@@ -3,6 +3,7 @@ import {
   type ArchiveSegment,
   type ArchiveSegmentHeader,
   type ArchiveStore,
+  assertReplaceable,
   classifyAppend,
 } from "@loom/event-runtime";
 import Database from "better-sqlite3";
@@ -18,11 +19,15 @@ interface Row {
   digest: string;
   incarnation: string;
   kind: string | null;
+  sender_digest: string | null;
   body: string;
 }
 
 const kindOf = (k: string | null): Pick<ArchiveSegmentHeader, "kind"> =>
   k === "legacy-checkpoint" ? { kind: "legacy-checkpoint" } : {};
+
+const senderOf = (d: string | null): Pick<ArchiveSegmentHeader, "senderDigest"> =>
+  d === null ? {} : { senderDigest: d };
 
 const toSegment = (r: Row): ArchiveSegment => {
   const body = JSON.parse(r.body) as { envelopes: ArchiveSegment["envelopes"]; sealed?: unknown };
@@ -33,6 +38,7 @@ const toSegment = (r: Row): ArchiveSegment => {
     digest: r.digest,
     incarnation: r.incarnation,
     ...kindOf(r.kind),
+    ...senderOf(r.sender_digest),
     envelopes: body.envelopes,
     ...(body.sealed !== undefined && { sealed: body.sealed }),
   };
@@ -55,10 +61,18 @@ export class SqliteArchiveStore implements ArchiveStore {
           digest TEXT NOT NULL,
           incarnation TEXT NOT NULL,
           kind TEXT,
+          sender_digest TEXT,
           body TEXT NOT NULL,
           PRIMARY KEY (execution_id, from_seq)
         );
       `);
+      // ADR 0139 N7: a table an earlier build created gains the column (CREATE IF NOT EXISTS never does).
+      const cols = this.db.prepare("PRAGMA table_info(archive_segments)").all() as Array<{
+        name: string;
+      }>;
+      if (!cols.some((c) => c.name === "sender_digest")) {
+        this.db.exec("ALTER TABLE archive_segments ADD COLUMN sender_digest TEXT");
+      }
     } catch (err) {
       this.db.close();
       throw err;
@@ -70,23 +84,42 @@ export class SqliteArchiveStore implements ArchiveStore {
     const tx = this.db.transaction(() => {
       const stored = this.headersSync(executionId);
       if (classifyAppend(executionId, stored, segment) === "noop") return;
-      this.db
-        .prepare(
-          "INSERT INTO archive_segments (execution_id, from_seq, through_seq, count, digest, incarnation, kind, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        .run(
-          executionId,
-          segment.from,
-          segment.through,
-          segment.count,
-          segment.digest,
-          segment.incarnation,
-          segment.kind ?? null,
-          JSON.stringify({
-            envelopes: segment.envelopes,
-            ...(segment.sealed !== undefined && { sealed: segment.sealed }),
-          })
-        );
+      this.insert(executionId, segment);
+    });
+    tx.immediate();
+  }
+
+  private insert(executionId: string, segment: ArchiveSegment): void {
+    this.db
+      .prepare(
+        "INSERT INTO archive_segments (execution_id, from_seq, through_seq, count, digest, incarnation, kind, sender_digest, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .run(
+        executionId,
+        segment.from,
+        segment.through,
+        segment.count,
+        segment.digest,
+        segment.incarnation,
+        segment.kind ?? null,
+        segment.senderDigest ?? null,
+        JSON.stringify({
+          envelopes: segment.envelopes,
+          ...(segment.sealed !== undefined && { sealed: segment.sealed }),
+        })
+      );
+  }
+
+  /** ADR 0139 N1: one transaction - compare the headers, delete the key's segments, insert the new ones. */
+  async replaceSegments(
+    executionId: string,
+    expected: readonly ArchiveSegmentHeader[],
+    next: readonly ArchiveSegment[]
+  ): Promise<void> {
+    const tx = this.db.transaction(() => {
+      assertReplaceable(executionId, this.headersSync(executionId), expected, next);
+      this.db.prepare("DELETE FROM archive_segments WHERE execution_id = ?").run(executionId);
+      for (const seg of next) this.insert(executionId, seg);
     });
     tx.immediate();
   }
@@ -94,7 +127,7 @@ export class SqliteArchiveStore implements ArchiveStore {
   private headersSync(executionId: string): ArchiveSegmentHeader[] {
     return this.db
       .prepare<[string], Omit<Row, "body">>(
-        "SELECT from_seq, through_seq, count, digest, incarnation, kind FROM archive_segments WHERE execution_id = ? ORDER BY from_seq"
+        "SELECT from_seq, through_seq, count, digest, incarnation, kind, sender_digest FROM archive_segments WHERE execution_id = ? ORDER BY from_seq"
       )
       .all(executionId)
       .map((r) => ({
@@ -104,6 +137,7 @@ export class SqliteArchiveStore implements ArchiveStore {
         digest: r.digest,
         incarnation: r.incarnation,
         ...kindOf(r.kind),
+        ...senderOf(r.sender_digest),
       }));
   }
 

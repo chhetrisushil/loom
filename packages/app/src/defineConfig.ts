@@ -1,6 +1,7 @@
 import { SkillRegistry, configureAgentLoopDefaults } from "@loom/agent";
 import { agentSurfaceProjection, createSurfaceEmitter } from "@loom/agent-surface";
 import {
+  DEFAULT_TENANT as DEFAULT_ERASE_TENANT,
   EraseCoordinator,
   type EraseSubjectOptions,
   type EraseSubjectResult,
@@ -1233,6 +1234,12 @@ export interface LoomApp {
     options?: EraseSubjectOptions
   ): Promise<EraseSubjectResult>;
   /**
+   * ADR 0139 N1 - operator verb: restore what an interrupted archive redaction of an earlier build left
+   * staged (`__loom_redact__:*` keys of the compaction archive). Also run at boot. Resolves with the archive
+   * keys restored (`[]` on a clean archive). Rejects without `compliance.erase`.
+   */
+  recoverArchiveRedactions(): Promise<string[]>;
+  /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
    * regardless of the `verify` config key. `options.lint` merges EXTRA compiler-lint
@@ -1737,6 +1744,24 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         )
       : stores.archiveStore;
 
+  // ADR 0139 N6: the crypto event store's sender-erasure verb (the keyed default handle), when it has one.
+  const cryptoEvents = ((config.crypto as { events?: unknown } | undefined)?.events ??
+    (config.storage.kind === "custom" ? config.storage.eventStore : undefined)) as
+    | {
+        eraseSender?: (s: { actor?: string; tenant?: string }) => Promise<unknown>;
+        senderSealing?: string;
+      }
+    | undefined;
+  const senderEraser =
+    typeof cryptoEvents?.eraseSender === "function"
+      ? cryptoEvents.eraseSender.bind(cryptoEvents)
+      : undefined;
+  if (cryptoEvents?.senderSealing === "disabled") {
+    (config.onWarn ?? defaultWarn)(
+      "security.crypto: this event store has senderSubjectOf: false, so a message sender's identity sits in the CLEAR in other chains' inbox streams and archives and erasing the sender cannot reach it (ADR 0139 N6). Omit the option to seal senders under the keyed default."
+    );
+  }
+
   const eraseCoordinator =
     subjectIndex !== undefined && config.compliance?.erase !== undefined
       ? new EraseCoordinator({
@@ -1749,6 +1774,18 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           shred: config.compliance.erase.shred,
           // ADR 0138 / 0139: erasure reckons with the archive that holds the subject's moved envelopes.
           ...(compactionArchive !== undefined && { archives: [compactionArchive] }),
+          // ADR 0139 N6: erasing a subject also erases them as a message SENDER (the crypto layer's keyed
+          // handle and its seed), in the tenant partition the erasure names.
+          ...(senderEraser !== undefined && {
+            eraseSender: (subjectId: string, tenant: string) =>
+              senderEraser({
+                actor: subjectId,
+                ...(tenant !== DEFAULT_ERASE_TENANT && { tenant }),
+              }),
+          }),
+          // ADR 0139 N1: an erasure that rewrote or deleted an archive key tells the runtime to forget its
+          // remembered last archived sequence for it (assigned below; nothing erases before defineConfig returns).
+          onArchiveKeyChanged: (key: string) => runtime.invalidateInboxArchive(key),
           ...(destroyedProof !== undefined && { destroyed: destroyedProof }),
           // `parked: "shred"` cancels each parked owner first, under the runtime's own authority.
           // `runtime` is assigned below; nothing erases before defineConfig returns.
@@ -2236,6 +2273,16 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         );
       }
       return eraseCoordinator.eraseSubject(subjectId, tenant, options);
+    },
+    recoverArchiveRedactions() {
+      if (eraseCoordinator === undefined) {
+        return Promise.reject(
+          new Error(
+            "[loom] recoverArchiveRedactions requires `compliance: { subjectOf, erase: { shred } }`"
+          )
+        );
+      }
+      return eraseCoordinator.recoverRedactions();
     },
     verify(options) {
       return runVerify(resolveInput(options?.lint), verifyOptions);

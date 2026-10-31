@@ -15,8 +15,14 @@ import type { EventEnvelope } from "@loom/core";
  *
  * 1.0.0: `append` / `headers` / `read` / `listExecutions` (paged) / optional `deleteExecution` /
  * `close`; every segment header carries the log `incarnation` it belongs to and an optional `kind`.
+ *
+ * 1.1.0 (ADR 0139 N1/N7, additive): the optional `replaceSegments(key, expected, next)`, an ATOMIC
+ * compare-and-swap of a key's whole segment list (a concurrent `append` makes it fail with
+ * {@link ArchiveConflictError}; nothing is written), and the optional header field `senderDigest`
+ * (a digest of the senders of a PLAINTEXT reserved-stream segment, which the digest itself masks). A
+ * 1.0.0 store conforms; the erasure that needs `replaceSegments` refuses an archive without it.
  */
-export const ARCHIVE_STORE_SPI_VERSION = "1.0.0";
+export const ARCHIVE_STORE_SPI_VERSION = "1.1.0";
 
 /**
  * What a segment holds. Absent / `"events"`: the exact envelopes a compaction removed. `"legacy-checkpoint"`:
@@ -49,6 +55,14 @@ export interface ArchiveSegmentHeader {
   readonly incarnation: string;
   /** Absent means `"events"`. Stored and returned verbatim. */
   readonly kind?: ArchiveSegmentKind;
+  /**
+   * SPI 1.1.0 (ADR 0139 N7), PLAINTEXT reserved-stream segments only: the sender digest of the
+   * envelopes' senders. The segment `digest` masks `payload.sender` (an erasure may redact it), so
+   * without this the sender field would have no bit-rot detection; a redaction recomputes it in the same
+   * atomic {@link ArchiveStore.replaceSegments}. Stored and returned verbatim; absent on every other segment
+   * (a sealing archive authenticates the sender with AEAD instead and never stores it).
+   */
+  readonly senderDigest?: string;
 }
 
 /** One contiguous range of removed envelopes. */
@@ -91,6 +105,19 @@ export interface ArchiveStore {
   ): Promise<ArchiveSegment[]>;
   /** OPTIONAL. The whole-execution delete of the retention path (`LogLifecycle.applyRetention`). */
   deleteExecution?(executionId: string): Promise<void>;
+  /**
+   * OPTIONAL (SPI 1.1.0, ADR 0139 N1). Atomically replace ALL of `executionId`'s segments with `next`, IF
+   * its current headers are exactly `expected` (ascending, as {@link ArchiveStore.headers} returned
+   * them, `senderDigest` included): one compare-and-swap, so a concurrent writer (a trim on another node
+   * appending a segment after the caller read) makes it reject with {@link ArchiveConflictError} and
+   * write NOTHING, and the caller re-reads and retries. Used by erasure to redact a sender in place; the
+   * `next` segments must be ascending and non-overlapping, and of the incarnation `expected` holds.
+   */
+  replaceSegments?(
+    executionId: string,
+    expected: readonly ArchiveSegmentHeader[],
+    next: readonly ArchiveSegment[]
+  ): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -101,7 +128,7 @@ export interface ArchiveExecutionPage {
 }
 
 /** The names of the OPTIONAL {@link ArchiveStore} methods, for the decorator plan. */
-export const OPTIONAL_ARCHIVE_STORE_METHODS = ["deleteExecution"] as const;
+export const OPTIONAL_ARCHIVE_STORE_METHODS = ["deleteExecution", "replaceSegments"] as const;
 
 /** A segment that overlaps or rewinds past what the archive already holds (nothing was written). */
 export class ArchiveConflictError extends Error {
@@ -109,10 +136,14 @@ export class ArchiveConflictError extends Error {
   constructor(
     readonly executionId: string,
     readonly attempted: ArchiveSegmentHeader,
-    readonly lastThrough: number
+    readonly lastThrough: number,
+    /** Set by {@link ArchiveStore.replaceSegments}: why the compare-and-swap failed. */
+    readonly replaceReason?: string
   ) {
     super(
-      `archive "${executionId}": segment [${attempted.from}..${attempted.through}] does not start after the archive's last sequence ${lastThrough}, and is not an exact repeat of an archived segment. Segments are append-only and contiguous; nothing was written.`
+      replaceReason !== undefined
+        ? `archive "${executionId}": replaceSegments refused - ${replaceReason}. Nothing was written; re-read the headers and retry.`
+        : `archive "${executionId}": segment [${attempted.from}..${attempted.through}] does not start after the archive's last sequence ${lastThrough}, and is not an exact repeat of an archived segment. Segments are append-only and contiguous; nothing was written.`
     );
     this.name = "ArchiveConflictError";
     Object.setPrototypeOf(this, ArchiveConflictError.prototype);
@@ -177,7 +208,71 @@ export const headerOf = (s: ArchiveSegmentHeader): ArchiveSegmentHeader => ({
   digest: s.digest,
   incarnation: s.incarnation,
   ...(s.kind !== undefined && { kind: s.kind }),
+  ...(s.senderDigest !== undefined && { senderDigest: s.senderDigest }),
 });
+
+const sameHeader = (a: ArchiveSegmentHeader, b: ArchiveSegmentHeader): boolean =>
+  a.from === b.from &&
+  a.through === b.through &&
+  a.count === b.count &&
+  a.digest === b.digest &&
+  a.incarnation === b.incarnation &&
+  (a.kind ?? "events") === (b.kind ?? "events") &&
+  (a.senderDigest ?? null) === (b.senderDigest ?? null);
+
+/**
+ * The shared `replaceSegments` rule for a backend, given the headers stored now: throws
+ * {@link ArchiveConflictError} unless they are exactly `expected`, and a `RangeError` for a `next` list
+ * that is not ascending, non-overlapping and well-formed. Nothing is written by this check.
+ */
+export function assertReplaceable(
+  executionId: string,
+  stored: readonly ArchiveSegmentHeader[],
+  expected: readonly ArchiveSegmentHeader[],
+  next: readonly ArchiveSegmentHeader[]
+): void {
+  const attempted =
+    next[0] ?? expected[0] ?? stored[0] ?? ({ from: 0, through: 0 } as ArchiveSegmentHeader);
+  const last = stored[stored.length - 1]?.through ?? -1;
+  if (stored.length !== expected.length) {
+    throw new ArchiveConflictError(
+      executionId,
+      attempted,
+      last,
+      `the key now holds ${stored.length} segment(s), the caller read ${expected.length}`
+    );
+  }
+  for (let i = 0; i < stored.length; i++) {
+    if (!sameHeader(stored[i]!, expected[i]!)) {
+      throw new ArchiveConflictError(
+        executionId,
+        attempted,
+        last,
+        `segment ${i} [${stored[i]!.from}..${stored[i]!.through}] changed since the caller read it`
+      );
+    }
+  }
+  let prev = Number.NEGATIVE_INFINITY;
+  for (const h of next) {
+    if (!Number.isSafeInteger(h.from) || !Number.isSafeInteger(h.through) || h.from > h.through) {
+      throw new RangeError(`archive segment [${h.from}..${h.through}] is malformed`);
+    }
+    if (h.from <= prev) {
+      throw new RangeError(
+        `replaceSegments: segments must be ascending and non-overlapping ([${h.from}..${h.through}] follows ${prev})`
+      );
+    }
+    prev = h.through;
+  }
+  const incarnation = expected[0]?.incarnation;
+  if (incarnation !== undefined) {
+    for (const h of next) {
+      if (h.incarnation !== incarnation) {
+        throw new ArchiveIncarnationError(executionId, incarnation, h.incarnation);
+      }
+    }
+  }
+}
 
 /**
  * The shared `append` rule for a backend, given the headers already stored (ascending): `"noop"`

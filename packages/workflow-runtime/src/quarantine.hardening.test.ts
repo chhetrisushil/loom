@@ -431,7 +431,9 @@ describe("P3-4: the idempotent repeat of a release", () => {
   it("matches the SENDER with the id: another sender's release is not this message's", async () => {
     const raw = memRaw();
     const keys = new InMemoryKeyStore();
-    const sealed = sealingStore(raw.eventStore, keys);
+    // (the sender is left in the clear here: this case is about the release matching a plaintext sender
+    // that the KEYLESS node `b` reads too; a sealed sender is keyed by its handle on a keyless node, see dedupeKeyOf)
+    const sealed = sealingStore(raw.eventStore, keys, undefined, false);
     const a = build({ inboxAutoRelease: false }, { ...raw, eventStore: sealed });
     const b = build({}, { ...raw });
     const f = collector(5, ["a"]);

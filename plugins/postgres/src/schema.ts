@@ -660,9 +660,31 @@ const DDL_REST = `
       digest TEXT NOT NULL,
       incarnation TEXT NOT NULL,
       kind TEXT,
+      sender_digest TEXT,
       body TEXT NOT NULL,
       PRIMARY KEY (execution_id, from_seq)
     );
+    -- ADR 0139 N7: \`sender_digest\` (a plaintext reserved segment's sender digest). A table the 1.0.0 build
+    -- created gains it with the same guarded add as \`timers.redrive\` (catalog first, one real ALTER under
+    -- the migration lock timeout; the archive is not on any hot read path).
+    DO $archive_sender_digest$
+    DECLARE
+      caller_lock_timeout text := current_setting('lock_timeout');
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'archive_segments' AND column_name = 'sender_digest'
+      ) THEN
+        PERFORM set_config(
+          'lock_timeout',
+          COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+          true
+        );
+        ALTER TABLE archive_segments ADD COLUMN IF NOT EXISTS sender_digest TEXT;
+        PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+      END IF;
+    END
+    $archive_sender_digest$;
 
     CREATE TABLE IF NOT EXISTS refs (
       name TEXT COLLATE "C" NOT NULL PRIMARY KEY,

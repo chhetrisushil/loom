@@ -34,6 +34,8 @@ export {
   type SenderIdentity,
   type SenderSubjectOf,
   type SealedSender,
+  SenderErasedError,
+  SenderHandles,
   isSealedSender,
 } from "./senderSeal";
 export { defaultSubjectOf } from "./subject";

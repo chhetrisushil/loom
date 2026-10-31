@@ -14,6 +14,7 @@ export {
 } from "./exportSubject";
 export {
   ArchivedCopiesRemainError,
+  SenderRedactionUnsupportedError,
   defaultSenderMatches,
   EraseCoordinator,
   ERASURE_STREAM,

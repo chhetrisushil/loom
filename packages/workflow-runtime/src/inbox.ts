@@ -111,6 +111,26 @@ export function topicProblem(topic: unknown): string | undefined {
  */
 export function dedupeKeyOf(m: { messageId: string; sender: InboxMessage["sender"] }): string {
   const s = m.sender;
+  // ADR 0139 N3 - an ERASED sender (`{ erased: true, ref }`) has no identity left to key on; collapsing to
+  // empty fields would make every erased sender's `m1` the same message. Their stable non-identifying
+  // reference (the sealed handle, or the one a redaction minted) stands in for the identity.
+  const erased = s as { erased?: unknown; ref?: unknown; $loomSender?: unknown; subject?: unknown };
+  // A sender a KEYLESS node reads still SEALED (`{ $loomSender: 1, subject, ct }`, ADR 0139 N6) has no
+  // identity fields either; its opaque handle (`subject`) is the stable per-sender value in the clear.
+  // (A node that opens it keys on the identity: a message a keyless node quarantined is therefore keyed
+  // differently from the same message read by an opener - stated in ADR 0139.)
+  if (erased.$loomSender === 1 && typeof erased.subject === "string") {
+    return createHash("sha256")
+      .update(JSON.stringify(["sealed", erased.subject, m.messageId]))
+      .digest("hex");
+  }
+  if (erased.erased === true) {
+    return createHash("sha256")
+      .update(
+        JSON.stringify(["erased", typeof erased.ref === "string" ? erased.ref : "", m.messageId])
+      )
+      .digest("hex");
+  }
   return createHash("sha256")
     .update(JSON.stringify([s.tenant ?? "", s.actor ?? "", s.onBehalfOf ?? "", m.messageId]))
     .digest("hex");
@@ -596,6 +616,27 @@ export async function deleteInbox(
     if (through !== undefined) archived.push([stream, through]);
   }
   for (const [stream, through] of archived) await store.deleteThrough?.(stream, through);
+}
+
+/**
+ * ADR 0139 N8 - the first reserved stream of the chain (inbox, topic, registry, quarantine) that holds ANY
+ * envelope, or `undefined` when every one is empty. The retention path of a KEPT execution uses it to refuse
+ * before it copies anything when the chain's envelopes would have nowhere to move.
+ */
+export async function firstNonEmptyChainStream(
+  store: EventStore,
+  chainId: string
+): Promise<string | undefined> {
+  const { legacy, registry, topics, quarantine } = await inboxStreamsOfChainDeep(store, chainId);
+  for (const stream of [
+    ...topics,
+    legacy,
+    quarantine,
+    ...(registry !== undefined ? [registry] : []),
+  ]) {
+    if ((await headOf(store, stream)) !== null) return stream;
+  }
+  return undefined;
 }
 
 /** Delete the consumed prefix of one TOPIC's stream (every entry up to the cursor, never the head). */

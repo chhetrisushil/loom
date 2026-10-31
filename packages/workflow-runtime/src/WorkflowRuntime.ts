@@ -1277,6 +1277,15 @@ export class WorkflowRuntime {
   // enforcement is the thrown error, which never depends on the record.
 
   /**
+   * ADR 0139 N1 - forget the remembered last archived sequence of an archive key. An erasure that deleted
+   * or rewrote the key (`EraseCoordinator`'s `onArchiveKeyChanged`, wired by `defineConfig`) calls this so
+   * the next trim re-reads the key's headers instead of trusting a stale memory.
+   */
+  invalidateInboxArchive(streamId: string): void {
+    this.reservedArchive?.invalidate(streamId);
+  }
+
+  /**
    * R3 — the options a KERNEL-INTERNAL caller (timer wake, recovery, supervisor, local worker)
    * spreads into its `start`/`resume`/`cancel`/`loadState` call: `{ system }` when this runtime
    * fails closed on a missing principal, else `{}` (so nothing changes when the mode is off).

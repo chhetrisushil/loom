@@ -8,11 +8,13 @@ import {
   InMemoryAsyncEventStore,
   TenantScopedArchiveStore,
   TenantScopedEventStore,
+  assertReservedSegmentDigest,
   inboxRegistryStreamId,
   inboxTopicStreamId,
   quarantineStreamId,
   reservedLateKey,
   segmentDigest,
+  senderDigestOf,
 } from "@loom/event-runtime";
 import {
   EncryptingArchiveStore,
@@ -145,6 +147,27 @@ for (const backend of BACKENDS) {
       const life = lifecycle(eventStore, archive);
       expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(original);
       expect((await life.reservedArchiveCoverage(stream)).unarchived).toEqual([]);
+    });
+
+    it("N7: a plaintext reserved segment carries a sender digest of its own, persisted by the backend and verified on the audit read", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("sdig");
+      const stream = inboxStreamId(c);
+      for (let i = 0; i < 6; i++) await appendInboxMessage(eventStore, c, message("x", i), now);
+      await trimInbox(eventStore, c, { x: 4 }, -1, new ReservedStreamArchive(archive, eventStore));
+      const [header] = await archive.headers(stream);
+      const [seg] = await archive.read(stream);
+      expect(header?.senderDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(seg?.senderDigest).toBe(header?.senderDigest);
+      expect(seg?.senderDigest).toBe(senderDigestOf(seg?.envelopes ?? []));
+      // the segment digest MASKS the sender (an erasure may redact it); the sender digest is what notices a flip
+      const rotted = clone(seg) as typeof seg;
+      (rotted?.envelopes[1]?.payload as { sender: { actor: string } }).sender.actor = "mallory";
+      expect(() => assertReservedSegmentDigest(stream, rotted as never)).toThrow();
+      // and the audit read of the intact archive verifies it
+      expect(
+        (await lifecycle(eventStore, archive).readReservedWithArchive(stream)).events.length
+      ).toBe(6);
     });
 
     it("trimTopicStream: a topic stream's moved prefix is recoverable byte-exact", async () => {
@@ -679,7 +702,10 @@ describe("reserved-stream archive: the guards of compaction apply", () => {
     const after = await life.readReservedWithArchive(stream);
     const live = await events.read(stream);
     for (const e of [...after.events, ...live]) {
-      expect((e.payload as { sender: unknown }).sender).toEqual({ erased: true });
+      expect((e.payload as { sender: unknown }).sender).toMatchObject({
+        erased: true,
+        ref: "sbj-3c1f9a",
+      });
     }
     // the OWNER's message is intact (body readable), in the archive and in the live stream, and nothing threw
     expect(after.events.map((e) => (e.payload as { payload: unknown }).payload)).toEqual([

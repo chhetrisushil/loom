@@ -464,13 +464,23 @@ export function hashChainedEventStore(
     // duplicate `readWithArchive` compares byte-exact), so nothing is lost by leaving it.
     // ADR 0139 D8: a bounded delete of a stream's drained prefix (the durable inbox's terminal delete).
     // The cached tail hash is dropped with it; what remains above `through` keeps its own prevHash.
-    deleteThrough: async (executionId: string, through: number): Promise<void> => {
-      lastHash.delete(executionId);
-      await (inner.deleteThrough as (id: string, through: number) => Promise<void>)(
-        executionId,
-        through
-      );
-    },
+    // ADR 0139 (review round): gated like `truncatePrefix`. A delete that leaves a REMAINDER (a message
+    // appended after the archive's read) leaves a survivor whose `prevHash` names a deleted event, so
+    // verifyChain would report a break; offering it would let a routine inbox retirement make an audit
+    // fail. Opt-in with `allowCompaction` (the moved envelopes are in the archive, and the stream is
+    // verified across the gap with `verifyChain(id, { archived })`); without it the method is NOT
+    // offered, and the kernel's reserved-stream delete refuses loudly and keeps the stream whole
+    // (`ReservedStreamDeleteUnsupportedError`), exactly as it does for a store with no `deleteThrough`.
+    deleteThrough:
+      options.allowCompaction === true
+        ? async (executionId: string, through: number): Promise<void> => {
+            lastHash.delete(executionId);
+            await (inner.deleteThrough as (id: string, through: number) => Promise<void>)(
+              executionId,
+              through
+            );
+          }
+        : { refuse: "a bounded delete can leave a survivor chained to a deleted event (ADR 0037)" },
     truncatePrefix:
       options.allowCompaction === true
         ? async (executionId: string, through: number) => {

@@ -312,7 +312,7 @@ export class ReservedStreamDeleteUnsupportedError extends Error {
   readonly retryable = false;
   constructor(readonly streamId: string) {
     super(
-      `refusing to delete reserved stream "${streamId}": the event store has no \`deleteThrough\` (EventStore SPI 2.6.0), so a message appended after the stream was archived could not be told from one that was, and a whole-stream delete would lose it silently (ADR 0139 D8). The stream was kept. Use a store that implements \`deleteThrough\` (the in-memory, SQLite and Postgres stores do; decorators forward it).`
+      `refusing to delete reserved stream "${streamId}": the event store has no \`deleteThrough\` (EventStore SPI 2.6.0), so a message appended after the stream was archived could not be told from one that was, and a whole-stream delete would lose it silently (ADR 0139 D8). The stream was kept. Use a store that implements \`deleteThrough\` (the in-memory, SQLite and Postgres stores do; decorators forward it; \`hashChainedEventStore\` offers it only with \`allowCompaction\`).`
     );
     this.name = "ReservedStreamDeleteUnsupportedError";
     Object.setPrototypeOf(this, ReservedStreamDeleteUnsupportedError.prototype);

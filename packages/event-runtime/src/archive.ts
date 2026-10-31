@@ -69,6 +69,16 @@ export function buildSegment(
 /** `payload.sender` after the sender was erased (sealed under their subject and shredded, or redacted). */
 export const SENDER_ERASED = Object.freeze({ erased: true as const });
 
+/**
+ * The erased-sender marker carrying a STABLE, NON-IDENTIFYING per-sender reference (ADR 0139 N3): the sealed
+ * sender's opaque handle, or a random one a plaintext redaction minted per erased subject. Two messages
+ * from one erased sender still share it and two different erased senders do not, so the owner's dedupe
+ * (which keyed on the identity before the erasure) keeps telling them apart; it names nobody.
+ */
+export function senderErasedMarker(ref?: string): { erased: true; ref?: string } {
+  return ref === undefined ? { erased: true } : { erased: true, ref };
+}
+
 /** Whether a stored `sender` value is the {@link SENDER_ERASED} marker. */
 export function isSenderErased(v: unknown): boolean {
   return typeof v === "object" && v !== null && (v as { erased?: unknown }).erased === true;
@@ -94,6 +104,27 @@ export function reservedSegmentDigest(envelopes: readonly EventEnvelope[]): stri
   return segmentDigest(envelopes.map(maskSender));
 }
 
+/**
+ * ADR 0139 N7 - the digest of the SENDERS of a run of reserved-stream envelopes (SHA-256 over the canonical
+ * JSON of each envelope's `payload.sender`, `null` for one without). A plaintext reserved segment carries it
+ * beside its (sender-masked) `digest`, so the one field an erasure may redact still has bit-rot detection;
+ * a redaction recomputes it in the same atomic replace.
+ */
+export function senderDigestOf(envelopes: readonly EventEnvelope[]): string {
+  const senders = envelopes.map((e) =>
+    e.eventType === "INBOX_MESSAGE"
+      ? ((e.payload as { sender?: unknown } | null)?.sender ?? null)
+      : null
+  );
+  try {
+    return createHash("sha256")
+      .update(canonicalJson(JSON.parse(JSON.stringify(senders))))
+      .digest("hex");
+  } catch (err) {
+    throw new ArchiveUnserializableError(err);
+  }
+}
+
 /** {@link buildSegment} with the reserved-stream digest. */
 export function buildReservedSegment(
   envelopes: readonly EventEnvelope[],
@@ -104,12 +135,25 @@ export function buildReservedSegment(
   return {
     ...buildSegment(envelopes, incarnation, from, through),
     digest: reservedSegmentDigest(envelopes),
+    senderDigest: senderDigestOf(envelopes),
   };
 }
 
 /** {@link assertSegmentDigest} for a reserved-stream segment. */
 export function assertReservedSegmentDigest(executionId: string, segment: ArchiveSegment): void {
   const actual = reservedSegmentDigest(segment.envelopes);
+  if (
+    segment.senderDigest !== undefined &&
+    senderDigestOf(segment.envelopes) !== segment.senderDigest
+  ) {
+    throw new ArchiveDigestError(
+      executionId,
+      segment.from,
+      segment.through,
+      `sender:${segment.senderDigest}`,
+      `sender:${senderDigestOf(segment.envelopes)}`
+    );
+  }
   if (actual !== segment.digest || segment.envelopes.length !== segment.count) {
     throw new ArchiveDigestError(
       executionId,

@@ -47,12 +47,13 @@ import {
   CompactionArchiveRequiredError,
   PlaintextArchiveError,
   PlaintextCheckpointError,
+  ReservedStreamArchiveRequiredError,
   type UnarchivedRange,
   plaintextArchiveReason,
   plaintextCheckpointReason,
   tenantScopeOf,
 } from "./checkpointGuard";
-import { chainIdOf, deleteInbox } from "./inbox";
+import { chainIdOf, deleteInbox, firstNonEmptyChainStream, inboxStreamId } from "./inbox";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 import { isWriteConflict } from "./writeConflict";
 
@@ -664,6 +665,16 @@ export class LogLifecycle {
     const events = await this.eventStore.read(executionId);
     const headState = await this.foldForRetention(executionId, events);
 
+    const chainOfHead = chainIdOf(headState, executionId);
+    if (this.options.archive !== undefined && headState.status !== "continued") {
+      // ADR 0139 N8 - a KEPT execution keeps its chain's unconsumed inbox envelopes too: they MOVE to the
+      // compaction archive. With none configured they would be dropped by the delete below, so refuse
+      // BEFORE anything is copied or deleted (fail closed), naming the fix.
+      if (this.options.compactionArchive === undefined) {
+        const held = await firstNonEmptyChainStream(this.eventStore, chainOfHead);
+        if (held !== undefined) throw new ReservedStreamArchiveRequiredError(held, "delete");
+      }
+    }
     if (this.options.archive !== undefined) {
       const archive = this.options.archive;
       // ADR 0074 R7 — one round-trip per chunk instead of one per event. Reclamation has
@@ -694,7 +705,31 @@ export class LogLifecycle {
     // the next sweep, whereas deleting the log first could leave segments no sweep ever revisits for
     // a reused id to meet (a segment also carries its log's incarnation, so a reused id refuses them).
     // ADR 0139 - the same for the chain's reserved streams (inbox envelopes a trim moved there).
-    const chainId = chainIdOf(headState, executionId);
+    const chainId = chainOfHead;
+    // ADR 0139 N2 - a KEPT execution's chain moves its live streams to the compaction archive AFTER the
+    // owner's log is deleted below, and the incarnation is the OWNER's bootstrap digest: derive it NOW, while
+    // the bootstrap exists, and pin it, or the move would stamp the fallback constant and be refused as a
+    // foreign run by the segments an earlier trim wrote.
+    let reservedMove: ReservedStreamArchive | undefined;
+    if (
+      this.options.archive !== undefined &&
+      this.options.compactionArchive !== undefined &&
+      headState.status !== "continued"
+    ) {
+      reservedMove = new ReservedStreamArchive(
+        this.options.compactionArchive,
+        this.eventStore,
+        this.options.tenant
+      );
+      reservedMove.pin(
+        chainId,
+        await reservedIncarnationOf(
+          this.eventStore,
+          inboxStreamId(chainId),
+          this.options.compactionArchive
+        )
+      );
+    }
     if (this.options.archive === undefined) {
       await this.options.compactionArchive?.deleteExecution?.(executionId);
       if (headState.status !== "continued" && this.options.compactionArchive !== undefined) {
@@ -715,13 +750,7 @@ export class LogLifecycle {
         this.eventStore,
         chainId,
         false,
-        this.options.archive !== undefined && this.options.compactionArchive !== undefined
-          ? new ReservedStreamArchive(
-              this.options.compactionArchive,
-              this.eventStore,
-              this.options.tenant
-            )
-          : "discard"
+        this.options.archive !== undefined ? (reservedMove ?? "discard") : "discard"
       );
     }
     await this.snapshotStore.deleteExecution?.(executionId);
@@ -1483,7 +1512,7 @@ export class LogLifecycle {
       archived.push(...seg.envelopes);
     }
     // Verified AFTER the segments open: a shredded owner reports the shred, not a "foreign run".
-    const incarnation = await reservedIncarnationOf(this.eventStore, streamId);
+    const incarnation = await reservedIncarnationOf(this.eventStore, streamId, archive);
     const headers = await archive.headers(streamId);
     const foreign = headers.find((h) => h.incarnation !== incarnation);
     if (foreign !== undefined) {
@@ -1525,14 +1554,17 @@ export class LogLifecycle {
     const archive = this.options.compactionArchive;
     if (archive === undefined) return [];
     const bootstrap = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
-    if (bootstrap === undefined || chainIdOfFirst(bootstrap, executionId) !== executionId)
+    // ADR 0139 N2: a KEPT retention deleted the owner's log but left the archive; with no bootstrap the
+    // chain is judged by the archive itself (a later generation's streams are archived under ITS chain id).
+    if (bootstrap !== undefined && chainIdOfFirst(bootstrap, executionId) !== executionId)
       return [];
     const streams = await archivedReservedStreams(archive, executionId);
     const out: Array<{ streamId: string; events: EventEnvelope[]; unarchived: UnarchivedRange[] }> =
       [];
     const incarnation = await reservedIncarnationOf(
       this.eventStore,
-      `${INBOX_STREAM_PREFIX}${executionId}`
+      `${INBOX_STREAM_PREFIX}${executionId}`,
+      archive
     );
     for (const streamId of streams) {
       const isLate = reservedLateOrigin(streamId) !== undefined;

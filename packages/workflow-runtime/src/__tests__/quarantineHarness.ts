@@ -25,8 +25,15 @@ export const SENSITIVE = { MESSAGE_CONSUMED: ["payload"], INBOX_MESSAGE: ["paylo
 
 export type Raw = ReturnType<Backend["make"]>;
 
-export function sealingStore(raw: EventStore, keys: KeyStore, subjectOf?: (e: never) => string) {
+export function sealingStore(
+  raw: EventStore,
+  keys: KeyStore,
+  subjectOf?: (e: never) => string,
+  /** `false`: do not seal the SENDER (ADR 0139 N6 default) - for a case that keys on a plaintext sender a keyless node also reads. */
+  senderSubjectOf?: false
+) {
   return new EncryptingEventStore(raw, keys, {
+    ...(senderSubjectOf === false && { senderSubjectOf: false as const }),
     sensitive: { ...SENSITIVE },
     subjectOf: (subjectOf as never) ?? ((e: { executionId: string }) => e.executionId),
   });

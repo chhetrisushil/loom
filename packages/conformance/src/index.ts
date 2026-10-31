@@ -4431,6 +4431,58 @@ export function runArchiveStoreConformance(
       await store.close();
     });
 
+    it("replaceSegments (if implemented) swaps the whole list atomically, and a changed key rejects with ArchiveConflictError", async () => {
+      const store = await factory();
+      if (store.replaceSegments === undefined) return void (await store.close());
+      await store.append("rp", archiveSeg("rp", 1, 3));
+      await store.append("rp", archiveSeg("rp", 4, 6));
+      await store.append("other", archiveSeg("other", 1, 3));
+      const seen = await store.headers("rp");
+      const redacted = {
+        ...buildSegment([{ ...archiveEnv("rp", 1), payload: { redacted: true } }], "inc-1", 1, 3),
+        senderDigest: "sd-1",
+      };
+      const keep = (await store.read("rp"))[1] as ArchiveSegment;
+      await store.replaceSegments("rp", seen, [redacted, keep]);
+      // (a SEALING archive deliberately does not store the plaintext sender digest: compare without it)
+      const bare = (xs: ArchiveSegment[]) => xs.map(({ senderDigest: _d, ...rest }) => rest);
+      expect(bare(await store.read("rp"))).toEqual(bare([redacted, keep]));
+      if ((store as { sealsSegments?: unknown }).sealsSegments !== true) {
+        expect((await store.headers("rp"))[0]?.senderDigest).toBe("sd-1");
+      }
+      expect((await store.headers("other")).length).toBe(1); // other keys untouched
+      // a writer that appended after the caller read: the swap is refused and writes NOTHING
+      const stale = await store.headers("rp");
+      await store.append("rp", archiveSeg("rp", 7, 8));
+      await expect(
+        store.replaceSegments("rp", stale, [archiveSeg("rp", 1, 3)])
+      ).rejects.toBeInstanceOf(ArchiveConflictError);
+      expect((await store.headers("rp")).map((h) => [h.from, h.through])).toEqual([
+        [1, 3],
+        [4, 6],
+        [7, 8],
+      ]);
+      expect(bare(await store.read("rp")).slice(0, 1)).toEqual(bare([redacted]));
+      // a header that changed in place (a concurrent writer rewrote a segment) is also a conflict
+      const before = await store.headers("rp");
+      const bumped = { ...redacted, digest: "d-2" };
+      await store.replaceSegments("rp", before, [
+        bumped,
+        keep,
+        (await store.read("rp"))[2] as ArchiveSegment,
+      ]);
+      await expect(store.replaceSegments("rp", before, [redacted])).rejects.toBeInstanceOf(
+        ArchiveConflictError
+      );
+      // malformed lists are refused, not stored
+      const now = await store.headers("rp");
+      await expect(
+        store.replaceSegments("rp", now, [archiveSeg("rp", 4, 6), archiveSeg("rp", 1, 3)])
+      ).rejects.toThrow();
+      expect((await store.headers("rp")).length).toBe(3);
+      await store.close();
+    });
+
     it("deleteExecution (if implemented) removes only that execution", async () => {
       const store = await factory();
       if (store.deleteExecution === undefined) return void (await store.close());

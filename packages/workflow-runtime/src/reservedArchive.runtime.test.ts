@@ -13,8 +13,9 @@ import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { build, flow, settle, until } from "./__tests__/r2Harness";
+import { ReservedStreamArchive } from "./archiveMove";
 import { InboxArchiveRequiredError, ReservedStreamArchiveRequiredError } from "./checkpointGuard";
-import { appendInboxMessage, inboxStreamId } from "./inbox";
+import { appendInboxMessage, dedupeKeyOf, inboxStreamId } from "./inbox";
 
 // ADR 0139 (#728) end to end: the runtime trims the consumed prefix and deletes a retired chain's streams
 // only by MOVING them into the archive; without one it trims and deletes nothing and says so.
@@ -276,5 +277,86 @@ describe("the inbox archive is required, defaulted or explicitly declined (ADR 0
       h.rt as unknown as { inboxFullError(e: string, f: { unconsumed: number }): Error }
     ).inboxFullError("x", { unconsumed: 3 });
     expect(err.message).toMatch(/no inboxArchive is configured/);
+  });
+});
+
+// ── ADR 0139 review round 2 (#729): N2 the incarnation survives a kept retention, N3 dedupe, N8 fail closed ──
+describe("retention of a KEPT execution and its reserved streams (ADR 0139 N2/N8)", () => {
+  /** A finished chain: 5 messages sent, trimmed into the archive, the terminal deleted the stream, 2 late sends re-created it. */
+  async function finishedWithLive(e: string) {
+    const inner = new InMemoryAsyncEventStore();
+    const h = build({}, { eventStore: inner });
+    await park(h, recv3(), e);
+    await sendDirect(inner, e, 5);
+    const stream = inboxStreamId(e);
+    await h.rt.notifyInbox(e).then((x) => x && settle(x));
+    await until(async () => (await h.archive.headers(stream)).length > 0, 8000);
+    await until(async () => (await h.rt.loadState(e))?.suspendedOn?.on === "hold", 8000);
+    const fence = await inner.acquireFence(e);
+    await h.rt.resume(e, { eventType: "hold", payload: { ok: true } }, { fence });
+    await until(async () => (await h.rt.loadState(e))?.status === "completed", 8000);
+    await until(async () => (await inner.read(stream)).length === 0, 8000);
+    // two sends that raced the terminal re-create the stream ABOVE what the archive holds
+    const floor = new ReservedStreamArchive(h.archive, inner).floorOf;
+    for (const i of [90, 91]) {
+      await appendInboxMessage(
+        inner,
+        e,
+        { topic: "a", messageId: `late${i}`, payload: `L${i}`, sender: { actor: "alice" } },
+        Date.now,
+        false,
+        floor
+      );
+    }
+    return { inner, h, stream };
+  }
+
+  it("N2: after a KEPT retention the archived inbox still reads, and the live stream was MOVED, not stranded", async () => {
+    const e = "arch-n2";
+    const { inner, h, stream } = await finishedWithLive(e);
+    const life = new LogLifecycle(inner, h.snapshotStore, {
+      compactionArchive: h.archive,
+      archive: { eventStore: new InMemoryAsyncEventStore() },
+    });
+    const before = clone((await life.readReservedWithArchive(stream)).events);
+    expect(before.length).toBeGreaterThan(5);
+    expect(await life.applyRetention(e, { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe("reclaimed");
+    expect(await inner.read(e)).toEqual([]); // the owner is gone from the live store
+    expect(await inner.read(stream)).toEqual([]); // the live stream MOVED to the archive
+    // the audit read still opens (no ArchiveIncarnationError from a fallback incarnation) and is byte-exact
+    expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(before);
+    // and the export path (the owner's bootstrap is gone) still finds the chain's archived streams
+    expect((await life.readReservedArchive(e)).map((x) => x.streamId)).toContain(stream);
+  });
+
+  it("N8: a KEPT execution with a retention archive but NO compaction archive REFUSES while its inbox holds envelopes (nothing is dropped)", async () => {
+    const e = "arch-n8";
+    const { inner, h, stream } = await finishedWithLive(e);
+    const keep = new InMemoryAsyncEventStore();
+    const life = new LogLifecycle(inner, h.snapshotStore, { archive: { eventStore: keep } });
+    const live = clone(await inner.read(stream));
+    expect(live.length).toBeGreaterThan(0);
+    await expect(life.applyRetention(e, { terminalTtlMs: 0 }, Date.now() + 1e9)).rejects.toThrow(
+      ReservedStreamArchiveRequiredError
+    );
+    // fail closed: the owner, the unconsumed envelopes and the retention archive are exactly as they were
+    expect((await inner.read(e)).length).toBeGreaterThan(0);
+    expect(clone(await inner.read(stream))).toEqual(live);
+    expect(await keep.read(e)).toEqual([]);
+  });
+});
+
+describe("the dedupe key of an erased sender (ADR 0139 N3)", () => {
+  const k = (sender: object) => dedupeKeyOf({ messageId: "m1", sender: sender as never });
+  it("two different erased senders do not dedupe against each other; one erased sender stays one", () => {
+    expect(k({ erased: true, ref: "r1" })).not.toBe(k({ erased: true, ref: "r2" }));
+    expect(k({ erased: true, ref: "r1" })).toBe(k({ erased: true, ref: "r1" }));
+    // never the all-empty collapse a live anonymous sender produces
+    expect(k({ erased: true, ref: "r1" })).not.toBe(k({}));
+  });
+  it("a sender a keyless node reads still sealed is keyed by its opaque handle, not collapsed", () => {
+    expect(k({ $loomSender: 1, subject: "sbj-a", ct: "x" })).not.toBe(
+      k({ $loomSender: 1, subject: "sbj-b", ct: "x" })
+    );
   });
 });

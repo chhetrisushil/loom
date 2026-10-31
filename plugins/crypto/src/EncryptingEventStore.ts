@@ -26,11 +26,14 @@ import {
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
 import {
+  SenderHandles,
+  type SenderIdentity,
   type SenderSubjectOf,
   isSealedSender,
   openSender,
   plaintextSenderOf,
   sealSender,
+  senderBindOf,
 } from "./senderSeal";
 import { defaultSubjectOf } from "./subject";
 
@@ -56,8 +59,13 @@ export interface EncryptingEventStoreOptions {
    * body stays under the owner's record. A read whose sender key is gone gets `{ erased: true }`. Return
    * an OPAQUE handle (it is stored in the clear beside the ciphertext, so never the identity itself), or
    * `undefined` for an anonymous sender. Share it with the archive (`sealArchive` does).
+   *
+   * ADR 0139 N6 - DEFAULT ON: omitted, the store seals every sender under an opaque handle derived with a
+   * keyed function from KeyStore-held material (see {@link SenderHandles}); `eraseSender` is the erasure
+   * verb and makes the handle unlinkable. `false` is the explicit opt-out (the sender then sits in the
+   * clear in other chains' streams and archives; `defineConfig` warns at boot).
    */
-  senderSubjectOf?: SenderSubjectOf;
+  senderSubjectOf?: SenderSubjectOf | false;
   /**
    * K10-R4 — what a read does when the subject's key has been DESTROYED (crypto-shredded):
    *  - `"throw"` (**default**): {@link PayloadShreddedError}. The authoritative fold MUST
@@ -166,6 +174,10 @@ export class EncryptingEventStore implements EventStore {
   private readonly onShredded: "throw" | "tolerate";
   /** PUBLIC so the archive and the kernel guard can read the SAME sender mapping (ADR 0139 D12). */
   readonly senderSubjectOf: SenderSubjectOf | undefined;
+  /** ADR 0139 N6: which sender mapping this store runs - the keyed default, the app's own, or none (an explicit opt-out). */
+  readonly senderSealing: "default" | "custom" | "disabled";
+  /** The default sender handles (`undefined` when the app supplied its own mapping or opted out). */
+  readonly senderHandles: SenderHandles | undefined;
   private readonly ivSource: IvSource | undefined;
   /** Streams (and subjects) whose `PAYLOAD_SHREDDED` tombstone has been seen: a tombstone is permanent. */
   private readonly shreddedSeen = new Set<string>();
@@ -197,7 +209,7 @@ export class EncryptingEventStore implements EventStore {
   sealArchive(archive: ArchiveStore): ArchiveStore {
     return new EncryptingArchiveStore(archive, this.keys, {
       subjectOf: this.subjectOf,
-      ...(this.senderSubjectOf !== undefined && { senderSubjectOf: this.senderSubjectOf }),
+      senderSubjectOf: this.senderSubjectOf ?? false,
       ownerWorkflowId: async (chainId) => (await this.readRange?.(chainId, 0, 0))?.[0]?.workflowId,
     });
   }
@@ -216,7 +228,19 @@ export class EncryptingEventStore implements EventStore {
     this.sensitive = { ...options.sensitive };
     this.subjectOf = options.subjectOf ?? defaultSubjectOf;
     this.onShredded = options.onShredded ?? "throw";
-    this.senderSubjectOf = options.senderSubjectOf;
+    if (options.senderSubjectOf === false) {
+      this.senderSubjectOf = undefined;
+      this.senderSealing = "disabled";
+      this.senderHandles = undefined;
+    } else if (options.senderSubjectOf !== undefined) {
+      this.senderSubjectOf = options.senderSubjectOf;
+      this.senderSealing = "custom";
+      this.senderHandles = undefined;
+    } else {
+      this.senderHandles = new SenderHandles(keys);
+      this.senderSubjectOf = this.senderHandles.subjectOf;
+      this.senderSealing = "default";
+    }
     assertIvSourceAllowed(options.ivSource, "EncryptingEventStore");
     this.ivSource = options.ivSource;
     const plan = {
@@ -454,6 +478,16 @@ export class EncryptingEventStore implements EventStore {
     return { ...envelope, payload, metadata: { ...envelope.metadata, seal: marker } };
   }
 
+  /**
+   * ADR 0139 N6 - erase a message SENDER: destroy the key their identity is sealed under (and, under the
+   * default mapping, the seed their handle derives from, so the handle is unlinkable to them). `false`
+   * when this store runs an app-supplied mapping (destroy that subject's key yourself) or the sender
+   * never sent a sealed message. Idempotent.
+   */
+  async eraseSender(sender: SenderIdentity): Promise<boolean> {
+    return (await this.senderHandles?.erase(sender)) ?? false;
+  }
+
   /** ADR 0139 D12: seal an inbox message's sender under the SENDER's subject (a no-op elsewhere). */
   private async sealSenderOf(envelope: EventEnvelope): Promise<EventEnvelope> {
     if (this.senderSubjectOf === undefined || envelope.eventType !== "INBOX_MESSAGE")
@@ -461,14 +495,19 @@ export class EncryptingEventStore implements EventStore {
     if (inboxChainOf(envelope.executionId) === undefined) return envelope;
     const sender = plaintextSenderOf(envelope.payload);
     if (sender === undefined) return envelope;
-    const subject = this.senderSubjectOf(sender);
+    const subject = await this.senderSubjectOf(sender);
     if (subject === undefined) return envelope;
     if (subject === "") {
       throw new TypeError(
         'EncryptingEventStore: senderSubjectOf resolved to "" and the crypto layer refuses to seal under it. Return undefined for an anonymous sender.'
       );
     }
-    const sealed = sealSender(await this.keys.getOrCreate(subject), subject, sender);
+    const sealed = sealSender(
+      await this.keys.getOrCreate(subject),
+      subject,
+      sender,
+      senderBindOf(envelope)
+    );
     return { ...envelope, payload: { ...(envelope.payload as object), sender: sealed } };
   }
 
@@ -488,7 +527,10 @@ export class EncryptingEventStore implements EventStore {
         if (!isSealedSender(sender)) return e;
         return {
           ...e,
-          payload: { ...(e.payload as object), sender: await openSender(this.keys, sender) },
+          payload: {
+            ...(e.payload as object),
+            sender: await openSender(this.keys, sender, senderBindOf(e)),
+          },
         };
       })
     );

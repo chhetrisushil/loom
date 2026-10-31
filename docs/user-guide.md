@@ -1571,6 +1571,7 @@ interface LoomApp {
   subjectIndex?: SubjectIndex;                                  // T3 (when compliance wired)
   exportSubject(id: string, o?: { includeEvents?: boolean; tenant?: string }): Promise<SubjectExport>;
   eraseSubject(id: string, tenant?: string): Promise<EraseSubjectResult>;
+  recoverArchiveRedactions(): Promise<string[]>; // restore a staged archive redaction an earlier build left (ADR 0139)
   verify(o?: { lint?: VerifyLintInputs }): VerificationReport;   // re-run pre-flight on demand (read-only)
   start(): void;                                                // idempotent; automatic unless autostart: false
   close(): Promise<void>;
