@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { recordOutcome } from "@loom/analytics";
 import { step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
+import { InMemoryArchiveStore } from "@loom/event-runtime";
 import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 import { LogLifecycle, WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
@@ -134,7 +135,11 @@ describe("loom learn", () => {
     const compact = async (id: string) => {
       const events = new SqliteEventStore(dbPath);
       const snaps = new SqliteSnapshotStore(join(dir, "snap.db"));
-      expect(await new LogLifecycle(events, snaps).compact(id)).not.toBeNull();
+      expect(
+        await new LogLifecycle(events, snaps, {
+          compactionArchive: new InMemoryArchiveStore(),
+        }).compact(id)
+      ).not.toBeNull();
       events.close();
     };
 

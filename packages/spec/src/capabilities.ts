@@ -112,6 +112,20 @@ export const CAPABILITIES: readonly Capability[] = [
     },
   },
   {
+    id: "archive-store",
+    title: "Compaction Archive SPI",
+    package: "@loom/event-runtime",
+    level: "L5",
+    summary:
+      "Append-only archive of the events `LogLifecycle.compact` removes (ADR 0138): compaction MOVES them, never deletes them, so archive ∪ surviving log is the original log byte-exact (in-memory / SQLite / Postgres, sealed under the log's KeyStore for an encrypting store).",
+    evidence: {
+      versionConstant: "ARCHIVE_STORE_SPI_VERSION",
+      conformanceTest: "packages/conformance/src/index.test.ts",
+      usedIn:
+        "packages/workflow-runtime/src/compactionArchive.test.ts — byte-exact union across successive compactions, refusal without an archive, the crash order, crypto-shred of the archived copy",
+    },
+  },
+  {
     id: "branch-registry",
     title: "Branch Registry SPI",
     package: "@loom/event-runtime",

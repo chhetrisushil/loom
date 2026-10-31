@@ -1,4 +1,4 @@
-import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
+import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loom/event-runtime";
 import { isPayloadShredded, iterateExecutionIds } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
@@ -97,6 +97,17 @@ export interface ContentSweepBase {
    *    indistinguishable, so both refuse.
    */
   snapshotStores?: readonly SnapshotLookup[];
+  /**
+   * ADR 0138 - the compaction archives (`LogLifecycle.compactionArchive`). Compaction MOVES the events
+   * it removes into the archive, so a ref only an archived event cites (a step input the fold no
+   * longer keeps, an old finding) is cited THERE and nowhere else. Every ref cited by an archived
+   * envelope is PINNED for as long as the archive holds it: the sweep never reclaims a blob the
+   * recoverable history still names. Not scanning them is the hazard: an erasing orphan pass without
+   * the archive of a compacted log erases blobs its audit trail still cites. Read through the same
+   * sealing store the lifecycle uses (an `EncryptingArchiveStore` yields plaintext; a crypto-shredded
+   * subject's archive is unreadable and cites nothing). The archive itself is never swept or pruned.
+   */
+  archiveStores?: readonly Pick<ArchiveStore, "read">[];
   /**
    * The blob store. With `deleteIfUntouchedSince` (SPI 1.3.0) every erase is conditional on
    * the blob's touch time, which closes the re-cite race for a re-cite THROUGH `put` (ADR 0055
@@ -591,6 +602,32 @@ export async function sweepUnpinnedContent(
           if (pinnedKinds.has(event.eventType)) pinned.add(address);
           if (!inEnvelope) loadBearing.add(address);
         });
+      }
+      // ADR 0138 - what compaction MOVED out of this log still cites content: pin it permanently.
+      for (const archive of options.archiveStores ?? []) {
+        let segments: Awaited<ReturnType<ArchiveStore["read"]>>;
+        try {
+          segments = await archive.read(executionId);
+        } catch (err) {
+          // Only a CONFIRMED shred (the realm-safe brand AND the execution's own tombstone) means the
+          // archived copy is erased; anything else (a missing key on this node, I/O) propagates.
+          if (isPayloadShredded(err) && events.some((e) => e.eventType === "PAYLOAD_SHREDDED")) {
+            continue;
+          }
+          throw err;
+        }
+        for (const seg of segments) {
+          for (const event of seg.envelopes) {
+            visitCitedAddresses(event.payload, (address) => {
+              const prior = lastCited.get(address);
+              if (prior === undefined || event.timestamp > prior) {
+                lastCited.set(address, event.timestamp);
+              }
+              pinned.add(address);
+              loadBearing.add(address);
+            });
+          }
+        }
       }
       // Did compaction touch this log, and where is its checkpoint (ADR 0106)? Compaction
       // removes its checkpoint's own slot and, whenever it keeps pinned-kind events, never

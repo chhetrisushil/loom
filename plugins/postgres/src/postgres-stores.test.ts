@@ -47,7 +47,7 @@ suite("@loom/plugin-postgres", () => {
 
   beforeEach(async () => {
     await admin.query(
-      "TRUNCATE events, snapshots, refs, lineage, fences, timers, leases, durable_state, read_model_rows, read_model_watermarks, memory_entries"
+      "TRUNCATE events, snapshots, refs, lineage, fences, timers, leases, durable_state, read_model_rows, read_model_watermarks, memory_entries, archive_segments"
     );
   });
 

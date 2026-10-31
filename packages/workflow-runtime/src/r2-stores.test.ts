@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unwrapTainted } from "@loom/classify";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loom/event-runtime";
 import type { EventStore, TimerStore } from "@loom/event-runtime";
 import {
   PostgresEventStore,
@@ -269,7 +273,9 @@ for (const backend of [memory, sqlite, postgres]) {
       await done(h, e);
       await until(async () => (await h.eventStore.read(inboxStreamId(e))).length === 0, 8000);
       expect(await h.eventStore.read(inboxStreamId(e))).toEqual([]);
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       expect(await life.applyRetention(e, { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
         "reclaimed"
       );

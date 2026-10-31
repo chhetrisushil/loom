@@ -1,7 +1,7 @@
 import { attachOutcomes, recordOutcome } from "@loom/analytics";
 import { step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { PostgresEventStore, PostgresSnapshotStore } from "@loom/plugin-postgres";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
@@ -380,7 +380,9 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
     // the state-built path agrees with the log path on a log that was never compacted
     expect(shape(trajectories<Route>(await evidence()))).toEqual(full);
 
-    const life = new LogLifecycle(eventStore, snapshotStore);
+    const life = new LogLifecycle(eventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     for (const id of ids) expect(await life.compact(id)).not.toBeNull();
     const log = (await Promise.all(ids.map((id) => eventStore.read(id)))).flat();
     // nothing extra is kept in place: every decision and the in-run reward are in the checkpoint
@@ -418,7 +420,11 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
     const bytes = (evs: readonly { payload: unknown }[]) =>
       evs.reduce((n, e) => n + JSON.stringify(e).length, 0);
     const before = await eventStore.read("big");
-    expect(await new LogLifecycle(eventStore, snapshotStore).compact("big")).not.toBeNull();
+    expect(
+      await new LogLifecycle(eventStore, snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("big")
+    ).not.toBeNull();
     const after = await eventStore.read("big");
     expect(after.filter((e) => e.eventType === "DECISION_RECORDED")).toHaveLength(0);
     expect(bytes(after)).toBeLessThan(bytes(before) / 50);
@@ -470,7 +476,11 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
     it("a compacted execution with ordinary decisionIds discounts identically", async () => {
       const { eventStore, snapshotStore, runtime } = await run(["d-b", "d-10", "d-2", "d-a"]);
       const raw = credit(await eventStore.read("o"));
-      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      expect(
+        await new LogLifecycle(eventStore, snapshotStore, {
+          compactionArchive: new InMemoryArchiveStore(),
+        }).compact("o")
+      ).not.toBeNull();
       expect(
         credit(evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o")))
       ).toEqual(raw);
@@ -480,7 +490,11 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
     // for array-index-like ids (which a plain object lists first, ascending).
     it("absorbed array-index-like ids keep their true order", async () => {
       const { eventStore, snapshotStore, runtime } = await run(["b", "10", "2", "a"]);
-      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      expect(
+        await new LogLifecycle(eventStore, snapshotStore, {
+          compactionArchive: new InMemoryArchiveStore(),
+        }).compact("o")
+      ).not.toBeNull();
       const got = credit(
         evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o"))
       );
@@ -489,7 +503,11 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
 
     it("a LEGACY snapshot (no seq) is read in folded-map order, with no migration", async () => {
       const { eventStore, snapshotStore, runtime } = await run(["d-b", "d-a"]);
-      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      expect(
+        await new LogLifecycle(eventStore, snapshotStore, {
+          compactionArchive: new InMemoryArchiveStore(),
+        }).compact("o")
+      ).not.toBeNull();
       const state = (await runtime.loadState("o"))!;
       const decisions = state.variables._decisions as Record<string, Record<string, unknown>>;
       expect(decisions["d-b"]?.seq).toBeTypeOf("number");
@@ -508,7 +526,11 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
 
     it("a MIXED-FLEET snapshot (a legacy entry among stamped ones) keeps the true order", async () => {
       const { eventStore, snapshotStore, runtime } = await run(["d1", "d2", "d3"]);
-      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      expect(
+        await new LogLifecycle(eventStore, snapshotStore, {
+          compactionArchive: new InMemoryArchiveStore(),
+        }).compact("o")
+      ).not.toBeNull();
       const state = (await runtime.loadState("o"))!;
       const decisions = state.variables._decisions as Record<string, Record<string, unknown>>;
       // d3 was added (or rebuilt) by a 1.23 node: no `seq`. Map order is the true order.
@@ -547,7 +569,9 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
         const raw = credit(await eventStore.read(executionId));
         expect(raw?.map((r) => r[0])).toEqual(["route-b", "route-a"]);
         expect(
-          await new LogLifecycle(eventStore, snapshotStore).compact(executionId)
+          await new LogLifecycle(eventStore, snapshotStore, {
+            compactionArchive: new InMemoryArchiveStore(),
+          }).compact(executionId)
         ).not.toBeNull();
         const state = (await runtime.loadState(executionId))!;
         // The premise: jsonb really did reorder the folded map.

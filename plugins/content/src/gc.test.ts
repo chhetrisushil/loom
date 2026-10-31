@@ -1535,6 +1535,51 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(result.reclaimed).toEqual([]);
     });
 
+    it("ADR 0138 - a blob only an ARCHIVED event cites is erased as an orphan unless the archive is scanned", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const { buildSegment } = await import("@loom/event-runtime");
+      const { InMemoryArchiveStore } = await import("@loom/event-runtime");
+      // An app event the fold ignores, so the checkpoint does NOT carry its ref: the log held the
+      // only citation, and compaction moved it to the archive.
+      const note = await content.put(bytes("telemetry only the removed event cited"));
+      const live = new InMemoryAsyncEventStore();
+      const events = [
+        evt("arch", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("arch", 1, "NOTE_RECORDED", { sample: envelopeFor(note.__loomContent) }, OLD),
+        evt("arch", 2, "STEP_STARTED", { stepId: "s" }, OLD),
+      ];
+      for (const e of events) await live.append(e);
+      const archive = new InMemoryArchiveStore();
+      await archive.append("arch", buildSegment(events.slice(1), 1, 2));
+      const snapshot = { sequence: 2, state: new ReplayVM(events).getState() };
+      await live.truncatePrefix("arch", 2);
+      const snapshotStore = {
+        loadLatest: async () => snapshot,
+        loadLatestBefore: async (_id: string, at: number) =>
+          snapshot.sequence <= at ? snapshot : null,
+      };
+      clock.now = NOW;
+      const sweep = (archiveStores?: (typeof archive)[]) =>
+        sweepUnpinnedContent({
+          eventStores: [live],
+          snapshotStores: [snapshotStore],
+          ...(archiveStores !== undefined && { archiveStores }),
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: { dryRun: true } as never,
+          dryRun: true,
+        });
+      // scanning the archive pins it: nothing would be erased
+      const withArchive = await sweep([archive]);
+      expect(withArchive.orphansReclaimed).toEqual([]);
+      expect(withArchive.reclaimed).toEqual([]);
+      // not scanning it: the blob looks unreferenced (this is the hazard the option closes)
+      const without = await sweep();
+      expect([...without.orphansReclaimed, ...without.reclaimed]).toContain(note.__loomContent);
+    });
+
     it("without snapshotStores, the orphan pass over a store that can truncate is REFUSED (fail closed)", async () => {
       const { clock, content } = clockedStore(OLD);
       const { evidence, live } = await compacted(content);

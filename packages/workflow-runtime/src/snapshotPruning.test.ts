@@ -1,7 +1,7 @@
 import { step$ } from "@loom/core";
 import type { ExecutionState, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, headOf } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore, headOf } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -62,7 +62,9 @@ function boot(snapshotEvery = 1) {
     onWarn: () => {},
   });
   runtime.registerFlow(definition, runner);
-  const lifecycle = new LogLifecycle(eventStore, snapshotStore);
+  const lifecycle = new LogLifecycle(eventStore, snapshotStore, {
+    compactionArchive: new InMemoryArchiveStore(),
+  });
   return { runtime, eventStore, snapshotStore, lifecycle, calls };
 }
 type App = ReturnType<typeof boot>;
@@ -241,6 +243,7 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
     const held = boot();
     await toGate(held, "e1", 4);
     const exempt = new LogLifecycle(held.eventStore, held.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       compactionExempt: () => true,
     });
     const before = await snapshotSequences(held, "e1");
@@ -249,13 +252,17 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
 
     const bare = boot();
     await toGate(bare, "e1", 3);
-    const noPrune = new LogLifecycle(bare.eventStore, {
-      save: (s) => bare.snapshotStore.save(s),
-      loadLatest: (i) => bare.snapshotStore.loadLatest(i),
-      loadAt: (i, s) => bare.snapshotStore.loadAt(i, s),
-      loadLatestBefore: (i, s) => bare.snapshotStore.loadLatestBefore(i, s),
-      close: () => bare.snapshotStore.close(),
-    });
+    const noPrune = new LogLifecycle(
+      bare.eventStore,
+      {
+        save: (s) => bare.snapshotStore.save(s),
+        loadLatest: (i) => bare.snapshotStore.loadLatest(i),
+        loadAt: (i, s) => bare.snapshotStore.loadAt(i, s),
+        loadLatestBefore: (i, s) => bare.snapshotStore.loadLatestBefore(i, s),
+        close: () => bare.snapshotStore.close(),
+      },
+      { compactionArchive: new InMemoryArchiveStore() }
+    );
     expect(await noPrune.pruneSnapshots("e1")).toBe(0);
   });
 
@@ -283,7 +290,9 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
   it("RACE (cross-process): a compaction landing between prune's log read and its delete aborts the prune; the checkpoint survives", async () => {
     const app = boot();
     await completed(app, "e1");
-    const compactor = new LogLifecycle(app.eventStore, app.snapshotStore); // a "different process"
+    const compactor = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }); // a "different process"
     let checkpoint: number | null = null;
     let injected = false;
     const racing = new Proxy(app.eventStore, {
@@ -301,7 +310,9 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
         return typeof v === "function" ? v.bind(t) : v;
       },
     });
-    const deleted = await new LogLifecycle(racing, app.snapshotStore).pruneSnapshots("e1");
+    const deleted = await new LogLifecycle(racing, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).pruneSnapshots("e1");
     expect(checkpoint).not.toBeNull();
     expect(deleted).toBe(0);
     expect(await app.snapshotStore.loadAt("e1", checkpoint!)).not.toBeNull();
@@ -429,14 +440,18 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
     expect(await snapshotSequences(app, "e1")).toEqual(before);
 
     // A store reporting a non-integer snapshot sequence is refused too (the bound is computed).
-    const liar = new LogLifecycle(app.eventStore, {
-      ...app.snapshotStore,
-      loadLatest: async (id: string) => {
-        const s = await app.snapshotStore.loadLatest(id);
-        return s === null ? null : { ...s, sequence: s.sequence + 0.5 };
-      },
-      pruneSnapshots: app.snapshotStore.pruneSnapshots,
-    } as typeof app.snapshotStore);
+    const liar = new LogLifecycle(
+      app.eventStore,
+      {
+        ...app.snapshotStore,
+        loadLatest: async (id: string) => {
+          const s = await app.snapshotStore.loadLatest(id);
+          return s === null ? null : { ...s, sequence: s.sequence + 0.5 };
+        },
+        pruneSnapshots: app.snapshotStore.pruneSnapshots,
+      } as typeof app.snapshotStore,
+      { compactionArchive: new InMemoryArchiveStore() }
+    );
     await expect(liar.pruneSnapshots("e1")).rejects.toThrow(RangeError);
     expect(calls).toBe(0);
   });

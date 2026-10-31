@@ -33,6 +33,7 @@ const LOOM_TABLES = [
   "durable_state",
   "read_model_rows",
   "read_model_watermarks",
+  "archive_segments",
 ];
 
 /** Pool config pinned to the test schema, so unqualified DDL lands there. */

@@ -4183,3 +4183,5 @@ export function runPolicyConformance<A>(
     });
   });
 }
+
+export { runArchiveStoreConformance } from "./archive.js";

@@ -55,6 +55,11 @@ export async function cmdRetentionRun(
     const now = Date.now();
     const lifecycle = new LogLifecycle(events, snapshots, {
       ...(branchRegistry !== undefined && { branchRegistry }),
+      // ADR 0138: with the app's retention archive configured the execution is KEPT elsewhere, so its
+      // compaction segments stay; only the plain-delete path removes them (LogLifecycle decides).
+      ...(stores.compactionArchive !== undefined && {
+        compactionArchive: stores.compactionArchive,
+      }),
     });
 
     // SP-2 — bounded-memory enumeration: pages when the store supports them

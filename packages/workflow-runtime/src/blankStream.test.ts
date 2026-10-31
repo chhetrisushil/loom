@@ -4,6 +4,7 @@ import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import {
   DuplicateSequenceError,
   type EventStore,
+  InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   headOf,
 } from "@loom/event-runtime";
@@ -86,7 +87,9 @@ function boot(
     eventStore,
     raw,
     snapshotStore,
-    life: new LogLifecycle(eventStore, snapshotStore),
+    life: new LogLifecycle(eventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }),
   };
 }
 type App = ReturnType<typeof boot>;
@@ -819,7 +822,9 @@ describe("ADR 0107 (B) — review round 1", () => {
       });
     }
     // Raw: the payloads are ciphertext it cannot read. The census says so; the apply refuses.
-    const rawLife = new LogLifecycle(app.raw, app.snapshotStore);
+    const rawLife = new LogLifecycle(app.raw, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect((await rawLife.blankStreamCensus()).ciphertext).toBe(true);
     await expect(rawLife.rehomeBlankStream({ apply: true })).rejects.toThrow(/ciphertext/);
     expect(seqs(await app.raw.read("e1"))).toEqual([0]);

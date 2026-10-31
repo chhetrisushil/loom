@@ -42,6 +42,7 @@ const RESERVED = new Set([
   "read_model_rows",
   "read_model_watermarks",
   "memory_entries",
+  "archive_segments",
 ]);
 
 function ident(value: unknown, what: string): string {

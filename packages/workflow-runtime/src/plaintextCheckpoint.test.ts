@@ -1,5 +1,5 @@
 import { unwrapTainted } from "@loom/classify";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
@@ -270,12 +270,14 @@ describe("the archive snapshot store follows the same rule (LogLifecycle)", () =
       sensitive: ["variables._input.ssn"],
     });
     const bad = new LogLifecycle(events, snaps, {
+      compactionArchive: new InMemoryArchiveStore(),
       archive: { eventStore: archiveEvents, snapshotStore: staticSnaps },
     });
     expect(await bad.evaluate("arc-1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
       "unsafe-archive"
     );
     const good = new LogLifecycle(events, snaps, {
+      compactionArchive: new InMemoryArchiveStore(),
       archive: {
         eventStore: archiveEvents,
         snapshotStore: new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), keys, {

@@ -1,4 +1,4 @@
-import type { EventStore } from "@loom/event-runtime";
+import type { ArchiveStore, EventStore } from "@loom/event-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 
 // ── ADR 0130 D8 (kernel half) - a checkpoint of a sealing log must itself be sealed ──────────
@@ -87,4 +87,79 @@ export function assertCheckpointSealed(
 ): void {
   const reason = plaintextCheckpointReason(eventStore, snapshotStore);
   if (reason !== undefined) throw new PlaintextCheckpointError(reason, executionId, target);
+}
+
+// ── ADR 0138 - the compaction archive must sit inside the same erasure boundary ───────────────
+//
+// `LogLifecycle.compact` MOVES the removed events into the archive. When the event store seals at
+// rest, a plaintext archive would hold the decrypted log outside the KeyStore, so shredding the
+// subject would no longer erase the archived copy. Same rule as the checkpoint above, one store over.
+
+/** Why a compaction archive is refused: it does not seal its segments, or not under the log's KeyStore. */
+export type PlaintextArchiveReason = "not-sealed" | "keys-not-shared";
+
+/** The event store seals payloads but the compaction archive would not (ADR 0138). Never retryable. */
+export class PlaintextArchiveError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly reason: PlaintextArchiveReason,
+    readonly executionId?: string
+  ) {
+    super(
+      `${executionId !== undefined ? `refusing to compact "${executionId}": ` : ""}the event store seals payloads, but the compaction archive ${
+        reason === "not-sealed"
+          ? "does not seal its segments (it would hold the decrypted log outside the erasure boundary)"
+          : "does not share the event store's KeyStore (a shred of the subject would not erase the archived copy)"
+      }. Wrap the archive store in \`new EncryptingArchiveStore(inner, keys)\` over the SAME KeyStore as the event store. Nothing was archived, saved or truncated.`
+    );
+    this.name = "PlaintextArchiveError";
+    Object.setPrototypeOf(this, PlaintextArchiveError.prototype);
+  }
+}
+
+/**
+ * The ADR 0138 rule: when the event store seals (or exposes a KeyStore), the archive must report
+ * `sealsSegments === true` AND share the event store's KeyStore by identity. `undefined` = permitted.
+ */
+export function plaintextArchiveReason(
+  eventStore: EventStore,
+  archive: ArchiveStore
+): PlaintextArchiveReason | undefined {
+  const eventKeys = keysOf(eventStore);
+  if (!eventStoreSeals(eventStore) && eventKeys === undefined) return undefined;
+  if ((archive as { sealsSegments?: unknown }).sealsSegments !== true) return "not-sealed";
+  if (eventKeys !== undefined && keysOf(archive) !== eventKeys) return "keys-not-shared";
+  return undefined;
+}
+
+/** `LogLifecycle.compact` was called with no compaction archive configured. Fail closed (ADR 0138). */
+export class CompactionArchiveRequiredError extends Error {
+  readonly retryable = false;
+  constructor(readonly executionId: string) {
+    super(
+      `refusing to compact "${executionId}": no compaction archive is configured, and compaction MOVES the removed events into one (ADR 0138) — it never deletes them. Configure one: \`sqliteStorage()\`/\`postgresStorage()\` provide it; otherwise pass \`storage.archiveStore\` (or \`retention.compactionArchive\`) to defineConfig, or \`compactionArchive\` to \`new LogLifecycle(...)\` (for example \`new InMemoryArchiveStore()\` for a volatile log). Nothing was archived, saved or truncated.`
+    );
+    this.name = "CompactionArchiveRequiredError";
+    Object.setPrototypeOf(this, CompactionArchiveRequiredError.prototype);
+  }
+}
+
+/**
+ * Compaction would remove an event that is neither in the archive nor after the archive's last
+ * segment (for example a kind a previous compaction kept, released later by changing
+ * `pinnedEventTypes`): the archive is append-only and contiguous, so it cannot take the event.
+ * Nothing was truncated.
+ */
+export class ArchiveGapError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly executionId: string,
+    readonly sequences: readonly number[]
+  ) {
+    super(
+      `refusing to compact "${executionId}": event(s) at sequence ${sequences.slice(0, 5).join(", ")}${sequences.length > 5 ? ` (+${sequences.length - 5} more)` : ""} are below the compaction archive's last segment but not in it (a kind an earlier compaction kept in place, released since), and the archive is append-only, so truncating them would lose them. Keep \`pinnedEventTypes\` as it was for this execution. Nothing was archived, saved or truncated.`
+    );
+    this.name = "ArchiveGapError";
+    Object.setPrototypeOf(this, ArchiveGapError.prototype);
+  }
 }

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { EventEnvelope } from "@loom/core";
+import { InMemoryArchiveStore } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
@@ -44,7 +45,9 @@ describe("LogLifecycle (retention): a continued predecessor is terminal, its cha
     await until(async () => (await h.rt.loadState("r~1"))?.status === "suspended");
     // a message nobody waits for stays unconsumed, so the stream is non-empty and survives trimming
     await h.rt.send("r", { topic: "cold", payload: "unread" });
-    const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+    const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     const far = Date.now() + 1e9;
 
     // a LIVE head is never reclaimable, a continued predecessor is
@@ -78,7 +81,9 @@ describe("LogLifecycle (retention): a continued predecessor is terminal, its cha
       timestamp: Date.now(),
       payload: { successorId: "u~1", chainId: "u", generation: 1 },
     });
-    const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+    const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect(await life.applyRetention("u", { terminalTtlMs: 0 }, Date.now() + 1e9)).not.toBe(
       "reclaimed"
     );

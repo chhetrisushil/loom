@@ -97,11 +97,31 @@ export interface HashChainOptions {
    * signer, no secret — and can then verify every entry without being able to author one.
    */
   verifier?: ChainVerifier;
+  /**
+   * ADR 0138 - allow `LogLifecycle.compact` over this chained log. OFF by default: compaction truncates
+   * the prefix, so the surviving log is a chain with a hole and `verifyChain(id)` breaks. With the
+   * compaction archive the moved events are recoverable byte-exact, so the chain can be verified
+   * ACROSS the compaction: `verifyChain(id, { archived: await lifecycle.readArchived(id) })`. Turning
+   * this on is the commitment that every audit passes `archived` for a compacted execution (a plain
+   * `verifyChain(id)` then reports the break, truthfully, rather than a pass).
+   */
+  allowCompaction?: true;
 }
 
 export interface HashChainedEventStore extends EventStore {
-  /** Recompute the chain for an execution and report the first break, if any. */
-  verifyChain(executionId: string): Promise<ChainVerification>;
+  /**
+   * Recompute the chain for an execution and report the first break, if any.
+   *
+   * `options.archived` (ADR 0138): the events a compaction MOVED out of the log
+   * (`LogLifecycle.readArchived`). Compaction truncates the log's prefix, so the surviving log
+   * alone is a chain with a hole, and verifying it breaks at the first survivor above the gap.
+   * Given the archived envelopes, the chain is verified over `archived ∪ log` (one entry per
+   * sequence, the log's copy winning), i.e. across the compaction, end to end.
+   */
+  verifyChain(
+    executionId: string,
+    options?: { readonly archived?: readonly EventEnvelope[] }
+  ): Promise<ChainVerification>;
 }
 
 const GENESIS = "";
@@ -119,6 +139,17 @@ export function canonicalize(value: unknown): string {
     .filter(([, v]) => v !== undefined)
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalize(v)}`).join(",")}}`;
+}
+
+/** ADR 0138: archived ∪ live, ascending, one entry per sequence (the log's copy wins a duplicate). */
+function stitch(
+  archived: readonly EventEnvelope[],
+  live: readonly EventEnvelope[]
+): EventEnvelope[] {
+  const bySequence = new Map<number, EventEnvelope>();
+  for (const e of archived) bySequence.set(e.sequence, e);
+  for (const e of live) bySequence.set(e.sequence, e);
+  return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
 }
 
 /** The bytes covered by the chain hash: the event minus its own chain metadata. */
@@ -243,10 +274,17 @@ export function hashChainedEventStore(
     readFrom: (executionId, fromSequence) => inner.readFrom(executionId, fromSequence),
     subscribe: (executionId, handler) => inner.subscribe(executionId, handler),
     close: () => inner.close(),
-    async verifyChain(executionId: string): Promise<ChainVerification> {
+    async verifyChain(
+      executionId: string,
+      options?: { readonly archived?: readonly EventEnvelope[] }
+    ): Promise<ChainVerification> {
       // Reported on every outcome so a hash-only pass can never read as an authorship check.
       const signaturesChecked = verifier !== undefined || secret !== undefined;
-      const events = await inner.read(executionId);
+      const live = await inner.read(executionId);
+      const events =
+        options?.archived === undefined || options.archived.length === 0
+          ? live
+          : stitch(options.archived, live);
       let prev = GENESIS;
       for (const e of events) {
         const chain = chainOf(e);
@@ -387,8 +425,16 @@ export function hashChainedEventStore(
     // prevHash names an event that no longer exists and `verifyChain` reports a break
     // (pinned in hashChain.test.ts). Offering it would let a routine compaction pass make
     // every later audit fail; refusing it makes the chained log visibly non-compactable.
-    truncatePrefix: { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
-    truncatePrefixKeeping: { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
+    // ADR 0138: opt-in. The archive makes the prefix recoverable, so `verifyChain(id, { archived })`
+    // verifies across the gap; without the opt-in the refusal stands (a plain verifyChain would break).
+    truncatePrefix:
+      options.allowCompaction === true
+        ? "forward"
+        : { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
+    truncatePrefixKeeping:
+      options.allowCompaction === true
+        ? "forward"
+        : { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
     listExecutions: "forward",
     listExecutionsPage: "forward",
   } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;

@@ -648,6 +648,20 @@ const DDL_REST = `
     );
     DO $ix_idx_snapshots_exec$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_snapshots_exec' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'snapshots'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_snapshots_exec ON snapshots (execution_id, sequence DESC); END IF; END $ix_idx_snapshots_exec$;
 
+    -- ADR 0138: the compaction archive. Append-only segments of the envelopes a compaction removed.
+    -- A new table only (CREATE TABLE IF NOT EXISTS takes no lock on a later boot); the primary key
+    -- (execution_id, from_seq) is the only index the archive needs. \`body\` is TEXT, not JSONB, so the
+    -- archived bytes are exactly what was written (no key reordering, no numeric normalisation).
+    CREATE TABLE IF NOT EXISTS archive_segments (
+      execution_id TEXT NOT NULL,
+      from_seq BIGINT NOT NULL,
+      through_seq BIGINT NOT NULL,
+      n_events BIGINT NOT NULL,
+      digest TEXT NOT NULL,
+      body TEXT NOT NULL,
+      PRIMARY KEY (execution_id, from_seq)
+    );
+
     CREATE TABLE IF NOT EXISTS refs (
       name TEXT COLLATE "C" NOT NULL PRIMARY KEY,
       execution_id TEXT NOT NULL,

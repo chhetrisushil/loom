@@ -173,16 +173,32 @@ import { LogLifecycle } from "@loom/workflow-runtime";
 
 const life = new LogLifecycle(eventStore, snapshotStore, {
   archive: { eventStore: archiveEvents, snapshotStore: archiveSnaps }, // A6 — archive first
+  compactionArchive, // ADR 0138 — where `compact` MOVES the events it removes (an ArchiveStore)
 });
 
 // Reclaim a terminal execution older than its window (archive-before-delete, so the
 // learning plane + deploy-sim corpus aren't starved):
 await life.applyRetention(executionId, { terminalTtlMs: 30 * 86_400_000 }, Date.now());
 
-// Compact a very long execution: checkpoint + truncate the prefix (sequence 0 preserved);
-// `fold(snapshot, suffix) === fold(events)` still holds, so it replays byte-identically:
+// Compact a very long execution: archive the prefix, checkpoint, then truncate it (sequence 0
+// preserved); `fold(snapshot, suffix) === fold(events)` still holds, so it replays byte-identically:
 await life.compact(executionId);
+
+// Audit: the moved events, byte-exact, digest-verified; with the surviving log this is the
+// original log. Replay, resume and `readRange` never read the archive.
+const moved = await life.readArchived(executionId);
+const original = await life.readWithArchive(executionId);
 ```
+
+**Compaction moves events, it never deletes them (ADR 0138).** `compact` appends the exact envelopes it
+removes to an `ArchiveStore` (`compactionArchive`; in-memory, SQLite and Postgres backends ship, and
+`sqliteStorage()` / `postgresStorage()` / `kind: "memory"` provide one) BEFORE it truncates, and it
+**refuses** (`CompactionArchiveRequiredError`, nothing changed) when none is configured. A crash between
+the two leaves a duplicate in the archive, never a gap, and a retry is idempotent. Over an encrypting event
+store the archive must be an `EncryptingArchiveStore` on the SAME `KeyStore` (`PlaintextArchiveError`
+otherwise), so a shred erases the archived copy too. Pass the archive to `sweepUnpinnedContent({ archiveStores })`
+so a blob only an archived event cites is not reclaimed, and verify an audit hash chain across the
+compaction with `verifyChain(id, { archived })` (`hashChainedEventStore(..., { allowCompaction: true })`).
 
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
 and Postgres); a store that omits them can't be swept. A compacted execution resumes, and

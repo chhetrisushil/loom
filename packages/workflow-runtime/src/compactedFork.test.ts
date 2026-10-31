@@ -1,7 +1,12 @@
 import { step$ } from "@loom/core";
 import type { ExecutionState, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { type EventStore, InMemoryAsyncEventStore, headOf } from "@loom/event-runtime";
+import {
+  type EventStore,
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  headOf,
+} from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -104,7 +109,11 @@ describe.each([
     const app = boot(copyPrefix);
     await toGate(app, "p", 1);
     const tip = (await headOf(app.eventStore, "p"))!;
-    expect(await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p")).toBe(tip);
+    expect(
+      await new LogLifecycle(app.eventStore, app.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("p")
+    ).toBe(tip);
     expect((await app.eventStore.read("p")).map((e) => e.sequence)).toEqual([0]);
 
     // Before ADR 0107 this was "valid range 0..0": the checkpoint sat above the log's tip.
@@ -125,7 +134,9 @@ describe.each([
     const app = boot(copyPrefix);
     await toGate(app, "p", 1);
     const tip = (await headOf(app.eventStore, "p"))!;
-    await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p");
+    await new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("p");
     for (let at = 1; at < tip; at++) {
       const err = await app.runtime.fork("p", at, { executionId: `c${at}` }).catch((e) => e);
       expect(err).toBeInstanceOf(CompactedForkPointError);
@@ -147,7 +158,9 @@ describe.each([
   it("a branch of a compacted parent names its fork seed as forkable (P3-1)", async () => {
     const app = boot(copyPrefix);
     await toGate(app, "p", 1);
-    await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p");
+    await new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("p");
     const r = await app.runtime.resume("p", { eventType: "go1", payload: { answer: "go1" } });
     await r.waitForSuspend();
     const tip = (await headOf(app.eventStore, "p"))!;
@@ -170,7 +183,9 @@ describe.each([
     const r = await app.runtime.resume("p", { eventType: "go1", payload: { answer: "go1" } });
     await r.waitForSuspend();
     const gate2 = (await headOf(app.eventStore, "p"))!;
-    await new LogLifecycle(app.eventStore, app.snapshotStore).compact("p");
+    await new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("p");
 
     const child = await app.runtime.fork("p", gate1, { executionId: "c" });
     same(child.state, await reference(2, gate1));
@@ -185,6 +200,7 @@ describe.each([
     await toGate(app, "p", 1);
     const tip = (await headOf(app.eventStore, "p"))!;
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     const through = (await life.compact("p"))!;
@@ -210,6 +226,7 @@ describe.each([
     await toGate(app, "p", 2);
     const tip = (await headOf(app.eventStore, "p"))!;
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     const through = await life.compact("p");
@@ -244,6 +261,7 @@ describe.each([
     await toGate(app, "p", 2);
     const tip = (await headOf(app.eventStore, "p"))!;
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     await life.compact("p");
@@ -299,8 +317,10 @@ describe("ADR 0107 — the blank executionId is reserved", () => {
     for (const r of refusals) await expect(r).rejects.toThrow(/reserved: a blank identity/);
     expect(await app.runtime.loadState("")).toBeNull();
     expect((await app.eventStore.read("")).map((e) => e.id)).toEqual(["-9"]);
-    await expect(new LogLifecycle(app.eventStore, app.snapshotStore).compact("")).rejects.toThrow(
-      /blank id names no execution/
-    );
+    await expect(
+      new LogLifecycle(app.eventStore, app.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("")
+    ).rejects.toThrow(/blank id names no execution/);
   });
 });

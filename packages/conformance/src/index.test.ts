@@ -6,6 +6,7 @@ import {
   BRANCH_REGISTRY_SPI_VERSION,
   CoalescingEventStore,
   EVENT_STORE_SPI_VERSION,
+  InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
   InMemoryLeaseStore,
@@ -64,6 +65,7 @@ import {
   leaseExpiredDefaultProblem,
   leaseScopeProblem,
   leaseStoreNowProblem,
+  runArchiveStoreConformance,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
@@ -348,6 +350,7 @@ describe("the decorator kit rejects a decorator that swallows or alters sealingC
 });
 
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
+runArchiveStoreConformance(() => new InMemoryArchiveStore(), "InMemoryArchiveStore");
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
 runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore", {
   clocked: (now) => new InMemoryLeaseStore({ now }),

@@ -29,6 +29,7 @@ export function renderCompatibilityMatrix(m: KernelManifest = kernelManifest()):
     ["Dispatcher SPI", m.spis.dispatcher, "`DISPATCHER_SPI_VERSION` · conformance kit"],
     ["MemoryStore SPI", m.spis.memoryStore, "`MEMORY_STORE_SPI_VERSION` · conformance kit"],
     ["ContentStore SPI", m.spis.contentStore, "`CONTENT_STORE_SPI_VERSION` · conformance kit"],
+    ["ArchiveStore SPI", m.spis.archiveStore, "`ARCHIVE_STORE_SPI_VERSION` · conformance kit"],
     ["Compiler manifest", m.compilerManifest.version, "`COMPILER_MANIFEST_VERSION`"],
   ];
   const body = rows.map(([c, v, a]) => `| ${c} | \`${v}\` | ${a} |`).join("\n");

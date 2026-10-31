@@ -1,5 +1,5 @@
 import { unwrapTainted } from "@loom/classify";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
@@ -376,7 +376,9 @@ describe("R2 D1 — the stream is bounded and cheap", () => {
     // the head turned terminal: nothing can ever read its inbox, so the stream went with it
     await until(async () => (await h.eventStore.read(inboxStreamId("e1"))).length === 0, 8000);
     expect(await h.eventStore.read(inboxStreamId("e1"))).toEqual([]);
-    const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+    const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect(await life.applyRetention("e1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
       "reclaimed"
     );

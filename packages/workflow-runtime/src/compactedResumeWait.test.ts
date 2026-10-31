@@ -1,7 +1,7 @@
 import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -134,7 +134,10 @@ async function scenario(
   await toFirstGate(app, "e");
   const seen = [];
   for (let g = 1; g <= GATES; g++) {
-    if (g === compactAt) await new LogLifecycle(app.eventStore, app.snapshotStore).compact("e");
+    if (g === compactAt)
+      await new LogLifecycle(app.eventStore, app.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("e");
     if (opts.cold === true) app = boot(app, opts); // a fresh runtime per resume (a cold instance)
     seen.push(await resumeGate(app, "e", g));
   }

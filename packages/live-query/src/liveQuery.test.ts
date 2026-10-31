@@ -1,7 +1,7 @@
 import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import {
   ContentMissingError,
   ContentResolvingEventStore,
@@ -448,7 +448,9 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     }
 
     // Compact through the CURRENT tip — far ahead of the frozen subscriber's.
-    await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+    await new LogLifecycle(rawEventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("e1");
 
     // One more real event after compaction: the eventual delta is non-empty but starts
     // well past the subscriber's stale `tip + 1` (a gap — events in between were
@@ -497,6 +499,7 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     }
     const tipBefore = seen.at(-1)!.sequence;
     await new LogLifecycle(rawEventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     }).compact("k1");
     await (await runtime.resume("k1", { eventType: FINDING, payload: { i: 3 } })).waitForSuspend();
@@ -545,6 +548,7 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     await rawEventStore.append(at(2, FINDING, { f: 1 }));
     await rawEventStore.append(at(3, "EXECUTION_COMPLETED", { output: {} }));
     await new LogLifecycle(rawEventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     }).compact("t");
     expect((await rawEventStore.read("t")).map((e) => e.sequence)).toEqual([0, 2, 3]);
@@ -580,7 +584,9 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     for (let i = 0; i < 3; i++) {
       await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
     }
-    await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+    await new LogLifecycle(rawEventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("e1");
 
     release(); // no new event after compaction — the eventual delta is EMPTY
     await tick();
@@ -617,7 +623,9 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     for (let i = 0; i < 3; i++) {
       await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
     }
-    const compactedThrough = await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+    const compactedThrough = await new LogLifecycle(rawEventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("e1");
 
     release(); // no new event after compaction, and no `head` to detect the gap either way
     await tick();
@@ -761,7 +769,9 @@ pgSuite("liveQuery — LogLifecycle.compact races a live subscription (Postgres)
         await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
       }
 
-      await new LogLifecycle(rawEventStore, snapshotStore).compact("e1");
+      await new LogLifecycle(rawEventStore, snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("e1");
       await (await runtime.resume("e1", { eventType: "TICK", payload: {} })).waitForSuspend();
 
       release();

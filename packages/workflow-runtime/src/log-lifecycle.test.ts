@@ -3,10 +3,12 @@ import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import {
   CoalescingEventStore,
+  InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
 } from "@loom/event-runtime";
 import {
+  EncryptingArchiveStore,
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
@@ -73,7 +75,9 @@ describe("K10.1 — retention", () => {
     const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "ret-1" });
     await handle.waitForCompletion();
 
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     const endedAt = (await app.eventStore.read("ret-1")).at(-1)!.timestamp;
 
     // Within the window → kept.
@@ -116,7 +120,9 @@ describe("K10.1 — retention", () => {
     const handle = await runtime.start({ definition, runner }, { n: 1 }, { executionId: "susp-1" });
     await handle.waitForSuspend();
 
-    const life = new LogLifecycle(eventStore, snapshotStore);
+    const life = new LogLifecycle(eventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect(await life.applyRetention("susp-1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
       "not-terminal"
     );
@@ -132,6 +138,7 @@ describe("K10.1 — retention", () => {
     const archiveEvents = new InMemoryAsyncEventStore();
     const archiveSnaps = new InMemoryAsyncSnapshotStore();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       archive: { eventStore: archiveEvents, snapshotStore: archiveSnaps },
     });
 
@@ -155,7 +162,9 @@ describe("K10.1 — retention", () => {
         return typeof v === "function" ? v.bind(t) : v;
       },
     }) as InMemoryAsyncEventStore;
-    const life = new LogLifecycle(noDelete, app.snapshotStore);
+    const life = new LogLifecycle(noDelete, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect(await life.applyRetention("u-1", { terminalTtlMs: 0 }, Date.now())).toBe("unsupported");
   });
 });
@@ -176,7 +185,9 @@ describe("K10.4 — compaction (fold(snapshot, suffix) === fold(events))", () =>
     });
     expect(before.length).toBeGreaterThan(3);
 
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     const through = await life.compact("comp-1");
     // ADR 0116 amendment (Q3): the checkpoint stops just BELOW the terminal event, which survives.
     expect(through).toBe(before.at(-1)!.sequence - 1);
@@ -208,7 +219,9 @@ describe("K10.4 — compaction (fold(snapshot, suffix) === fold(events))", () =>
       timestamp: 1,
       payload: { input: { n: 1 } },
     });
-    const life = new LogLifecycle(eventStore, app.snapshotStore);
+    const life = new LogLifecycle(eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect(await life.compact("tiny")).toBeNull();
   });
 });
@@ -236,7 +249,10 @@ describe("K10.1 R5 — branch guard + control facts", () => {
       payload: { input: { n: 1 } },
     });
 
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { branchRegistry });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      branchRegistry,
+    });
     expect(await life.applyRetention("parent-1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
       "blocked-by-branch"
     );
@@ -251,6 +267,7 @@ describe("K10.1 R5 — branch guard + control facts", () => {
 
     const consulted: string[] = [];
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinned: async (executionId) => {
         consulted.push(executionId);
         return executionId === "pin-1";
@@ -281,6 +298,7 @@ describe("K10.1 R5 — branch guard + control facts", () => {
 
     const archiveEvents = new InMemoryAsyncEventStore();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       archive: { eventStore: archiveEvents },
       pinned: () => true,
     });
@@ -296,7 +314,9 @@ describe("K10.1 R5 — branch guard + control facts", () => {
     await handle.waitForCompletion();
 
     const now = Date.now() + 1e9;
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect(await life.applyRetention("del-1", { terminalTtlMs: 0 }, now)).toBe("reclaimed");
 
     const lifecycleLog = await app.eventStore.read(LIFECYCLE_STREAM);
@@ -343,7 +363,9 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     await handle.waitForCompletion();
     const before = await app.eventStore.read("ec-1");
 
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new EncryptingArchiveStore(new InMemoryArchiveStore(), app.keys),
+    });
     expect(await life.compact("ec-1")).toBe(before.at(-1)!.sequence - 1);
     expect((await app.rawEvents.read("ec-1")).length).toBeLessThan(before.length);
 
@@ -369,7 +391,9 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     const before = await app.rawEvents.read("ec-2");
     const plain = new InMemoryAsyncSnapshotStore();
 
-    const life = new LogLifecycle(app.eventStore, plain);
+    const life = new LogLifecycle(app.eventStore, plain, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     await expect(life.compact("ec-2")).rejects.toThrow(UnsafeCompactionError);
     // Not a silent null: nothing was checkpointed in plaintext and nothing was truncated.
     expect(await plain.loadLatest("ec-2")).toBeNull();
@@ -382,9 +406,11 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
         sensitive: ["variables._input.n"],
       }
     );
-    await expect(new LogLifecycle(app.eventStore, otherKeys).compact("ec-2")).rejects.toThrow(
-      UnsafeCompactionError
-    );
+    await expect(
+      new LogLifecycle(app.eventStore, otherKeys, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("ec-2")
+    ).rejects.toThrow(UnsafeCompactionError);
   });
 
   it("NEGATIVE (ADR 0130 D8) - compact REFUSES a static-path snapshot store on the SAME keys (it would write _waitAnswers in plaintext), and touches nothing", async () => {
@@ -397,14 +423,17 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     const staticStore = new EncryptingSnapshotStore(rawStatic, app.keys, {
       sensitive: ["variables._input.n"],
     });
-    await expect(new LogLifecycle(app.eventStore, staticStore).compact("ec-sp")).rejects.toThrow(
-      PlaintextCheckpointError
-    );
+    await expect(
+      new LogLifecycle(app.eventStore, staticStore, {
+        compactionArchive: new EncryptingArchiveStore(new InMemoryArchiveStore(), app.keys),
+      }).compact("ec-sp")
+    ).rejects.toThrow(PlaintextCheckpointError);
     expect(await rawStatic.loadLatest("ec-sp")).toBeNull();
     expect(await app.rawEvents.read("ec-sp")).toEqual(before);
     // the explicit opt-out still compacts (a plaintext checkpoint the operator accepted)
     expect(
       await new LogLifecycle(app.eventStore, staticStore, {
+        compactionArchive: new EncryptingArchiveStore(new InMemoryArchiveStore(), app.keys),
         allowPlaintextCheckpoints: true,
       }).compact("ec-sp")
     ).not.toBeNull();
@@ -419,16 +448,24 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     // would compact straight into a plaintext store.
     expect(outer.truncatePrefix).toBeDefined();
     await expect(
-      new LogLifecycle(outer, new InMemoryAsyncSnapshotStore()).compact("ec-3")
+      new LogLifecycle(outer, new InMemoryAsyncSnapshotStore(), {
+        compactionArchive: new EncryptingArchiveStore(new InMemoryArchiveStore(), app.keys),
+      }).compact("ec-3")
     ).rejects.toThrow(UnsafeCompactionError);
-    expect(await new LogLifecycle(outer, app.snapshotStore).compact("ec-3")).not.toBeNull();
+    expect(
+      await new LogLifecycle(outer, app.snapshotStore, {
+        compactionArchive: new EncryptingArchiveStore(new InMemoryArchiveStore(), app.keys),
+      }).compact("ec-3")
+    ).not.toBeNull();
   });
 
   it("retains an encrypted log into an archive that shares its KeyStore — and a shred still erases the archive", async () => {
     const app = encryptedApp();
     const handle = await app.runtime.start(app.flow, { n: SECRET }, { executionId: "er-1" });
     await handle.waitForCompletion();
-    await new LogLifecycle(app.eventStore, app.snapshotStore).compact("er-1"); // a snapshot to archive
+    await new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new EncryptingArchiveStore(new InMemoryArchiveStore(), app.keys),
+    }).compact("er-1"); // a snapshot to archive
 
     const rawArchive = new SqliteEventStore(":memory:");
     const rawArchiveSnaps = new SqliteSnapshotStore(":memory:");
@@ -441,7 +478,10 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
         events: rawArchive, // the exact erasure error outside the kernel needs the raw log (ADR 0130 D7)
       }),
     };
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { archive });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      archive,
+    });
     expect(await life.applyRetention("er-1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
       "reclaimed"
     );
@@ -469,6 +509,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     const before = await app.rawEvents.read("er-2");
     const plainArchive = new InMemoryAsyncEventStore();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       archive: { eventStore: plainArchive },
     });
     const now = Date.now() + 1e9;
@@ -480,6 +521,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
 
     // Same event keys but a plaintext archive SNAPSHOT store: the snapshot copy would leak.
     const halfSafe = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       archive: {
         eventStore: new EncryptingEventStore(new InMemoryAsyncEventStore(), app.keys, {
           sensitive: { EXECUTION_STARTED: ["input.n"] },
@@ -498,6 +540,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "pl-1" });
     await handle.waitForCompletion();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       archive: {
         eventStore: new InMemoryAsyncEventStore(),
         snapshotStore: new InMemoryAsyncSnapshotStore(),

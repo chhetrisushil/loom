@@ -103,3 +103,14 @@ export {
   BranchPromotionConflictError,
   assertListRefsLimit,
 } from "./BranchRegistry";
+export {
+  ARCHIVE_STORE_SPI_VERSION,
+  ArchiveConflictError,
+  ArchiveDigestError,
+  OPTIONAL_ARCHIVE_STORE_METHODS,
+  classifyAppend,
+  headerOf,
+} from "./archiveSpi";
+export type { ArchiveSegment, ArchiveSegmentHeader, ArchiveStore } from "./archiveSpi";
+export { assertSegmentDigest, buildSegment, segmentDigest } from "./archive";
+export { InMemoryArchiveStore } from "./InMemoryArchiveStore";
