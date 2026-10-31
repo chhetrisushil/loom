@@ -675,7 +675,7 @@ frames:
 
 Print one stored **snapshot**, decoded, as indented JSON (`id`, `executionId`, `workflowId`, `sequence`, `createdAt`, `state`). Without `--at` it is the latest snapshot; with `--at SEQ`, the one stored at exactly `SEQ` (a snapshot at another sequence is a different state, so it errors and says so rather than substituting a neighbour).
 
-Use it instead of SQL on `snapshots.state`: with the opt-in zstd snapshot codec ([ADR 0140](adr/0140-snapshot-zstd-codec.md)) the state lives in a `BYTEA`/`BLOB` frame that `state->` cannot traverse, and the command reads it through the same snapshot store the runtime resumes from (either storage format decodes; an encrypting store opens it). `--redact` masks output dot-paths as in `loom debug`. With `--db` it also needs `--snap <snapshots.db>`; with `--config` it uses the app's own snapshot store. It is read-only, and exits `1` when there is no such snapshot and `2` when the store has no snapshot store.
+Use it instead of SQL on `snapshots.state`: with the opt-in zstd snapshot codec ([ADR 0141](adr/0141-snapshot-zstd-codec.md)) the state lives in a `BYTEA`/`BLOB` frame that `state->` cannot traverse, and the command reads it through the same snapshot store the runtime resumes from (either storage format decodes; an encrypting store opens it). `--redact` masks output dot-paths as in `loom debug`. With `--db` it also needs `--snap <snapshots.db>`; with `--config` it uses the app's own snapshot store. It is read-only, and exits `1` when there is no such snapshot and `2` when the store has no snapshot store.
 
 ```bash
 npx loom snapshot show --db .data/events.db --snap .data/snapshots.db 01J8…

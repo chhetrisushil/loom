@@ -79,7 +79,7 @@ export function installOptional<S extends object, M extends keyof S>(
 const TENANT_MARKER = "tenantScope";
 
 /**
- * ADR 0140 - the snapshot codec a store WRITES (`"none" | "zstd"`), carried up through every snapshot
+ * ADR 0141 - the snapshot codec a store WRITES (`"none" | "zstd"`), carried up through every snapshot
  * decorator so the composition root (`defineConfig`) reads what the outermost store really does and can
  * refuse a mismatch, instead of the opt-in being silently dropped by a wrapper.
  */
@@ -97,7 +97,7 @@ export function decoratedInnerOf(target: object): object | undefined {
 /**
  * Carry the STRUCTURAL markers other layers read by shape from `inner` up to the decorator `target`
  * (unless `target` defines its own): the encryption marker `keys`, `sealsWholeState` (ADR 0130 D8) and
- * the tenant marker `tenantScope` (ADR 0138 H3), the snapshot codec marker `snapshotCodec` (ADR 0140), and record `target` as wrapping `inner`. EVERY store
+ * the tenant marker `tenantScope` (ADR 0138 H3), the snapshot codec marker `snapshotCodec` (ADR 0141), and record `target` as wrapping `inner`. EVERY store
  * decorator (event, snapshot, archive) must call this - {@link installOptional} does - or a guard that
  * reads a marker on the outermost store sees a plain, unscoped one. The decorator conformance kit
  * asserts it for each decorator in the repo.
@@ -120,7 +120,7 @@ export function forwardStoreMarkers(target: object, inner: object): void {
   if (typeof tenant === "string" && writable[TENANT_MARKER] === undefined) {
     writable[TENANT_MARKER] = tenant;
   }
-  // ADR 0140 - a decorator above a codec-writing snapshot store still writes that codec.
+  // ADR 0141 - a decorator above a codec-writing snapshot store still writes that codec.
   const codec = source[CODEC_MARKER];
   if ((codec === "none" || codec === "zstd") && writable[CODEC_MARKER] === undefined) {
     writable[CODEC_MARKER] = codec;

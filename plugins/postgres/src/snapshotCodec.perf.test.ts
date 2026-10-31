@@ -4,7 +4,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 
-// ADR 0140 evidence (issues #730 / #733). NOT part of `pnpm test` (see vitest.shared.ts): run with
+// ADR 0141 evidence (issues #730 / #733). NOT part of `pnpm test` (see vitest.shared.ts): run with
 // `LOOM_TEST_PERF=1 LOOM_TEST_POSTGRES_URL=... pnpm --filter @loom/plugin-postgres test:perf`.
 // It PRINTS the numbers the ADR quotes: stored bytes of an agent run's folded state at 50 and 200 turns
 // (plain and claim-checked) as JSONB pglz (`pg_column_size(state)`) vs the zstd-3 BYTEA frame
@@ -103,7 +103,7 @@ function agentState(turns: number, claimChecked: boolean): ExecutionState {
 const median = (xs: number[]): number =>
   [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] ?? 0;
 
-suite("snapshot bytes + resume read: JSONB pglz vs zstd BYTEA (ADR 0140 evidence)", () => {
+suite("snapshot bytes + resume read: JSONB pglz vs zstd BYTEA (ADR 0141 evidence)", () => {
   const schema = `loom_zstd_perf_${process.pid}`;
   let admin: Pool;
   let pool: Pool;

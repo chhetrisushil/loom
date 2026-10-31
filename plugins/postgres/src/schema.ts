@@ -113,7 +113,7 @@ export interface MigrateOptions {
    */
   snapshotCompression?: "lz4" | "default";
   /**
-   * ADR 0140 - `"zstd"` also provisions the `snapshots.state_z BYTEA` column the zstd snapshot codec
+   * ADR 0141 - `"zstd"` also provisions the `snapshots.state_z BYTEA` column the zstd snapshot codec
    * writes (`state` stays NOT NULL: a codec row keeps a fixed sentinel there). OPT-IN, fail
    * soft, own short transaction with its own lock wait of min(`lockTimeoutMs`, 200 ms); see
    * {@link ensureSnapshotZstd}. Unlike the other options it is NOT decided by the first migrator of a
@@ -349,7 +349,7 @@ async function setSnapshotLz4(
 const zstdReady = new WeakMap<PoolLike, Promise<boolean>>();
 
 /**
- * ADR 0140 - provision the BYTEA column of the zstd snapshot codec: `snapshots.state_z BYTEA` (TOAST
+ * ADR 0141 - provision the BYTEA column of the zstd snapshot codec: `snapshots.state_z BYTEA` (TOAST
  * storage EXTERNAL: the bytes are already compressed, so the server must not try again) and a `NOT VALID`
  * CHECK tying it to `state`, which stays NOT NULL (a codec row keeps a fixed sentinel in `state`, so a
  * node that predates the codec fails loudly on it instead of reading NULL as "no state"). Resolves `true`

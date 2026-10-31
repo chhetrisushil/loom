@@ -15,7 +15,7 @@ export interface SqliteStorageOptions {
   /** Also provision a branch registry (its own DB file to avoid write contention). */
   branching?: boolean;
   /**
-   * ADR 0140 - opt in to zstd-compressed snapshot states (default `"none"`: JSON text, as before).
+   * ADR 0141 - opt in to zstd-compressed snapshot states (default `"none"`: JSON text, as before).
    * Needs Node >= 22.15 (throws at construction otherwise). Old snapshots stay readable; see
    * `SqliteSnapshotStoreOptions.codec`.
    */

@@ -804,7 +804,7 @@ export interface DurabilityOptions {
    */
   heartbeat?: HeartbeatConfig;
   /**
-   * ADR 0140 - how folded-state snapshots are STORED. OPT-IN; the default stores them exactly as before.
+   * ADR 0141 - how folded-state snapshots are STORED. OPT-IN; the default stores them exactly as before.
    *
    * `codec: "zstd"` writes each state as zstd-3 compressed JSON behind a format byte (about 0.8x the bytes
    * of Postgres JSONB on plain agent state, about 0.6x claim-checked, and a faster resume read; the log and
@@ -827,7 +827,7 @@ export interface DurabilityOptions {
      * checkpoint store of an encrypting event store): compress-before-seal makes the ciphertext length a
      * function of the compressed state, a CRIME/BREACH-style length oracle when part of a state is
      * attacker-influenced beside a secret and stored sizes are observable. Without it that combination
-     * THROWS at boot (ADR 0140 D3).
+     * THROWS at boot (ADR 0141 D3).
      */
     lengthLeak?: "accept";
   };
@@ -1564,7 +1564,7 @@ function defaultSnapshotStore(
   // The default keys snapshots by executionId. An event store whose `subjectOf` maps elsewhere is not
   // visible from here (the field is private and decorators do not carry it): pass an explicit
   // `EncryptingSnapshotStore({ subjectOf })` in that case (docs/compliance.md).
-  // ADR 0140: the state is compressed BEFORE it is sealed (`codec`); the in-memory store below then holds
+  // ADR 0141: the state is compressed BEFORE it is sealed (`codec`); the in-memory store below then holds
   // the envelope, which its own frame shrinks a further ~25% (base64 to bytes).
   return new EncryptingSnapshotStore(inner, keys, {
     sealState: true,
@@ -1604,7 +1604,7 @@ function buildStores(
   if (storage.kind === "custom") {
     if (codec !== "none" && storage.snapshotStore !== undefined) {
       // The opt-in must never be silently dropped: a store the app passes is already built, and the
-      // marker travels up through every snapshot decorator (ADR 0140).
+      // marker travels up through every snapshot decorator (ADR 0141).
       const reported = (storage.snapshotStore as { snapshotCodec?: unknown }).snapshotCodec;
       if (reported === undefined) {
         warn(

@@ -1235,7 +1235,7 @@ describe("tenantMarkerProblems (decorator kit negative)", () => {
   });
 });
 
-// The snapshot-codec marker case must FIRE (ADR 0140 M2): a decorator that hides the wrapped store's
+// The snapshot-codec marker case must FIRE (ADR 0141 M2): a decorator that hides the wrapped store's
 // `snapshotCodec` made `defineConfig` read a zstd store as "reports nothing" and drop the opt-in.
 describe("snapshotCodecMarkerProblems (decorator kit negative)", () => {
   const inner = () => new InMemoryAsyncSnapshotStore();

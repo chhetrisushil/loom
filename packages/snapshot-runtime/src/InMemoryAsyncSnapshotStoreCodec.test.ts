@@ -14,7 +14,7 @@ function snap(sequence: number, tag: string): Snapshot {
   };
 }
 
-describe("InMemoryAsyncSnapshotStore codec (ADR 0140)", () => {
+describe("InMemoryAsyncSnapshotStore codec (ADR 0141)", () => {
   it("default is today's behaviour: the very object saved comes back", async () => {
     const store = new InMemoryAsyncSnapshotStore();
     const s = snap(1, "a");

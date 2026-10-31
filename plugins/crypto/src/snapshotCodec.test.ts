@@ -11,7 +11,7 @@ import { decryptValue, encryptValue } from "./crypto";
 import { SnapshotUndecryptableError } from "./errors";
 import { InMemoryKeyStore } from "./keystore";
 
-// ADR 0140 - the snapshot codec runs BEFORE sealing. Skipped on a Node without zlib.zstd (>= 22.15).
+// ADR 0141 - the snapshot codec runs BEFORE sealing. Skipped on a Node without zlib.zstd (>= 22.15).
 const zstd = describe.skipIf(!zstdAvailable());
 
 const words = "the customer ticket refund order invoice payment failed retry approval".split(" ");
@@ -46,7 +46,7 @@ function snapshot(sequence = 3, tag = "t"): Snapshot {
   };
 }
 
-describe("EncryptingSnapshotStore codec option (ADR 0140), validation", () => {
+describe("EncryptingSnapshotStore codec option (ADR 0141), validation", () => {
   it("is off by default and reports it", () => {
     const s = new EncryptingSnapshotStore(
       new InMemoryAsyncSnapshotStore(),

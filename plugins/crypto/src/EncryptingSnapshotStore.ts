@@ -77,7 +77,7 @@ export interface EncryptingSnapshotStoreOptions {
    */
   legacyPlaintext?: "load" | "refuse";
   /**
-   * `sealState` only. ADR 0140 - `"zstd"` COMPRESSES THE STATE BEFORE SEALING it: ciphertext is
+   * `sealState` only. ADR 0141 - `"zstd"` COMPRESSES THE STATE BEFORE SEALING it: ciphertext is
    * incompressible, so a codec in the backend below this store (a BYTEA column) can only ever see
    * random-looking base64. The plaintext inside the envelope becomes a self-describing codec frame, so
    * the envelope shape, the AAD binding and every reader (`openWholeState`, shredding) are unchanged and
@@ -95,7 +95,7 @@ export interface EncryptingSnapshotStoreOptions {
    * CRIME/BREACH-style length oracle wherever a party can influence part of a state (tool output, inbox
    * text) that is stored beside a secret, and can observe stored sizes (a database reader, a storage
    * metric, a backup listing) across repeated re-saves. It is an explicit acknowledgment, never implied
-   * by choosing a codec (ADR 0140 D3).
+   * by choosing a codec (ADR 0141 D3).
    */
   lengthLeak?: "accept";
   /**
@@ -150,7 +150,7 @@ export class EncryptingSnapshotStore implements SnapshotStore {
    */
   readonly sealsWholeState?: true;
   /**
-   * ADR 0140 - the codec this store writes: with `sealState`, the one the sealed plaintext is compressed
+   * ADR 0141 - the codec this store writes: with `sealState`, the one the sealed plaintext is compressed
    * with; in static-path mode, the backend's own (read structurally by `defineConfig`).
    */
   readonly snapshotCodec: SnapshotCodecName;

@@ -14,7 +14,7 @@ const snap: Snapshot = {
   createdAt: 1,
 };
 
-describe("ProfilingSnapshotStore size = stored bytes (ADR 0140)", () => {
+describe("ProfilingSnapshotStore size = stored bytes (ADR 0141)", () => {
   it("measures the JSON text when the wrapped store writes no codec (unchanged)", async () => {
     const p = new ProfilingSnapshotStore(new InMemoryAsyncSnapshotStore());
     await p.save(snap);
@@ -45,7 +45,7 @@ describe("ProfilingSnapshotStore size = stored bytes (ADR 0140)", () => {
     });
   });
 
-  describe.skipIf(!zstdAvailable())("over a store that seals the whole state (ADR 0140 D3)", () => {
+  describe.skipIf(!zstdAvailable())("over a store that seals the whole state (ADR 0141 D3)", () => {
     const sealing = () =>
       Object.assign(new InMemoryAsyncSnapshotStore({ codec: "zstd" }), {
         sealsWholeState: true as const,

@@ -91,7 +91,7 @@ export function encryptValue(
   if (iv.length !== 12) throw new RangeError("an AES-GCM IV must be exactly 12 bytes");
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   if (aad !== undefined) cipher.setAAD(aadBytes(aad.v, aad.bind));
-  // ADR 0140 - COMPRESS BEFORE SEALING: ciphertext is incompressible, so a codec has to run on the
+  // ADR 0141 - COMPRESS BEFORE SEALING: ciphertext is incompressible, so a codec has to run on the
   // plaintext. With a codec the plaintext is a self-describing frame (a control byte no JSON text can
   // start with, so it needs no envelope field and is covered by the GCM tag); without one it is the JSON
   // text exactly as it always was.
@@ -131,7 +131,7 @@ export function decryptValue(key: Buffer, envelope: unknown, bind?: string): unk
     decipher.update(Buffer.from(envelope.data, "base64")),
     decipher.final(),
   ]);
-  // A frame (ADR 0140) or the bare JSON text every earlier envelope holds.
+  // A frame (ADR 0141) or the bare JSON text every earlier envelope holds.
   return decodeStateMaybeLegacy(plaintext);
 }
 

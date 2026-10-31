@@ -2,7 +2,7 @@ import zlib from "node:zlib";
 import type { ExecutionState } from "@loom/core";
 
 /**
- * ADR 0140 - the snapshot STATE codec.
+ * ADR 0141 - the snapshot STATE codec.
  *
  * A snapshot is a cache over the log: whatever is stored must decode to the IDENTICAL folded state.
  * The codec therefore stores `JSON.stringify(state)` (the same text SQLite has always held), either

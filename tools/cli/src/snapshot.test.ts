@@ -7,7 +7,7 @@ import { zstdAvailable } from "@loom/snapshot-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./cli";
 
-// `loom snapshot show` (ADR 0140): prints a stored snapshot DECODED, whichever format holds it.
+// `loom snapshot show` (ADR 0141): prints a stored snapshot DECODED, whichever format holds it.
 
 function state(tag: string): ExecutionState {
   return {

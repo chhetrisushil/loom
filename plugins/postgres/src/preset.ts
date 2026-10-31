@@ -30,7 +30,7 @@ export interface PostgresStorageOptions {
   /** ADR 0136 — opt in to lz4 for `snapshots.state` (default `"default"`); see `MigrateOptions.snapshotCompression`. */
   snapshotCompression?: "lz4" | "default";
   /**
-   * ADR 0140 - opt in to zstd-compressed snapshot states in a `snapshots.state_z BYTEA` column (default
+   * ADR 0141 - opt in to zstd-compressed snapshot states in a `snapshots.state_z BYTEA` column (default
    * `"none"`: JSONB, schema untouched). Needs Node >= 22.15 (throws at construction otherwise). The column
    * is provisioned at boot, fail soft (one warning, JSONB writes continue). Old snapshots stay readable and
    * are never rewritten; see `PostgresSnapshotStoreOptions.codec`.
