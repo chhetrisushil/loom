@@ -30,6 +30,13 @@ import { validRefSize } from "./untrusted";
  */
 export interface ContentResolveContext {
   readonly executionId: string;
+  /**
+   * The workflow of the asking execution (ADR 0143). A store that seals per subject maps
+   * `(executionId, workflowId)` to the erasure subject with the SAME `subjectOf` the event store runs, and a
+   * `subjectOf` keyed by workflow needs it: pass it on as `store.get(ref, { executionId, workflowId })`.
+   * Absent only on a hand-built context (a caller that did not know it).
+   */
+  readonly workflowId?: string;
   readonly stepId?: string;
   readonly principal?: PrincipalChain;
   readonly origin: "tool" | "app" | "reasoning";
@@ -120,7 +127,7 @@ export async function resolveRequestContent(
     maxBytes?: number;
     signal?: AbortSignal;
     /** REQUIRED: who is asking. A resolver cannot authorize a read it cannot attribute. */
-    context: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+    context: Pick<ContentResolveContext, "executionId" | "workflowId" | "stepId" | "principal">;
     /**
      * ADR 0133 D5 - how an assistant `reasoning` part's `textRef` is read. Defaults to `resolver`.
      * A request with no reasoning parts never calls it.
@@ -154,7 +161,7 @@ async function resolveReasoningParts(
   resolver: ContentResolver | undefined,
   options: {
     signal?: AbortSignal;
-    context: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+    context: Pick<ContentResolveContext, "executionId" | "workflowId" | "stepId" | "principal">;
   }
 ): Promise<LlmRequest> {
   const addresses = new Map<string, LlmReasoningPart>();
@@ -185,6 +192,9 @@ async function resolveReasoningParts(
         try {
           bytes = await resolver(ref, {
             executionId: options.context.executionId,
+            ...(options.context.workflowId !== undefined && {
+              workflowId: options.context.workflowId,
+            }),
             ...(options.context.stepId !== undefined && { stepId: options.context.stepId }),
             ...(options.context.principal !== undefined && {
               principal: options.context.principal,
@@ -248,7 +258,7 @@ async function resolveMediaRefs(
   options: {
     maxBytes?: number;
     signal?: AbortSignal;
-    context: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+    context: Pick<ContentResolveContext, "executionId" | "workflowId" | "stepId" | "principal">;
   }
 ): Promise<LlmRequest> {
   const refs = collectRefs(request.messages);
@@ -302,6 +312,9 @@ async function resolveMediaRefs(
       try {
         const bytes = await resolver(ref, {
           executionId: options.context.executionId,
+          ...(options.context.workflowId !== undefined && {
+            workflowId: options.context.workflowId,
+          }),
           ...(options.context.stepId !== undefined && { stepId: options.context.stepId }),
           ...(options.context.principal !== undefined && { principal: options.context.principal }),
           origin: use.tool ? "tool" : "app",

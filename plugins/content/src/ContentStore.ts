@@ -87,6 +87,14 @@ export interface ContentStore {
    */
   readonly sealsContent?: boolean;
   /**
+   * OPTIONAL, for a store that {@link sealsContent} (SPI 1.5.0, ADR 0143 D5) - the OWNERSHIP PROOF: does the
+   * blob at `ref` authenticate under `access`'s subject key (decrypt and discard)? A citation in a log is not
+   * ownership; erasure and export ask before they delete or open a cited blob. `false` for an absent blob or
+   * one that does not open under this subject; REJECTS when it cannot decide (the key is destroyed or not on
+   * this node). A store that seals and lacks it makes erasure REFUSE a subject that cites blobs.
+   */
+  ownedBy?(ref: ContentRef, access: ContentAccess): Promise<boolean>;
+  /**
    * Store bytes, returning their content-addressed ref. Idempotent by hash (stored once).
    * `access` (SPI 1.5.0, ADR 0143) names the owning execution; a plain store ignores it.
    */

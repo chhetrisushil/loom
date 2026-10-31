@@ -18,8 +18,8 @@ import { defaultSubjectOf } from "./subject";
 //
 // The ADDRESS is the inner store's own content address of the stored bytes (`sha256:<hex of the
 // ciphertext>`), and the ciphertext is DETERMINISTIC per (subject, plaintext): the GCM nonce is a keyed hash
-// of the plaintext (a synthetic IV, so a nonce repeats only for an identical plaintext under one key, which
-// leaks nothing new). Consequences:
+// of the SUBJECT and the plaintext (a synthetic IV over the associated data, so a nonce repeats only for an
+// identical (subject, plaintext) under one key, which leaks nothing new). Consequences:
 //  - within one subject, identical plaintext -> identical bytes -> ONE blob (dedupe, and the claim-check's
 //    crash re-run reproduces the same envelope);
 //  - across subjects, identical plaintext -> unrelated bytes -> DIFFERENT addresses: an address reveals no
@@ -32,6 +32,31 @@ const IV_BYTES = 12;
 const TAG_BYTES = 16;
 const HEADER_BYTES = 1 + IV_BYTES + TAG_BYTES;
 const AAD_PREFIX = "loom/content/v1|";
+const SUBJECT_LEN_BYTES = 4;
+
+/** The associated data: the format version AND the subject, both authenticated (a flipped byte never opens). */
+function aadOf(subject: string): Buffer {
+  return Buffer.concat([Buffer.from([VERSION]), Buffer.from(AAD_PREFIX + subject, "utf-8")]);
+}
+
+/**
+ * The synthetic IV (an SIV over the associated data): `HMAC(ivKey, version || len(subject) || subject ||
+ * plaintext)`. The subject is IN the input, so two subjects served the SAME key by one KeyStore (ADR 0143
+ * D3) can never reuse a (key, nonce) pair with different associated data, which would let an attacker recover
+ * the GHASH key and forge tags. The length prefix keeps (subject, plaintext) unambiguous.
+ */
+function syntheticIv(subjectKey: Buffer, subject: string, plaintext: Uint8Array): Buffer {
+  const name = Buffer.from(subject, "utf-8");
+  const len = Buffer.alloc(SUBJECT_LEN_BYTES);
+  len.writeUInt32BE(name.byteLength);
+  return createHmac("sha256", derive(subjectKey, "iv"))
+    .update(Buffer.from([VERSION]))
+    .update(len)
+    .update(name)
+    .update(plaintext)
+    .digest()
+    .subarray(0, IV_BYTES);
+}
 
 export interface EncryptingContentStoreOptions {
   /**
@@ -47,12 +72,9 @@ function derive(subjectKey: Buffer, label: string): Buffer {
 
 /** Seal `plaintext` for `subject`: `[version][iv][tag][ciphertext]`, deterministic per (key, plaintext). */
 function seal(subjectKey: Buffer, subject: string, plaintext: Uint8Array): Uint8Array {
-  const iv = createHmac("sha256", derive(subjectKey, "iv"))
-    .update(plaintext)
-    .digest()
-    .subarray(0, IV_BYTES);
+  const iv = syntheticIv(subjectKey, subject, plaintext);
   const cipher = createCipheriv("aes-256-gcm", derive(subjectKey, "enc"), iv);
-  cipher.setAAD(Buffer.from(AAD_PREFIX + subject, "utf-8"));
+  cipher.setAAD(aadOf(subject));
   const body = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.concat([Buffer.from([VERSION]), iv, cipher.getAuthTag(), body]);
 }
@@ -67,7 +89,7 @@ function open(subjectKey: Buffer, subject: string, stored: Uint8Array): Uint8Arr
     derive(subjectKey, "enc"),
     buf.subarray(1, 1 + IV_BYTES)
   );
-  decipher.setAAD(Buffer.from(AAD_PREFIX + subject, "utf-8"));
+  decipher.setAAD(aadOf(subject));
   decipher.setAuthTag(buf.subarray(1 + IV_BYTES, HEADER_BYTES));
   return new Uint8Array(
     Buffer.concat([decipher.update(buf.subarray(HEADER_BYTES)), decipher.final()])
@@ -108,10 +130,10 @@ export class EncryptingContentStore implements ContentStore {
 
   private subjectFor(access: ContentAccess | undefined, operation: string): string {
     if (access === undefined) throw new ContentAccessRequiredError(operation);
-    const subject = this.subjectOf(access);
-    if (subject === "") {
+    const subject: unknown = this.subjectOf(access);
+    if (typeof subject !== "string" || subject === "") {
       throw new Error(
-        `EncryptingContentStore.${operation}: the subject for "${access.executionId}" resolved to "" and the crypto layer refuses to seal under it. Fix \`subjectOf\`.`
+        `EncryptingContentStore.${operation}: the subject for "${access.executionId}" resolved to ${subject === "" ? '""' : `a non-string (${typeof subject})`} and the crypto layer refuses to seal under it. Fix \`subjectOf\`.`
       );
     }
     return subject;
@@ -133,10 +155,19 @@ export class EncryptingContentStore implements ContentStore {
     try {
       key = await this.keys.getOrCreate(subject);
     } catch (err) {
-      // A destroyed subject's key is never re-minted: a put for it is refused as the erasure it is.
-      if ((await this.keys.wasDestroyed?.(subject)) === true) {
-        throw new PayloadShreddedError(subject, (access as ContentAccess).executionId);
+      // A destroyed subject's key is never re-minted: a put for it is refused as the erasure it is. The
+      // probe must not mask the ORIGINAL failure: if it throws too, the original error stands (the probe's
+      // is attached as its cause when the original is an Error).
+      let destroyed = false;
+      try {
+        destroyed = (await this.keys.wasDestroyed?.(subject)) === true;
+      } catch (probe) {
+        if (err instanceof Error && err.cause === undefined) {
+          Object.defineProperty(err, "cause", { value: probe, configurable: true, writable: true });
+        }
+        throw err;
       }
+      if (destroyed) throw new PayloadShreddedError(subject, (access as ContentAccess).executionId);
       throw err;
     }
     const ref = await this.inner.put(seal(key, subject, bytes));
@@ -152,11 +183,13 @@ export class EncryptingContentStore implements ContentStore {
     try {
       // The address names the ciphertext: a blob swapped under an address (or an inner store returning
       // another blob's bytes) is caught before decryption, and GCM + the subject AAD catches the rest.
+      // An address scheme this layer cannot verify is REFUSED (fail closed), never trusted unchecked.
       const address = ref.__loomContent;
-      if (address.startsWith("sha256:")) {
-        const actual = `sha256:${createHash("sha256").update(stored).digest("hex")}`;
-        if (actual !== address) throw new Error("stored bytes do not match their address");
+      if (!address.startsWith("sha256:")) {
+        throw new Error("unknown address scheme (only sha256: addresses are verifiable)");
       }
+      const actual = `sha256:${createHash("sha256").update(stored).digest("hex")}`;
+      if (actual !== address) throw new Error("stored bytes do not match their address");
       return open(key, subject, stored);
     } catch (err) {
       throw new ContentUndecryptableError(subject, ref.__loomContent, err);
@@ -189,6 +222,31 @@ export class EncryptingContentStore implements ContentStore {
         ? null
         : this.openStored(key, subject, refs[i] as ContentRef, bytes)
     );
+  }
+
+  /**
+   * The OWNERSHIP PROOF (ADR 0143 D5): does the blob at `ref` authenticate under `access`'s subject key and
+   * AAD? It decrypts and DISCARDS the plaintext, so `true` means "sealed by this subject", which a mere
+   * citation in a log is not (a resume payload, an input or an awaitChild result can cite any address).
+   * Erasure and export ask it before they touch a cited blob.
+   *
+   * `false`: the blob is absent, or does not open under this subject (another subject's, or corrupt: GCM
+   * cannot tell the two apart, so a damaged blob reads as foreign here and stays loud on an ordinary `get`).
+   * It THROWS when ownership cannot be decided: {@link PayloadShreddedError} (the subject's key is already
+   * destroyed) or {@link KeyUnavailableError} (the key is merely not on this node).
+   */
+  async ownedBy(ref: ContentRef, access: ContentAccess): Promise<boolean> {
+    const subject = this.subjectFor(access, "ownedBy");
+    const stored = await this.inner.get(ref);
+    if (stored === null || stored === undefined) return false;
+    const key = await this.readKey(subject, access);
+    try {
+      this.openStored(key, subject, ref, stored);
+      return true;
+    } catch (err) {
+      if (err instanceof ContentUndecryptableError) return false;
+      throw err;
+    }
   }
 
   /** Physically erase the sealed bytes (by address; needs no key). Idempotent. */

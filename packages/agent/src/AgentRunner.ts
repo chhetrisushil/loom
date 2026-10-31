@@ -499,6 +499,7 @@ export class AgentRunner {
     }
     const resolveContext = {
       executionId: ctx.executionId,
+      workflowId: ctx.workflowId,
       stepId: ctx.stepId,
       ...(ctx.principal !== undefined && { principal: ctx.principal }),
     };

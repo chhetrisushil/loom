@@ -47,6 +47,12 @@ export interface ClaimCheckedBlob {
   value?: unknown;
   bytesBase64?: string;
   missing?: true;
+  /**
+   * ADR 0143 D5/D8: the log CITES this address, but a sealing store could not prove the subject owns the
+   * blob (another subject's, absent, or corrupt): it is NOT the subject's data, so nothing of it (not even
+   * the cited size) is reported. Never present beside `value`/`bytesBase64`.
+   */
+  foreign?: true;
 }
 
 /** One execution's contribution to a subject export. */
@@ -143,6 +149,11 @@ export interface ExportSubjectOptions {
       ref: { __loomContent: string },
       access?: { executionId: string; workflowId: string }
     ): Promise<Uint8Array | null>;
+    /** A sealing store's ownership proof (ADR 0143 D5): asked before a cited blob is opened. */
+    ownedBy?(
+      ref: { __loomContent: string },
+      access: { executionId: string; workflowId: string }
+    ): Promise<boolean>;
   };
   /** Include the raw event log per execution (Art. 20 portability). Default `true`. */
   includeEvents?: boolean;
@@ -248,10 +259,19 @@ async function resolveBlobs(
   for (const [address, m] of meta) {
     let bytes: Uint8Array | null;
     try {
+      // A log may CITE a blob it never put (an input, a resume payload, a child's result): over a sealing
+      // store the subject must PROVE ownership before the blob is opened or reported as theirs.
+      if (
+        typeof content.ownedBy === "function" &&
+        !(await content.ownedBy({ __loomContent: address }, access))
+      ) {
+        out.push({ address, foreign: true });
+        continue;
+      }
       bytes = await content.get({ __loomContent: address }, access);
     } catch (err) {
       // A sealed blob whose subject key was destroyed is ERASED (the redacted view shows it as missing);
-      // a key merely absent from this node, or an unopenable blob, stays loud: never garbage, never a lie.
+      // a key merely absent from this node, or an unopenable OWNED blob, stays loud: never garbage, never a lie.
       if (!isPayloadShredded(err)) throw err;
       bytes = null;
     }

@@ -447,6 +447,21 @@ describe("resolving claim-checked content at call time (R5)", () => {
     ]);
   });
 
+  it("tells the resolver the WORKFLOW as well as the execution (ADR 0143: a workflow-keyed subjectOf needs it)", async () => {
+    const seen: LlmRequest[] = [];
+    const contexts: unknown[] = [];
+    const effect = createLlmEffect<LlmRequest, string>({
+      provider: provider(seen),
+      buildRequest: (r) => r,
+      resolveContent: async (_ref, context) => {
+        contexts.push({ executionId: context.executionId, workflowId: context.workflowId });
+        return new Uint8Array([1]);
+      },
+    });
+    await effect.execute(request("sha256:a"), ctx());
+    expect(contexts).toEqual([{ executionId: "e", workflowId: "w" }]);
+  });
+
   it("fails loudly when the blob is absent (erased) and never calls the provider", async () => {
     const seen: LlmRequest[] = [];
     const effect = createLlmEffect<LlmRequest, string>({
