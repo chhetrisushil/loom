@@ -183,7 +183,7 @@ runtime.register("triage-llm", new LlmEffect(async (input, ctx) => {
 }));
 ```
 
-Effect kinds: `"tool" | "llm" | "human" | "a2a"`. The `EffectContext` gives handlers `executionId`, `stepId`, `attempt`, `emit()`, and an optional `signal` (AbortSignal) for cancellation.
+Effect kinds: `"tool" | "llm" | "human" | "a2a"`. The `EffectContext` gives handlers `executionId`, `stepId`, `attempt`, `emit()`, and an optional `signal` (AbortSignal) for cancellation. `EffectContext.taskKind` (additive, ADR 0140) names the kind of the task the workflow runtime is running the effect under (`"tool"` inside an `agentLoop$` tool frame); middleware may use it to scope itself.
 
 ### Middleware wraps effects
 

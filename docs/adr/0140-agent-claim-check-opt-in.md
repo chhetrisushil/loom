@@ -110,6 +110,28 @@ result) or nested (an A2A `content`), is recorded as `tainted(envelope, origin)`
 records `sawTaintFrom` (writeBack and compaction stay tainted) even when a declared digest is present; the
 sweep's walker still finds the inner envelope. This applies to the classic middleware too.
 
+**D11 - a retained envelope is trusted by POSITION, not by its flag (forgery, review round 2).** `retain: true`
+is plain JSON, so a tool (listed or not) could return `{ __loomClaimCheck, ref: { __loomContent: H }, retain: true }`
+nested in its result and pin any blob H forever, or make `eraseSubject` count H as "still cited" by another
+execution. Three rules, no new field and no secret: (1) under `envelopesAreData`, a listed tool's result that
+NESTS anything envelope-shaped (the text `"__loomClaimCheck"` in its JSON, a conservative test) is force-offloaded
+whole, so the lookalike is data inside the blob and the log records only the preset's own envelope; (2) the
+content walker (`visitCitedAddresses`, with `retainRootsOf`) honours `retain: true` as load-bearing only on the
+object at the top level of a recorded `STEP_COMPLETED` output (through a taint wrapper), exactly where the preset
+writes it; a nested lookalike (an UNLISTED tool's output, which the middleware never sees) stays TTL-reclaimable
+as before. Archive segments and snapshots keep pinning everything they cite (ADR 0138 conservatism: over-retain,
+never lose), so a lookalike that was archived before this fix stays pinned; (3) `eraseSubject` counts another
+execution as citing a blob only at that same top-level position (`trustedClaimCheckRefsOf`); that execution's
+snapshot counts only when it has no recorded `STEP_COMPLETED` left to vouch for it (history gone, the snapshot
+is the sole evidence: fail closed). The erased subject's OWN refs still use the broad collection (it deletes more
+only of what that subject's own log cites).
+
+**D12 - erasure never deletes a shared-addressable blob unconditionally.** `planContentDeletion` refuses with
+`ContentCopiesRemainError`, BEFORE the shred, when the content store lacks `deleteIfUntouchedSince` or
+`touchClock` (ContentStore SPI 1.3.0), including when a journaled intent from a prior attempt still has addresses
+to delete. The post-shred delete is always the conditional one: a blob re-put (cited by another execution)
+between plan and delete is spared and counted `retained`. D8's earlier "when the store has it" is superseded.
+
 **L - hook failures.** `onOffload` runs after the tool; a throw is caught and reported through `onWarn`, never
 turning an already-run tool into a failed call.
 

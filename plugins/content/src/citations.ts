@@ -45,7 +45,13 @@ function mediaSourceAddress(value: object): string | undefined {
  */
 export function visitCitedAddresses(
   value: unknown,
-  visit: (address: string, inEnvelope: boolean) => void
+  visit: (address: string, inEnvelope: boolean) => void,
+  /**
+   * ADR 0140 D11 - when given, a `retain: true` envelope is honoured as load-bearing ONLY if it is in
+   * this set (see {@link retainRootsOf}); any other (a nested, tool-authored lookalike) stays reclaimable.
+   * Absent: every retained envelope is honoured (snapshots and archives, which pin everything anyway).
+   */
+  trustedRetain?: ReadonlySet<object>
 ): void {
   const stack: unknown[] = [value];
   const seen = new WeakSet<object>();
@@ -76,11 +82,36 @@ export function visitCitedAddresses(
     const offloaded = envelopeRef(current);
     // ADR 0140 - a RETAINED envelope's blob is audit evidence, not telemetry: load-bearing.
     if (offloaded !== undefined) {
-      visit(offloaded, (current as { retain?: unknown }).retain !== true);
+      visit(
+        offloaded,
+        (current as { retain?: unknown }).retain !== true ||
+          (trustedRetain !== undefined && !trustedRetain.has(current))
+      );
     }
     for (const [key, item] of Object.entries(current)) {
       if (offloaded !== undefined && key === "ref") continue;
       stack.push(item);
     }
   }
+}
+
+/**
+ * ADR 0140 D11 - the objects in an event payload where a retained envelope is TRUSTED: the top-level
+ * `output` of a `STEP_COMPLETED` (through a taint wrapper), exactly where the opt-in preset records its
+ * envelope. A `retain: true` lookalike nested inside a tool's result is tool-authored data: it cannot
+ * pin a blob.
+ */
+export function retainRootsOf(event: { eventType: string; payload: unknown }): Set<object> {
+  const roots = new Set<object>();
+  if (event.eventType !== "STEP_COMPLETED") return roots;
+  let out = (event.payload as { output?: unknown } | null)?.output;
+  if (
+    typeof out === "object" &&
+    out !== null &&
+    (out as { __loomTainted?: unknown }).__loomTainted !== undefined
+  ) {
+    out = (out as { value?: unknown }).value;
+  }
+  if (typeof out === "object" && out !== null) roots.add(out);
+  return roots;
 }

@@ -250,7 +250,11 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
     }
     if (json === undefined) return result;
     const bytes = encoder.encode(json);
-    if (!forged && bytes.byteLength <= cap) return result;
+    // ADR 0140 D11: under `envelopesAreData` a lookalike envelope NESTED anywhere in the result is data
+    // too: the whole result is force-offloaded, so the log never records a tool-authored
+    // `{ __loomClaimCheck, ref, retain }` the sweep or erasure could mistake for one this middleware wrote.
+    const nestedForged = options.envelopesAreData === true && json.includes('"__loomClaimCheck"');
+    if (!forged && !nestedForged && bytes.byteLength <= cap) return result;
 
     const ref = await options.store.put(bytes);
     const declared = ctx.toolId === undefined ? undefined : options.digests?.[ctx.toolId];
