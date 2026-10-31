@@ -442,7 +442,7 @@ export interface AgentLoopConfig {
    *
    * The effect receives `{ messages }` and returns `{ summary: string }`.
    *
-   * OPT-IN, and uncompacted state grows O(turns^2) (50 turns ~ 7 MB snapshot, 200 turns ~ 110 MB; see
+   * OPT-IN, and uncompacted state grows O(turns^2) (50 turns ~ 3.5 MB of folded state, 200 turns ~ 55 MB; see
    * docs/scaling.md "Agent state growth"): without this option the loop warns once when the transcript
    * passes {@link AgentLoopConfig.warnTranscriptBytes}. `createSummarizerEffect(provider)` is a
    * ready-made effect for `toolId`:
@@ -475,27 +475,40 @@ export interface AgentLoopConfig {
 
 const DEFAULT_GATE = "AgentToolApproval";
 /**
- * Default for {@link AgentLoopConfig.warnTranscriptBytes}: 256 KiB (~64k tokens). In the #721 offline
- * harness a 50-turn uncompacted run held a ~140 kB transcript and a 7 MB snapshot, 200 turns 110 MB, so
- * a 1 MB transcript is long past the point the fix is cheap; 256 KiB (~turn 100, tens of MB of state) is
- * early enough to act on and still above every short-lived agent.
+ * Default for {@link AgentLoopConfig.warnTranscriptBytes}: 256 KiB (~64k tokens). [measured, offline
+ * harness, cloning store] An uncompacted run counts ~2.5 kB of transcript per turn and holds 3.5 MB of
+ * folded state at turn 50 (128 kB transcript) and 54.9 MB at turn 200 (500 kB). 256 KiB is turn ~107 and
+ * ~16 MB of state: early enough to act on, still above every short-lived agent. A 1 MB transcript is turn
+ * ~450 and ~280 MB, past a Postgres JSONB value's 255 MB cap.
  */
 export const DEFAULT_STATE_GROWTH_WARN_BYTES = 256 * 1024;
 
-/** Send a loop warning to the loop's own sink, else the app's, else a process warning. A broken sink never fails the run. */
+/**
+ * Send a loop warning to the loop's own sink, else the app's, else a process warning. A broken sink never
+ * fails the run: a throw (or a rejecting Promise a sink returned) is swallowed, and so is a failing
+ * `process.emitWarning`.
+ */
 function emitLoopWarning(config: AgentLoopConfig, message: string, code: string): void {
-  const sink = config.onWarn ?? loopDefaultsSlot().onWarn;
-  if (sink !== undefined) {
-    try {
-      sink(message);
-      return;
-    } catch {
-      // fall through to the process warning
+  try {
+    const sink = config.onWarn ?? loopDefaultsSlot().onWarn;
+    if (sink !== undefined) {
+      try {
+        const returned: unknown = sink(message);
+        // A sink that returns a rejecting Promise must not become an unhandled rejection.
+        if (typeof (returned as { then?: unknown } | undefined)?.then === "function") {
+          (returned as PromiseLike<unknown>).then(undefined, () => undefined);
+        }
+        return;
+      } catch {
+        // fall through to the process warning
+      }
     }
+    const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+      .process;
+    proc?.emitWarning?.(message, { code });
+  } catch {
+    // a warning is advisory: nothing here may fail the run
   }
-  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
-    .process;
-  proc?.emitWarning?.(message, { code });
 }
 
 let warnedReasoningOutsideRing = false;
@@ -1674,7 +1687,7 @@ export async function agentLoop$(
         warnedStateGrowth = true;
         emitLoopWarning(
           config,
-          `agentLoop$: the transcript re-sent every turn is ${transcriptBytes} bytes (> ${warnBytes}) and this loop has no \`compaction\`, so its journaled state grows O(turns^2) and resume reads it all. Set \`compaction: { toolId, afterBytes }\` (\`createSummarizerEffect(provider)\` is a ready-made toolId); see docs/scaling.md "Agent state growth". Silence with \`warnTranscriptBytes: false\`.`,
+          `agentLoop$: the transcript is ${transcriptBytes} bytes by the loop's compaction measure (> ${warnBytes}; text and tool-result bytes, not JSON size), every turn's whole model input is journaled, and this loop has no \`compaction\`, so its journaled state grows O(turns^2) and resume reads it all. Set \`compaction: { toolId, afterBytes }\` (\`createSummarizerEffect(provider)\` is a ready-made toolId); see docs/scaling.md "Agent state growth". Silence with \`warnTranscriptBytes: false\`.`,
           "LOOM_AGENT_STATE_GROWTH"
         );
       }

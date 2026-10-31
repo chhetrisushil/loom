@@ -450,24 +450,30 @@ sharding need a read model and interest-filtered delivery.
 An `agentLoop$` run with no `compaction` journals each turn's whole model input (`<id>#turn:N:input`: the
 transcript, re-sent every turn), so its folded state grows **O(turns^2)**, and resume reads the latest
 snapshot in full, so resume cost grows the same way. 97-99.9% of the state is those `frames`; tool outputs
-and variables are small. **[measured, offline harness]** (issue #721; scaled `agentLoop$` run with a
-deterministic offline model, one tool returning 1-4 kB per turn, in-memory stores; sizes are
-`JSON.stringify(state)`):
+and variables are small. **[measured, offline harness]** (issue #721, re-measured 2026-10-31; scaled
+`agentLoop$` run with a deterministic offline model, one tool returning 1-4 kB per turn, in-memory stores
+whose event store JSON-clones every payload as a durable store does; sizes are `JSON.stringify` of the state
+folded from the log, which is what a resume rebuilds). The first #721 table was ~2x too high: its store did
+not clone, so every folded frame aliased the one live transcript (issue #722); those figures are retracted.
 
-| Config | Latest snapshot (what resume reads) | Per-turn state |
-|---|---|---|
-| 50 turns, no levers | 7.0 MB | ~140 kB |
-| 200 turns, no levers | 110 MB | ~550 kB |
-| ~450 turns, no levers | `RangeError: Invalid string length` serializing state | n/a |
-| 1000 turns, claim-check only (1 kB cap) | 353 MB | still quadratic |
-| 1000 turns, compaction only (`afterMessages: 20`, `keepRecent: 4`) | 28.9-32.4 MB | ~30 kB (linear) |
-| 1000 turns, compaction + claim-check | 4.2 MB | ~4 kB |
+| Config | Turns | Folded state (what resume reads) | Per-turn growth |
+|---|---|---|---|
+| no levers | 50 | 3.5 MB | ~105 kB/turn |
+| no levers | 200 | 54.9 MB | ~480 kB/turn |
+| no levers | 450 | 279 MB | quadratic |
+| no levers | 600 / 650 | 497 MB / `RangeError: Invalid string length` serializing the state | V8's ~512 MiB string cap, ~610 turns |
+| compaction only (`afterMessages: 20`, `keepRecent: 4`) | 50 / 200 / 1000 | 1.0 MB / 4.2 MB / 21.3 MB | ~21 kB/turn (linear) |
+| compaction + claim-check (1 kB cap) | 50 / 200 / 1000 | 153 kB / 639 kB / 3.3 MB | ~3.3 kB/turn (linear) |
+
+The transcript the loop counts (`transcriptBytes`, the figure `warnTranscriptBytes` and `afterBytes` read) is
+~2.5 kB per turn here: 128 kB at turn 50, 246 kB at 100, 372 kB at 150, 500 kB at 200, 1.1 MB at 450.
 
 Caveats: offline stubs (a real model's transcript shape differs, but the re-sent-transcript quadratic shape
-holds); in-memory stores (on-disk sizes differ, e.g. TOAST); a trivial summarizer. With a small
-`snapshotEvery` and no pruning, total bytes written are (saves x state), O(turns^3): 3.7 GB at 200 turns,
-59 GB at 1000; snapshot pruning (`keepLatest: 1`, ADR 0134) removes 98-99% of that. A Postgres JSONB value
-caps at 255 MB, which a real backend hits before V8's string limit.
+holds); in-memory stores (on-disk sizes differ, e.g. TOAST); a trivial summarizer; the "latest snapshot" a
+live in-process run saves was ~2x the folded figures above until #722 was fixed (the live fold aliased the
+transcript). Total bytes written with a small `snapshotEvery` and no pruning are (saves x state), so cubic in
+turns; snapshot pruning (`keepLatest: 1`, ADR 0134) removes almost all of that (not re-measured). A Postgres
+JSONB value caps at 255 MB, which an uncompacted run reaches near turn 430, before V8's string limit.
 
 **The lever is compaction** (bounds the state), plus claim-check on top. Claim-check alone does not help: it
 offloads a tool RESULT's bytes, not the transcript. Compaction is **opt-in** and stays so (ADR 0137), but
@@ -480,8 +486,8 @@ agentLoop$(ctx, { definition, modelToolId: "model",
 ```
 
 - With no `compaction`, the loop warns ONCE per run (through `onWarn` / `observability.onWarn`, else a process
-  warning `LOOM_AGENT_STATE_GROWTH`) when its transcript passes `warnTranscriptBytes` (default 256 KiB;
-  `false` disables). It only reports: the log and replay are unchanged.
+  warning `LOOM_AGENT_STATE_GROWTH`) when its transcript passes `warnTranscriptBytes` (default 256 KiB, about
+  turn 107 and ~16 MB of state in the harness above; `false` disables). It only reports: the log and replay are unchanged.
 - `createSummarizerEffect` is an ordinary effect, so it runs in the capability ring and is journaled once and
   served from the log on replay. Pick `afterBytes` well below the point where resume hurts; the kept suffix is
   at most half of it.

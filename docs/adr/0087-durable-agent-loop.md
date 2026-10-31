@@ -220,8 +220,8 @@ with neither threshold set and does not reject `afterBytes` alone.
 ## Amendment (2026-10-31) — the quadratic is measured; compaction stays opt-in, now with a warning and a built-in summarizer
 
 Issue #721 measured the D5 growth on a scaled offline harness: an uncompacted loop's folded state is
-O(turns^2) (7.0 MB latest snapshot at 50 turns, 110 MB at 200, `RangeError: Invalid string length` near 450
-turns), 97-99.9% of it the journaled per-turn model input. The owner ruled compaction stays OPT-IN. What
+O(turns^2) (3.5 MB of folded state at 50 turns, 54.9 MB at 200, `RangeError: Invalid string length`
+serializing it by 650 turns; re-measured with a cloning store, the first figures were ~2x high), 97-99.9% of it the journaled per-turn model input. The owner ruled compaction stays OPT-IN. What
 changed is discoverability and cost of opting in ([ADR 0137](0137-agent-state-growth-warning-and-builtin-summarizer.md)):
 `agentLoop$` warns once per run when an uncompacted transcript crosses `warnTranscriptBytes` (default 256 KiB;
 `false` disables), and `createSummarizerEffect(provider)` is a ready-made `compaction.toolId`. See
