@@ -11,6 +11,7 @@
     { "path": "../../packages/classify" },
     { "path": "../../packages/core" },
     { "path": "../../packages/event-runtime" },
+    { "path": "../content" },
     { "path": "../../packages/snapshot-runtime" }
   ]
 }

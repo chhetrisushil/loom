@@ -1,5 +1,10 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { type DestructionProof, type EventStore, erasureWindowView } from "@loom/event-runtime";
+import {
+  type DestructionProof,
+  type EventStore,
+  erasureWindowView,
+  isPayloadShredded,
+} from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import type { SubjectIndex } from "./SubjectIndex";
 import { claimCheckRefsOf } from "./eraseSubject";
@@ -133,7 +138,12 @@ export interface ExportSubjectOptions {
    * ADR 0140 - the content store claim-checked tool outputs were offloaded to. Given, each execution's
    * export resolves the blobs its events cite (`claimChecked`), so the export is the data, not just refs.
    */
-  content?: { get(ref: { __loomContent: string }): Promise<Uint8Array | null> };
+  content?: {
+    get(
+      ref: { __loomContent: string },
+      access?: { executionId: string; workflowId: string }
+    ): Promise<Uint8Array | null>;
+  };
   /** Include the raw event log per execution (Art. 20 portability). Default `true`. */
   includeEvents?: boolean;
   /** T3-R2.4 — scope the export to a tenant (default: the single partition). */
@@ -204,7 +214,9 @@ export async function exportSubject(
       ? []
       : ((await options.archive?.readReservedArchive?.(executionId)) ?? []);
     const claimChecked =
-      options.content === undefined ? [] : await resolveBlobs(options.content, events);
+      options.content === undefined
+        ? []
+        : await resolveBlobs(options.content, events, { executionId, workflowId });
     executions.push({
       executionId,
       workflowId,
@@ -226,13 +238,23 @@ export async function exportSubject(
 /** Resolve every claim-check envelope the events cite (deduped by address), in first-seen order. */
 async function resolveBlobs(
   content: NonNullable<ExportSubjectOptions["content"]>,
-  events: readonly EventEnvelope[]
+  events: readonly EventEnvelope[],
+  // ADR 0143: the execution the blobs belong to, so a store that seals per subject opens them with its key.
+  access: { executionId: string; workflowId: string }
 ): Promise<ClaimCheckedBlob[]> {
   const meta = new Map<string, { size?: number; digest?: unknown; codec?: string }>();
   for (const e of events) collectEnvelopes(e.payload, meta);
   const out: ClaimCheckedBlob[] = [];
   for (const [address, m] of meta) {
-    const bytes = await content.get({ __loomContent: address });
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await content.get({ __loomContent: address }, access);
+    } catch (err) {
+      // A sealed blob whose subject key was destroyed is ERASED (the redacted view shows it as missing);
+      // a key merely absent from this node, or an unopenable blob, stays loud: never garbage, never a lie.
+      if (!isPayloadShredded(err)) throw err;
+      bytes = null;
+    }
     const base = {
       address,
       ...(m.size !== undefined && { size: m.size }),

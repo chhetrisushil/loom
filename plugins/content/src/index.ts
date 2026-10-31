@@ -12,6 +12,7 @@ export {
   CONTENT_LIST_PAGE_DEFAULT_LIMIT,
   CONTENT_LIST_PAGE_MAX_LIMIT,
   CONTENT_STORE_SPI_VERSION,
+  type ContentAccess,
   type ContentListPage,
   type ContentListPageOptions,
   type ContentPageEntry,

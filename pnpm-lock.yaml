@@ -1809,6 +1809,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../content
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime

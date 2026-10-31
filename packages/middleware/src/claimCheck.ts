@@ -12,22 +12,38 @@ import type { EffectMiddleware } from "@loom/effect-runtime";
 // deterministic projection). Reaching through the ref from flow control
 // reintroduces nondeterminism and is lintable (CC-5, tools/*).
 
+/**
+ * ADR 0143 - the execution a content operation is for (structural twin of `@loom/plugin-content`'s
+ * `ContentAccess`, ContentStore SPI 1.5.0). The middleware passes the running effect's execution on every
+ * `put`, so a store that seals per subject knows whose key to use; a plain store ignores it.
+ */
+export interface ClaimCheckAccess {
+  readonly executionId: string;
+  readonly workflowId: string;
+}
+
 /** Write-side view of the content store (structural — no plugin dependency). */
 export interface ClaimCheckStore {
   /** Content-addressed, idempotent by hash — the `ContentStore.put` contract (ADR 0046). */
-  put(bytes: Uint8Array): Promise<{ __loomContent: string }>;
+  put(bytes: Uint8Array, access?: ClaimCheckAccess): Promise<{ __loomContent: string }>;
   /** OPTIONAL (ST-1, ADR 0059) — streaming ingestion; required only for stream-typed results. */
-  putStream?(stream: AsyncIterable<Uint8Array>): Promise<{ __loomContent: string }>;
+  putStream?(
+    stream: AsyncIterable<Uint8Array>,
+    access?: ClaimCheckAccess
+  ): Promise<{ __loomContent: string }>;
 }
 
 /** Read-side view, for {@link resolveClaimCheck} OUTSIDE the determinism boundary. */
 export interface ClaimCheckReader {
-  get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+  get(ref: { __loomContent: string }, access?: ClaimCheckAccess): Promise<Uint8Array | null>;
   /**
    * OPTIONAL (TS-10, ADR 0062) — batched get, positionally aligned, null per
    * absent entry. A `ContentStore` with `getMany` satisfies this structurally.
    */
-  getMany?(refs: readonly { __loomContent: string }[]): Promise<(Uint8Array | null)[]>;
+  getMany?(
+    refs: readonly { __loomContent: string }[],
+    access?: ClaimCheckAccess
+  ): Promise<(Uint8Array | null)[]>;
 }
 
 /** What STEP_COMPLETED records in place of an over-cap effect result. */
@@ -171,6 +187,7 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
   const encoder = new TextEncoder();
   return async (ctx, _input, next): Promise<unknown> => {
     const result = await next();
+    const access: ClaimCheckAccess = { executionId: ctx.executionId, workflowId: ctx.workflowId };
     if (options.passThrough?.(result, ctx.toolId) === true) return result;
     // already an envelope (stacked wiring) — never double-wrap; unless envelopes are DATA (ADR 0140 M7)
     const forged = options.envelopesAreData === true && isClaimCheck(result);
@@ -197,7 +214,7 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
       })();
       let streamedRef: { __loomContent: string };
       try {
-        streamedRef = await options.store.putStream(counted);
+        streamedRef = await options.store.putStream(counted, access);
       } finally {
         // W-audit leak fix: if putStream threw mid-consumption, `counted` is
         // suspended at a yield and nobody would ever finalize it — resuming it
@@ -242,7 +259,7 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
     const nestedForged = options.envelopesAreData === true && json.includes('"__loomClaimCheck"');
     if (!forged && !nestedForged && bytes.byteLength <= cap) return result;
 
-    const ref = await options.store.put(bytes);
+    const ref = await options.store.put(bytes, access);
     const declared = ctx.toolId === undefined ? undefined : options.digests?.[ctx.toolId];
     const projected =
       declared !== undefined ? declared(result) : options.defaultDigest?.(result, ctx.toolId);
@@ -327,14 +344,15 @@ export function previewDigest(
  */
 export async function resolveClaimCheck<T = unknown>(
   reader: ClaimCheckReader,
-  envelope: ClaimCheckEnvelope
+  envelope: ClaimCheckEnvelope,
+  access?: ClaimCheckAccess
 ): Promise<T | null> {
   if (envelope.codec !== undefined && envelope.codec !== "json") {
     throw new TypeError(
       `resolveClaimCheck: envelope codec is "${envelope.codec}", not JSON — use resolveClaimCheckBytes for stream-offloaded content`
     );
   }
-  const bytes = await reader.get(envelope.ref);
+  const bytes = await reader.get(envelope.ref, access);
   if (bytes === null) return null;
   return JSON.parse(new TextDecoder().decode(bytes)) as T;
 }
@@ -346,9 +364,10 @@ export async function resolveClaimCheck<T = unknown>(
  */
 export async function resolveClaimCheckBytes(
   reader: ClaimCheckReader,
-  envelope: ClaimCheckEnvelope
+  envelope: ClaimCheckEnvelope,
+  access?: ClaimCheckAccess
 ): Promise<Uint8Array | null> {
-  return reader.get(envelope.ref);
+  return reader.get(envelope.ref, access);
 }
 
 /**
@@ -361,7 +380,8 @@ export async function resolveClaimCheckBytes(
  */
 export async function resolveClaimChecks<T = unknown>(
   reader: ClaimCheckReader,
-  envelopes: readonly ClaimCheckEnvelope[]
+  envelopes: readonly ClaimCheckEnvelope[],
+  access?: ClaimCheckAccess
 ): Promise<(T | null)[]> {
   for (const envelope of envelopes) {
     if (envelope.codec !== undefined && envelope.codec !== "json") {
@@ -377,8 +397,8 @@ export async function resolveClaimChecks<T = unknown>(
   const refs = [...distinct.values()];
   const fetched =
     reader.getMany !== undefined
-      ? await reader.getMany(refs)
-      : await Promise.all(refs.map((r) => reader.get(r)));
+      ? await reader.getMany(refs, access)
+      : await Promise.all(refs.map((r) => reader.get(r, access)));
   const byAddress = new Map<string, Uint8Array | null>();
   refs.forEach((r, i) => byAddress.set(r.__loomContent, fetched[i] ?? null));
   const decoder = new TextDecoder();

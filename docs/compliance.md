@@ -174,7 +174,7 @@ idempotent: liveness is judged on that redacted view.
 
 With the opt-in `execution.claimCheck`, an agent tool's large output lives in a CONTENT STORE, not the log, so a
 key's destruction does not reach it. `security.crypto` with the opt-in is refused at boot unless the store
-declares `sealsContent: true` (a store that seals each blob under its owning subject's key; none ships yet).
+declares `sealsContent: true`: wrap the store with `EncryptingContentStore` from `@loom/plugin-crypto` (ADR 0143), over the SAME KeyStore and `subjectOf` as the log (a different one is refused at boot). It seals each blob under its owning subject's key with a subject-scoped address, so the shred makes every blob unreadable; `eraseSubject` still journals the blobs it covered and deletes the ciphertext (`contentDeleted: { deleted, retained: 0, sealed }`).
 Over a plaintext store `eraseSubject` collects the envelope refs the subject's executions cite (logs, archive
 segments, snapshots) before the shred, keeps any blob another non-erased execution still cites (a deduplicated
 identical output), journals `ERASURE_CONTENT_DELETE_INTENDED` first, deletes the rest and journals

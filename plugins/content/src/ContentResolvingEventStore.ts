@@ -99,6 +99,14 @@ export class ContentResolvingEventStore implements EventStore {
     private readonly content: ContentStore,
     options: ContentResolvingEventStoreOptions
   ) {
+    // ADR 0143: a sealing store needs the owning execution on every put/get, and ADR 0046 externalization
+    // resolves a read BATCH across executions without carrying it. Refuse rather than seal under a guess
+    // (the claim-check path, which has the execution, is the one that works over a sealing store).
+    if (content.sealsContent === true) {
+      throw new TypeError(
+        "ContentResolvingEventStore: this content store seals per subject (sealsContent: true), which ADR 0046 externalization cannot drive (it does not carry the owning execution into put/get). Use a plain store here, or offload through execution.claimCheck."
+      );
+    }
     this.externalize = options.externalize;
     this.onTouchError = options.onTouchError;
     // Every optional method decided over the whole union (ADR 0074 Amendment), each

@@ -106,3 +106,38 @@ export class PlaintextSnapshotRefusedError extends Error {
     Object.setPrototypeOf(this, PlaintextSnapshotRefusedError.prototype);
   }
 }
+
+/**
+ * ADR 0143 - a sealing content store ({@link EncryptingContentStore}) was called without the owning
+ * execution. It cannot know whose key to use, and it never seals under a guess or returns bytes it could not
+ * authenticate to a subject: it refuses.
+ */
+export class ContentAccessRequiredError extends Error {
+  constructor(operation: string) {
+    super(
+      `EncryptingContentStore.${operation}: no content access (the owning executionId + workflowId) was given, so the subject whose key seals/opens the blob is unknown. Pass it as the second argument (the claim-check middleware, exportSubject and resolveClaimCheck do); a content store that seals per subject cannot be driven without it.`
+    );
+    this.name = "ContentAccessRequiredError";
+    Object.setPrototypeOf(this, ContentAccessRequiredError.prototype);
+  }
+}
+
+/**
+ * ADR 0143 - a blob exists but did NOT open under the subject's key, although the key exists: corruption,
+ * a tampered row, a blob moved from another subject, or a `subjectOf` that drifted since it was sealed.
+ * Deliberately not {@link PayloadShreddedError}: a defect never reads as an erasure, and plaintext or
+ * garbage is never returned in its place.
+ */
+export class ContentUndecryptableError extends Error {
+  constructor(
+    readonly subjectId: string,
+    readonly address: string,
+    override readonly cause?: unknown
+  ) {
+    super(
+      `content blob "${address}" could not be opened under subject "${subjectId}"'s key although the key exists: the stored bytes are corrupt, were tampered with or moved from another subject, or the subject mapping drifted since they were sealed`
+    );
+    this.name = "ContentUndecryptableError";
+    Object.setPrototypeOf(this, ContentUndecryptableError.prototype);
+  }
+}

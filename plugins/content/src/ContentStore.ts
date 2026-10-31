@@ -19,8 +19,22 @@ import { type ContentRef, contentAddress } from "./content";
  *  - 1.4.0: optional `touch` — bump touch times WITHOUT a put, so a citation that enters a log
  *    without one (a fork's `copyPrefix`, a ref an `append` carries) is visible to the
  *    conditional delete; `reclaimOrphans` requires it (ADR 0055 D6 amendment 2).
+ *  - 1.5.0: an optional {@link ContentAccess} argument on `put`/`putStream`/`get`/`getMany` (the execution a
+ *    blob belongs to) and the optional `sealsContent` marker, so a store can seal each blob under its
+ *    owner's subject key (ADR 0143). A plain store ignores the argument; nothing else changes.
  */
-export const CONTENT_STORE_SPI_VERSION = "1.4.0";
+export const CONTENT_STORE_SPI_VERSION = "1.5.0";
+
+/**
+ * ADR 0143 - WHO a content operation is for: the execution that offloads (`put`) or reads (`get`) the blob.
+ * It is the same pair every event-store `subjectOf` takes, so a sealing store maps it to the erasure subject
+ * with the mapping the log already uses. A plain store ignores it. A store that seals
+ * ({@link ContentStore.sealsContent}) REFUSES a call without it (fail closed).
+ */
+export interface ContentAccess {
+  readonly executionId: string;
+  readonly workflowId: string;
+}
 
 /** One blob as {@link ContentStore.listPage} reports it (SPI 1.3.0). */
 export interface ContentPageEntry {
@@ -65,8 +79,18 @@ export function contentListPageLimit(limit: number | undefined): number {
 }
 
 export interface ContentStore {
-  /** Store bytes, returning their content-addressed ref. Idempotent by hash (stored once). */
-  put(bytes: Uint8Array): Promise<ContentRef>;
+  /**
+   * ADR 0143 - `true` for a store that SEALS each blob under its owning subject's key (so a crypto-shred of
+   * the subject makes every blob it holds unreadable). `defineConfig` accepts `execution.claimCheck` with
+   * `security.crypto` only for such a store, and erasure treats the shred as erasing its blobs. Absent/false:
+   * a plain store whose bytes sit in the clear.
+   */
+  readonly sealsContent?: boolean;
+  /**
+   * Store bytes, returning their content-addressed ref. Idempotent by hash (stored once).
+   * `access` (SPI 1.5.0, ADR 0143) names the owning execution; a plain store ignores it.
+   */
+  put(bytes: Uint8Array, access?: ContentAccess): Promise<ContentRef>;
   /**
    * OPTIONAL (ST-1, ADR 0059) — store a byte STREAM without materializing it in
    * the caller's memory. Contract: the returned ref MUST be the content address
@@ -77,9 +101,9 @@ export interface ContentStore {
    * verify (or re-key) on finalize (resolves requirements §6.3). Node
    * `Readable` streams satisfy `AsyncIterable<Uint8Array>` directly.
    */
-  putStream?(stream: AsyncIterable<Uint8Array>): Promise<ContentRef>;
+  putStream?(stream: AsyncIterable<Uint8Array>, access?: ContentAccess): Promise<ContentRef>;
   /** Resolve a ref to its bytes, or `null` if erased/absent — MUST NOT throw on absence. */
-  get(ref: ContentRef): Promise<Uint8Array | null>;
+  get(ref: ContentRef, access?: ContentAccess): Promise<Uint8Array | null>;
   /**
    * OPTIONAL (TS-10, ADR 0062) — batched get for interactive read paths (e.g.
    * frozen-snapshot serving: many refs, one human waiting). Result is
@@ -87,7 +111,7 @@ export interface ContentStore {
    * on absence. Duplicate refs are legal and resolve identically. Semantics are
    * exactly element-wise `get` — only the round-trip count may differ.
    */
-  getMany?(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]>;
+  getMany?(refs: readonly ContentRef[], access?: ContentAccess): Promise<(Uint8Array | null)[]>;
   /** Physically erase the bytes. Idempotent; referential integrity is the caller's concern. */
   delete(ref: ContentRef): Promise<void>;
   /**
