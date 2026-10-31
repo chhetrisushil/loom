@@ -195,12 +195,13 @@ export class EncryptingSnapshotStore implements SnapshotStore {
           "EncryptingSnapshotStore: `codec` only applies with `sealState: true` (it compresses the whole state before sealing it; a static-path store seals small fields)."
         );
       }
-      assertSnapshotCodecAvailable(this.snapshotCodec);
       if (options.lengthLeak !== "accept") {
         throw new TypeError(
           `EncryptingSnapshotStore: codec "${this.snapshotCodec}" with \`sealState\` compresses the state BEFORE sealing it, so the ciphertext length reveals the compressed length of the state (a CRIME/BREACH-style length oracle where part of a state is attacker-influenced and another part is secret, and stored sizes are observable). Pass \`lengthLeak: "accept"\` to acknowledge that, or leave \`codec\` off (the default).`
         );
       }
+      // Configuration errors first, so they are the same on every Node; availability last.
+      assertSnapshotCodecAvailable(this.snapshotCodec);
     } else if (options.sealState !== true) {
       // A static-path store seals small fields and leaves the rest of the state to the backend, whose
       // codec (if any) still applies: report it, so a layer above sees what is really written.
