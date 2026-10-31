@@ -74,8 +74,9 @@ function boot(result: unknown, opts: RunOpts = {}, eventStore = new InMemoryAsyn
     steps: [],
   };
   const tool = opts.media === true ? { ...lookup, returnsMedia: true } : lookup;
-  runtime.registerFlow(def, async (ctx) =>
-    agentLoop$(
+  const captured: { result?: Awaited<ReturnType<typeof agentLoop$>> } = {};
+  runtime.registerFlow(def, async (ctx) => {
+    captured.result = await agentLoop$(
       ctx,
       {
         definition: agent$({ id: "a", name: "A", tools: [tool as typeof lookup] }),
@@ -92,9 +93,10 @@ function boot(result: unknown, opts: RunOpts = {}, eventStore = new InMemoryAsyn
         }),
       },
       { prompt: opts.prompt ?? "go" }
-    )
-  );
-  return { runtime, def, seen, eventStore };
+    );
+    return captured.result;
+  });
+  return { runtime, def, seen, eventStore, captured };
 }
 
 async function run(result: unknown, opts: RunOpts = {}) {
@@ -269,24 +271,79 @@ describe("the scan covers the SERIALIZED text, not the live value", () => {
     });
   }
 
-  it("a getter that changes between reads: the model never sees an unfenced wrapper", async () => {
-    let n = 0;
-    const flipping = {
-      get content() {
-        return n++ === 0 ? "clean" : wrapper();
-      },
-    };
-    const { seen } = await run(flipping);
-    const text = resultText(seen[1]);
-    if (text.includes(INJECT)) expect(text).toContain("<untrusted-input");
-  });
-
   it("a recovered run fences the same way as the live run (the log holds the JSON form)", async () => {
     const result = new PeerReply(wrapper());
     const live = await run(result);
     const replayed = await replayAfterFirstTool(result, live);
     expect(resultText(live.seen[1])).toContain("<untrusted-input");
     expect(resultText(replayed.seen[0])).toBe(resultText(live.seen[1]));
+  });
+
+  const statefulGetters: Array<[string, () => unknown]> = [
+    [
+      "tainted first, clean later",
+      () => {
+        let n = 0;
+        return {
+          get content() {
+            return n++ === 0 ? wrapper() : "clean-later-read";
+          },
+        };
+      },
+    ],
+    [
+      "clean first, tainted later",
+      () => {
+        let n = 0;
+        return {
+          get content() {
+            return n++ === 0 ? "clean-first-read" : wrapper();
+          },
+        };
+      },
+    ],
+    [
+      "a toJSON that changes",
+      () => {
+        let n = 0;
+        return { toJSON: () => ({ n: n++ }) };
+      },
+    ],
+  ];
+  for (const [name, make] of statefulGetters) {
+    it(`FAILS CLOSED on a STATEFUL output (${name}): no model-facing text a replay could not match`, async () => {
+      const b = boot(make());
+      const handle = await b.runtime.start(b.def, {}, { executionId: "e" });
+      await expect(handle.waitForCompletion()).rejects.toThrow(/successive reads/);
+      // nothing was presented to the model: it never saw a second request
+      expect(b.seen).toHaveLength(1);
+    });
+  }
+
+  it("a Date output: the live presentation equals the replayed one (ISO string both)", async () => {
+    const result = { at: new Date("2026-01-02T03:04:05.000Z") };
+    const live = await run(result);
+    const replayed = await replayAfterFirstTool(result, live);
+    // the loop's own record holds the SAME JSON form the model was shown (not a live Date)
+    expect(live.captured.result?.toolCallLog[0]).toMatchObject({
+      toolOutput: { at: "2026-01-02T03:04:05.000Z" },
+    });
+    expect(resultText(live.seen[1])).toContain("2026-01-02T03:04:05.000Z");
+    expect(resultText(replayed.seen[0])).toBe(resultText(live.seen[1]));
+  });
+
+  it("GOLDEN: a plain-JSON output reaches the model byte-for-byte as before", async () => {
+    const result = { a: 1, b: [true, null, "x"], c: { d: "é\u2028" } };
+    const { seen } = await run(result);
+    expect(resultText(seen[1])).toBe(
+      JSON.stringify([
+        {
+          type: "tool_result",
+          toolUseId: "c0",
+          content: JSON.stringify({ tool: "lookup", result }),
+        },
+      ])
+    );
   });
 
   it("a clean result stays byte-identical (no marker, no walk)", () => {

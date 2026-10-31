@@ -1514,8 +1514,11 @@ export async function agentLoop$(
     const record = (
       toolCall: LlmToolCall,
       j: number,
-      { output, isError, virtualBytes }: Outcome
+      { output: rawOutput, isError, virtualBytes }: Outcome
     ): void => {
+      // ONE JSON normalisation per tool output (#735): the log entry, the digest, the model-facing
+      // fence, the run's taint, write-back and compaction all consume THIS value, never the live one.
+      const output = normalizeToolOutput(toolCall.name, rawOutput);
       toolCallLog.push(
         lean
           ? {
@@ -1978,13 +1981,39 @@ export async function agentLoop$(
 }
 
 /**
- * ADR 0142 D2 - the lean log entry's description of a tool output. The output is first taken through
- * its JSON round trip (`JSON.parse(JSON.stringify(output))`): that is the form a JSON event store
- * records and a resumed run reads back (a `Date` is its ISO string, a `Map` is `{}`, `toJSON` is
- * honoured), so `digest` - sha256 (hex) of `canonicalJson` of it (@loom/core: sorted keys, no whitespace)
- * - equals the canonical form of the output the log holds, live or resumed. `bytes` is its UTF-8 length.
- * An output JSON cannot represent (`undefined`, a function, a bigint, a cycle, or deeper than the
- * canonicalizer's cap) has `digest: null, bytes: 0`: the entry never throws.
+ * Take a tool output through its JSON round trip ONCE (#735, ADR 0085 amendment): the form a JSON
+ * event store records and a resumed run reads back (`Date` is its ISO string, `Map` is `{}`, `toJSON`
+ * and getters are run). Everything downstream of the tool (log entry, lean digest, `tool_result` text
+ * and its fence, `sawTaintFrom`, write-back, compaction) consumes the returned value, so the live run
+ * sees what a replay of the recorded step sees.
+ *
+ * The kernel commits STEP_COMPLETED from the effect's own return BEFORE this loop sees it, so the
+ * recorded bytes are the store's read, not ours. Those agree with ours unless the value's JSON form
+ * differs between two reads (a stateful getter or `toJSON`): that is DETECTED (a second serialisation
+ * must equal the first) and the run FAILS CLOSED with an error, because the model would otherwise be
+ * shown (and the taint scan run over) text a replay cannot reproduce. A plain-JSON output is
+ * byte-identical after the round trip. `undefined`, a function or a symbol has no JSON form and is
+ * left as is (it renders as an absent result, as before); a bigint, a cycle or a value too deep to
+ * serialise throws, as it always did when the result was rendered. Media results take the same path:
+ * their parts are JSON by construction (base64 `data`, refs), so nothing is lost.
+ */
+function normalizeToolOutput(toolName: string, output: unknown): unknown {
+  const text = JSON.stringify(output) as string | undefined;
+  if (text === undefined) return undefined;
+  if (JSON.stringify(output) !== text) {
+    throw new Error(
+      `agentLoop$: the output of tool "${toolName}" serialises to different JSON on successive reads (a stateful getter or toJSON), so the model-facing result cannot match what a replay reads back. Return plain data.`
+    );
+  }
+  return JSON.parse(text);
+}
+
+/**
+ * ADR 0142 D2 - the lean log entry's description of a tool output. `output` is already the JSON
+ * round trip ({@link normalizeToolOutput}), so `digest` - sha256 (hex) of `canonicalJson` of it
+ * (@loom/core: sorted keys, no whitespace) - equals the canonical form of the output the log holds,
+ * live or resumed. `bytes` is its UTF-8 length. An output JSON cannot represent (`undefined`, a
+ * function, or deeper than the canonicalizer's cap) has `digest: null, bytes: 0`: the entry never throws.
  */
 function leanOutputFields(
   output: unknown,
@@ -1994,9 +2023,11 @@ function leanOutputFields(
   let bytes = 0;
   let digest: string | null = null;
   try {
-    const text = canonicalJson(JSON.parse(JSON.stringify(output)));
-    bytes = new TextEncoder().encode(text).length;
-    digest = sha256Hex(text);
+    if (output !== undefined) {
+      const text = canonicalJson(output);
+      bytes = new TextEncoder().encode(text).length;
+      digest = sha256Hex(text);
+    }
   } catch {
     // no canonical form
   }
