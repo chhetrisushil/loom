@@ -358,3 +358,31 @@ describe("classifyModelCallError — the conversation's own model call", () => {
     }
   });
 });
+
+describe("isTerminalToolError - ExecutionTerminatedError is classified by status (ADR 0135)", () => {
+  const stateOf = (status: string) =>
+    ({ executionId: "child", status, variables: {} }) as unknown as core.ExecutionState;
+  const terminated = (status: string, cause?: unknown) =>
+    new workflowRuntime.ExecutionTerminatedError(stateOf(status), cause);
+
+  it.each(["completed", "continued"])("%s (no cause) is terminal", (status) => {
+    expect(isTerminalToolError(terminated(status))).toBe(true);
+  });
+
+  it("failed with an ordinary cause is feedback, as waitForCompletion's rejection would be", () => {
+    const cause = new Error("child tool broke");
+    expect(isTerminalToolError(cause)).toBe(false);
+    expect(isTerminalToolError(terminated("failed", cause))).toBe(false);
+  });
+
+  it("cancelled with an ordinary cause is feedback", () => {
+    expect(isTerminalToolError(terminated("cancelled", new Error("stop")))).toBe(false);
+  });
+
+  it("failed or cancelled with a terminal cause is terminal (the cause is classified)", () => {
+    const denial = new effectRuntime.CapabilityDeniedError("x", "y" as never);
+    expect(isTerminalToolError(denial)).toBe(true);
+    expect(isTerminalToolError(terminated("failed", denial))).toBe(true);
+    expect(isTerminalToolError(terminated("cancelled", denial))).toBe(true);
+  });
+});

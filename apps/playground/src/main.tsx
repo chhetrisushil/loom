@@ -560,17 +560,28 @@ function App() {
         setExecutionId(handle.executionId);
         sysLog(`Execution ID: ${handle.executionId}`);
 
-        handle.waitForSuspend().then(() => {
-          setPhase("suspended");
-          sysLog("Suspended — waiting for approval");
-        });
+        // waitForSuspend rejects (ExecutionTerminatedError) when the run ends without parking; the
+        // completion handler below reports that outcome, so the rejection is only swallowed here.
+        handle
+          .waitForSuspend()
+          .then(() => {
+            setPhase("suspended");
+            sysLog("Suspended — waiting for approval");
+          })
+          .catch(() => {});
 
-        handle.waitForCompletion().then((st) => {
-          if (st.status === "completed") {
-            setPhase("completed");
-            sysLog("Completed");
-          }
-        });
+        handle
+          .waitForCompletion()
+          .then((st) => {
+            if (st.status === "completed") {
+              setPhase("completed");
+              sysLog("Completed");
+            }
+          })
+          .catch((err) => {
+            setPhase("failed");
+            sysLog(`Error: ${String(err)}`);
+          });
       } catch (err) {
         setPhase("failed");
         sysLog(`Error: ${String(err)}`);

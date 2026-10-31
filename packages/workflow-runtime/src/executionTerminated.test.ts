@@ -134,4 +134,20 @@ describe("ExecutionHandle.waitForSuspend on a terminal run (#710)", () => {
       process.off("unhandledRejection", on);
     }
   });
+
+  it("keeps the plaintext state out of serialisation but readable as err.state", async () => {
+    const h = build();
+    const f = flow("secret", async () => "super-secret-output");
+    h.rt.registerFlow(f.definition, f.runner);
+    const handle = await h.rt.start(f, {}, { executionId: "s" });
+    await handle.waitForCompletion();
+    const err = (await caught(handle.waitForSuspend())) as ExecutionTerminatedError;
+    expect(err.state.executionId).toBe("s");
+    expect(Object.keys(err)).not.toContain("state");
+    expect(Object.keys(err)).toContain("status");
+    const json = JSON.stringify(err);
+    expect(json).not.toContain("state");
+    expect(json).not.toContain("super-secret-output");
+    expect(json).toContain("completed");
+  });
 });
