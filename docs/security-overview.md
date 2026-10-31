@@ -71,7 +71,7 @@ The capability authorizer runs before any middleware, and isolation is innermost
 
 ## 3. Integrity of the durable log
 
-The log is append-only, single-writer and replay-deterministic, and with `@loom/plugin-audit-chain` wired it is cryptographically tamper-evident. Current contract versions: `EVENT_SCHEMA` 1.25.0, `KERNEL_ABI` 1.3.0, `EVENT_STORE_SPI` 2.6.0.
+The log is append-only, single-writer and replay-deterministic, and with `@loom/plugin-audit-chain` wired it is cryptographically tamper-evident. Current contract versions: `EVENT_SCHEMA` 1.26.0, `KERNEL_ABI` 1.3.0, `EVENT_STORE_SPI` 2.6.0.
 
 ### Single writer and fencing (ADR 0021, 0118, 0129)
 
@@ -92,7 +92,7 @@ Effects are at-least-once; steps are exactly-once with respect to the log. The k
 - **Two signature modes, mutually exclusive.** HMAC-SHA256 gives tamper *evidence* against third parties, but the verifier can also forge. Ed25519 (`ed25519Signer` / `ed25519Verifier`) gives third-party *verifiability*: an auditor holding only the public key can check authorship. `keyId` supports rotation without invalidating history.
 - `signaturesChecked: false` is reported when no key was supplied, so a hash-only pass is never mistaken for an authorship check.
 - The chain lives in metadata, which the fold ignores, so replay is identical with or without it.
-- **Limitation:** verification assumes an untruncated log. Compaction and retention break the chain at the new head; verify and archive before truncating.
+- **Limitation:** verification assumes an untruncated log. Retention breaks the chain at the new head (verify and archive before deleting). Compaction now MOVES the removed events into the compaction archive (ADR 0138), so a chain can be verified across one: build the store with `hashChainedEventStore(inner, { allowCompaction: true })` and pass the archive to `verifyChain(id, { archived })`; without `allowCompaction` a hash-chained inbox cannot run its terminal delete (the refusal reaches `onStorageError`).
 
 ### Determinism and replay safety
 
@@ -266,11 +266,12 @@ A verifier (`classification-reachability`) fails the build when a mark sits insi
 - A destroyed key is never re-minted. `wasDestroyed` gives the key store's own proof of destruction; the log alone only proves intent.
 - `app.eraseSubject` is liveness-gated: it never shreds a running fold. It parks a durable `ERASURE_PENDING` request and completes when the subject's executions end, or cancels parked owners with `parked: "shred"`.
 - `exportSubject` builds an access and portability package from a subject index that is partitioned by tenant.
-- **Gap stated in the docs:** content-store blobs (claim-checked and externalized bytes) are deduplicated plaintext keyed by hash with no subject mapping, and erasure does not reach them. Derived read models need an explicit row purge (ADR 0093).
+- **Content-store blobs:** claim-checked and externalized bytes are, by default, deduplicated plaintext keyed by hash with no subject mapping, and erasure does not reach them unless you opt in. With `execution.claimCheck` and `security.crypto`, `EncryptingContentStore` (ADR 0143) seals each blob under its owning subject's key at a subject-scoped address, so a crypto-shred makes the blobs unreadable and `eraseSubject` deletes the ones the subject provably owns; over a plaintext store `eraseSubject` deletes the blobs the subject's logs cite (ADR 0140). Externalized event fields (ADR 0046) have no such mapping. Derived read models need an explicit row purge (ADR 0093).
 
 ### Retention, compaction and content GC (ADR 0022, 0055, 0106)
 
 - Retention is operator-driven and dry-run first (`loom retention run`, `--apply` to reclaim); no timer prunes the log. It archives before deleting, journals `EXECUTION_ARCHIVED` / `EXECUTION_DELETED` facts, and refuses to delete a run a live fork still depends on.
+- Compaction MOVES the events it removes into an `ArchiveStore` and refuses without one (ADR 0138); an inbox trim or terminal delete does the same for the reserved streams (ADR 0139). Over an encrypting log the archive must seal under the same KeyStore (`PlaintextArchiveError` otherwise); over a plaintext archive, `eraseSubject` deletes the subject's archived copies and refuses before the shred if it cannot. Message senders are sealed under the sender's own subject by default on a sealing deployment, and `app.reinstateSender` is the journaled operator verb that lets an erased sender send again. The erasing content sweep refuses unless the archives passed cover every compacted log.
 - Pinned event kinds and pinned content survive compaction and sweeps; the content sweep makes each erase conditional on the blob's touch time, so a blob re-cited mid-sweep is kept.
 
 ### Model reasoning and media (ADR 0133, 0120)

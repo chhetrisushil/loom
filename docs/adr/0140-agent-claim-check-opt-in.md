@@ -78,10 +78,12 @@ claim-check is on (it counts transcript bytes, which the envelope shrinks but co
 **D8 - erasure and encryption FAIL CLOSED (blobs are subject data).** A tool output offloaded to the content
 store sits outside the per-subject keys that seal the log, so a key's destruction does not reach it.
 (a) **`security.crypto` + `execution.claimCheck` is REFUSED at boot** (`TypeError`, nothing composed) unless the
-store declares `sealsContent: true`, meaning it seals each blob under its owning subject's key. No such store
-ships: the `ContentStore` SPI has no subject on `put`/`get`, and an address that is the plain content hash leaks
-plaintext equality across subjects (defeating erasure and tenant isolation), so a clean
-`EncryptingContentStore` needs a subject-aware SPI revision, which is its own ADR; the refusal names the gap
+store declares `sealsContent: true`, meaning it seals each blob under its owning subject's key. **Update:
+[ADR 0143](0143-encrypting-content-store.md) (ContentStore SPI 1.5.0) has since shipped `EncryptingContentStore`,
+the store this clause asked for; the text below is the decision as taken at the time.** When this ADR was written no
+such store shipped: the `ContentStore` SPI had no subject on `put`/`get`, and an address that is the plain content
+hash leaks plaintext equality across subjects (defeating erasure and tenant isolation), so a clean
+`EncryptingContentStore` needed a subject-aware SPI revision, which was its own ADR; the refusal named the gap
 rather than papering over it. (b) **`compliance.erase` over a plaintext store now reaches the blobs.** Boot
 requires the store to have `delete()`. `eraseSubject`, BEFORE the shred, collects every envelope ref the
 subject's executions cite (live logs, archive segments, snapshots), drops each one another, non-erased
