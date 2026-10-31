@@ -475,7 +475,15 @@ whose event store JSON-clones every payload as a durable store does; sizes are `
 folded from the log, which is what a resume rebuilds). The first #721 table was ~2x too high: its store did
 not clone, so every folded frame aliased the one live transcript (issue #722); those figures are retracted.
 
-| Config | Turns | Folded state (what resume reads) | Per-turn growth |
+**These "no levers" rows are the figures BEFORE [ADR 0138](adr/0138-compaction-archives-what-it-removes.md) part B
+(EVENT_SCHEMA 1.26.0), which stopped the fold from copying a settled step's input.** They are kept because
+they are what a pre-1.26 log folds to and they size the problem the compaction rows below still solve. After
+part B the same shape of run folds to about 132 KB at 50 turns and 527 KB at 200 (`foldedInputs.perf.test.ts`,
+JSON-cloned payloads, a different harness from this table), and 1201 KB at 200 turns in the
+tool-output tables below (`claimCheckOptIn.perf.test.ts`, 1.5-4 kB per turn). The transcript itself is still
+re-sent and journaled every turn, so the LOG stays quadratic without `compaction`.
+
+| Config | Turns | Folded state (what resume reads), pre-0138 part B | Per-turn growth |
 |---|---|---|---|
 | no levers | 50 | 3.5 MB | ~105 kB/turn |
 | no levers | 200 | 54.9 MB | ~480 kB/turn |
@@ -506,13 +514,15 @@ agentLoop$(ctx, { definition, modelToolId: "model",
 
 - With no `compaction`, the loop warns ONCE per run (through `onWarn` / `observability.onWarn`, else a process
   warning `LOOM_AGENT_STATE_GROWTH`) when its transcript passes `warnTranscriptBytes` (default 256 KiB, about
-  turn 107 and ~16 MB of state in the harness above; `false` disables). It only reports: the log and replay are unchanged.
+  turn 107 in the harness above, where a pre-0138-B state was ~16 MB; `false` disables). It only reports: the log and replay are unchanged.
 - `createSummarizerEffect` is an ordinary effect, so it runs in the capability ring and is journaled once and
   served from the log on replay. Pick `afterBytes` well below the point where resume hurts; the kept suffix is
   at most half of it.
-- Folding completed turns' inputs out of the folded state altogether would make state linear for everyone,
-  but it is a kernel change that needs its own root-cause read and ADR (not done; since landed as ADR 0138
-  part B, which is why the "no levers" folded state above is the pre-fix figure).
+- Folding completed turns' inputs out of the folded state landed as ADR 0138 part B (EVENT_SCHEMA 1.26.0), which
+  is why the "no levers" folded-state rows above are pre-fix figures. It shrinks what a resume reads, not the
+  journal: the log still holds every turn's input, and only `compaction` bounds that (moving the removed
+  events to the compaction archive, which compaction now REQUIRES; `defineConfig` supplies one for memory, SQLite
+  and Postgres storage).
 
 **Claim-check the tool outputs (opt-in, ADR 0140).** Tool outputs are ~80% of what is left of a mid-run state,
 so the second lever is one line:
@@ -548,9 +558,11 @@ the re-sent transcript, which only `compaction` bounds, so use both. **Auditabil
 envelopes are marked `retain: true`, so the content sweep never TTL-reclaims a blob while any log, archive or
 snapshot cites it; only erasure (or discarding the citing history) frees it. List tool ids in
 `claimCheck.reclaimable` only for genuine telemetry (the explicit audit trade). With `security.crypto` the opt-in
-is refused at boot (the blobs would be plaintext outside the per-subject keys); with `compliance.erase` the
-store must `delete()`, and `eraseSubject` deletes the subject's blobs (keeping an identical blob another subject
-still cites) and records it. The ADR 0137 warning names this opt-in too.
+is refused at boot unless the store seals content (`sealsContent`), which `EncryptingContentStore` over the same
+KeyStore and `subjectOf` as `security.crypto.events` does (ADR 0143: blobs are sealed per subject, so a
+crypto-shred makes them unreadable, and the address is subject-scoped, so dedupe is within a subject only); with
+`compliance.erase` the store must `delete()`, and `eraseSubject` deletes the blobs the subject provably owns
+(keeping a blob another execution still cites) and records it. The ADR 0137 warning names this opt-in too.
 
 **Keep the finished step value lean (opt-in, ADR 0142).** A completed run's state also carries
 `_output.toolCallLog`, a second copy of every tool result (`toolOutput`) that the tool frames already hold.

@@ -366,6 +366,25 @@ interface RetryOptions {
 
 Never retries a ~SuspendError~ or a cancelled (aborted-signal) execution.
 
+*Claim-check (ADR 0054, 0140).* ~claimCheckMiddleware~ offloads a result over the cap to a content store and records an envelope.
+
+#+begin_src typescript
+function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddleware
+interface ClaimCheckOptions {
+  store: ClaimCheckStore; inlineCapBytes?: number;            // default 16 KiB here; defineConfig's execution.claimCheck defaults to 1 KiB
+  digests?: Readonly<Record<string, (result: unknown) => unknown>>;   // per-tool digest, the only part orchestration may branch on
+  defaultDigest?: (result: unknown, toolId: string | undefined) => unknown;   // for a tool with NO digest entry; unset = { ref, size } only
+  onOffload?: (info: ClaimCheckInfo) => void;
+  retain?: boolean | ((toolId) => boolean);                   // ADR 0140: mark the envelope retain: true so the sweep never TTL-reclaims the blob
+  passThrough?: (result, toolId) => boolean;                  // never offload (e.g. media)
+  envelopesAreData?: boolean;                                 // a result that LOOKS like an envelope is force-offloaded as data
+}
+function previewDigest(maxChars = 256): (result: unknown, toolId?: string) => PreviewDigest | undefined   // { preview, truncated? }; never for a tainted result
+// A result that carries an ADR 0085 taint wrapper (top level or nested) is recorded as tainted(envelope, origin): unwrap before reading .ref/.digest/.size.
+// @loom/app: defineConfig({ execution: { claimCheck: ClaimCheckConfig } }), DEFAULT_CLAIM_CHECK_CAP_BYTES (1 KiB), DEFAULT_CLAIM_CHECK_PREVIEW_CHARS (256);
+//   ClaimCheckConfig = { store, toolIds (required, non-empty), inlineCapBytes?, digests?, preview?: number | false, onOffload?, reclaimable?: true | toolIds[] }
+#+end_src
+
 *Resource accounting & quotas (2.0, K3).* ~meteringMiddleware~ meters every effect onto the log and enforces a budget by admission control.
 
 #+begin_src typescript
@@ -723,6 +742,46 @@ count. It never prunes the latest ~keepLatest~ (default 1), a compacted log's ch
 below it, a log compacted through its tip (~[0]~), a ~compactionExempt~ execution, or ~keepSequences~; so every
 fork point and every fold is unchanged (a fork may fold more events). The runtime never calls it on its own.
 
+*Compaction archives what it removes (ADR 0138, ~ARCHIVE_STORE_SPI_VERSION~ 1.1.0).* ~LogLifecycle.compact~ appends the exact
+envelopes it removes to an ~ArchiveStore~, THEN saves the checkpoint, THEN truncates (a crash leaves a duplicate, never a gap), and
+REFUSES with ~CompactionArchiveRequiredError~ when none is configured (~PlaintextArchiveError~ when the log seals and the archive
+does not seal under the SAME KeyStore). ~defineConfig~ supplies an archive for ~kind: "memory"~, ~sqliteStorage()~ and
+~postgresStorage()~; a durable custom storage sets ~storage.archiveStore~ or ~durability.retention.compactionArchive~
+(~durability.retention.tenant~ makes ~compact~ refuse unless the event store and the archive are visibly scoped to that tenant).
+~readRange~, replay, resume and every sweep never read the archive.
+
+#+begin_src typescript
+interface ArchiveStore {            // @loom/event-runtime
+  append(executionId: string, segment: ArchiveSegment): Promise<void>;   // append-only, contiguous; an exact repeat is a no-op; else ArchiveConflictError
+  headers(executionId: string): Promise<ArchiveSegmentHeader[]>;         // { from, through, count, digest, incarnation, kind?, senderDigest? }
+  listExecutions(opts?: { cursor?: string; limit?: number }): Promise<{ executionIds: string[]; nextCursor?: string }>;
+  read(executionId: string, range?: { from?: number; through?: number }): Promise<ArchiveSegment[]>;
+  deleteExecution?(executionId: string): Promise<void>;                 // the retention path only
+  replaceSegments?(executionId, expected: ArchiveSegmentHeader[], next: ArchiveSegment[]): Promise<void>;   // SPI 1.1.0: atomic CAS (erasure's sender redaction)
+  close(): Promise<void>;
+}
+class InMemoryArchiveStore; class SqliteArchiveStore { constructor(path: string) }; class PostgresArchiveStore;    // archive_segments
+class TenantScopedArchiveStore implements ArchiveStore { constructor(inner: ArchiveStore, tenant: string) }       // ArchiveTenantMismatchError
+class EncryptingArchiveStore implements ArchiveStore { /* @loom/plugin-crypto; sealed under the log's KeyStore + subjectOf; senderSubjectOf? */ }
+const ARCHIVE_STORE_SPI_VERSION = "1.1.0"; function runArchiveStoreConformance(...); function runArchiveStoreDecoratorConformance(...)
+// LogLifecycle: readArchived(id, range?) (digest-verified, ArchiveDigestError), readWithArchive(id), archiveCoverage(id) (UnarchivedRange[] { from, through, why }),
+//   readLegacyCheckpoints(id), readReservedWithArchive(streamId) ({ events, lateRuns }), reservedArchiveCoverage(streamId), readReservedArchive(streamId).
+//   ArchiveIncompleteError for a range only a pre-0138 checkpoint remembers (unless allowIncomplete); ArchiveGapError; ArchiveIncarnationError (reused id).
+// sweepUnpinnedContent({ archiveStores, acknowledgeUnarchivedLogs? }): an ERASING pass refuses (ArchiveStoresRequiredError, reason "uncovered") unless the archives cover EVERY compacted log;
+//   acknowledgeUnarchivedLogs: true is the explicit opt-in for logs whose history is already gone (reported in unarchivedAcknowledged).
+// hashChainedEventStore(inner, { allowCompaction: true }) + verifyChain(id, { archived }) verifies a chain across a compaction.
+#+end_src
+
+*Reserved streams archive too (ADR 0139, ~EVENT_STORE_SPI_VERSION~ 2.6.0).* ~trimInbox~, ~trimTopicStream~, ~trimQuarantine~ and the terminal
+~deleteInbox~ MOVE the envelopes into the same archive (keyed by the stream id) and refuse without one
+(~ReservedStreamArchiveRequiredError~; a hand-built runtime with the inbox on and no ~inboxArchive~ is refused at construction with
+~InboxArchiveRequiredError~ unless its store is in-memory or it says ~inboxArchive: "none"~, as ~kernel.inbox.archive: "none"~ does in ~defineConfig~).
+The terminal delete is bounded by the optional ~EventStore.deleteThrough(id, through)~; a store without it refuses
+(~ReservedStreamDeleteUnsupportedError~). ~EraseCoordinator~ (~archives~ option, wired by ~defineConfig~) deletes a subject's copies from a plaintext
+archive (~ArchivedCopiesRemainError~ refuses before the shred), and a sealing deployment seals message senders under an opaque per-sender handle
+(~SenderErasedError~ blocks an erased sender until ~app.reinstateSender(actor, tenant?, { by })~; ~SenderMasterLostError~, ~SenderEraseIncompleteError~,
+~SenderRedactionUnsupportedError~; ~app.recoverArchiveRedactions()~ restores a staged redaction). ~KeyStore.getOrCreate~ MUST be an atomic create-if-absent.
+
 *Compaction integrity (ADR 0106).* The checkpoint is named for its execution (a blank one used to
 send every event a later resume appended to execution ~""~), a log compacted before is folded ON its
 checkpoint (~CompactionCheckpointMissingError~ when that checkpoint is gone, nothing touched), and
@@ -1020,6 +1079,14 @@ class ProfilingSnapshotStore implements SnapshotStore {
 }
 #+end_src
 
+Snapshot codec (ADR 0141, default off, SPI unchanged): ~encodeState(state, codec)~ / ~decodeState(...)~ store a state as a format byte plus
+verbatim JSON (~0x01~) or a checksummed zstd-3 frame (~0x02~; an unknown byte is a loud ~SnapshotDecodeError~, an oversize declared size ~SnapshotStateTooLargeError~);
+reads dispatch on the stored format, so old JSON snapshots stay readable. Opt in with ~sqliteStorage({ snapshotCodec: "zstd" })~, ~postgresStorage({ snapshotCodec: "zstd" })~,
+the stores' ~codec~ option or ~defineConfig({ durability: { snapshots: { codec: "zstd", lengthLeak?: "accept" } } })~; ~EncryptingSnapshotStore({ sealState: true, codec: "zstd", lengthLeak: "accept" })~
+compresses BEFORE sealing and so needs the acknowledgment. Needs Node 22.15 or later: ~SnapshotCodecUnavailableError~ at construction otherwise (~zstdAvailable()~, ~parseSnapshotCodec~, ~assertSnapshotCodecAvailable~).
+~loom snapshot show~ prints a decoded snapshot. Postgres only: ~migratePostgresStores(pool, { snapshotCompression: "lz4" })~ (ADR 0136; fail-soft, a speed trade, not a size one).
+~ProfilingSnapshotStore~ measures stored (compressed) bytes for a zstd store and plaintext state otherwise.
+
 Browser-safe subpath: ~@loom/snapshot-runtime/memory~.
 
 ** ~@loom/plugin-postgres~ — scale-out storage *(2.0)*
@@ -1137,7 +1204,7 @@ class SqliteBranchRegistry implements BranchRegistry {}
 class SqliteMemoryStore implements MemoryStore {}        // FTS5 external-content index for `search`
 class SqliteReadModelStore implements ReadModelStore {}
 class SqliteDurableStateStore implements DurableStateStore {}
-class SqliteContentStore implements ContentStore { constructor(path: string, opts?: { now?: () => number }) }   // SPI 1.4.0
+class SqliteContentStore implements ContentStore { constructor(path: string, opts?: { now?: () => number }) }   // SPI 1.4.0 (touch); 1.5.0 owner argument is accepted and ignored
 class SqliteTimerStore implements TimerStore {}
 function sqliteStorage(path: string): CustomStorage      // the preset for defineConfig({ storage })
 #+end_src
@@ -1424,6 +1491,7 @@ class KeyUnavailableError extends Error { code: "KEY_UNAVAILABLE"; subjectId: st
 // key absent and NO tombstone: this node's KeyStore lacks it. The kernel turns it into a denial-shaped
 // SealedStreamUnreadableError (an ExecutionDeniedError with UNKNOWN_OWNER_REASON; isSealedUnreadable(e));
 // the real cause: sealedDetailOf(err) from "@loom/workflow-runtime/operator" (operators only).
+// getOrCreate MUST be an atomic create-if-absent across nodes (ADR 0139 D22; runKeyStoreConformance has a concurrent case a non-atomic store fails)
 interface KeyStore { getOrCreate(subjectId: string): Promise<Buffer>; get(subjectId: string): Promise<Buffer | null>; destroy(subjectId: string): Promise<void>;
                     wasDestroyed?(subjectId: string): Promise<boolean>; }  // ADR 0130 D7 r5: true only if THIS store destroyed the key
 class InMemoryKeyStore implements KeyStore { … }   // reference (tests / ephemeral)
@@ -1467,6 +1535,8 @@ function expandPaths(paths: readonly string[], value: unknown): string[]   // `[
 function tainted<T>(value: T, origin: string): TaintedValue<T>
 function isTainted(value: unknown): boolean; function taintOf(value: unknown): Taint | undefined
 function unwrapTainted<T>(value: TaintedValue<T> | T): T
+function scanTaint(value: unknown, options?: TaintScanOptions): TaintScan   // @loom/classify (ADR 0085 amendment): finds a wrapper NESTED anywhere in a value (iterative, cycle-safe, depth 64 / 100,000 nodes, fails CLOSED past the bound with origin "unknown:taint-scan-bound-exceeded")
+function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string | undefined   // the joined origin label (capped at 8 origins, then "+N more"); agentLoop$ fences the WHOLE tool_result when it is set
 // producers: plugin-mcp taints a whole tool result; plugin-a2a taints `content` only
 #+end_src
 
@@ -2238,6 +2308,9 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   requireApproval?: (toolCall, turn, onMenu?) => boolean — @deprecated alias of needsApproval with the INVERTED polarity (auto-approve: `true` = proceed, `false` = park); same recorded log; one LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED warning per process; both given = AgentLoopConfigError
 //   toolErrors?: "feedback" | "fail"   — default feedback: a failing tool is an isError tool_result (authority/safety/quota/cancel/park never are)
 //   parallelTools?: boolean | number   — one turn's calls through ctx.parallel; ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
+//   compaction?: { toolId: string; afterMessages?: number; afterBytes?: number; keepRecent?: 4 } — fold older turns into one summary through the journaled effect `toolId` ({ messages } -> { summary }); at least one threshold; OPT-IN
+//   warnTranscriptBytes?: number | false — with NO compaction, ONE warning per run (onWarn, else LOOM_AGENT_STATE_GROWTH) when the transcript passes this many bytes; default DEFAULT_STATE_GROWTH_WARN_BYTES (256 KiB); report-only (ADR 0137)
+//   createSummarizerEffect(provider, { instruction?, maxTokens? = 1024 }) — a ready-made compaction effect (SummarizerEmptyError on an empty summary); register it, it is journaled once
 //   toolCallLog?: "full" | "lean"   — (ADR 0142) default full = today's shape; lean = status/bytes/digest/stepId instead of toolOutput (also in the agentInterrupted payload). An explicit value is journaled and a resume with the other value throws AgentLoopConfigError; unset is not checked
 //   loopId?: string                    — (R17) the id prefix of this loop's frames/decisions/gates; default definition.id. Two loops in one execution must not share it
 //   signal?: AbortSignal               — stop THIS run: no further model/tool call; fails on AGENT_INTERRUPTED with InterruptedAgentRun

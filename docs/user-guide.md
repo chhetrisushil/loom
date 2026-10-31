@@ -1451,8 +1451,8 @@ defineConfig({
   security:      { authorizer, policies, secrets, resumeAuthenticator,
                    executionAuthorizer, onExecutionDenied, compliance },
   observability: { telemetry, onEvent, onWarn, onStorageError },
-  durability:    { snapshotEvery, retention },
-  execution:     { dispatcher, effectMiddleware, registerEffects, now, validateInput, envelope, errorClasses },
+  durability:    { snapshotEvery, retention, snapshots, heartbeat },
+  execution:     { dispatcher, effectMiddleware, registerEffects, now, validateInput, envelope, errorClasses, claimCheck },
   checks:        { validate, verify, manifest },
 });
 ```
@@ -1528,7 +1528,11 @@ interface LoomConfig {
   };
   durability?: {
     snapshotEvery?: number;              // mid-run checkpoint cadence — bounds the replay tail (any backend)
-    retention?: { archive?: ArchiveStores; pinned?: PinPredicate }; // K10.1 lifecycle + K10.6 pin seam
+    retention?: { archive?: ArchiveStores; pinned?: PinPredicate;   // K10.1 lifecycle + K10.6 pin seam
+                  compactionArchive?: ArchiveStore;                   // ADR 0138: where `compact` MOVES removed events (storage presets supply one)
+                  tenant?: string };                                  // compact refuses unless event store + archive are visibly scoped to it
+    snapshots?: { codec?: "zstd"; lengthLeak?: "accept" };            // ADR 0141: opt-in zstd snapshot states; lengthLeak required to compress a SEALED store
+    heartbeat?: { /* ttlMs, renewEveryMs, store, onStoreError, acquire, lazyGraceMs, enabled */ };  // ADR 0130 D11
   };
   execution?: {
     dispatcher?: ExecutionDispatcher;    // where executions run
@@ -1536,6 +1540,8 @@ interface LoomConfig {
     registerEffects?: (effects: EffectRuntime) => void;  // boot-time effect registration: agentLoop$'s model + tool effects go here
     now?: () => number;                  // injectable clock for envelope timestamps (DST/simulation)
     validateInput?: boolean;             // parse inputSchema at start() (ADR 0051 D7)
+    claimCheck?: { store: ContentStore; toolIds: string[]; inlineCapBytes?: number; digests?: Record<string, Digest>;
+                   preview?: number | false; onOffload?: (info) => void; reclaimable?: boolean | string[] };  // ADR 0140: opt-in; with security.crypto the store must seal (EncryptingContentStore, ADR 0143)
   };
   checks?: {
     validate?: boolean | "warn" | "error";  // boot-time flow-graph check
@@ -1572,7 +1578,7 @@ interface LoomApp {
   exportSubject(id: string, o?: { includeEvents?: boolean; tenant?: string }): Promise<SubjectExport>;
   eraseSubject(id: string, tenant?: string): Promise<EraseSubjectResult>;
   recoverArchiveRedactions(): Promise<string[]>; // restore a staged archive redaction an earlier build left (ADR 0139)
-  reinstateSender(actor: string, tenant?: string, options?: { by?: string }): Promise<{ reinstated: boolean; ref?: string; epoch?: number }>; // lift an erased sender's block under a NEW handle, journaled (ADR 0139 D22)
+  reinstateSender(actor: string, tenant?: string, options?: { by?: string }): Promise<{ reinstated: boolean; ref?: string; epoch?: number }>; // lift an erased sender's block under a NEW handle, journaled (ADR 0139 D24)
   verify(o?: { lint?: VerifyLintInputs }): VerificationReport;   // re-run pre-flight on demand (read-only)
   start(): void;                                                // idempotent; automatic unless autostart: false
   close(): Promise<void>;

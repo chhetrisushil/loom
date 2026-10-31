@@ -216,10 +216,18 @@ archive; over a tenant-scoped event store the archive must be a `TenantScopedArc
 **The durable inbox's streams are archived the same way (ADR 0139).** `trimInbox`, the per-topic trim, the quarantine
 trim and a retired chain's delete MOVE the envelopes (ids, timestamps, sender metadata - the payload survives in
 `MESSAGE_CONSUMED`) into the SAME archive, keyed by the reserved stream id, and refuse without one: through `defineConfig`
-the compaction archive is handed to the runtime (`inboxArchive`); a hand-built runtime without it trims and deletes
-nothing and reports a `ReservedStreamArchiveRequiredError` per chain through `onStorageError`. Read it back with
+the compaction archive is handed to the runtime (`inboxArchive`), and `defineConfig` THROWS when the inbox is on and no archive is resolvable
+(`kernel.inbox.archive: "none"` is the explicit opt-out: nothing is trimmed or deleted, said at boot, and sends continue until
+`inboxMaxRetained` refuses them). A hand-built runtime with the inbox on and no `inboxArchive` is refused at construction
+(`InboxArchiveRequiredError`) unless its event store is in-memory or it says `inboxArchive: "none"`; a trim that still reaches the runtime without an archive
+refuses with `ReservedStreamArchiveRequiredError`, reported per chain through `onStorageError`. Read it back with
 `life.readReservedWithArchive(streamId)` / `life.reservedArchiveCoverage(streamId)`; `exportSubject` returns it as
 `reservedStreams`; a re-created stream starts above the archive, and a straggler lands in a late run (`__loom_late__:<stream>@<n>`). The terminal delete is bounded by what was archived (`EventStore.deleteThrough`; a store without it keeps the stream), the inbox needs an archive at construction (`inboxArchive`, defaulted for an in-memory store, `"none"` to decline), and erasing a subject deletes its archived copies from a plaintext archive.
+Over a hash-chained store the terminal inbox delete needs `hashChainedEventStore(inner, { allowCompaction: true })` (without it the delete refuses and the streams are kept).
+A sealing deployment seals each message's sender (actor, tenant, `onBehalfOf`) under an opaque handle derived from KeyStore material (`senderSubjectOf: false` opts out and `defineConfig` warns), so `eraseSubject`
+also erases the subject AS A SENDER and an erased sender reads `{ erased: true }`; it stays blocked (`SenderErasedError`) until `app.reinstateSender(actor, tenant?, { by })`
+journals a reinstatement under a new handle. **`KeyStore.getOrCreate` must be an atomic create-if-absent across nodes** (an upsert lets two nodes mint two sender seeds, and erasure would destroy only one): `runKeyStoreConformance` has a concurrent case that a non-atomic store fails.
+`app.recoverArchiveRedactions()` restores a redaction that a crash left staged.
 
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
 and Postgres); a store that omits them can't be swept. A compacted execution resumes, and

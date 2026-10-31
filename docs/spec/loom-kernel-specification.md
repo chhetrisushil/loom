@@ -351,8 +351,15 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
   the bounded-memory enumeration maintenance passes prefer). An implementation MAY omit optional
   methods; the conformance kit skips them. A store that omits `acquireFence` performs no fencing
   (single-node).
+- **Other optional methods:** `SnapshotStore.deleteExecution`, `loadLatestSealed` (SPI 1.1.0) and
+  `pruneSnapshots` (SPI 1.2.0, [ADR 0134](../adr/0134-snapshot-pruning.md): a range delete the CALLER,
+  `LogLifecycle.pruneSnapshots`, decides is safe); `ArchiveStore.deleteExecution` and `replaceSegments` (SPI 1.1.0,
+  [ADR 0139](../adr/0139-reserved-streams-archive-before-removal.md) D14). `LogLifecycle.compact` appends the exact
+  envelopes it removes to the `ArchiveStore` before it truncates and refuses without one
+  ([ADR 0138](../adr/0138-compaction-archives-what-it-removes.md)); `readRange`, replay and resume never read it.
 - **Plugin-tier SPIs** are pinned the same way, without kernel version constants:
-  `ContentStore` (incl. the ADR 0059 `putStream` outcome contract), `DurableStateStore`, and
+  `ContentStore` (incl. the ADR 0059 `putStream` outcome contract and, since SPI 1.5.0, the optional owner argument
+  `ContentAccess` plus the `sealsContent` marker, [ADR 0143](../adr/0143-encrypting-content-store.md)), `DurableStateStore`, and
   `ReadModelStore` (incl. query limit/cursor validation) each ship a `run…Conformance` kit in
   `@loom/conformance`.
 - **Compatibility:** an SPI version is semver; a MINOR bump adds an optional method, a MAJOR bump

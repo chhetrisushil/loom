@@ -84,10 +84,12 @@ without history rewrite, and erased data fails loudly rather than silently* (cry
 operator-driven, dry-run-first enforcement path* (K10.1 + K10.6 CLIs).
 
 Say the scope of the second sentence out loud: it covers the **log**. Content-store blobs
-(claim-checked and externalized bytes) are deduped plaintext keyed by hash, with no subject
-mapping, and `EraseCoordinator` never touches them. That is a gap. Erasing a subject's blobs
-takes an explicit `contentStore.delete(ref)` for each ref you know to be theirs (ADR 0055,
-Consequences of D5–D7).
+(externalized bytes, and claim-checked bytes by default) are deduped plaintext keyed by hash, with no
+subject mapping, and `EraseCoordinator` does not touch them. That is a gap unless you opt in: the agent
+`execution.claimCheck` over a plaintext store has `eraseSubject` delete the blobs the subject's logs cite
+(ADR 0140), and over `EncryptingContentStore` (ADR 0143) each blob is sealed under its subject's key, so
+the shred makes it unreadable. For anything else, erasing a subject's blobs takes an explicit
+`contentStore.delete(ref)` for each ref you know to be theirs (ADR 0055, Consequences of D5–D7).
 
 See also: [data-classification.md](data-classification.md), [compliance.md](compliance.md),
 [user-guide → Log lifecycle](user-guide/log-and-read-models.md#log-lifecycle-crypto-shredding-retention--compaction-k10), ADRs 0022/0046/0054/0055.
