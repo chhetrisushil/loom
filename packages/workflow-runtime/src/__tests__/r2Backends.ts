@@ -73,8 +73,21 @@ export function inboxBackends(tag: string): [Backend, Backend, Backend] {
       timers: new PostgresTimerStore(pool as never),
     }),
     teardown: async () => {
-      await pool?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-      await pool?.end();
+      if (pool === undefined || pgUrl === undefined) return;
+      // A run settles (EXECUTION_COMPLETED is durable) BEFORE its best-effort inbox retire and
+      // checkpoint finish, so a test that waited on "completed" can reach teardown with that work
+      // still holding row locks. DROP SCHEMA would then take AccessExclusive locks in the opposite
+      // order and deadlock with it (loom #718). `pool.end()` first: it lets every checked-out
+      // client (an in-flight retire transaction) finish and release, and later queries from that
+      // background work fail fast on the ended pool (the retire is best-effort and reports them to
+      // `onStorageError`). Only then is the schema dropped, over a separate connection.
+      await pool.end();
+      const admin = postgresPool({ connectionString: pgUrl, max: 1 });
+      try {
+        await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      } finally {
+        await admin.end();
+      }
     },
   };
   return [memory, sqlite, postgres];
