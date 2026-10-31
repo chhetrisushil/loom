@@ -74,6 +74,7 @@ const FEEDBACK = new Set([
   "UnsafeCompactionError",
   "CompactionCheckpointMissingError",
   "BlankStreamUnrepairedError",
+  "BlankStreamCensusUnavailableError",
 ]);
 
 /** Reaches the runtime. */

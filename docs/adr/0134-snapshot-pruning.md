@@ -170,8 +170,9 @@ that D3 keeps: they stay, though the sweep does not count their refs (an existin
   kept) but forks at `1..C`, which a sequential order serves from snapshots, now throw
   `CompactedForkPointError`. A completed execution triggers it (latest snapshot at the terminal `T`, compact
   checkpoint at `T-1`, ADR 0116 Q3). So: (a) `compact` and `pruneSnapshots` are serialized per execution
-  inside `LogLifecycle` (an in-process promise chain per execution id; the entry is removed when the chain
-  drains, so the map is bounded by the executions in flight); (b) after the snapshot reads, prune re-reads the
+  inside a `LogLifecycle` INSTANCE (a promise chain per execution id; the entry is removed when the chain
+  drains, so the map is bounded by the executions in flight; two instances over the same stores, in one process
+  or two, do NOT exclude each other); (b) after the snapshot reads, prune re-reads the
   log and **deletes nothing (resolves `0`) if the gap moved**, which narrows the cross-process window to the
   re-read-to-delete gap. It does not close it. **Operators must not run `compact` and `pruneSnapshots` on one
   execution from different processes at once**; a retry after an aborted prune is always safe.
@@ -181,7 +182,28 @@ that D3 keeps: they stay, though the sweep does not count their refs (an existin
   `""` in place as evidence (ADR 0107), so the check is a `head` read of `""` (nothing there: proceed, one read)
   and only if there is a stream the census, refusing while any segment is `rehomable` or any run is
   unattributed. Segments in a terminal state (`rehomed`, `occupied`, `superseded`, `conflict`, `invalid`) do
-  not block. The census enumerates every execution, but only a store that still has a blank stream pays it.
+  not block. The census enumerates every execution (one snapshot read chain each), so it is not free, and
+  because the repair leaves `""` behind, a store a pre-0106 build ever touched would pay it on EVERY prune
+  call: a sweep of N executions would be O(N^2) snapshot reads. So a verdict with **no re-homable segment** is
+  memoized per `LogLifecycle` instance, keyed on the head sequence of `""`. Why that key is sound: the verdict
+  is a function of the stray events in `""` (append-only, so any new evidence moves its head), of blank
+  snapshots (only a pre-0106 build writes those, and it would also write to `""`), and of the re-home state
+  (a repair only turns `rehomable` into `rehomed`, which cannot turn a clean verdict into a refusal;
+  `rehomeBlankStream({ apply: true })` clears the cache anyway). Only the no-re-homable verdict is stored,
+  and a cached verdict that would refuse (unattributed runs without the opt-out) is re-derived, so a refusal is
+  never stale. Known limit: deleting an execution (retention) after a clean verdict removes the snapshots that
+  proved its stray events; a later census would call them unattributed, a cached one does not, until the head
+  moves or a new instance is made. That cannot lose data (the deleted execution has nothing to prune).
+  A store whose event store implements neither `listExecutions` nor `listExecutionsPage` refuses with
+  `BlankStreamCensusUnavailableError` (typed, names the missing capability; never a delete).
+- **An unattributed run can never be settled by repair** (no snapshot proves whose it is, and the operator
+  cannot assign it), which would otherwise block pruning for the whole store with no override.
+  `pruneSnapshots(id, { acceptUnattributedBlankStream: true })` (default `false`, per call, never remembered)
+  proceeds when the ONLY blockers are unattributed runs. A `rehomable` segment ALWAYS refuses, flag or not:
+  that repair is provable and one command away.
+- **Re-entrancy hangs.** A user-supplied `compactionExempt` / `pinned` callback that itself calls `compact` or
+  `pruneSnapshots` on the SAME execution waits on the chain it is running inside and never resolves. No
+  re-entrancy support is added; do not call either from those callbacks.
 - **Bounds are safe integers.** `keepSequences` entries and the computed bounds must be safe integers
   (backends disagree otherwise); `pruneSnapshots` throws `RangeError` before any delete.
 
