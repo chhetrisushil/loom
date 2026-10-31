@@ -6,7 +6,7 @@ import type { ExecutionState } from "@loom/core";
  * only on a park; without this it stayed pending forever on a terminal run, so a caller that
  * awaited it alone hung.
  *
- * - `state` is the folded state at the terminal (`completed`, `failed`, `cancelled` or `continued`);
+ * - `state` (non-enumerable; it holds PLAINTEXT variables and step outputs, so keep it out of logs) is the folded state at the terminal (`completed`, `failed`, `cancelled` or `continued`);
  *   for a completion it is the very state `waitForCompletion()` resolves with.
  * - `status` is `state.status`, for a quick branch.
  * - `cause` is the error `waitForCompletion()` rejects with, when it rejects (a failure or a
@@ -18,7 +18,8 @@ import type { ExecutionState } from "@loom/core";
  * termination: both promises still reject with that error.
  */
 export class ExecutionTerminatedError extends Error {
-  readonly state: ExecutionState;
+  /** Non-enumerable: the PLAINTEXT folded state, kept out of `JSON.stringify` and error serialisers. */
+  declare readonly state: ExecutionState;
   readonly status: ExecutionState["status"];
   readonly cause?: unknown;
 
@@ -27,7 +28,12 @@ export class ExecutionTerminatedError extends Error {
       `Execution "${state.executionId}" ${state.status} before it suspended; waitForSuspend() only settles on a park`
     );
     this.name = "ExecutionTerminatedError";
-    this.state = state;
+    Object.defineProperty(this, "state", {
+      value: state,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
     this.status = state.status;
     if (cause !== undefined) this.cause = cause;
     Object.setPrototypeOf(this, ExecutionTerminatedError.prototype);

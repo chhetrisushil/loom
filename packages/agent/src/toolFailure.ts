@@ -1,5 +1,6 @@
 import { SuspendError } from "@loom/core";
 import { CapabilityDeniedError, EffectModeViolationError } from "@loom/effect-runtime";
+import { ExecutionTerminatedError } from "@loom/workflow-runtime";
 
 /**
  * Error classes that are NOT a tool's own failure and must reach the runtime untouched, matched by
@@ -78,9 +79,6 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "DuplicateSequenceError",
   "EgressDeniedError",
   "SpawnLimitExceededError",
-  // a run that ended (completed, failed, cancelled, continued) before it parked, seen by a waiter on its
-  // suspend promise: not a request the model can adapt (ADR 0135)
-  "ExecutionTerminatedError",
   // a provider reported an error inside a 200 stream (overloaded, server error): transient
   // infrastructure, left to the step retry policy, not the model
   "LlmStreamError",
@@ -162,6 +160,11 @@ function isTerminalOne(err: unknown, declaredNonRetryable = true): boolean {
     return true;
   }
   if (typeof err !== "object" || err === null) return false;
+  // A run that ended before it parked, seen by a waiter on its suspend promise (ADR 0135). It is
+  // classified by STATUS, not by name: with no cause (completed, continued) there is no failure to
+  // adapt to, so it is terminal; with one (failed, cancelled) it is the same failure
+  // `waitForCompletion()` would reject with, so the caller walks to the cause (isTerminalToolError).
+  if (err instanceof ExecutionTerminatedError) return err.cause === undefined;
   if (isTerminalLlmHttp(err)) return true;
   // A class that declares itself non-retryable is a decision, not a fault (the middleware's own rule).
   if (declaredNonRetryable && (err as { retryable?: unknown }).retryable === false) return true;
