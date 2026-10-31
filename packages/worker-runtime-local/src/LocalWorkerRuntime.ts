@@ -114,7 +114,9 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     try {
       await Promise.race([
         // completion first (defence in depth: waitForSuspend() already settles after it)
-        handle.waitForCompletion().then(() => undefined),
+        handle
+          .waitForCompletion()
+          .then(() => undefined),
         handle.waitForSuspend().then(() => undefined),
       ]);
     } catch (err) {
