@@ -57,7 +57,11 @@ function err(id: JsonRpcRequest["id"], code: number, message: string): JsonRpcRe
   return { jsonrpc: "2.0", id, error: { code, message } };
 }
 
-/** A JSON-safe projection of the folded state — what a wire client reads back. */
+/**
+ * A JSON-safe projection of the folded state — what a wire client reads back.
+ * ADR 0138 (EVENT_SCHEMA 1.26.0): `frames[..].input` is present only for steps still in flight; a settled
+ * step's input is read from the log (or `LogLifecycle.readArchived` after a compaction).
+ */
 function stateView(state: ExecutionState): unknown {
   return {
     executionId: state.executionId,

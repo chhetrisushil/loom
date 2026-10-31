@@ -595,7 +595,6 @@ const handlers: Record<string, Handler> = {
       completedAt: event.timestamp,
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
       ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
-      ...(existing?.input !== undefined && { input: existing.input }),
       ...(payload.output !== undefined && { output: payload.output }),
     };
     return {
@@ -623,7 +622,6 @@ const handlers: Record<string, Handler> = {
       ...(existing?.scope !== undefined && { scope: existing.scope }),
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
       ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
-      ...(existing?.input !== undefined && { input: existing.input }),
       ...(payload.error !== undefined && { error: payload.error }),
       ...(payload.channel !== undefined && {
         errorChannel: payload.channel,
@@ -660,7 +658,6 @@ const handlers: Record<string, Handler> = {
       ...(existing?.scope !== undefined && { scope: existing.scope }),
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
       ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
-      ...(existing?.input !== undefined && { input: existing.input }),
     };
     return {
       ...state,
@@ -1749,7 +1746,14 @@ export function getHandler(eventType: string): Handler | undefined {
 //   fact's `messageId`, gated on `_quarantined` existing. (5) `EXECUTION_STARTED.continuedFrom.
 //   carried.quarantined`, a validated seed (invalid parts ignored). Byte-identity: a log carrying
 //   none of these shapes folds exactly as under 1.24.0.
-export const EVENT_SCHEMA_VERSION = "1.25.0";
+// 1.26.0: ADR 0138 D8, NO new kind and NO payload change. The fold stops copying `input` into a frame
+// when it SETTLES (STEP_COMPLETED / STEP_FAILED / STEP_CANCELLED); STEP_STARTED and STEP_RETRYING keep it,
+// so an in-flight frame still shows what is running. The folded BYTES change (state is linear in turns, not
+// quadratic); `normalizeSnapshotState` strips `input` from the settled frames of an older snapshot in one
+// O(frames) pass, so `fold(snapshot, tail) == fold(events)` holds. Nothing reads a settled frame's input
+// from the fold; the log (or the compaction archive, ADR 0138) holds it. A pre-1.26 node re-adds an input
+// to a frame it settles (harmless; stripped by the next normalize) - the documented mixed-fleet exception.
+export const EVENT_SCHEMA_VERSION = "1.26.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

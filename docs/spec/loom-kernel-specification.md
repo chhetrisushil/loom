@@ -121,7 +121,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   execution's snapshots, which makes the log authoritative.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.25.0** — after the
+  the pinned type set MUST change together. The current version is **1.26.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -189,6 +189,15 @@ load-bearing, plus the global guardrails that gate every additive capability:
   (queue per topic, shape `released? held*`, at most 1 024 entries), an additive `MESSAGE_CONSUMED`
   step that drops a delivered released entry (gated on `_quarantined`), and the carry
   `continuedFrom.carried.quarantined`. `KERNEL_ABI_VERSION` stays 1.3.0.
+  [ADR 0138](../adr/0138-compaction-archives-what-it-removes.md) added 1.26.0, no new kind and no payload
+  change: a frame's `input` is set by `STEP_STARTED` (kept by `STEP_RETRYING`) and DROPPED when the frame
+  settles (`STEP_COMPLETED`, `STEP_FAILED`, `STEP_CANCELLED`), because nothing reads a settled frame's input
+  from the fold and the log (or the compaction archive) holds it. The folded bytes differ (state is linear in
+  turns); `normalizeSnapshotState` strips `input` from the settled frames of an older snapshot in one
+  O(frames) pass, so `fold(snapshot, tail) == fold(events)` holds. Documented mixed-fleet exception, as
+  1.24.0: a pre-1.26 node re-adds an input to a frame it settles, harmlessly. The wire `stateView`,
+  `executionFromState`, the inspector's state pane and `ReplayInspector.framesTouched` therefore no longer
+  show a completed step's input; read it from the log (the timeline) or `LogLifecycle.readArchived`.
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, hold a `STEP_FAILED`
   that no status-setting event follows, or record any `DECISION_RECORDED` (the folded state now

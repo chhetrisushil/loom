@@ -86,6 +86,8 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
     // Covered by an existing seam rather than needing their own:
     SnapshotStore: "scaffolded by the `store` seam, alongside EventStore",
     BranchRegistry: "scaffolded by the `store` seam, behind its `branching` option",
+    ArchiveStore:
+      "not emitted by the `store` template yet (ADR 0138): a store plugin that wants `compact` implements it and runs `runArchiveStoreConformance`",
   };
 
   /** SPI interface names the map publishes, read from its rows. */
@@ -204,7 +206,7 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
     // The strongest form of this rule, and the one that generalises past today's list:
     // publishing a conformance kit IS loom saying "third parties implement this". An SPI it
     // says that about, and then gives no way to start from, is advertising with no door.
-    const COVERED_ELSEWHERE = new Set(["SnapshotStore", "BranchRegistry"]); // the `store` seam
+    const COVERED_ELSEWHERE = new Set(["SnapshotStore", "BranchRegistry", "ArchiveStore"]); // the `store` seam (ArchiveStore: its optional compaction companion, ADR 0138; the template does not emit it yet)
     const scaffoldable = new Set(Object.values(SEAM_SPI));
     const kitted = exportedKits().map((k) => k.replace(/^run/, "").replace(/Conformance$/, ""));
     const doorless = kitted.filter((spi) => !scaffoldable.has(spi) && !COVERED_ELSEWHERE.has(spi));

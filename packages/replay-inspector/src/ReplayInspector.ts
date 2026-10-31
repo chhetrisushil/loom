@@ -207,6 +207,10 @@ export class ReplayInspector {
  * Frames whose identity changed across the transition. Compared by reference first —
  * the fold copies on write, so an untouched frame is the SAME object and this is O(1)
  * per frame rather than a deep compare.
+ *
+ * ADR 0138 (EVENT_SCHEMA 1.26.0): a frame that has SETTLED no longer carries its `input` in the folded
+ * state, so a state pane built from these frames shows an input only while the step is in flight. A
+ * completed step's input is read from the log (the timeline event) or `LogLifecycle.readArchived`.
  */
 function framesTouched(before: ExecutionState, after: ExecutionState): readonly ExecutionFrame[] {
   const out: ExecutionFrame[] = [];

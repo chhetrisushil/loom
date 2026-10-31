@@ -178,7 +178,6 @@ function referenceFold(events: EventEnvelope[]): ExecutionState {
           ...(old?.startedAt !== undefined && { startedAt: old.startedAt }),
           ...(old?.firstStartedAt !== undefined && { firstStartedAt: old.firstStartedAt }),
           ...(old?.firstSeq !== undefined && { firstSeq: old.firstSeq }),
-          ...(old?.input !== undefined && { input: old.input }),
           ...(p.output !== undefined && { output: p.output }),
         };
         break;
@@ -192,7 +191,6 @@ function referenceFold(events: EventEnvelope[]): ExecutionState {
           ...(old?.startedAt !== undefined && { startedAt: old.startedAt }),
           ...(old?.firstStartedAt !== undefined && { firstStartedAt: old.firstStartedAt }),
           ...(old?.firstSeq !== undefined && { firstSeq: old.firstSeq }),
-          ...(old?.input !== undefined && { input: old.input }),
           ...(p.error !== undefined && { error: p.error }),
         };
         if (st.status === "suspended" && vars._failedWhileParked !== true) {

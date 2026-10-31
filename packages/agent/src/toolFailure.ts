@@ -61,6 +61,12 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   // a checkpoint into a snapshot store that does not seal the whole state while the event store seals:
   // a configuration error, retrying cannot help (ADR 0130 D8)
   "PlaintextCheckpointError",
+  // ADR 0138: compaction archive refusals / integrity failures - configuration or evidence errors, no retry helps
+  "ArchiveGapError",
+  "CompactionArchiveRequiredError",
+  "PlaintextArchiveError",
+  "ArchiveConflictError",
+  "ArchiveDigestError",
   // heartbeat lease lost (taken over / past its self-fencing deadline / keeper closed): this driver
   // must stop; and the node's lease store is in its quiet period: no tool-level retry helps (ADR 0130 D11)
   "LeaseLostError",

@@ -46,7 +46,8 @@ describe("foldEvents", () => {
     const state = foldEvents(events, INITIAL);
     expect(state.frames["step-a"]?.status).toBe("completed");
     expect(state.frames["step-a"]?.output).toEqual({ y: 2 });
-    expect(state.frames["step-a"]?.input).toEqual({ x: 1 });
+    // ADR 0138 D8: a SETTLED frame no longer carries its input (the log holds it)
+    expect(state.frames["step-a"]?.input).toBeUndefined();
   });
 
   it("sets status to suspended on EXECUTION_SUSPENDED", () => {
