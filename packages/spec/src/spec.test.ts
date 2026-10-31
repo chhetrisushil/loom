@@ -38,7 +38,7 @@ describe("kernelManifest", () => {
     // ops are type-only. Both the version and the table must be exactly what they were.
     expect(m.kernelAbi.version).toBe("1.3.0");
     expect(m.kernelAbi.syscalls).toHaveLength(14);
-    expect(m.spis.snapshotStore).toBe("1.1.0");
+    expect(m.spis.snapshotStore).toBe("1.2.0");
     expect(m.wireAbi.version).toBe("1.0.0");
   });
 });
