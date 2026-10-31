@@ -216,7 +216,13 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
     });
     const r = await coord.eraseSubject("ann");
     // no owner-set scan and no conditional delete: sealed addresses are subject-scoped
-    expect(r.contentDeleted).toEqual({ deleted: 2, retained: 0, sealed: 2, foreign: 0 });
+    expect(r.contentDeleted).toEqual({
+      deleted: 2,
+      retained: 0,
+      sealed: 2,
+      foreign: 0,
+      unprovable: 0,
+    });
     expect(content.delete).toHaveBeenCalledTimes(2);
     expect(blobs.size).toBe(0);
     const control = (await store.read("__loom_erasure__")).map((e) => e.eventType);
@@ -236,7 +242,13 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
       content: sealed,
     });
     const r = await coord.eraseSubject("ann");
-    expect(r.contentDeleted).toEqual({ deleted: 1, retained: 1, sealed: 1, foreign: 1 });
+    expect(r.contentDeleted).toEqual({
+      deleted: 1,
+      retained: 1,
+      sealed: 1,
+      foreign: 1,
+      unprovable: 0,
+    });
     expect(blobs.has("shared")).toBe(true);
     expect(blobs.has("own")).toBe(false);
     // the proof ran under the CITING execution (its subject), before the shred
@@ -248,6 +260,160 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
       (e) => e.eventType === "ERASURE_CONTENT_DELETED"
     );
     expect(done?.payload).toMatchObject({ deleted: 1, retained: 1, foreign: 1 });
+  });
+
+  // Compliance subject = user; crypto subject = execution (they differ): one data subject spans executions
+  // with distinct keys, and a blob put by one is cited first by another.
+  async function crossWorld() {
+    const store = new InMemoryAsyncEventStore();
+    for (const [id, outs] of [
+      ["u1", ["x", "y"]], // u1 cites x (put by u2) first, and y (its own)
+      ["u2", ["x"]],
+      ["z1", ["w"]], // another user's blob, never the subject's
+    ] as const) {
+      await store.append(
+        ev(id, 0, "EXECUTION_STARTED", { input: { userId: id === "z1" ? "zed" : "ann" } })
+      );
+      let seq = 1;
+      for (const a of outs) {
+        await store.append(
+          ev(id, seq++, "STEP_COMPLETED", { stepId: `${id}#turn:0:tool:0`, output: env(a) })
+        );
+      }
+      await store.append(ev(id, seq, "EXECUTION_COMPLETED", { output: null }));
+    }
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("u1")), ...(await store.read("u2")), ...(await store.read("z1"))],
+      subjectOf
+    );
+    const blobs = new Map<string, Uint8Array>(
+      ["x", "y", "w"].map((a) => [a, new TextEncoder().encode(a)])
+    );
+    const putBy: Record<string, string> = { x: "u2", y: "u1", w: "z1" };
+    const content = {
+      sealsContent: true,
+      delete: vi.fn(async (ref: { __loomContent: string }) => void blobs.delete(ref.__loomContent)),
+      ownedBy: vi.fn(
+        async (ref: { __loomContent: string }, access: { executionId: string }) =>
+          putBy[ref.__loomContent] === access.executionId
+      ),
+    };
+    return { store, index, blobs, content };
+  }
+
+  it("compliance and crypto subjects differ: a blob put by one execution of the subject and first cited by another is DELETED and counted, not foreign (ADR 0143 D5)", async () => {
+    const { store, index, blobs, content } = await crossWorld();
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({
+      deleted: 2,
+      retained: 0,
+      sealed: 2,
+      foreign: 0,
+      unprovable: 0,
+    });
+    expect([...blobs.keys()]).toEqual(["w"]);
+  });
+
+  it("a citation-only blob (no execution of the subject put it) stays foreign even with several citers", async () => {
+    const { store, index, blobs, content } = await crossWorld();
+    // u2 now also cites w, which only z1 (another user) put
+    await store.append(
+      ev("u2", 5, "STEP_COMPLETED", { stepId: "u2#turn:0:tool:1", output: env("w") })
+    );
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({
+      deleted: 2,
+      retained: 1,
+      sealed: 2,
+      foreign: 1,
+      unprovable: 0,
+    });
+    expect(blobs.has("w")).toBe(true);
+  });
+
+  it("a re-erasure whose key is already destroyed journals the cited blobs UNPROVABLE (not foreign) and deletes none (ADR 0143 D5)", async () => {
+    const { store, index, blobs, content } = await crossWorld();
+    const destroyed = Object.assign(new Error("key destroyed"), {});
+    brandPayloadShredded(destroyed);
+    const gone = {
+      ...content,
+      ownedBy: vi.fn(async () => {
+        throw destroyed;
+      }),
+    };
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content: gone,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({
+      deleted: 0,
+      retained: 2,
+      sealed: 0,
+      foreign: 0,
+      unprovable: 2,
+    });
+    expect(blobs.size).toBe(3);
+    const done = (await store.read("__loom_erasure__")).find(
+      (e) => e.eventType === "ERASURE_CONTENT_DELETED"
+    );
+    expect(done?.payload).toMatchObject({ foreign: 0, unprovable: 2 });
+  });
+
+  it("a crash after the intent and the shred: the retry deletes the intent's addresses and keeps foreign stable (every proof now throws)", async () => {
+    const { store, index, blobs, content } = await crossWorld();
+    await store.append(
+      ev("u2", 5, "STEP_COMPLETED", { stepId: "u2#turn:0:tool:1", output: env("w") })
+    );
+    const destroyed = Object.assign(new Error("key destroyed"), {});
+    brandPayloadShredded(destroyed);
+    let shredded = false;
+    let failDelete = true;
+    const flaky = {
+      ...content,
+      ownedBy: vi.fn(async (ref: { __loomContent: string }, access: { executionId: string }) => {
+        if (shredded) throw destroyed;
+        return content.ownedBy(ref, access);
+      }),
+      delete: vi.fn(async (ref: { __loomContent: string }) => {
+        if (failDelete) throw new Error("store down");
+        blobs.delete(ref.__loomContent);
+      }),
+    };
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {
+        shredded = true;
+      },
+      content: flaky,
+    });
+    await expect(coord.eraseSubject("ann")).rejects.toThrow(/store down/);
+    expect(blobs.size).toBe(3);
+    failDelete = false;
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({
+      deleted: 2,
+      retained: 1,
+      sealed: 2,
+      foreign: 1,
+      unprovable: 0,
+    });
+    expect([...blobs.keys()]).toEqual(["w"]);
   });
 
   it("a sealing store WITHOUT ownedBy is refused before the shred when the subject cites a blob (fail closed)", async () => {
@@ -292,7 +458,13 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
       content: { sealsContent: true, ownedBy: async () => true } as never,
     });
     const r = await coord.eraseSubject("ann");
-    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 0, sealed: 2, foreign: 0 });
+    expect(r.contentDeleted).toEqual({
+      deleted: 0,
+      retained: 0,
+      sealed: 2,
+      foreign: 0,
+      unprovable: 0,
+    });
   });
 
   it("a subject with no claim-checked blobs records nothing over a sealing store", async () => {
