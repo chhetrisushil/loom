@@ -354,7 +354,7 @@ describe("the warning sink can never fail the run", () => {
       throw new Error("emitWarning broke");
     });
     try {
-      const b = boot({ config: { ...cfg, onWarn: undefined } });
+      const b = boot({ config: cfg });
       // `boot` always installs a sink; clear it so the loop reaches the process warning.
       b.runtime.registerFlow(flowDef, async (ctx) =>
         agentLoop$(
