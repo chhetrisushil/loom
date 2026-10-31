@@ -362,6 +362,9 @@ const NOT_A_CAPABILITY = new Set([
   // settlement fix on the public handle of the workflow runtime. No event, SPI, ABI or subsystem change;
   // nothing to grade.
   "0135",
+  // 0136 - opt-in lz4 TOAST compression for `snapshots.state` in the Postgres plugin (issue #707): a
+  // storage-column option with a fail-soft fallback. No event, SPI, ABI or subsystem change; nothing to grade.
+  "0136",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

@@ -25,6 +25,8 @@ export interface PostgresStorageOptions {
   migrationLockTimeoutMs?: number;
   /** ADR 0118 D1 — run the one-time park-fence backfill at boot (default `true`); see {@link PostgresEventStore}. */
   backfillParkFences?: boolean;
+  /** ADR 0136 — opt in to lz4 for `snapshots.state` (default `"default"`); see `MigrateOptions.snapshotCompression`. */
+  snapshotCompression?: "lz4" | "default";
 }
 
 /**
@@ -59,6 +61,9 @@ export function postgresStorage(
     }),
     ...(options.backfillParkFences !== undefined && {
       backfillParkFences: options.backfillParkFences,
+    }),
+    ...(options.snapshotCompression !== undefined && {
+      snapshotCompression: options.snapshotCompression,
     }),
   });
   const snapshotStore = new PostgresSnapshotStore(pool);
