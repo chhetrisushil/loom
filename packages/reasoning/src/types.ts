@@ -161,7 +161,10 @@ export type ReasonOptions = ReasonOptionsBase &
     | { resolveContent?: undefined; resolveContext?: undefined }
     | {
         resolveContent: ContentResolver;
-        resolveContext: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+        resolveContext: Pick<
+          ContentResolveContext,
+          "executionId" | "workflowId" | "stepId" | "principal"
+        >;
       }
   );
 

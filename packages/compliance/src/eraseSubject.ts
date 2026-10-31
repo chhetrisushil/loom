@@ -85,6 +85,15 @@ export interface ErasableContent {
   deleteIfUntouchedSince?(ref: { __loomContent: string }, cutoffMs: number): Promise<boolean>;
   touchClock?(): Promise<number>;
   readonly sealsContent?: unknown;
+  /**
+   * ADR 0143 D5 - the ownership proof a SEALING store offers: does the blob open under the subject of
+   * `access` (decrypt and discard)? Erasure deletes only blobs it proves the subject owns; a blob the log
+   * merely CITES (a resume payload, an input, another execution's result) is never deleted.
+   */
+  ownedBy?(
+    ref: { __loomContent: string },
+    access: { executionId: string; workflowId: string }
+  ): Promise<boolean>;
 }
 
 /** What an erasure removed from the content store (recorded durably as `ERASURE_CONTENT_DELETED`). */
@@ -98,6 +107,12 @@ export interface ContentCopiesDeleted {
    * subject's cited blobs; `deleted` of them were also physically removed). Absent over a plaintext store.
    */
   sealed?: number;
+  /**
+   * ADR 0143 D5: over a sealing store, how many cited blobs erasure could NOT prove the subject owns (another
+   * subject's blob the log merely cites, an absent one, or one whose key was already destroyed). They are
+   * counted in `retained`, never deleted, and never reported as the subject's data.
+   */
+  foreign?: number;
 }
 
 /** What an erasure removed from the plaintext archives (recorded durably as `ERASURE_ARCHIVE_DELETED`). */
@@ -913,9 +928,16 @@ export class EraseCoordinator {
      * {@link trustedClaimCheckRefsOf}); a snapshot's refs count only when the execution has no recorded
      * step left to vouch for them (history gone: the snapshot is the sole evidence, so fail closed).
      */
-    trustedOnly = false
+    trustedOnly = false,
+    /**
+     * ADR 0143: where each address was first cited (the citing execution + its workflow), so a sealing
+     * store can be asked whether the address is OWNED by that citer's subject.
+     */
+    citedBy?: Map<string, { executionId: string; workflowId: string }>
   ): Promise<void> {
     const events = await this.readErasedOk(executionId, proof);
+    const before = citedBy === undefined ? undefined : new Set(into);
+    let workflowId = events[0]?.workflowId;
     let sawStep = false;
     const visit = (list: readonly { eventType: string; payload: unknown }[]): void => {
       if (!trustedOnly) {
@@ -928,7 +950,10 @@ export class EraseCoordinator {
     for (const archive of this.options.archives ?? []) {
       try {
         if ((await archive.headers(executionId)).length === 0) continue;
-        for (const seg of await archive.read(executionId)) visit(seg.envelopes);
+        for (const seg of await archive.read(executionId)) {
+          workflowId ??= seg.envelopes[0]?.workflowId;
+          visit(seg.envelopes);
+        }
       } catch (err) {
         // A sealed segment whose key is already gone cites nothing anyone can read.
         if (!isPayloadShredded(err) && !isKeyUnavailable(err)) throw err;
@@ -936,7 +961,15 @@ export class EraseCoordinator {
     }
     const read = await this.readSnapshotErasedOk(executionId, events, proof);
     if (read.snapshot !== null && !read.opaque && (!trustedOnly || !sawStep)) {
+      workflowId ??= read.snapshot.state.workflowId;
       claimCheckRefsOf(read.snapshot.state, into);
+    }
+    if (citedBy !== undefined && before !== undefined) {
+      for (const a of into) {
+        if (!before.has(a) && !citedBy.has(a)) {
+          citedBy.set(a, { executionId, workflowId: workflowId ?? "" });
+        }
+      }
     }
   }
 
@@ -952,29 +985,70 @@ export class EraseCoordinator {
     executions: readonly string[],
     proof: DestructionProof | undefined
   ): Promise<
-    | { intentId?: string; addresses: string[]; retained: number; cutoff?: number; sealed?: true }
+    | {
+        intentId?: string;
+        addresses: string[];
+        retained: number;
+        cutoff?: number;
+        sealed?: true;
+        foreign?: number;
+      }
     | undefined
   > {
     const open = await this.openIntent(CONTENT_DELETE_INTENDED, CONTENT_DELETED, subjectId, tenant);
     const mine = new Set<string>();
-    for (const id of executions) await this.refsOfExecution(id, proof, mine);
+    const citedBy = new Map<string, { executionId: string; workflowId: string }>();
+    for (const id of executions) await this.refsOfExecution(id, proof, mine, false, citedBy);
     if (mine.size === 0 && open === undefined) return undefined;
     if (this.sealsContent()) {
-      // ADR 0143: a store that seals each blob under the subject's key. The SHRED erases them (no plaintext
-      // copy exists to remove), and the addresses are subject-scoped, so no other subject's blob can share
-      // one (no owner-set scan, no conditional delete). Erasure still RECORDS what it covered (the intent,
-      // BEFORE the shred; the completion after) and deletes the now-unreadable ciphertext where the store
-      // can, so the audit trail names the blobs and storage is reclaimed.
-      const prior = (open?.payload as { addresses?: string[] } | undefined)?.addresses ?? [];
-      const sealed = [...new Set([...prior, ...mine])];
+      // ADR 0143: a store that seals each blob under a subject's key. The SHRED erases the subject's own
+      // blobs (no plaintext copy exists to remove). But a log CITES addresses it never put (an input, a
+      // resume payload, another execution's result): citation is not ownership. Each cited address is
+      // PROVEN owned by the subject (the store decrypts it under the subject's key and discards the
+      // plaintext) before it is planned for deletion; a blob that does not prove is never deleted and is
+      // journaled as foreign/retained. Erasure still RECORDS what it covered (the intent, BEFORE the shred;
+      // the completion after) and deletes the now-unreadable ciphertext where the store can.
+      const prior = (open?.payload as { addresses?: string[]; foreign?: number } | undefined) ?? {};
+      const known = new Set(prior.addresses ?? []);
+      const owned = new Set(known);
+      const foreign = new Set<string>();
+      const fresh = [...mine].filter((a) => !known.has(a));
+      const content = this.options.content;
+      if (fresh.length > 0 && typeof content?.ownedBy !== "function") {
+        throw new ContentCopiesRemainError(
+          fresh.length,
+          "the sealing content store offers no ownedBy(ref, access), so erasure cannot prove which cited blobs the subject owns and which another subject's log merely cites (a sealing store without the proof is refused rather than guessed at)"
+        );
+      }
+      for (const address of fresh) {
+        const access = citedBy.get(address) as { executionId: string; workflowId: string };
+        let isOwned: boolean;
+        try {
+          isOwned = await (content as Required<Pick<ErasableContent, "ownedBy">>).ownedBy(
+            { __loomContent: address },
+            access
+          );
+        } catch (err) {
+          // The key is already destroyed (a re-erasure): ownership is unprovable and the bytes are
+          // unreadable either way - retained, never deleted. Any other failure (a key merely absent from
+          // this node) is loud: nothing is shredded.
+          if (!isPayloadShredded(err)) throw err;
+          isOwned = false;
+        }
+        if (isOwned) owned.add(address);
+        else foreign.add(address);
+      }
+      const retained = Math.max(prior.foreign ?? 0, foreign.size);
+      const addresses = [...owned];
       const intentId =
         open?.id ??
         (await this.appendIntent(CONTENT_DELETE_INTENDED, subjectId, tenant, {
-          addresses: sealed,
-          retained: 0,
+          addresses,
+          retained,
+          foreign: retained,
           sealed: true,
         }));
-      return { intentId, addresses: sealed, retained: 0, sealed: true };
+      return { intentId, addresses, retained, foreign: retained, sealed: true };
     }
     const content = this.options.content;
     const store = this.options.eventStore;
@@ -1073,7 +1147,14 @@ export class EraseCoordinator {
     subjectId: string,
     tenant: string,
     plan:
-      | { intentId?: string; addresses: string[]; retained: number; cutoff?: number; sealed?: true }
+      | {
+          intentId?: string;
+          addresses: string[];
+          retained: number;
+          cutoff?: number;
+          sealed?: true;
+          foreign?: number;
+        }
       | undefined
   ): Promise<ContentCopiesDeleted | undefined> {
     if (plan === undefined || plan.intentId === undefined) return undefined;
@@ -1086,12 +1167,14 @@ export class EraseCoordinator {
         await content.delete({ __loomContent: address });
         deleted++;
       }
+      const foreign = plan.foreign ?? 0;
       await this.appendCompletion(CONTENT_DELETED, subjectId, tenant, plan.intentId, {
         deleted,
-        retained: 0,
+        retained: foreign,
         sealed: plan.addresses.length,
+        foreign,
       });
-      return { deleted, retained: 0, sealed: plan.addresses.length };
+      return { deleted, retained: foreign, sealed: plan.addresses.length, foreign };
     }
     for (const address of plan.addresses) {
       const ref = { __loomContent: address };

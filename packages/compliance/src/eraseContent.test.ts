@@ -195,18 +195,28 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
     expect(blobs.has("own")).toBe(true);
   });
 
-  it("a store that seals per subject (ADR 0143): the shred erases it, the erasure RECORDS it and deletes the ciphertext", async () => {
+  // ADR 0143 D5: a sealing store proves OWNERSHIP of each cited blob; a citation alone deletes nothing.
+  const sealing = (
+    content: Awaited<ReturnType<typeof world>>["content"],
+    owned: ReadonlySet<string>
+  ) => ({
+    ...content,
+    sealsContent: true,
+    ownedBy: vi.fn(async (ref: { __loomContent: string }) => owned.has(ref.__loomContent)),
+  });
+
+  it("a store that seals per subject (ADR 0143): the shred erases what the subject OWNS; the erasure RECORDS it and deletes the ciphertext", async () => {
     const { store, index, content, blobs } = await world();
     const order: string[] = [];
     const coord = new EraseCoordinator({
       index,
       eventStore: store,
       shred: async () => void order.push("shred"),
-      content: { ...content, sealsContent: true },
+      content: sealing(content, new Set(["own", "shared"])),
     });
     const r = await coord.eraseSubject("ann");
     // no owner-set scan and no conditional delete: sealed addresses are subject-scoped
-    expect(r.contentDeleted).toEqual({ deleted: 2, retained: 0, sealed: 2 });
+    expect(r.contentDeleted).toEqual({ deleted: 2, retained: 0, sealed: 2, foreign: 0 });
     expect(content.delete).toHaveBeenCalledTimes(2);
     expect(blobs.size).toBe(0);
     const control = (await store.read("__loom_erasure__")).map((e) => e.eventType);
@@ -216,16 +226,73 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
     );
   });
 
+  it("a cited blob the subject does NOT own is never deleted and is journaled retained/foreign (ADR 0143 D5)", async () => {
+    const { store, index, content, blobs } = await world();
+    const sealed = sealing(content, new Set(["own"])); // "shared" is cited, but another subject's
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content: sealed,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({ deleted: 1, retained: 1, sealed: 1, foreign: 1 });
+    expect(blobs.has("shared")).toBe(true);
+    expect(blobs.has("own")).toBe(false);
+    // the proof ran under the CITING execution (its subject), before the shred
+    expect(sealed.ownedBy).toHaveBeenCalledWith(
+      { __loomContent: "shared" },
+      { executionId: "a1", workflowId: "wf" }
+    );
+    const done = (await store.read("__loom_erasure__")).find(
+      (e) => e.eventType === "ERASURE_CONTENT_DELETED"
+    );
+    expect(done?.payload).toMatchObject({ deleted: 1, retained: 1, foreign: 1 });
+  });
+
+  it("a sealing store WITHOUT ownedBy is refused before the shred when the subject cites a blob (fail closed)", async () => {
+    const { store, index, content, blobs } = await world();
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred,
+      content: { ...content, sealsContent: true },
+    });
+    await expect(coord.eraseSubject("ann")).rejects.toBeInstanceOf(ContentCopiesRemainError);
+    expect(shred).not.toHaveBeenCalled();
+    expect(blobs.size).toBe(2);
+  });
+
+  it("an undecidable proof (key not on this node) fails the erasure loudly, nothing shredded", async () => {
+    const { store, index, content } = await world();
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred,
+      content: {
+        ...content,
+        sealsContent: true,
+        ownedBy: async () => {
+          throw new Error("key unavailable");
+        },
+      },
+    });
+    await expect(coord.eraseSubject("ann")).rejects.toThrow(/key unavailable/);
+    expect(shred).not.toHaveBeenCalled();
+  });
+
   it("a sealing store that cannot delete: erasure completes and records the sealed blobs, deleting none", async () => {
     const { store, index } = await world();
     const coord = new EraseCoordinator({
       index,
       eventStore: store,
       shred: async () => {},
-      content: { sealsContent: true } as never,
+      content: { sealsContent: true, ownedBy: async () => true } as never,
     });
     const r = await coord.eraseSubject("ann");
-    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 0, sealed: 2 });
+    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 0, sealed: 2, foreign: 0 });
   });
 
   it("a subject with no claim-checked blobs records nothing over a sealing store", async () => {

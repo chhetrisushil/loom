@@ -1,3 +1,4 @@
+import { type LlmRequest, createLlmEffect } from "@loom/llm";
 import { isClaimCheck, resolveClaimCheck } from "@loom/middleware";
 import { sweepUnpinnedContent } from "@loom/plugin-content";
 import {
@@ -138,7 +139,7 @@ describe("claim-check under security.crypto with the EncryptingContentStore (ADR
     await finish(b, "x");
     const r = await b.app.eraseSubject("ann");
     expect(r.outcome).toBe("erased");
-    expect(r.contentDeleted).toEqual({ deleted: 2, retained: 0, sealed: 2 });
+    expect(r.contentDeleted).toEqual({ deleted: 2, retained: 0, sealed: 2, foreign: 0 });
     const control = await w.raw.read("__loom_erasure__");
     const types = control.map((e) => e.eventType);
     expect(types.indexOf("ERASURE_CONTENT_DELETE_INTENDED")).toBeGreaterThanOrEqual(0);
@@ -175,7 +176,7 @@ describe("claim-check under security.crypto with the EncryptingContentStore (ADR
     const envs = await envelopes(w.events, "x");
     await finish(b, "x");
     const r = await b.app.eraseSubject("ann");
-    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 0, sealed: 2 });
+    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 0, sealed: 2, foreign: 0 });
     expect((await innerBytes(w.inner)).length).toBe(2); // ciphertext remains, unreadable
     await expect(
       content.get(envs[0]!.ref, { executionId: "x", workflowId: "agent" })
@@ -226,6 +227,55 @@ describe("claim-check under security.crypto with the EncryptingContentStore (ADR
   });
 });
 
+describe("a media resolver over a sealing store with a WORKFLOW-keyed subjectOf (ADR 0120 x 0143)", () => {
+  it("the resolve context carries the workflowId, so the subject maps and the blob opens", async () => {
+    const keys = new InMemoryKeyStore();
+    const subjectOf = (o: { executionId: string; workflowId: string }): string =>
+      `wf:${o.workflowId}`;
+    const content = new EncryptingContentStore(new CountingContentStore(), keys, { subjectOf });
+    const owner = { executionId: "e1", workflowId: "billing" };
+    const put = await content.put(new Uint8Array([1, 2, 3]), owner);
+    const seen: string[] = [];
+    const effect = createLlmEffect<LlmRequest, string>({
+      provider: {
+        capabilities: { image: ["image/png"] },
+        complete: async (r) => {
+          seen.push(JSON.stringify(r.messages));
+          return { content: "ok", stopReason: "end_turn" };
+        },
+      },
+      buildRequest: (r) => r,
+      // the pattern ADR 0120 documents: hand the context's identity to the store
+      resolveContent: (ref, c) =>
+        content.get(
+          { __loomContent: ref.address },
+          { executionId: c.executionId, workflowId: c.workflowId as string }
+        ),
+    });
+    const request: LlmRequest = {
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              mediaType: "image/png",
+              source: { kind: "ref", ref: { address: put.__loomContent, size: 3 } },
+            },
+          ],
+        },
+      ],
+    };
+    // a DIFFERENT execution of the SAME workflow shares the subject and reads it
+    const ctx = (workflowId: string) =>
+      ({ executionId: "e2", stepId: "s", workflowId, attempt: 1, emit: () => {} }) as never;
+    await expect(effect.execute(request, ctx("billing"))).resolves.toBe("ok");
+    expect(seen).toHaveLength(1);
+    // another workflow is another subject: it does not open (loud, never plaintext)
+    await expect(effect.execute(request, ctx("support"))).rejects.toThrow();
+  });
+});
+
 describe("boot refusals (ADR 0143 D6): the blobs must sit under the SAME keys as the log", () => {
   const cfg = (events: EncryptingEventStore, content: EncryptingContentStore) =>
     boot({
@@ -258,6 +308,53 @@ describe("boot refusals (ADR 0143 D6): the blobs must sit under the SAME keys as
     expect(() =>
       cfg(events, new EncryptingContentStore(new CountingContentStore(), keys))
     ).not.toThrow();
+  });
+
+  it("a pairing that cannot be COMPARED is refused (fail closed): a content store that hides its KeyStore/subjectOf", () => {
+    const keys = new InMemoryKeyStore();
+    const events = new EncryptingEventStore(new CloningEventStore(), keys, { sensitive: {} });
+    const real = new EncryptingContentStore(new CountingContentStore(), keys);
+    // a wrapper that forwards the data path but not the markers
+    const hidden = {
+      sealsContent: true as const,
+      put: real.put.bind(real),
+      get: real.get.bind(real),
+      delete: real.delete.bind(real),
+      ownedBy: real.ownedBy.bind(real),
+    };
+    expect(() => cfg(events, hidden as never)).toThrow(/KeyStore cannot be compared/);
+    const noSubject = Object.assign({ ...hidden }, { keys });
+    expect(() => cfg(events, noSubject as never)).toThrow(/subjectOf cannot be compared/);
+  });
+
+  it("a pairing hidden on the EVENT side is refused too; a decorator is looked through", () => {
+    const keys = new InMemoryKeyStore();
+    const events = new EncryptingEventStore(new CloningEventStore(), keys, { sensitive: {} });
+    const content = new EncryptingContentStore(new CountingContentStore(), keys);
+    // a wrapper that works as a store but does not expose `keys`/`subjectOf`
+    const bare = new Proxy(events, {
+      get: (t, k) => {
+        if (k === "keys" || k === "subjectOf") return undefined;
+        const v = Reflect.get(t, k, t) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      },
+    });
+    expect(() => cfg(bare, content)).toThrow(/cannot be compared/);
+    // a decorator that hides `subjectOf` but exposes the layer it wraps is looked THROUGH (the ADR 0138 walk),
+    // so a pairing a wrapper merely does not forward is still compared: refused if different, booted if not
+    const decorated = new Proxy(events, {
+      get: (t, k) => {
+        if (k === "subjectOf") return undefined;
+        if (k === "inner") return t;
+        const v = Reflect.get(t, k, t) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      },
+    });
+    const other = new EncryptingContentStore(new CountingContentStore(), keys, {
+      subjectOf: (o) => `t:${o.executionId}`,
+    });
+    expect(() => cfg(decorated, other)).toThrow(/different subjectOf/);
+    expect(() => cfg(decorated, content)).not.toThrow();
   });
 
   it("a plain store is still refused with the wiring to use", () => {

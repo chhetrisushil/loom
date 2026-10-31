@@ -1047,6 +1047,7 @@ interface ContentStore {
   readonly sealsContent?: boolean   // SPI 1.5.0 (ADR 0143): true = seals each blob under its owner's subject key (EncryptingContentStore)
   // SPI 1.5.0: every data call takes an OPTIONAL `access?: ContentAccess { executionId, workflowId }` (the owning
   // execution); a plain store ignores it, a sealing store REFUSES a call without it
+  ownedBy?(ref: ContentRef, access: ContentAccess): Promise<boolean>   // OPTIONAL, sealing stores: the ownership proof erasure/export ask (ADR 0143 D5)
   put(bytes: Uint8Array, access?: ContentAccess): Promise<ContentRef>   // plain store: address IS sha256(bytes)
   get(ref: ContentRef, access?: ContentAccess): Promise<Uint8Array | null>
   getMany?(refs: readonly ContentRef[], access?: ContentAccess): Promise<(Uint8Array | null)[]>   // OPTIONAL, coalesced
@@ -1391,6 +1392,7 @@ class EncryptingContentStore implements ContentStore {   // ADR 0143, ContentSto
   readonly sealsContent: true; readonly keys: KeyStore; readonly subjectOf   // defineConfig compares both with security.crypto.events by identity
   // put/get/getMany REQUIRE the `ContentAccess` owner (ContentAccessRequiredError); address = inner hash of the ciphertext (subject-scoped);
   // destroyed key => PayloadShreddedError, tampered/swapped blob => ContentUndecryptableError; no putStream
+  ownedBy(ref, access): Promise<boolean>   // ownership PROOF (decrypt + discard): erasure deletes / export opens only blobs the subject sealed; a merely CITED blob is foreign
 }
 class EncryptingSnapshotStore implements SnapshotStore { constructor(inner: SnapshotStore, keys: KeyStore, options: EncryptingSnapshotStoreOptions) }
 interface EncryptingEventStoreOptions {

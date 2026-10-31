@@ -3097,6 +3097,8 @@ export interface ContentAccessLike {
 export interface ContentStoreLike {
   /** SPI 1.5.0 (ADR 0143): `true` for a store that seals each blob under its owner's subject key. */
   readonly sealsContent?: boolean;
+  /** SPI 1.5.0 (ADR 0143 D5): a sealing store's ownership proof (decrypt under the owner's subject key, discard). */
+  ownedBy?(ref: { __loomContent: string }, access: ContentAccessLike): Promise<boolean>;
   put(bytes: Uint8Array, access?: ContentAccessLike): Promise<{ __loomContent: string }>;
   /** OPTIONAL (ST-1, SPI streaming): content-addressed streaming ingestion. */
   putStream?(
@@ -3206,6 +3208,12 @@ export function runContentStoreConformance(
       if (raw.sealsContent === true) {
         // Fail closed: no owner, no seal and no open.
         await expect(raw.put(bytes("no-owner"))).rejects.toThrow();
+        // The ownership proof (when offered): true for the owner's own blob, false for an absent address.
+        if (raw.ownedBy !== undefined) {
+          const mine = await raw.put(bytes("proof"), owner);
+          expect(await raw.ownedBy(mine, owner)).toBe(true);
+          expect(await raw.ownedBy({ __loomContent: "sha256:deadbeef" }, owner)).toBe(false);
+        }
         return;
       }
       const withOwner = await raw.put(bytes("owned"), owner);

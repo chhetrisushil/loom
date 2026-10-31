@@ -39,6 +39,7 @@ import type {
   LeaseStore,
   TimerStore,
 } from "@loom/event-runtime";
+import { decoratedInnerOf } from "@loom/event-runtime";
 // Only the in-memory stores are imported statically — they are pure JS. We import
 // them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
 // barrel also re-exports the SQLite stores (which `import "better-sqlite3"`), and
@@ -507,6 +508,15 @@ export interface ClaimCheckConfig {
   store: ClaimCheckStore & {
     /** Required with `compliance.erase`: erasing a subject deletes the blobs their tool outputs went to. */
     delete?(ref: { __loomContent: string }): Promise<void>;
+    /**
+     * A sealing store's ownership proof (ADR 0143 D5): erasure deletes, and export opens, only the cited blobs
+     * the subject provably owns. `EncryptingContentStore` has it; a sealing store without it is refused by
+     * erasure when the subject cites a blob.
+     */
+    ownedBy?(
+      ref: { __loomContent: string },
+      access: { executionId: string; workflowId: string }
+    ): Promise<boolean>;
     /** Read side: lets `app.exportSubject` return the resolved tool outputs, not just their refs. */
     get?(
       ref: { __loomContent: string },
@@ -570,6 +580,21 @@ interface ResolvedClaimCheck {
 }
 
 /**
+ * ADR 0143: the named marker of a store, looked up through the decorators around it (`decoratedInnerOf`, the
+ * walk ADR 0138 H3 uses for `tenantScope`, and a visible `inner`), nearest layer first. `undefined` when no
+ * layer exposes it: the caller then cannot compare and refuses.
+ */
+function markerThroughDecorators(store: unknown, name: "keys" | "subjectOf"): unknown {
+  let cur: unknown = store;
+  for (let i = 0; i < 16 && typeof cur === "object" && cur !== null; i++) {
+    const v = (cur as Record<string, unknown>)[name];
+    if (v !== undefined) return v;
+    cur = decoratedInnerOf(cur) ?? (cur as { inner?: unknown }).inner;
+  }
+  return undefined;
+}
+
+/**
  * Validate `execution.claimCheck` (TypeError on bad values) and build its middleware. FAILS CLOSED against
  * the two combinations that would leave an erased subject's data behind (ADR 0140 D8): a configured
  * `security.crypto` needs a store that seals per subject (`sealsContent: true`: the `EncryptingContentStore`, ADR 0143), and a
@@ -622,22 +647,32 @@ function claimCheckFrom(
   }
   if (posture.crypto && sealsContent) {
     // ADR 0143: a sealing store on a DIFFERENT KeyStore or subject mapping than the log would seal blobs a
-    // shred of the log's key never reaches (erasure theater). Compared by identity, where both are visible.
-    const store = raw.store as { keys?: unknown; subjectOf?: unknown };
-    const events = posture.cryptoEvents as { keys?: unknown; subjectOf?: unknown } | undefined;
-    if (events !== undefined && store.keys !== undefined && events.keys !== undefined) {
-      if (store.keys !== events.keys) {
-        throw new TypeError(
-          "defineConfig: execution.claimCheck.store seals under a different KeyStore than security.crypto.events: destroying a subject's key in the log's store would not make its offloaded blobs unreadable. Build the EncryptingContentStore over the same KeyStore. Nothing was composed."
-        );
-      }
+    // shred of the log's key never reaches (erasure theater). Compared by identity, and REFUSED when the
+    // pair cannot be compared (a decorator that hides `keys`/`subjectOf`, a registry wrapper): an
+    // unverifiable pairing is not a verified one. In-repo decorators forward both (forwardStoreMarkers).
+    const store = {
+      keys: markerThroughDecorators(raw.store, "keys"),
+      subjectOf: markerThroughDecorators(raw.store, "subjectOf"),
+    };
+    const events = {
+      keys: markerThroughDecorators(posture.cryptoEvents, "keys"),
+      subjectOf: markerThroughDecorators(posture.cryptoEvents, "subjectOf"),
+    };
+    const cannot = (what: string): never => {
+      throw new TypeError(
+        `defineConfig: execution.claimCheck.store seals content under security.crypto, but its ${what} cannot be compared with security.crypto.events (one side does not expose it: a decorator or registry wrapper hides it), so it cannot be shown that destroying a subject's key in the log also makes its offloaded blobs unreadable. Pass the EncryptingEventStore as security.crypto.events and the EncryptingContentStore itself as the claim-check store (built over the same KeyStore and subjectOf), or use decorators that forward the markers (forwardStoreMarkers). Nothing was composed.`
+      );
+    };
+    if (store.keys === undefined || events.keys === undefined) cannot("KeyStore");
+    if (store.keys !== events.keys) {
+      throw new TypeError(
+        "defineConfig: execution.claimCheck.store seals under a different KeyStore than security.crypto.events: destroying a subject's key in the log's store would not make its offloaded blobs unreadable. Build the EncryptingContentStore over the same KeyStore. Nothing was composed."
+      );
     }
-    if (
-      events !== undefined &&
-      typeof store.subjectOf === "function" &&
-      typeof events.subjectOf === "function" &&
-      store.subjectOf !== events.subjectOf
-    ) {
+    if (typeof store.subjectOf !== "function" || typeof events.subjectOf !== "function") {
+      cannot("subjectOf");
+    }
+    if (store.subjectOf !== events.subjectOf) {
       throw new TypeError(
         "defineConfig: execution.claimCheck.store maps an execution to its erasure subject with a different subjectOf than security.crypto.events: a blob and its log would be sealed under different keys. Pass the SAME function to both. Nothing was composed."
       );

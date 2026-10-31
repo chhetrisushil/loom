@@ -500,7 +500,12 @@ describe("security.crypto / compliance.erase fail closed (ADR 0140 D8)", () => {
 
   it("B2(a): a store that DECLARES sealsContent is accepted, and the sealed run replays", async () => {
     const events = sealing();
-    const content = Object.assign(new CountingContentStore(), { sealsContent: true as const });
+    // A store that DECLARES sealing and exposes the log's own KeyStore + subjectOf (the pairing is provable).
+    const content = Object.assign(new CountingContentStore(), {
+      sealsContent: true as const,
+      keys: (events as unknown as { keys: unknown }).keys,
+      subjectOf: (events as unknown as { subjectOf: unknown }).subjectOf,
+    });
     const b = boot({
       turns: 2,
       park: true,
