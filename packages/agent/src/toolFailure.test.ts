@@ -379,6 +379,14 @@ describe("isTerminalToolError - ExecutionTerminatedError is classified by status
     expect(isTerminalToolError(terminated("cancelled", new Error("stop")))).toBe(false);
   });
 
+  it.each([undefined, null])(
+    "failed with a %s cause (a flow that threw it) is feedback, as waitForCompletion's would be",
+    (cause) => {
+      expect(isTerminalToolError(cause)).toBe(false);
+      expect(isTerminalToolError(terminated("failed", cause))).toBe(false);
+    }
+  );
+
   it("failed or cancelled with a terminal cause is terminal (the cause is classified)", () => {
     const denial = new effectRuntime.CapabilityDeniedError("x", "y" as never);
     expect(isTerminalToolError(denial)).toBe(true);
