@@ -1111,8 +1111,8 @@ describe("ADR 0134 D6 - snapshot pruning refuses while the blank stream is unrep
     const h = await history(1);
     const app = boot();
     await pre0106(app, "e1", h, "resumed");
-    app.eventStore.listExecutions = undefined;
-    app.eventStore.listExecutionsPage = undefined;
+    delete app.eventStore.listExecutions;
+    delete app.eventStore.listExecutionsPage;
     let deletes = 0;
     const inner = app.snapshotStore.pruneSnapshots!.bind(app.snapshotStore);
     app.snapshotStore.pruneSnapshots = async (...a) => {
