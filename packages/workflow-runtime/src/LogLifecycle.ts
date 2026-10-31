@@ -818,6 +818,109 @@ export class LogLifecycle {
   }
 
   /**
+   * ADR 0134 — prune the snapshots a newer one has superseded. DEFAULT OFF: nothing calls this
+   * unless an operator or an app's own schedule does. Snapshots are a cache over the log, so a
+   * deleted one costs a longer fold, never the state, with these exceptions, which are never
+   * pruned:
+   *
+   * - **The latest `keepLatest` snapshots** (default 1; the latest is what a resume folds on).
+   * - **Everything at or below a compacted log's anchor.** When the log has a gap, its
+   *   checkpoint (the lowest snapshot at or above the gap) is the ONLY record of the state
+   *   below it, and the snapshots below the gap are the exact fork points ADR 0107 D2 serves.
+   *   A log compacted down to `[0]` keeps every snapshot, for the same reason.
+   * - **`keepSequences`**, an explicit keep-set from the caller.
+   *
+   * So only snapshots strictly ABOVE the anchor (or any, for a never-compacted log) and strictly
+   * BELOW the `keepLatest`-th newest are deleted. Every fork point the log could serve before is
+   * served after, with the same state: a base above the gap folds a contiguous suffix.
+   *
+   * Resolves with the number deleted; `0` when the store cannot prune, the execution is exempt
+   * (`compactionExempt`: a hold also holds its snapshots), or there is nothing prunable.
+   * Costs one log read (as `compact` does) and a bounded number of snapshot point reads
+   * (`keepLatest`, plus a walk only for a gapped log that has neither a snapshot at its gap nor
+   * a fork seed). The delete is one statement.
+   */
+  async pruneSnapshots(
+    executionId: string,
+    options: { keepLatest?: number; keepSequences?: readonly number[] } = {}
+  ): Promise<number> {
+    if (executionId === "" || isReservedStream(executionId)) {
+      throw new TypeError(
+        `refusing to prune the snapshots of "${executionId}": a blank id or a reserved control stream names no execution.`
+      );
+    }
+    const keepLatest = options.keepLatest ?? 1;
+    if (!Number.isInteger(keepLatest) || keepLatest < 1) {
+      throw new RangeError(
+        `pruneSnapshots: keepLatest must be an integer >= 1 (the latest snapshot is never pruned); got ${String(keepLatest)}`
+      );
+    }
+    const snapshots = this.snapshotStore;
+    if (snapshots.pruneSnapshots === undefined) return 0;
+    if (
+      this.options.compactionExempt !== undefined &&
+      (await this.options.compactionExempt(executionId)) === true
+    ) {
+      return 0;
+    }
+    const events = await this.eventStore.read(executionId);
+    // Nothing to anchor on, or compacted through the tip (`[0]`): the checkpoint is the latest
+    // snapshot and the older ones are the exact fork points below it.
+    if (events.length <= 1) return 0;
+    const tip = events[events.length - 1]!.sequence;
+    const gap = highestMissing(events);
+
+    // `before`: the sequence of the keepLatest-th newest snapshot, which pruning must not reach.
+    let newest = await snapshots.loadLatest(executionId);
+    if (newest === null) return 0;
+    for (let i = 1; i < keepLatest; i++) {
+      newest =
+        newest.sequence > 0
+          ? await snapshots.loadLatestBefore(executionId, newest.sequence - 1)
+          : null;
+      if (newest === null) return 0; // fewer than keepLatest snapshots: all are kept
+    }
+    const before = newest.sequence;
+
+    // `after`: the anchor of a compacted log, or -1 (the whole range) for a gap-free one.
+    let after = -1;
+    if (gap >= 0) {
+      // Same lookup as the content sweep: a compaction's own checkpoint sits exactly at the gap;
+      // a branch of a compacted parent has its fork seed (sequence 0 records it); else walk down.
+      let anchor = await snapshots.loadLatestBefore(executionId, gap);
+      const forkSequence = (events[0]!.metadata as { forkSequence?: unknown } | undefined)
+        ?.forkSequence;
+      if (
+        (anchor === null || anchor.sequence !== gap) &&
+        typeof forkSequence === "number" &&
+        forkSequence >= gap
+      ) {
+        const seed =
+          snapshots.loadAt !== undefined
+            ? await snapshots.loadAt(executionId, forkSequence)
+            : await snapshots.loadLatestBefore(executionId, forkSequence);
+        anchor = seed !== null && seed.sequence === forkSequence ? seed : anchor;
+      }
+      if (anchor === null || anchor.sequence < gap) {
+        anchor = null;
+        let s = await snapshots.loadLatestBefore(executionId, Math.max(tip, before));
+        while (s !== null && s.sequence >= gap) {
+          anchor = s;
+          s =
+            s.sequence > gap ? await snapshots.loadLatestBefore(executionId, s.sequence - 1) : null;
+        }
+      }
+      // No checkpoint at or above the gap: `compact` would refuse this log. Prune nothing.
+      if (anchor === null) return 0;
+      after = anchor.sequence;
+    }
+    if (before - after <= 1) return 0;
+    return snapshots.pruneSnapshots(executionId, { after, before }, [
+      ...(options.keepSequences ?? []),
+    ]);
+  }
+
+  /**
    * ADR 0116 migration — restore the terminal event a pre-0116 compaction took off the log.
    *
    * Before ADR 0116, compacting a finished execution truncated THROUGH its tip: the log was left
