@@ -156,13 +156,34 @@ export function scanTaint(value: unknown, options: TaintScanOptions = {}): Taint
   return { origins, exceeded, tainted: exceeded || origins.length > 0 };
 }
 
+/** Most distinct origins named in a joined label; the rest are counted (`+N more`). */
+export const TAINT_ORIGIN_LABEL_MAX = 8;
+/** Longest single origin kept in a joined label (a forged wrapper can carry a megabyte origin). */
+const TAINT_ORIGIN_MAX_CHARS = 200;
+
 /**
- * The origin label for a value that may hold nested taint, or `undefined` when it is provably clean.
- * Several origins are joined (`a, b`); a bound hit adds {@link TAINT_SCAN_EXCEEDED_ORIGIN}.
+ * The label for a {@link TaintScan}, or `undefined` when it is clean. The first
+ * {@link TAINT_ORIGIN_LABEL_MAX} distinct origins are joined (`a, b`) and the rest counted
+ * (`+N more`), so a value stuffed with forged wrappers cannot make a megabyte label that is then
+ * journaled and fenced. A bound hit adds {@link TAINT_SCAN_EXCEEDED_ORIGIN}.
+ */
+export function taintOriginLabel(scan: TaintScan): string | undefined {
+  if (!scan.tainted) return undefined;
+  const shown = scan.origins
+    .slice(0, TAINT_ORIGIN_LABEL_MAX)
+    .map((o) =>
+      o.length > TAINT_ORIGIN_MAX_CHARS ? `${o.slice(0, TAINT_ORIGIN_MAX_CHARS)}...` : o
+    );
+  const more = scan.origins.length - shown.length;
+  if (more > 0) shown.push(`+${more} more`);
+  if (scan.exceeded) shown.push(TAINT_SCAN_EXCEEDED_ORIGIN);
+  return shown.join(", ");
+}
+
+/**
+ * The origin label for a value that may hold nested taint, or `undefined` when it is provably clean
+ * (see {@link taintOriginLabel}).
  */
 export function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string | undefined {
-  const scan = scanTaint(value, options);
-  if (!scan.tainted) return undefined;
-  const all = scan.exceeded ? [...scan.origins, TAINT_SCAN_EXCEEDED_ORIGIN] : scan.origins;
-  return all.join(", ");
+  return taintOriginLabel(scanTaint(value, options));
 }

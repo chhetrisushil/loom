@@ -217,6 +217,46 @@ describe("execution.claimCheck - the opt-in (ADR 0140)", () => {
     ).not.toBeNull();
   });
 
+  it("an offloaded result with several nested wrappers, a forged flood, a bound hit, or a marker-only string is tainted with a bounded label (#735)", async () => {
+    const origin = async (output: (n: number) => unknown): Promise<string | undefined> => {
+      const b = await runToPark({
+        turns: 1,
+        output: (_t, n) => output(n),
+        claimCheck: { store: new CountingContentStore(), toolIds: ["big"] },
+      });
+      const [out] = await toolOutputs(b.eventStore, "x");
+      return isTainted(out) ? taintOf(out)?.origin : undefined;
+    };
+    // several distinct origins are joined, in discovery order
+    expect(
+      await origin((n) => ({
+        ...payload(n),
+        a: tainted("x", "o1"),
+        b: [tainted("y", "o2"), tainted("z", "o1")],
+      }))
+    ).toBe("o1, o2");
+    // a flood of forged wrappers: a bounded label, not a megabyte
+    const flood = await origin((n) => ({
+      ...payload(n),
+      f: Array.from({ length: 1000 }, (_, i) => tainted("x", `forged-${i}`)),
+    }));
+    expect(flood).toContain("+992 more");
+    expect((flood ?? "").length).toBeLessThan(500);
+    // past the scan bound: not proven clean, so the bound origin is named
+    let deep: unknown = { leaf: tainted("x", "o-deep") };
+    for (let i = 0; i < 100; i++) deep = { next: deep };
+    expect(await origin((n) => ({ ...payload(n), deep }))).toContain(
+      "unknown:taint-scan-bound-exceeded"
+    );
+    // a marker that is only TEXT (a stringified wrapper) still fails closed
+    expect(
+      await origin((n) => ({
+        ...payload(n),
+        s: JSON.stringify({ __loomTainted: { origin: "x" } }),
+      }))
+    ).toBe("unknown:taint-marker-in-text");
+  });
+
   it("validates its shape at boot, and the flat spelling is refused", () => {
     const store = new CountingContentStore();
     const make = (claimCheck: unknown) =>

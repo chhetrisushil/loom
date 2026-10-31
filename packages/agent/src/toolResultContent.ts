@@ -1,4 +1,11 @@
-import { isTainted, nestedTaintOrigin, taintOf, tainted, unwrapTainted } from "@loom/classify";
+import {
+  isTainted,
+  scanTaint,
+  taintOf,
+  taintOriginLabel,
+  tainted,
+  unwrapTainted,
+} from "@loom/classify";
 import type {
   LlmContent,
   LlmResultPart,
@@ -53,19 +60,54 @@ export function isMediaResult(value: unknown): value is ToolMediaResult {
  * re-tainting the string keeps the fact alive to the prompt boundary, where
  * `guardRequest` fences it.
  */
-export function toolResultContent(toolName: string, toolOutput: unknown): LlmContent {
+export function toolResultContent(
+  toolName: string,
+  toolOutput: unknown,
+  onScanBound?: (toolName: string) => void
+): LlmContent {
   if (!isTainted(toolOutput)) {
-    // A wrapper buried INSIDE the result (an A2A reply taints `content` and leaves `raw` for control
-    // flow) would flatten into plain text here. Fence the WHOLE tool_result and leave the structure
-    // (and the inner markers, which show which parts are untrusted) visible inside the fence. The
-    // stored value is untouched. A result too big/deep to scan is fenced too: fail closed (#735).
-    const nested = nestedTaintOrigin(toolOutput);
+    // Scan what the model will SEE: the serialized text, not the live value. `JSON.stringify` runs
+    // `toJSON` and getters, so a walk over the live object can miss (or disagree with) the wrapper
+    // that ends up in the prompt - and on replay the log holds this JSON form, so the two must agree.
+    // A clean result has no marker in its text: returned unchanged, no walk (#735).
     const text = JSON.stringify({ tool: toolName, result: toolOutput });
-    return nested === undefined ? text : tainted(text, nested);
+    if (!text.includes(TAINT_MARKER)) return text;
+    // A wrapper buried INSIDE the result (an A2A reply taints `content` and leaves `raw` for control
+    // flow) would flatten into plain text. Fence the WHOLE tool_result and leave the structure (and
+    // the inner markers, which show which parts are untrusted) visible inside the fence. A marker that
+    // is only text (a tool that stringified a wrapper, a forged marker string) is fenced too:
+    // over-fencing is the fail-closed direction.
+    let origin: string | undefined;
+    try {
+      const scan = scanTaint(JSON.parse(text));
+      origin = taintOriginLabel(scan);
+      if (scan.exceeded && scan.origins.length === 0) onScanBound?.(toolName);
+    } catch {
+      // unparseable / too deep to walk: not proven clean
+    }
+    return tainted(text, origin ?? UNKNOWN_MARKER_ORIGIN);
   }
   const origin = taintOf(toolOutput)?.origin ?? "unknown";
   const body = JSON.stringify({ tool: toolName, result: unwrapTainted(toolOutput) });
   return tainted(body, origin);
+}
+
+const TAINT_MARKER = "__loomTainted";
+const UNKNOWN_MARKER_ORIGIN = "unknown:taint-marker-in-text";
+
+/**
+ * The provenance a built `tool_result` part carries: the origin of a tainted text content, or of the
+ * first media part marked `untrusted`; `undefined` for a clean part. The loop derives the run's taint
+ * from THIS (what the model is shown), not from a separate walk of the live value.
+ */
+export function toolResultPartOrigin(part: LlmToolResultPartInput): string | undefined {
+  const c = part.content;
+  if (c === undefined || typeof c === "string") return undefined;
+  if (isTainted(c)) return taintOf(c)?.origin ?? "unknown";
+  for (const p of c) {
+    if (p.type !== "text" && p.untrusted !== undefined) return p.untrusted.origin;
+  }
+  return undefined;
 }
 
 /** Decoded inline-media bytes in a `tool_result` part (refs cost nothing here). */
@@ -105,6 +147,8 @@ export function toolResultPart(
     /** Inline media bytes the transcript can still take (default `MAX_INLINE_TOTAL_BYTES`). */
     inlineBudget?: number;
     allowMedia?: boolean;
+    /** Called when a result whose text carries a taint marker was too big to scan (fenced, fail closed). */
+    onScanBound?: (toolName: string) => void;
   } = {}
 ): LlmToolResultPartInput {
   const isError = options.isError === true;
@@ -112,7 +156,7 @@ export function toolResultPart(
     return {
       type: "tool_result",
       toolUseId,
-      content: toolResultContent(toolName, toolOutput),
+      content: toolResultContent(toolName, toolOutput, options.onScanBound),
       ...(isError && { isError }),
     };
   }

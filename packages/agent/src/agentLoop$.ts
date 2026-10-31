@@ -1,4 +1,4 @@
-import { isTainted, nestedTaintOrigin, taintOf, tainted } from "@loom/classify";
+import { isTainted, taintOf, tainted } from "@loom/classify";
 import type { AgentDefinition, ExecutableTask, ToolDefinition } from "@loom/core";
 import {
   TypedFailure,
@@ -40,7 +40,7 @@ import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { type SkillActivationConfig, SkillActivationSession } from "./skillActivation";
 import { isTerminalToolError, markToolRaised } from "./toolFailure";
-import { inlineBytesIn, toolResultPart } from "./toolResultContent";
+import { inlineBytesIn, toolResultPart, toolResultPartOrigin } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import { type ToolSearchConfig, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
 import type { AgentInput, AgentOutput, AgentStep, LeanAgentStep } from "./types";
@@ -510,6 +510,12 @@ export const DEFAULT_STATE_GROWTH_WARN_BYTES = 256 * 1024;
  * fails the run: a throw (or a rejecting Promise a sink returned) is swallowed, and so is a failing
  * `process.emitWarning`.
  */
+/**
+ * A transcript slice that holds untrusted content: a taint wrapper or a media part marked `untrusted`.
+ * A summary written over it is itself derived from untrusted text (over-matching only over-fences).
+ */
+const UNTRUSTED_IN_TRANSCRIPT = /"__loomTainted"|"untrusted":\{/;
+
 function emitLoopWarning(config: AgentLoopConfig, message: string, code: string): void {
   try {
     const sink = config.onWarn ?? loopDefaultsSlot().onWarn;
@@ -1175,6 +1181,14 @@ export async function agentLoop$(
     }
   };
 
+  /**
+   * Provenance of the run so far: the origin of the first untrusted thing the run was SHOWN (a tainted
+   * tool result, an untrusted media part, a recalled tainted memory entry). The answer is written back
+   * tainted when set, so taint survives every hop through memory.
+   */
+  let sawTaintFrom: string | undefined;
+  const warnedScanBound = new Set<string>();
+
   if (config.memory !== undefined) {
     const tier = config.memoryTier ?? "working";
     const scope = config.memoryScope ?? ctx.executionId;
@@ -1187,6 +1201,8 @@ export async function agentLoop$(
     });
     for (const entry of recalled) {
       if (isTainted(entry.content)) {
+        // A recalled tainted entry is untrusted input to THIS run: whatever it answers is derived from it.
+        sawTaintFrom ??= taintOf(entry.content)?.origin ?? "unknown";
         // Written back from a run that saw untrusted content: it stays untrusted. A fenced `user`
         // message, whatever role it was stored under (the guard refuses taint in assistant position).
         pushMessage({ role: "user", content: entry.content as LlmContent }, [
@@ -1299,9 +1315,6 @@ export async function agentLoop$(
     /** D14 — the size compaction's byte trigger counts for this result, when not its own (a changed skill text on replay). */
     virtualBytes?: number;
   }
-  /** Provenance of the run so far: the origin of the first tainted tool result, if any. */
-  let sawTaintFrom: string | undefined;
-
   /**
    * Everything that can settle a call WITHOUT running it: the oversize refusal, the approval gate,
    * the menu / input check. Pure of the recorded model response plus the approval verdicts, so a
@@ -1489,16 +1502,20 @@ export async function agentLoop$(
   ): Promise<void> => {
     const results: LlmToolResultPartInput[] = [];
     const sizes: number[] = [];
+    const warnScanBound = (toolName: string): void => {
+      if (warnedScanBound.has(toolName)) return;
+      warnedScanBound.add(toolName);
+      emitLoopWarning(
+        config,
+        `agentLoop$: the result of tool "${toolName}" is too large or deep to scan for untrusted content and its text carries a taint marker, so the whole tool_result is fenced as untrusted (fail closed). Return less data from the tool, or claim-check it.`,
+        "LOOM_AGENT_TAINT_SCAN_BOUND"
+      );
+    };
     const record = (
       toolCall: LlmToolCall,
       j: number,
       { output, isError, virtualBytes }: Outcome
     ): void => {
-      if (sawTaintFrom === undefined) {
-        sawTaintFrom = isTainted(output)
-          ? (taintOf(output)?.origin ?? "unknown")
-          : nestedTaintOrigin(output); // a wrapper nested in the result (A2A `content`), #735
-      }
       toolCallLog.push(
         lean
           ? {
@@ -1518,7 +1535,11 @@ export async function agentLoop$(
         isError,
         allowMedia: mediaTools.has(toolCall.name),
         inlineBudget: MAX_INLINE_TOTAL_BYTES - inlineUsed,
+        onScanBound: warnScanBound,
       });
+      // The run's taint comes from the part the model is actually shown (serialized text or an
+      // untrusted media part), never from a separate walk of the live value (#735).
+      sawTaintFrom ??= toolResultPartOrigin(part);
       inlineUsed += inlineBytesIn(part);
       results.push(part);
       sizes.push(virtualBytes ?? resultBytes(part));
@@ -1688,7 +1709,7 @@ export async function agentLoop$(
               assertNotClaimChecked("compaction", compaction.toolId, compacted);
               const { summary } = compacted as { summary: string };
               const summaryText = `Summary of earlier turns: ${summary}`;
-              const summaryContent: LlmContent = JSON.stringify(fold).includes('"__loomTainted"')
+              const summaryContent: LlmContent = UNTRUSTED_IN_TRANSCRIPT.test(JSON.stringify(fold))
                 ? tainted(summaryText, "agent:compaction-summary")
                 : summaryText;
               const frame = simpleCompactionMessage(summaryContent, messages);
@@ -1733,7 +1754,7 @@ export async function agentLoop$(
               // R17 (ADR 0122) — a summary written over content any of which was untrusted is itself
               // model output derived from untrusted text. Re-inserted as a plain `user` message it would
               // shed the fence; carry the taint so the prompt boundary keeps fencing it.
-              const summaryContent: LlmContent = JSON.stringify(fold).includes('"__loomTainted"')
+              const summaryContent: LlmContent = UNTRUSTED_IN_TRANSCRIPT.test(JSON.stringify(fold))
                 ? tainted(summaryText, "agent:compaction-summary")
                 : summaryText;
               messages.push({ role: "user", content: summaryContent }, ...recent);
