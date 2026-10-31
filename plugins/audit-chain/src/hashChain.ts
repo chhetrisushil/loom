@@ -462,6 +462,15 @@ export function hashChainedEventStore(
     // last surviving event, and a log compacted through its tip would leave `[0]`, so the next append
     // would chain onto the bootstrap and break the chain (H1). The archive holds the tip too (a
     // duplicate `readWithArchive` compares byte-exact), so nothing is lost by leaving it.
+    // ADR 0139 D8: a bounded delete of a stream's drained prefix (the durable inbox's terminal delete).
+    // The cached tail hash is dropped with it; what remains above `through` keeps its own prevHash.
+    deleteThrough: async (executionId: string, through: number): Promise<void> => {
+      lastHash.delete(executionId);
+      await (inner.deleteThrough as (id: string, through: number) => Promise<void>)(
+        executionId,
+        through
+      );
+    },
     truncatePrefix:
       options.allowCompaction === true
         ? async (executionId: string, through: number) => {

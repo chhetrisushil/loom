@@ -283,6 +283,43 @@ export class ReservedStreamArchiveRequiredError extends Error {
 }
 
 /**
+ * ADR 0139 M1 - the durable inbox is on and no archive was configured for it (and none could be defaulted:
+ * the event store is not in-memory, or it seals/is tenant-scoped in a way a default cannot follow). The
+ * inbox MOVES what a trim or delete removes into an archive, so a deployment without one could only
+ * keep every stream forever (until `inboxMaxRetained` refuses sends). Refused at construction rather than
+ * discovered at the first trim. Pass `inboxArchive` (the compaction archive; `defineConfig` does), or
+ * `inboxArchive: "none"` to run without trimming and say so.
+ */
+export class InboxArchiveRequiredError extends Error {
+  readonly retryable = false;
+  constructor() {
+    super(
+      'kernel.features.inbox needs an archive to MOVE trimmed and deleted inbox envelopes into (ADR 0139), and none was configured. Pass `inboxArchive` to `new WorkflowRuntime(...)`, or `storage.archiveStore` / `durability.retention.compactionArchive` to defineConfig (`sqliteStorage()`, `postgresStorage()` and `storage: { kind: "memory" }` provide one). To run WITHOUT trimming, say so: `inboxArchive: "none"` (streams then grow until `inboxMaxRetained` refuses sends). An in-memory event store gets an in-memory archive by default; a sealing or tenant-scoped one needs it passed explicitly.'
+    );
+    this.name = "InboxArchiveRequiredError";
+    Object.setPrototypeOf(this, InboxArchiveRequiredError.prototype);
+  }
+}
+
+/**
+ * ADR 0139 D8 - a reserved-stream delete needs `EventStore.deleteThrough` (SPI 2.6.0), the one atomic
+ * delete bounded by what was archived, and the event store has none. The only alternative is a
+ * whole-stream `deleteExecution`, which would remove a message appended after the archive's read
+ * without archiving it, so the delete is REFUSED: the stream is kept (archived, intact, and retried
+ * by the next terminal, send re-check or `reclaimInbox`). Nothing was removed.
+ */
+export class ReservedStreamDeleteUnsupportedError extends Error {
+  readonly retryable = false;
+  constructor(readonly streamId: string) {
+    super(
+      `refusing to delete reserved stream "${streamId}": the event store has no \`deleteThrough\` (EventStore SPI 2.6.0), so a message appended after the stream was archived could not be told from one that was, and a whole-stream delete would lose it silently (ADR 0139 D8). The stream was kept. Use a store that implements \`deleteThrough\` (the in-memory, SQLite and Postgres stores do; decorators forward it).`
+    );
+    this.name = "ReservedStreamDeleteUnsupportedError";
+    Object.setPrototypeOf(this, ReservedStreamDeleteUnsupportedError.prototype);
+  }
+}
+
+/**
  * Compaction would remove an event that is neither in the archive nor after the archive's last
  * segment (for example a kind a previous compaction kept, released later by changing
  * `pinnedEventTypes`): the archive is append-only and contiguous, so it cannot take the event.

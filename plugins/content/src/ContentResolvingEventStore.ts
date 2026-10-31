@@ -88,6 +88,7 @@ export class ContentResolvingEventStore implements EventStore {
   readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
+  readonly deleteThrough?: NonNullable<EventStore["deleteThrough"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
@@ -179,6 +180,7 @@ export class ContentResolvingEventStore implements EventStore {
       // Forwarded so a content-wrapped store keeps its retention/compaction capabilities.
       // These reclaim EVENTS only; blob reclamation is separate (see the class note).
       deleteExecution: "forward",
+      deleteThrough: "forward",
       truncatePrefix: "forward",
       truncatePrefixKeeping: "forward",
       // Enumeration is over executionIds only — no payload, so no resolution needed.

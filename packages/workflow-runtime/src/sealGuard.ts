@@ -398,6 +398,7 @@ export class SealGuardedEventStore implements EventStore {
       },
       copyPrefix: "forward", // copies the stored bytes verbatim in the inner store: nothing is read here
       deleteExecution: "forward",
+      deleteThrough: "forward",
       truncatePrefix: "forward",
       truncatePrefixKeeping: "forward",
       listExecutions: "forward",

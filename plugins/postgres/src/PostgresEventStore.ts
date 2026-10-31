@@ -909,6 +909,22 @@ export class PostgresEventStore implements EventStore {
     // the only thing that keeps a zombie writer of a re-created id fenced out.
   }
 
+  async deleteThrough(executionId: string, through: number): Promise<void> {
+    await this.ready;
+    // ADR 0139 D8: like deleteExecution, take the fence row first so a conditional append and this delete
+    // are strictly ordered; the DELETE is bounded by `through` in ONE statement (a message appended above
+    // it survives), and the inert token-0 fence row goes only when nothing of the log remains.
+    const id = `convert_from(decode('${Buffer.from(executionId, "utf8").toString("hex")}', 'hex'), 'UTF8')`;
+    if (!Number.isSafeInteger(through))
+      throw new TypeError("deleteThrough: through must be a safe integer");
+    await this.pool.query(
+      `INSERT INTO fences (execution_id, fence) VALUES (${id}, 0) ON CONFLICT (execution_id) DO NOTHING;
+       SELECT fence FROM fences WHERE execution_id = ${id} FOR UPDATE;
+       DELETE FROM events WHERE execution_id = ${id} AND sequence <= ${through};
+       DELETE FROM fences WHERE execution_id = ${id} AND fence = 0 AND NOT EXISTS (SELECT 1 FROM events WHERE execution_id = ${id})`
+    );
+  }
+
   async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {
     await this.ready;
     // Preserve sequence 0 (bootstrap anchor); drop (0..throughSequence].

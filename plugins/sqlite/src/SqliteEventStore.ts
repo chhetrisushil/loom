@@ -341,6 +341,13 @@ export class SqliteEventStore implements EventStore {
     this.db.prepare<[string]>("DELETE FROM events WHERE execution_id = ?").run(executionId);
   }
 
+  async deleteThrough(executionId: string, through: number): Promise<void> {
+    // ADR 0139 D8 - one statement, sequence 0 included; events above `through` are untouched.
+    this.db
+      .prepare<[string, number]>("DELETE FROM events WHERE execution_id = ? AND sequence <= ?")
+      .run(executionId, through);
+  }
+
   async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {
     // Preserve sequence 0 (bootstrap anchor); drop (0..throughSequence].
     this.db

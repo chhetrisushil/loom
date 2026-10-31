@@ -205,6 +205,7 @@ export class ShardedEventStore implements EventStore {
   readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
   readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
+  readonly deleteThrough?: NonNullable<EventStore["deleteThrough"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
@@ -274,6 +275,12 @@ export class ShardedEventStore implements EventStore {
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);
+      },
+      // Bounded by `through`, so a stream a caller drains stays placed while anything above it remains.
+      deleteThrough: async (id, through) => {
+        const shard = await this.route(id);
+        await shard.deleteThrough!(id, through);
+        if ((await headOf(shard, id)) === null) this.placementCache.delete(id);
       },
       truncatePrefix: async (id, through) => (await this.route(id)).truncatePrefix!(id, through),
       truncatePrefixKeeping: async (id, through, keep) =>

@@ -156,9 +156,11 @@ export interface EventStoreConformanceOptions {
    * still runs. Declaring `"2.3.0"` (or nothing) while not meeting the MUST fails the kit, which
    * is the point: the claim is the thing under test. A store that claims `"2.4.0"` (it predates
    * `sealingCapability`, SPI 2.5.0, ADR 0130 residuals D7) skips the 2.5.0 case; the default claim
-   * is the current version, `"2.5.0"`.
+   * is the current version, `"2.6.0"`. A store that claims `"2.5.0"` predates `deleteThrough` (SPI 2.6.0,
+   * ADR 0139 D8) and skips its cases; a store that implements `deleteThrough` while claiming less is still
+   * checked (the method is optional, so presence is what is tested).
    */
-  eventStoreSpi?: "2.2.0" | "2.3.0" | "2.4.0" | "2.5.0";
+  eventStoreSpi?: "2.2.0" | "2.3.0" | "2.4.0" | "2.5.0" | "2.6.0";
 }
 
 /**
@@ -208,9 +210,9 @@ export function runEventStoreConformance(
   label = "EventStore",
   options: EventStoreConformanceOptions = {}
 ): void {
-  const claimed = options.eventStoreSpi ?? "2.5.0";
+  const claimed = options.eventStoreSpi ?? "2.6.0";
   const it23 = claimed === "2.2.0" ? it.skip : it;
-  const it25 = claimed === "2.5.0" ? it : it.skip;
+  const it25 = claimed === "2.5.0" || claimed === "2.6.0" ? it : it.skip;
   describe(`${label} conformance (EventStore SPI)`, () => {
     it("append + read returns an execution's events in sequence order", async () => {
       const store = factory();
@@ -362,6 +364,39 @@ export function runEventStoreConformance(
       // cannot be re-created is a leak with a user-visible symptom.
       await expect(store.append(evt("del", 0))).resolves.toBeUndefined();
       expect(await store.read("del")).toHaveLength(1);
+      await store.close();
+    });
+
+    it("deleteThrough (if implemented) removes sequence <= through, sequence 0 included, and keeps the rest (SPI 2.6.0)", async () => {
+      const store = factory();
+      if (store.deleteThrough === undefined) return void (await store.close());
+      await store.append(evt("dt", 0, "EXECUTION_STARTED"));
+      for (let i = 1; i <= 4; i++) await store.append(evt("dt", i));
+      await store.deleteThrough("dt", 2);
+      expect((await store.read("dt")).map((e) => e.sequence)).toEqual([3, 4]);
+      // the freed ids can be re-used; the survivors cannot be re-appended
+      await store.append(evt("dt", 5));
+      expect((await store.read("dt")).map((e) => e.sequence)).toEqual([3, 4, 5]);
+      await store.deleteThrough("dt", 2); // idempotent
+      expect((await store.read("dt")).map((e) => e.sequence)).toEqual([3, 4, 5]);
+      await store.close();
+    });
+
+    it("deleteThrough (if implemented) leaves a later append alone and, drained, removes the execution (SPI 2.6.0)", async () => {
+      const store = factory();
+      if (store.deleteThrough === undefined) return void (await store.close());
+      await store.append(evt("dtd", 0, "EXECUTION_STARTED"));
+      await store.append(evt("dtd", 1));
+      const through = (await store.read("dtd")).at(-1)?.sequence as number;
+      await store.append(evt("dtd", 2)); // lands after the caller's read
+      await store.deleteThrough("dtd", through);
+      expect((await store.read("dtd")).map((e) => e.sequence)).toEqual([2]);
+      await store.deleteThrough("dtd", 2);
+      expect(await store.read("dtd")).toEqual([]);
+      if (store.head !== undefined) expect(await store.head("dtd")).toBeNull();
+      // gone like deleteExecution: the id can start over
+      await store.append(evt("dtd", 0));
+      expect((await store.read("dtd")).map((e) => e.sequence)).toEqual([0]);
       await store.close();
     });
 

@@ -4,6 +4,7 @@ import {
   INBOX_STREAM_PREFIX,
   INBOX_TOPIC_SEQ_BASE,
   QUARANTINE_STREAM_PREFIX,
+  archiveChainOf,
   hasInboxStreamShape,
   inboxChainOf,
   inboxRegistryStreamId,
@@ -12,6 +13,8 @@ import {
   inboxTopicStreamId,
   isReservedStream,
   quarantineStreamId,
+  reservedLateKey,
+  reservedLateOrigin,
 } from "./types";
 
 // ADR 0110 amendment, D10b — the naming of a chain's inbox streams, shared by the runtime, the
@@ -50,6 +53,23 @@ describe("inbox stream naming", () => {
     for (const ok of ["x", "x#0", "x#0123456789abcde", "x#0123456789abcdeg", "x#regs", "x::g#0"]) {
       expect(hasInboxStreamShape(ok)).toBe(false);
     }
+  });
+
+  it("ADR 0139 M4: a late-run archive key never changes what a LIVE id means", () => {
+    // a live chain id that ends like the old `#late-<n>` suffix is still its own chain
+    expect(inboxChainOf(`${INBOX_STREAM_PREFIX}${"job#late-1"}`)).toBe("job#late-1");
+    expect(hasInboxStreamShape("job#late-1")).toBe(false);
+    expect(inboxChainOf(`${INBOX_STREAM_PREFIX}${"job@2"}`)).toBe("job@2");
+    // the archive key is a different, reserved namespace that `start` refuses for every id
+    const key = reservedLateKey(`${INBOX_STREAM_PREFIX}${"job@2"}`, 3);
+    expect(isReservedStream(key)).toBe(true);
+    expect(inboxChainOf(key)).toBeUndefined();
+    expect(reservedLateOrigin(key)).toEqual({ streamId: `${INBOX_STREAM_PREFIX}${"job@2"}`, n: 3 });
+    expect(archiveChainOf(key)).toBe("job@2");
+    expect(archiveChainOf(`${INBOX_STREAM_PREFIX}${"job@2"}`)).toBe("job@2");
+    expect(reservedLateOrigin(`${INBOX_STREAM_PREFIX}${"job@2"}`)).toBeUndefined();
+    expect(archiveChainOf(reservedLateKey(inboxTopicStreamId("c1", "t"), 1))).toBe("c1");
+    expect(archiveChainOf(reservedLateKey(quarantineStreamId("c1"), 2))).toBe("c1");
   });
 
   it("topic streams live above the legacy sequence space", () => {

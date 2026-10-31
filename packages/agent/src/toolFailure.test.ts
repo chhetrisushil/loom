@@ -112,6 +112,8 @@ const TERMINAL = new Set([
   "ArchiveGapError",
   "CompactionArchiveRequiredError",
   "ReservedStreamArchiveRequiredError",
+  "ReservedStreamDeleteUnsupportedError",
+  "InboxArchiveRequiredError",
   "PlaintextArchiveError",
   "ArchiveConflictError",
   "ArchiveDigestError",

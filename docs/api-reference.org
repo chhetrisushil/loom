@@ -972,7 +972,7 @@ the check.
 
 #+begin_src typescript
 type OptionalEventStoreMethod = "appendBatch" | "readRange" | "head" | "acquireFence" | "copyPrefix"
-  | "deleteExecution" | "truncatePrefix" | "truncatePrefixKeeping" | "listExecutions"
+  | "deleteExecution" | "deleteThrough" | "truncatePrefix" | "truncatePrefixKeeping" | "listExecutions"
   | "listExecutionsPage";                                                          // derived from EventStore
 const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]            // compile-time exhaustive
 type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
@@ -1403,6 +1403,11 @@ interface EncryptingSnapshotStoreOptions {
 // envelopes exactly as stored, never decrypted; EncryptingEventStore implements it, decorators forward it.
 // EncryptingSnapshotStoreOptions.events?: EventStore — the RAW event store, so a missing key is judged by the
 // log's PAYLOAD_SHREDDED tombstone (PayloadShreddedError) vs none (KeyUnavailableError); without it the old PayloadShreddedError stands.
+// EventStore SPI 2.6.0 (ADR 0139 D8): deleteThrough?(executionId, through) - ONE atomic delete of every event with
+// sequence <= through, sequence 0 included; a concurrent append above `through` survives. Callers that need it refuse without it.
+// EncryptingEventStoreOptions.senderSubjectOf?: (sender) => string | undefined (ADR 0139 D12) - seals an inbox envelope's
+// sender under the SENDER's subject (an OPAQUE handle); a read after the sender's shred yields { erased: true }.
+// EncryptingArchiveStoreOptions.senderSubjectOf? - the same mapping for the archive; encryptingEventStore.sealArchive(archive).
 // import { seededIvSource, type IvSource } from "@loom/plugin-crypto/testing";   // deterministic IVs for DST
 class KeyUnavailableError extends Error { code: "KEY_UNAVAILABLE"; subjectId: string; streamId?: string }  // @loom/event-runtime
 // key absent and NO tombstone: this node's KeyStore lacks it. The kernel turns it into a denial-shaped

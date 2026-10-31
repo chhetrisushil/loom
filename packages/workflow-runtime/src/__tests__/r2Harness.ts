@@ -150,7 +150,8 @@ export function build(
     snapshotStore,
     effectRuntime: effects,
     inboxEnabled: true,
-    ...(archive !== undefined && { inboxArchive: archive }),
+    // `archive: null` is the explicit "no inbox archive" (ADR 0139 M1: the runtime refuses to start without one)
+    inboxArchive: archive ?? "none",
     ...(timers !== undefined && { timerStore: timers }),
     onWarn: (m: string) => warnings.push(m),
     onStorageError: (_id: string, e: unknown) => storageErrors.push(e),

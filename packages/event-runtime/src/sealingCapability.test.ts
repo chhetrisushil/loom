@@ -39,7 +39,7 @@ class Sealing extends InMemoryAsyncEventStore {
 
 describe("EventStore SPI 2.5.0: sealingCapability", () => {
   it("is version 2.5.0 and is a listed optional method (so every decorator plan must decide it)", () => {
-    expect(EVENT_STORE_SPI_VERSION).toBe("2.5.0");
+    expect(EVENT_STORE_SPI_VERSION).toBe("2.6.0");
     expect(OPTIONAL_EVENT_STORE_METHODS).toContain("sealingCapability");
   });
 

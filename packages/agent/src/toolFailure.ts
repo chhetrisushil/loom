@@ -65,6 +65,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "ArchiveGapError",
   "CompactionArchiveRequiredError",
   "ReservedStreamArchiveRequiredError",
+  "ReservedStreamDeleteUnsupportedError",
+  "InboxArchiveRequiredError",
   "PlaintextArchiveError",
   "ArchiveConflictError",
   "ArchiveDigestError",

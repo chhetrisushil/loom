@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  ArchiveIncarnationError,
   type ArchiveStore,
   type EventStore,
   INBOX_TOPIC_SEQ_BASE,
@@ -10,6 +11,8 @@ import {
   inboxRegistryStreamId,
   inboxTopicStreamId,
   quarantineStreamId,
+  reservedLateKey,
+  segmentDigest,
 } from "@loom/event-runtime";
 import {
   EncryptingArchiveStore,
@@ -29,9 +32,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { ReservedStreamArchive, reservedIncarnation } from "./archiveMove";
 import {
+  ArchiveIncompleteError,
   ArchiveTenantMismatchError,
   PlaintextArchiveError,
   ReservedStreamArchiveRequiredError,
+  ReservedStreamDeleteUnsupportedError,
 } from "./checkpointGuard";
 import {
   INBOX_FLOOR_KIND,
@@ -138,7 +143,7 @@ for (const backend of BACKENDS) {
       ]);
       expect(headers.every((h) => h.incarnation === reservedIncarnation(stream))).toBe(true);
       const life = lifecycle(eventStore, archive);
-      expect(clone(await life.readReservedWithArchive(stream))).toEqual(original);
+      expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(original);
       expect((await life.reservedArchiveCoverage(stream)).unarchived).toEqual([]);
     });
 
@@ -164,7 +169,7 @@ for (const backend of BACKENDS) {
         INBOX_TOPIC_SEQ_BASE + 5,
       ]);
       const life = lifecycle(eventStore, archive);
-      expect(clone(await life.readReservedWithArchive(stream))).toEqual(original);
+      expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(original);
     });
 
     it("trimQuarantine: the freed copies are recoverable; only the anchor stays", async () => {
@@ -186,7 +191,7 @@ for (const backend of BACKENDS) {
       expect(r).toEqual({ head: 3, oldestPinned: null });
       expect((await eventStore.read(stream)).map((e) => e.sequence)).toEqual([0]);
       const life = lifecycle(eventStore, archive);
-      expect(clone(await life.readReservedWithArchive(stream))).toEqual(before);
+      expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(before);
 
       // the next copy does NOT reuse an archived sequence: it lands above the archive's last
       const floor = moved.floorOf;
@@ -249,9 +254,9 @@ for (const backend of BACKENDS) {
       expect(await trimInbox(failing, c, { x: 5 }, -1, moved)).toBe(5);
       expect((await archive.headers(stream)).map((h) => [h.from, h.through])).toEqual([[0, 5]]);
       expect((await eventStore.read(stream)).map((e) => e.sequence)).toEqual([0, 6, 7]);
-      expect(clone(await lifecycle(eventStore, archive).readReservedWithArchive(stream))).toEqual(
-        original
-      );
+      expect(
+        clone((await lifecycle(eventStore, archive).readReservedWithArchive(stream)).events)
+      ).toEqual(original);
     });
 
     it("the terminal delete MOVES every stream of the chain; a re-created stream starts above the archive", async () => {
@@ -275,7 +280,7 @@ for (const backend of BACKENDS) {
       for (const s of [topic, legacy, registry]) expect(await eventStore.read(s)).toEqual([]);
       const life = lifecycle(eventStore, archive);
       for (const [s, original] of Object.entries(originals)) {
-        expect(clone(await life.readReservedWithArchive(s))).toEqual(original);
+        expect(clone((await life.readReservedWithArchive(s)).events)).toEqual(original);
       }
       // a send after the delete (the race) allocates ABOVE what the archive holds
       const again = await appendInboxMessage(
@@ -297,6 +302,15 @@ for (const backend of BACKENDS) {
     it("a straggler (a sequence the archive already holds, with other content) is archived in a late run, not dropped", async () => {
       const { eventStore, archive } = backend.make();
       const c = chain("late");
+      await eventStore.append({
+        id: `${c}-0`,
+        workflowId: "w",
+        executionId: c,
+        eventType: "EXECUTION_STARTED",
+        sequence: 0,
+        timestamp: 1,
+        payload: {},
+      });
       const stream = inboxTopicStreamId(c, "y");
       await appendInboxMessage(eventStore, c, message("y", 0), now, true);
       const moved = new ReservedStreamArchive(archive, eventStore);
@@ -314,25 +328,18 @@ for (const backend of BACKENDS) {
       await eventStore.append(straggler);
       await deleteInbox(eventStore, c, true, moved);
       expect(await eventStore.read(stream)).toEqual([]);
-      const late = await archive.read(`${stream}#late-1`);
+      const late = await archive.read(reservedLateKey(stream, 1));
       expect(late).toHaveLength(1);
       expect(clone(late[0]?.envelopes)).toEqual([straggler]);
       // a crash-retry of the same straggler is an exact repeat: nothing new is written
       await eventStore.append(straggler);
       await deleteInbox(eventStore, c, true, moved);
-      expect(await archive.headers(`${stream}#late-1`)).toHaveLength(1);
+      expect(await archive.headers(reservedLateKey(stream, 1))).toHaveLength(1);
       // the export-side reader returns it, tagged with its stream (for the chain's generation-0 execution)
-      await eventStore.append({
-        id: `${c}-0`,
-        workflowId: "w",
-        executionId: c,
-        eventType: "EXECUTION_STARTED",
-        sequence: 0,
-        timestamp: 1,
-        payload: {},
-      });
       const read = await lifecycle(eventStore, archive).readReservedArchive(c);
-      expect(read.map((r) => r.streamId).sort()).toEqual([stream, `${stream}#late-1`].sort());
+      expect(read.map((r) => r.streamId).sort()).toEqual(
+        [stream, reservedLateKey(stream, 1)].sort()
+      );
     });
 
     it("the floor marker of a re-opened chain is seeded above the archive", async () => {
@@ -347,6 +354,210 @@ for (const backend of BACKENDS) {
       const [marker] = await eventStore.read(legacy);
       expect(marker?.eventType).toBe(INBOX_FLOOR_KIND);
       expect(marker?.sequence).toBe(4);
+    });
+
+    // ── the review of #729 ────────────────────────────────────────────────────────────────────────
+
+    const ids = (events: readonly EventEnvelope[]): unknown[] =>
+      events.map((e) => (e.payload as { messageId?: string }).messageId);
+    const ownerStart = (c: string, timestamp = 1): EventEnvelope => ({
+      id: `${c}-0`,
+      workflowId: "w",
+      executionId: c,
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp,
+      payload: {},
+    });
+
+    it("B1: a message appended between the archive's read and the delete survives it, and the next delete archives it", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("race");
+      const stream = inboxStreamId(c);
+      for (let i = 0; i < 3; i++) await appendInboxMessage(eventStore, c, message("x", i), now);
+      const moved = new ReservedStreamArchive(archive, eventStore);
+      const store = eventStore as { deleteThrough?: EventStore["deleteThrough"] };
+      const real = store.deleteThrough?.bind(eventStore) as NonNullable<
+        EventStore["deleteThrough"]
+      >;
+      let injected = false;
+      store.deleteThrough = async (id, through) => {
+        if (!injected && id === stream) {
+          injected = true; // the send lands after moveAll read the stream, before the delete
+          await appendInboxMessage(eventStore, c, message("x", 99), now, false, moved.floorOf);
+        }
+        return real(id, through);
+      };
+      await deleteInbox(eventStore, c, false, moved);
+      // not swept away: it is the live remainder of the stream
+      expect(ids(await eventStore.read(stream))).toEqual(["m99"]);
+      // the sender's re-check (retireInbox) / reclaimInbox runs the same bounded delete again
+      await deleteInbox(eventStore, c, false, moved);
+      expect(await eventStore.read(stream)).toEqual([]);
+      const read = await lifecycle(eventStore, archive).readReservedWithArchive(stream);
+      expect(ids(read.events)).toEqual(["m0", "m1", "m2", "m99"]);
+    });
+
+    it("B1: a store without deleteThrough REFUSES the delete and keeps the stream (never a whole-stream delete)", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("nodt");
+      const stream = inboxStreamId(c);
+      for (let i = 0; i < 2; i++) await appendInboxMessage(eventStore, c, message("x", i), now);
+      let wholeDeletes = 0;
+      const legacyStore = Object.create(eventStore, {
+        deleteThrough: { value: undefined },
+        deleteExecution: {
+          value: async () => {
+            wholeDeletes++;
+          },
+        },
+      }) as EventStore;
+      const moved = new ReservedStreamArchive(archive, legacyStore);
+      await expect(deleteInbox(legacyStore, c, false, moved)).rejects.toThrow(
+        ReservedStreamDeleteUnsupportedError
+      );
+      expect(wholeDeletes).toBe(0);
+      expect(ids(await eventStore.read(stream))).toEqual(["m0", "m1"]);
+    });
+
+    it("B2: a stream trimmed BEFORE the archive existed reports the lost range, never reads as covered", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("legacy-gap");
+      const stream = inboxStreamId(c);
+      for (let i = 0; i < 10; i++) await appendInboxMessage(eventStore, c, message("x", i), now);
+      await eventStore.truncatePrefix?.(stream, 5); // a pre-ADR trim: 1..5 gone, nothing archived
+      const moved = new ReservedStreamArchive(archive, eventStore);
+      await moved.moveThrough(stream, 7);
+      await eventStore.truncatePrefix?.(stream, 7);
+      // sequence 0 is its own segment; the next starts at ITS first envelope, never below it
+      expect((await archive.headers(stream)).map((h) => [h.from, h.through])).toEqual([
+        [0, 0],
+        [6, 7],
+      ]);
+      const life = lifecycle(eventStore, archive);
+      expect((await life.reservedArchiveCoverage(stream)).unarchived).toEqual([
+        { from: 1, through: 5, why: "missing" },
+      ]);
+      await expect(life.readReservedWithArchive(stream)).rejects.toThrow(ArchiveIncompleteError);
+      const partial = await life.readReservedWithArchive(stream, { allowIncomplete: true });
+      expect(partial.events.map((e) => e.sequence)).toEqual([0, 6, 7, 8, 9]);
+    });
+
+    it("B2/M3: the same after the terminal delete (nothing live): the archive's own extent is judged", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("legacy-gap-del");
+      const stream = inboxStreamId(c);
+      await eventStore.append(ownerStart(c));
+      for (let i = 0; i < 10; i++) await appendInboxMessage(eventStore, c, message("x", i), now);
+      await eventStore.truncatePrefix?.(stream, 5);
+      await deleteInbox(eventStore, c, false, new ReservedStreamArchive(archive, eventStore));
+      expect(await eventStore.read(stream)).toEqual([]);
+      const life = lifecycle(eventStore, archive);
+      expect((await life.reservedArchiveCoverage(stream)).unarchived).toEqual([
+        { from: 1, through: 5, why: "missing" },
+      ]);
+      await expect(life.readReservedWithArchive(stream)).rejects.toThrow(ArchiveIncompleteError);
+      // the export reports the range instead of hiding it
+      const exported = await life.readReservedArchive(c);
+      expect(exported.find((r) => r.streamId === stream)?.unarchived).toEqual([
+        { from: 1, through: 5, why: "missing" },
+      ]);
+    });
+
+    it("B3: a re-created stream's sequence 0 is compared byte-exact; a different one is a straggler, not dropped", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("seq0");
+      const stream = inboxStreamId(c);
+      for (let i = 0; i < 3; i++) await appendInboxMessage(eventStore, c, message("x", i), now);
+      const moved = new ReservedStreamArchive(archive, eventStore);
+      await deleteInbox(eventStore, c, false, moved);
+      // a node WITHOUT an archive floor re-creates the stream at its base
+      await appendInboxMessage(eventStore, c, message("x", 42), now);
+      expect((await eventStore.read(stream)).map((e) => e.sequence)).toEqual([0]);
+      await deleteInbox(eventStore, c, false, moved);
+      expect(await eventStore.read(stream)).toEqual([]);
+      const read = await lifecycle(eventStore, archive).readReservedWithArchive(stream);
+      expect(ids(read.events)).toEqual(["m0", "m1", "m2"]);
+      expect(read.lateRuns.map((r) => ids(r.events))).toEqual([["m42"]]);
+    });
+
+    it("B3: a re-created quarantine anchor and copy are archived in a late run", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("qanchor");
+      const stream = quarantineStreamId(c);
+      await appendInboxMessage(eventStore, c, message("a", 0), now);
+      const [first] = await eventStore.read(inboxStreamId(c));
+      await appendQuarantineCopy(eventStore, c, first as EventEnvelope, "k0", "a", 0);
+      const moved = new ReservedStreamArchive(archive, eventStore);
+      await deleteInbox(eventStore, c, false, moved);
+      await appendQuarantineCopy(eventStore, c, first as EventEnvelope, "k1", "a", 5); // no floor
+      await deleteInbox(eventStore, c, false, moved);
+      expect(await eventStore.read(stream)).toEqual([]);
+      const read = await lifecycle(eventStore, archive).readReservedWithArchive(stream);
+      const lateIds = read.lateRuns.flatMap((r) => r.events.map((e) => e.id));
+      expect(lateIds.some((id) => id.includes("k1"))).toBe(true);
+      expect(read.events.some((e) => e.id.includes("k0"))).toBe(true);
+    });
+
+    it("M2: the incarnation is the chain owner's bootstrap; a reused chain id refuses the previous run's segments", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("reuse");
+      const stream = inboxStreamId(c);
+      await eventStore.append(ownerStart(c, 1));
+      for (let i = 0; i < 4; i++) await appendInboxMessage(eventStore, c, message("x", i), now);
+      const moved = new ReservedStreamArchive(archive, eventStore);
+      await deleteInbox(eventStore, c, false, moved);
+      const [bootstrap] = await eventStore.read(c);
+      expect((await archive.headers(stream))[0]?.incarnation).toBe(
+        segmentDigest([bootstrap as EventEnvelope])
+      );
+      // retention deleted the execution (a retention archive kept the segments), then the id was reused
+      await eventStore.deleteExecution?.(c);
+      await eventStore.append(ownerStart(c, 2));
+      await appendInboxMessage(eventStore, c, message("x", 50), now);
+      await expect(moved.floorOf(stream)).rejects.toThrow(ArchiveIncarnationError);
+      await expect(
+        deleteInbox(eventStore, c, false, new ReservedStreamArchive(archive, eventStore))
+      ).rejects.toThrow(ArchiveIncarnationError);
+      const life = lifecycle(eventStore, archive);
+      await expect(life.readReservedWithArchive(stream)).rejects.toThrow(ArchiveIncarnationError);
+      await expect(life.readReservedArchive(c)).rejects.toThrow(ArchiveIncarnationError);
+      expect(ids(await eventStore.read(stream))).toEqual(["m50"]); // nothing was removed
+    });
+
+    it("M3: late runs are returned (tagged, apart from the main run) and counted by the coverage", async () => {
+      const { eventStore, archive } = backend.make();
+      const c = chain("lateread");
+      const stream = inboxStreamId(c);
+      await eventStore.append(ownerStart(c));
+      await appendInboxMessage(eventStore, c, message("x", 0), now);
+      await appendInboxMessage(eventStore, c, message("x", 1), now);
+      const moved = new ReservedStreamArchive(archive, eventStore);
+      await deleteInbox(eventStore, c, false, moved);
+      await eventStore.append({
+        id: `${stream}-1`,
+        workflowId: "__loom_inbox__",
+        executionId: stream,
+        eventType: "INBOX_MESSAGE",
+        sequence: 1,
+        timestamp: 9,
+        payload: message("x", 77),
+      });
+      await deleteInbox(eventStore, c, false, moved);
+      const life = lifecycle(eventStore, archive);
+      const read = await life.readReservedWithArchive(stream);
+      expect(ids(read.events)).toEqual(["m0", "m1"]);
+      expect(read.lateRuns).toHaveLength(1);
+      expect(read.lateRuns[0]?.key).toBe(reservedLateKey(stream, 1));
+      expect(ids(read.lateRuns[0]?.events ?? [])).toEqual(["m77"]);
+      const coverage = await life.reservedArchiveCoverage(stream);
+      expect(coverage.unarchived).toEqual([]);
+      expect(coverage.lateRuns.map((r) => r.key)).toEqual([reservedLateKey(stream, 1)]);
+      // the export-side reader lists it (a late key is not a stream: no unarchived ranges of its own)
+      const listed = await life.readReservedArchive(c);
+      const late = listed.find((r) => r.streamId === reservedLateKey(stream, 1));
+      expect(late?.unarchived).toEqual([]);
+      expect(ids(late?.events ?? [])).toEqual(["m77"]);
     });
   });
 }
@@ -403,8 +614,83 @@ describe("reserved-stream archive: the guards of compaction apply", () => {
     const life = new LogLifecycle(events, new InMemoryAsyncSnapshotStore(), {
       compactionArchive: archive,
     });
-    expect(clone(await life.readReservedWithArchive(stream))).toEqual(original);
+    expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(original);
     await keys.destroy(c);
+    await expect(life.readReservedWithArchive(stream, { allowIncomplete: true })).rejects.toThrow(
+      PayloadShreddedError
+    );
+  });
+
+  it("B4(b): a message's SENDER is sealed under the SENDER's subject: erasing the sender shreds their identity in another chain's inbox AND archive; the owner's message stays", async () => {
+    const keys = new InMemoryKeyStore();
+    // the subject is an OPAQUE handle (it is stored in the clear beside the ciphertext)
+    const senderSubjectOf = (s: { actor?: string }): string | undefined =>
+      s.actor === "alice" ? "sbj-3c1f9a" : undefined;
+    const events = new EncryptingEventStore(new InMemoryAsyncEventStore(), keys, {
+      sensitive: SENSITIVE,
+      senderSubjectOf,
+    });
+    const rawArchive = new InMemoryArchiveStore();
+    const archive = new EncryptingArchiveStore(rawArchive, keys, { senderSubjectOf });
+    const owner = chain("owner");
+    const stream = inboxStreamId(owner);
+    await events.append({
+      id: `${owner}-0`,
+      workflowId: "w",
+      executionId: owner,
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: {},
+    });
+    const alice = { actor: "alice", tenant: "t1", onBehalfOf: "bob" };
+    for (let i = 0; i < 4; i++) {
+      await appendInboxMessage(
+        events,
+        owner,
+        { ...message("x", i), sender: alice, payload: `body ${i}` },
+        now
+      );
+    }
+    // at rest, in the log, the identity is ciphertext (the owner's key never sealed it)
+    const rest = JSON.stringify(
+      await (events as unknown as { inner: EventStore }).inner.read(stream)
+    );
+    expect(rest).not.toContain("alice");
+    expect(rest).not.toContain("bob");
+    expect((await events.read(stream))[0]?.payload).toMatchObject({
+      sender: alice,
+      payload: "body 0",
+    });
+
+    // trim: the moved envelopes keep the sender sealed under THEIR subject inside the owner-sealed segment
+    await trimInbox(events, owner, { x: 3 }, -1, new ReservedStreamArchive(archive, events));
+    expect(JSON.stringify(await rawArchive.read(stream))).not.toContain("alice");
+    const life = new LogLifecycle(events, new InMemoryAsyncSnapshotStore(), {
+      compactionArchive: archive,
+    });
+    const before = await life.readReservedWithArchive(stream);
+    expect(before.events.map((e) => (e.payload as { sender?: unknown }).sender)).toContainEqual(
+      alice
+    );
+
+    // ERASE THE SENDER: only their key goes
+    await keys.destroy("sbj-3c1f9a");
+    const after = await life.readReservedWithArchive(stream);
+    const live = await events.read(stream);
+    for (const e of [...after.events, ...live]) {
+      expect((e.payload as { sender: unknown }).sender).toEqual({ erased: true });
+    }
+    // the OWNER's message is intact (body readable), in the archive and in the live stream, and nothing threw
+    expect(after.events.map((e) => (e.payload as { payload: unknown }).payload)).toEqual([
+      "body 0",
+      "body 1",
+      "body 2",
+      "body 3",
+    ]);
+    expect((live.at(-1)?.payload as { payload: unknown }).payload).toBe("body 3");
+    // erasing the OWNER still erases the bodies (their key is untouched until then)
+    await keys.destroy(owner);
     await expect(life.readReservedWithArchive(stream, { allowIncomplete: true })).rejects.toThrow(
       PayloadShreddedError
     );

@@ -102,6 +102,7 @@ export class TenantScopedEventStore implements EventStore {
   readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
+  readonly deleteThrough?: NonNullable<EventStore["deleteThrough"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
@@ -157,6 +158,7 @@ export class TenantScopedEventStore implements EventStore {
       copyPrefix: (from, to, through, metadata) =>
         inner.copyPrefix!(scope(from), scope(to), through, metadata).catch(this.rethrowUnscoped),
       deleteExecution: (id) => inner.deleteExecution!(scope(id)),
+      deleteThrough: (id, through) => inner.deleteThrough!(scope(id), through),
       truncatePrefix: (id, through) => inner.truncatePrefix!(scope(id), through),
       truncatePrefixKeeping: (id, through, keep) =>
         inner.truncatePrefixKeeping!(scope(id), through, keep),

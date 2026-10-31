@@ -748,6 +748,12 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     const b2 = build({}, { ...raw, eventStore: noCopy });
     b2.rt.registerFlow(s.f.definition, s.f.runner);
     const listing = async () => (await raw.eventStore.listExecutions?.()) ?? [];
+    // the completed child's own streams are retired in the background (archived, then deleted): let that
+    // settle, or the count below races it
+    await until(
+      async () => !(await listing()).includes(quarantineStreamId(child.executionId)),
+      8000
+    );
     const before = (await listing()).length;
     const err = await b2.rt.fork(s.e, at).catch((x) => x);
     expect(err).toBeInstanceOf(InboxQuarantineRefusedError);

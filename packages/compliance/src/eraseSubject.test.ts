@@ -1,7 +1,12 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  type ArchiveStore,
+  InMemoryArchiveStore,
   InMemoryAsyncEventStore,
+  assertReservedSegmentDigest,
   brandPayloadShredded,
+  buildReservedSegment,
+  buildSegment,
   inboxTopicStreamId,
   quarantineStreamId,
 } from "@loom/event-runtime";
@@ -9,7 +14,7 @@ import { foldEvents } from "@loom/replay-vm";
 import { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { SubjectIndex } from "./SubjectIndex";
-import { EraseCoordinator } from "./eraseSubject";
+import { ArchivedCopiesRemainError, ERASURE_STREAM, EraseCoordinator } from "./eraseSubject";
 
 const subjectOf = (e: EventEnvelope): string | undefined =>
   e.eventType === "EXECUTION_STARTED"
@@ -722,5 +727,161 @@ describe("EraseCoordinator and PARKED owners (review P2-2)", () => {
       shred,
     });
     await expect(coord.eraseSubject("pat")).rejects.toThrow("forged");
+  });
+});
+
+describe("erasure deletes the archived copies of a PLAINTEXT archive (ADR 0138 / 0139, owner ruling 2026-10-31)", () => {
+  const chainInbox = (c: string) => `__loom_inbox__:${c}`;
+  async function world() {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "e1", "zed");
+    await store.append(ev("e1", 1, "EXECUTION_COMPLETED", {}));
+    const index = SubjectIndex.fromEvents(await store.read("e1"), subjectOf);
+    const archive = new InMemoryArchiveStore();
+    // ADR 0138: a compaction segment of the subject's execution, and another execution's (kept)
+    await archive.append(
+      "e1",
+      buildSegment([ev("e1", 1, "STEP_COMPLETED", { secret: "zed" })], "inc")
+    );
+    await archive.append("other", buildSegment([ev("other", 1, "STEP_COMPLETED", {})], "inc"));
+    // ADR 0139: the chain's reserved streams (a trimmed prefix, a late run) and another chain's
+    for (const key of [
+      chainInbox("e1"),
+      `__loom_late__:${chainInbox("e1")}@1`,
+      "__loom_quarantine__:e1",
+      chainInbox("e10"), // a chain whose id merely STARTS with ours: must survive
+    ]) {
+      await archive.append(
+        key,
+        buildSegment(
+          [{ ...ev(key, 1, "INBOX_MESSAGE", { topic: "t" }), workflowId: "__loom_inbox__" }],
+          "inc"
+        )
+      );
+    }
+    return { store, index, archive };
+  }
+
+  it("deletes the subject's compaction and reserved segments, keeps others', and records what it deleted", async () => {
+    const { store, index, archive } = await world();
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred, archives: [archive] });
+    const r = await coord.eraseSubject("zed");
+    expect(r.outcome).toBe("erased");
+    expect(r.archivedCopiesDeleted?.executions).toEqual(["e1"]);
+    expect([...(r.archivedCopiesDeleted?.reservedStreams ?? [])].sort()).toEqual(
+      [chainInbox("e1"), "__loom_quarantine__:e1", `__loom_late__:${chainInbox("e1")}@1`].sort()
+    );
+    expect(await archive.headers("e1")).toEqual([]);
+    expect(await archive.headers(chainInbox("e1"))).toEqual([]);
+    expect(await archive.headers(`__loom_late__:${chainInbox("e1")}@1`)).toEqual([]);
+    expect((await archive.headers("other")).length).toBe(1);
+    expect((await archive.headers(chainInbox("e10"))).length).toBe(1);
+    const recorded = (await store.read(ERASURE_STREAM)).filter(
+      (e) => e.eventType === "ERASURE_ARCHIVE_DELETED"
+    );
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.payload).toMatchObject({ subjectId: "zed", executions: ["e1"] });
+    // idempotent: a retry finds nothing and records nothing more
+    await coord.eraseSubject("zed");
+    expect(
+      (await store.read(ERASURE_STREAM)).filter((e) => e.eventType === "ERASURE_ARCHIVE_DELETED")
+    ).toHaveLength(1);
+  });
+
+  it("never returns erased while plaintext copies remain: a plaintext archive that cannot delete refuses BEFORE the shred", async () => {
+    const { store, index, archive } = await world();
+    const stuck: ArchiveStore = {
+      append: (id, seg) => archive.append(id, seg),
+      headers: (id) => archive.headers(id),
+      read: (id, range) => archive.read(id, range),
+      listExecutions: (o) => archive.listExecutions(o),
+      close: () => archive.close(),
+    };
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred, archives: [stuck] });
+    await expect(coord.eraseSubject("zed")).rejects.toThrow(ArchivedCopiesRemainError);
+    expect(shred).not.toHaveBeenCalled();
+    expect((await archive.headers("e1")).length).toBe(1);
+  });
+
+  it("a SEALING archive is left to the crypto-shred (nothing is deleted from it)", async () => {
+    const { store, index, archive } = await world();
+    const sealing = Object.assign(Object.create(archive), { sealsSegments: true }) as ArchiveStore;
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred, archives: [sealing] });
+    const r = await coord.eraseSubject("zed");
+    expect(r.outcome).toBe("erased");
+    expect(r.archivedCopiesDeleted).toBeUndefined();
+    expect((await archive.headers("e1")).length).toBe(1);
+  });
+
+  it("a PARKED erasure deletes the archived copies when the last execution terminates", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "e2", "yan");
+    const index = SubjectIndex.fromEvents(await store.read("e2"), subjectOf);
+    const archive = new InMemoryArchiveStore();
+    await archive.append("e2", buildSegment([ev("e2", 1, "STEP_COMPLETED", { s: 1 })], "inc"));
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: vi.fn(async () => {}),
+      archives: [archive],
+    });
+    expect((await coord.eraseSubject("yan")).outcome).toBe("parked");
+    expect((await archive.headers("e2")).length).toBe(1);
+    const done = ev("e2", 1, "EXECUTION_COMPLETED", {});
+    await store.append(done);
+    await coord.handleEvent(done);
+    expect(await archive.headers("e2")).toEqual([]);
+  });
+
+  it("D12: erasing a SENDER redacts their identity in OTHER chains' archived reserved segments (plaintext), keeps the rest, journals it", async () => {
+    const { store, index, archive } = await world();
+    const key = chainInbox("other-chain");
+    const msg = (seq: number, actor: string) => ({
+      ...ev(key, seq, "INBOX_MESSAGE", {
+        topic: "t",
+        messageId: `m${seq}`,
+        payload: `body ${seq}`,
+        sender: { actor },
+      }),
+      workflowId: "__loom_inbox__",
+    });
+    const envs = [msg(1, "zed"), msg(2, "kim"), msg(3, "zed")];
+    await archive.append(key, buildReservedSegment(envs, "inc"));
+    // a crashed rewrite of another key: the stage holds the whole segment, the original is gone
+    const lost = chainInbox("crashed");
+    await archive.append(
+      `__loom_redact__:${lost}`,
+      buildReservedSegment([{ ...msg(1, "kim"), executionId: lost }], "inc")
+    );
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: vi.fn(async () => {}),
+      archives: [archive],
+    });
+    const r = await coord.eraseSubject("zed");
+    expect(r.senderRedactions).toEqual([{ streamId: key, envelopes: 2 }]);
+    const [seg] = await archive.read(key);
+    expect(seg?.envelopes.map((e) => (e.payload as { sender: unknown }).sender)).toEqual([
+      { erased: true },
+      { actor: "kim" },
+      { erased: true },
+    ]);
+    expect(seg?.envelopes.map((e) => (e.payload as { payload: unknown }).payload)).toEqual([
+      "body 1",
+      "body 2",
+      "body 3",
+    ]);
+    assertReservedSegmentDigest(key, seg as never); // the digest masks the sender: it still verifies
+    expect(await archive.headers(`__loom_redact__:${key}`)).toEqual([]);
+    // the crashed rewrite was recovered from its stage
+    expect((await archive.headers(lost)).length).toBe(1);
+    expect(await archive.headers(`__loom_redact__:${lost}`)).toEqual([]);
+    expect(
+      (await store.read(ERASURE_STREAM)).some((e) => e.eventType === "ERASURE_SENDER_REDACTED")
+    ).toBe(true);
   });
 });

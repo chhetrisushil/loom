@@ -30,4 +30,10 @@ export {
   EncryptingArchiveStore,
   type EncryptingArchiveStoreOptions,
 } from "./EncryptingArchiveStore";
+export {
+  type SenderIdentity,
+  type SenderSubjectOf,
+  type SealedSender,
+  isSealedSender,
+} from "./senderSeal";
 export { defaultSubjectOf } from "./subject";

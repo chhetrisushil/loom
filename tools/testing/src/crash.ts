@@ -120,6 +120,7 @@ export function crashingEventStore(
     readAtRest: "forward",
     copyPrefix: "forward",
     deleteExecution: "forward",
+    deleteThrough: "forward",
     truncatePrefix: "forward",
     truncatePrefixKeeping: "forward",
     listExecutions: "forward",
