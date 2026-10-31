@@ -43,7 +43,7 @@ import { isTerminalToolError, markToolRaised } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import { type ToolSearchConfig, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
-import type { AgentInput, AgentOutput, AgentStep } from "./types";
+import type { AgentInput, AgentOutput, AgentStep, LeanAgentStep } from "./types";
 
 // ── R1 — the agent loop as a RUNNER BODY, not a step handler ─────────────────
 //
@@ -205,7 +205,7 @@ export interface AgentLoopConfig {
    */
   warnTranscriptBytes?: number | false;
   /**
-   * ADR 0141 / issue #732 - the shape of `toolCallLog` in the returned `AgentOutput` (and in the
+   * ADR 0142 / issue #732 - the shape of `toolCallLog` in the returned `AgentOutput` (and in the
    * `agentInterrupted` payload). `"full"` (default, byte-identical to before) keeps every
    * `{iteration, toolName, toolInput, toolOutput}`. `"lean"` replaces `toolOutput` with
    * `{status: "ok"|"error", bytes, digest, stepId}`: `stepId` is the tool frame id
@@ -990,7 +990,7 @@ export async function agentLoop$(
     );
     if (recorded !== config.toolCallLog) {
       throw new AgentLoopConfigError(
-        `agentLoop$: this loop recorded toolCallLog "${recorded}" but is configured "${String(config.toolCallLog)}"; the mode is fixed for the life of a run (ADR 0141 D3)`
+        `agentLoop$: this loop recorded toolCallLog "${recorded}" but is configured "${String(config.toolCallLog)}"; the mode is fixed for the life of a run (ADR 0142 D3)`
       );
     }
   }
@@ -1224,7 +1224,7 @@ export async function agentLoop$(
     });
   }
 
-  const toolCallLog: AgentStep[] = [];
+  const toolCallLog: (AgentStep | LeanAgentStep)[] = [];
   let iterations = 0;
   let lastContent = "";
 
@@ -1239,7 +1239,11 @@ export async function agentLoop$(
   const interruptedWith = (partial: string): never =>
     fail(
       AGENT_INTERRUPTED,
-      { content: partial, iterations, toolCallLog } satisfies InterruptedAgentRun,
+      {
+        content: partial,
+        iterations,
+        toolCallLog: toolCallLog as AgentStep[] | LeanAgentStep[],
+      } satisfies InterruptedAgentRun,
       "agent run interrupted"
     );
   const interrupted = (err?: unknown): never => interruptedWith(partialOf(err));
@@ -1943,14 +1947,21 @@ export async function agentLoop$(
     }
   }
 
-  return { content: lastContent, toolCallLog, iterations };
+  return {
+    content: lastContent,
+    toolCallLog: toolCallLog as AgentStep[] | LeanAgentStep[],
+    iterations,
+  };
 }
 
 /**
- * ADR 0141 D2 - the lean log entry's description of a tool output. `digest` is sha256 (hex) of
- * `canonicalJson(output)` (@loom/core: sorted keys, no whitespace, `undefined` members dropped), `bytes`
- * its UTF-8 length. An output with no canonical form (`undefined`, a function/bigint/non-finite number,
- * or deeper than the canonicalizer's cap) has `digest: null, bytes: 0`: the entry never throws.
+ * ADR 0142 D2 - the lean log entry's description of a tool output. The output is first taken through
+ * its JSON round trip (`JSON.parse(JSON.stringify(output))`): that is the form a JSON event store
+ * records and a resumed run reads back (a `Date` is its ISO string, a `Map` is `{}`, `toJSON` is
+ * honoured), so `digest` - sha256 (hex) of `canonicalJson` of it (@loom/core: sorted keys, no whitespace)
+ * - equals the canonical form of the output the log holds, live or resumed. `bytes` is its UTF-8 length.
+ * An output JSON cannot represent (`undefined`, a function, a bigint, a cycle, or deeper than the
+ * canonicalizer's cap) has `digest: null, bytes: 0`: the entry never throws.
  */
 function leanOutputFields(
   output: unknown,
@@ -1960,7 +1971,7 @@ function leanOutputFields(
   let bytes = 0;
   let digest: string | null = null;
   try {
-    const text = canonicalJson(output);
+    const text = canonicalJson(JSON.parse(JSON.stringify(output)));
     bytes = new TextEncoder().encode(text).length;
     digest = sha256Hex(text);
   } catch {

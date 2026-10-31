@@ -1,21 +1,21 @@
 import type { EventEnvelope, FlowDefinition, ToolDefinition } from "@loom/core";
 import { TypedFailure, agent$, canonicalJson, sha256Hex, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { LlmProvider, LlmResponse } from "@loom/llm";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { LogLifecycle, WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { type AgentLoopConfig, agentLoop$ } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
-import type { AgentOutput } from "./types";
+import type { AgentOutput, AgentStep, LeanAgentStep } from "./types";
 import { isLeanAgentStep } from "./types";
 
-// ADR 0141 / issue #732 - `toolCallLog: "full" | "lean"`.
+// ADR 0142 / issue #732 - `toolCallLog: "full" | "lean"`.
 
 const mk = (id: string): ToolDefinition =>
   tool$({
@@ -42,6 +42,11 @@ interface Boot {
   /** Wrap the loop so an `agentInterrupted` failure is returned, not thrown. */
   catchInterrupted?: boolean;
   abortOnTool?: AbortController;
+  /** What the "big" tool returns (default: a plain object). */
+  bigOutput?: (input: { n: number }) => unknown;
+  /** Park on a gate after the loop, so a test can compact the finished log. */
+  suspendAfter?: boolean;
+  snapshotStore?: InMemoryAsyncSnapshotStore;
 }
 
 function boot(o: Boot = {}) {
@@ -64,7 +69,8 @@ function boot(o: Boot = {}) {
     "big",
     new ToolEffect(async (input) => {
       o.abortOnTool?.abort();
-      return { n: (input as { n: number }).n, b: [1, 2], a: "x".repeat(3000) };
+      const n = (input as { n: number }).n;
+      return o.bigOutput !== undefined ? o.bigOutput({ n }) : { n, b: [1, 2], a: "x".repeat(3000) };
     })
   );
   effects.register(
@@ -76,7 +82,7 @@ function boot(o: Boot = {}) {
   const store = o.store ?? new InMemoryAsyncEventStore();
   const runtime = new WorkflowRuntime({
     eventStore: store,
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
+    snapshotStore: o.snapshotStore ?? new InMemoryAsyncSnapshotStore(),
     effectRuntime: effects,
     divergence: "fail",
     scopes: true,
@@ -89,7 +95,9 @@ function boot(o: Boot = {}) {
   };
   const runner: FlowRunner<unknown, unknown> = async (ctx) => {
     try {
-      return await agentLoop$(ctx, config, { prompt: "go" });
+      const out = await agentLoop$(ctx, config, { prompt: "go" });
+      if (o.suspendAfter === true) await ctx.suspend({ on: "go" });
+      return out;
     } catch (e) {
       if (
         o.catchInterrupted === true &&
@@ -117,20 +125,25 @@ const stepOf = (e: EventEnvelope): string =>
 async function resumeWith(
   store: InMemoryAsyncEventStore,
   fromTurn: number,
-  config: Boot["config"]
+  config: Boot["config"],
+  extra: Pick<Boot, "bigOutput"> & { fresh?: () => InMemoryAsyncEventStore } = {}
 ) {
   const full = await store.read("e1");
   const cutoff = full.findIndex((e) => stepOf(e).startsWith(`a#turn:${fromTurn}`));
   expect(cutoff).toBeGreaterThan(0);
   const prefix = full.slice(0, cutoff);
-  const crashed = new InMemoryAsyncEventStore();
+  const crashed = extra.fresh?.() ?? new InMemoryAsyncEventStore();
   for (const e of prefix) await crashed.append(e);
-  const folded = new ReplayVM(prefix, {
+  const folded = new ReplayVM(await crashed.read("e1"), {
     executionId: "e1",
     workflowId: "lean",
     workflowVersion: "1.0.0",
   }).getState();
-  const b = boot({ store: crashed, ...(config !== undefined && { config }) });
+  const b = boot({
+    store: crashed,
+    ...(config !== undefined && { config }),
+    ...(extra.bigOutput !== undefined && { bigOutput: extra.bigOutput }),
+  });
   return (await b.runtime.restoreFromState(folded)).waitForCompletion();
 }
 
@@ -169,7 +182,7 @@ describe("toolCallLog: lean", () => {
     const events = await leanB.store.read("e1");
     for (const [i, s] of lean.entries()) {
       const f = full[i] as (typeof full)[number];
-      expect(isLeanAgentStep(s)).toBe(true);
+      if (!isLeanAgentStep(s)) throw new Error("lean expected");
       expect(Object.keys(s).sort()).toEqual([
         "bytes",
         "digest",
@@ -265,7 +278,8 @@ describe("toolCallLog: lean", () => {
       )) as FlowRunner<unknown, unknown>);
     const st = await (await runtime.start(flowDef, {}, { executionId: "n1" })).waitForCompletion();
     expect(st.status).toBe("completed");
-    const s = outputOf(st).toolCallLog[0];
+    const s = outputOf(st).toolCallLog[0] as AgentStep | LeanAgentStep;
+    if (!isLeanAgentStep(s)) throw new Error("lean expected");
     expect(s?.digest).toBeNull();
     expect(s?.bytes).toBe(0);
     expect(s?.status).toBe("ok");
@@ -320,5 +334,155 @@ describe("toolCallLog: the mode is pinned per loop (determinism)", () => {
     );
     const after = (await crashed.read("e1")).slice(cutoff);
     expect(after.some((e) => e.eventType === "STEP_STARTED")).toBe(false);
+  });
+});
+
+/** A store like every real one: it keeps a JSON copy, never the live object the writer holds. */
+class CloningEventStore extends InMemoryAsyncEventStore {
+  private static clone(e: EventEnvelope): EventEnvelope {
+    return JSON.parse(JSON.stringify(e)) as EventEnvelope;
+  }
+  override async append(e: EventEnvelope): Promise<void> {
+    return super.append(CloningEventStore.clone(e));
+  }
+  override async appendBatch(es: readonly EventEnvelope[]): Promise<void> {
+    return super.appendBatch(es.map(CloningEventStore.clone));
+  }
+  override async appendIfUnchanged(...a: Parameters<InMemoryAsyncEventStore["appendIfUnchanged"]>) {
+    const [id, ev, expect] = a;
+    return super.appendIfUnchanged(id, ev === null ? null : CloningEventStore.clone(ev), expect);
+  }
+}
+
+class Boxed {
+  constructor(private readonly v: number) {}
+  toJSON() {
+    return { boxed: this.v };
+  }
+}
+
+const recordedOutput = (events: EventEnvelope[], stepId: string): unknown =>
+  events
+    .filter((e) => e.eventType === "STEP_COMPLETED" && stepOf(e) === stepId)
+    .map((e) => (e.payload as { output?: unknown }).output)[0];
+
+describe("toolCallLog: lean digest equals the canonical form of what the log RECORDS (ADR 0142 D2)", () => {
+  const shapes: Record<string, (i: { n: number }) => unknown> = {
+    Date: ({ n }) => ({ n, d: new Date(0) }),
+    "toJSON class": ({ n }) => ({ n, c: new Boxed(n) }),
+    Map: ({ n }) => ({ n, m: new Map([["k", 1]]) }),
+  };
+  for (const [name, bigOutput] of Object.entries(shapes)) {
+    it(`${name}: live and resumed digests match the recorded STEP_COMPLETED output`, async () => {
+      const first = boot({
+        store: new CloningEventStore(),
+        bigOutput,
+        config: { toolCallLog: "lean" },
+      });
+      const done = await run(first);
+      const events = await first.store.read("e1");
+      const log = outputOf(done).toolCallLog;
+      const oks = log.filter((s) => isLeanAgentStep(s) && s.status === "ok");
+      expect(oks.length).toBeGreaterThan(0);
+      for (const s of oks) {
+        if (!isLeanAgentStep(s)) throw new Error("lean expected");
+        const recorded = recordedOutput(events, s.stepId);
+        expect(recorded).toBeDefined();
+        expect(s.digest).toBe(sha256Hex(canonicalJson(recorded)));
+        expect(s.bytes).toBe(new TextEncoder().encode(canonicalJson(recorded)).length);
+      }
+      // a resumed run (earlier frames come back JSON-parsed from the fold) digests identically
+      const resumed = await resumeWith(
+        first.store,
+        2,
+        { toolCallLog: "lean" },
+        { bigOutput, fresh: () => new CloningEventStore() }
+      );
+      expect(resumed.status).toBe("completed");
+      expect(JSON.stringify(outputOf(resumed).toolCallLog)).toBe(JSON.stringify(log));
+    });
+  }
+});
+
+describe("toolCallLog: lean errors and unframed calls (ADR 0142 D1)", () => {
+  it("an error entry's digest matches the `failed` value of its <stepId>:outcome decision", async () => {
+    const b = boot({ store: new CloningEventStore(), config: { toolCallLog: "lean" } });
+    const log = outputOf(await run(b)).toolCallLog;
+    const events = await b.store.read("e1");
+    const errs = log.filter((s) => isLeanAgentStep(s) && s.status === "error");
+    expect(errs.length).toBe(1);
+    const e = errs[0];
+    if (e === undefined || !isLeanAgentStep(e)) throw new Error("lean expected");
+    // the failed tool's frame carries NO output ...
+    expect(recordedOutput(events, e.stepId)).toBeUndefined();
+    // ... the fed-back failure is in the decision
+    const dec = events.find(
+      (x) =>
+        x.eventType === "DECISION_RECORDED" &&
+        (x.payload as { decisionId?: string }).decisionId === `${e.stepId}:outcome`
+    );
+    expect(dec).toBeDefined();
+    const failed = (dec?.payload as { choice?: { failed?: unknown } }).choice?.failed;
+    expect(failed).toBeDefined();
+    expect(e.digest).toBe(sha256Hex(canonicalJson(failed)));
+  });
+});
+
+describe("toolCallLog: pin written late (ADR 0142 D3)", () => {
+  it("an old run with no pin, resumed with an explicit mode, journals the pin late and rebuilds the whole log in the new shape", async () => {
+    const first = boot(); // unset: no pin journaled
+    await run(first);
+    expect((await first.store.read("e1")).some((e) => stepOf(e).includes("toolCallLog"))).toBe(
+      false
+    );
+    const resumed = await resumeWith(first.store, 2, { toolCallLog: "lean" });
+    expect(resumed.status).toBe("completed");
+    const log = outputOf(resumed).toolCallLog;
+    expect(log).toHaveLength(TURNS);
+    // not mixed: EVERY entry is lean, including the turns that were already journaled before the resume
+    expect(log.every((s) => isLeanAgentStep(s))).toBe(true);
+  });
+
+  it("lean then resumed with the option UNSET is not detected: the log is rebuilt full (documented limit)", async () => {
+    const first = boot({ config: { toolCallLog: "lean" } });
+    await run(first);
+    const resumed = await resumeWith(first.store, 2, undefined);
+    expect(resumed.status).toBe("completed");
+    expect(outputOf(resumed).toolCallLog.every((s) => !isLeanAgentStep(s))).toBe(true);
+  });
+});
+
+describe("toolCallLog: lean entries resolve after ADR 0138 compaction", () => {
+  it("the stepId is found in the archive and its recorded output verifies the digest", async () => {
+    const archive = new InMemoryArchiveStore();
+    const b = boot({ suspendAfter: true, config: { toolCallLog: "lean" } });
+    const h = await b.runtime.start(flowDef, {}, { executionId: "c1" });
+    await h.waitForSuspend();
+    const life = new LogLifecycle(b.store, new InMemoryAsyncSnapshotStore(), {
+      compactionArchive: archive,
+    });
+    expect(await life.compact("c1")).not.toBeNull();
+    const live = await b.store.read("c1");
+    const archived = await life.readArchived("c1");
+    const st = await b.runtime.loadState("c1");
+    expect(st?.status).toBe("suspended");
+    const toolFrames = archived.filter(
+      (e) => e.eventType === "STEP_COMPLETED" && /^a#turn:\d+:tool:0$/.test(stepOf(e))
+    );
+    // the frames were MOVED out of the live log into the archive ...
+    expect(live.some((e) => /^a#turn:\d+:tool:0$/.test(stepOf(e)))).toBe(false);
+    expect(toolFrames.length).toBeGreaterThan(0);
+    // ... and a lean entry (taken from the run's output) resolves there and verifies
+    const resumedState = await (
+      await b.runtime.resume("c1", { eventType: "go", payload: {} })
+    ).waitForCompletion();
+    const lean = outputOf(resumedState).toolCallLog;
+    const ok = lean.filter((s) => isLeanAgentStep(s) && s.status === "ok");
+    expect(ok.length).toBeGreaterThan(0);
+    for (const s of ok) {
+      if (!isLeanAgentStep(s)) throw new Error("lean expected");
+      const rec = recordedOutput(archived, s.stepId);
+      expect(sha256Hex(canonicalJson(rec))).toBe(s.digest);
+    }
   });
 });
