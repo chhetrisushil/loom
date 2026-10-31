@@ -334,7 +334,7 @@ export class LogLifecycle {
   private readonly keep: ReadonlySet<string>;
 
   /**
-   * ADR 0134 D6 - the tail of each execution's in-process `compact`/`pruneSnapshots` chain. An
+   * ADR 0134 D6 - the tail of each execution's `compact`/`pruneSnapshots` chain. An
    * entry exists only while an operation is queued or running and is removed when the chain
    * drains, so the map is bounded by the executions in flight.
    */
@@ -767,7 +767,7 @@ export class LogLifecycle {
    * shares the KeyStore but does not seal the WHOLE state (unless `allowPlaintextCheckpoints`).
    */
   compact(executionId: string): Promise<number | null> {
-    // ADR 0134 D6 - serialized with `pruneSnapshots` on the same execution (in this process).
+    // ADR 0134 D6 - serialized with `pruneSnapshots` on the same execution (within this instance).
     return this.withExecution(executionId, () => this.compactOnce(executionId));
   }
 
@@ -918,16 +918,17 @@ export class LogLifecycle {
    * Resolves with the number deleted; `0` when the store cannot prune, the execution is exempt
    * (`compactionExempt`: a hold also holds its snapshots), there is nothing prunable, or a
    * compaction from another process landed while it was deciding (nothing deleted; retry).
-   * Serialized with `compact` per execution in this process; two PROCESSES must not run them on
+   * Serialized with `compact` per execution WITHIN ONE LogLifecycle INSTANCE (not across instances
+   * or processes; a `pinned`/`compactionExempt` callback calling either on the same execution hangs). Two instances or PROCESSES must not run them on
    * one execution at once (ADR 0134 D6). Refuses with {@link BlankStreamUnrepairedError} while
    * the pre-0106 blank stream still has events to re-home, and with a `RangeError` for a
    * `keepSequences` entry that is not a safe integer. Costs two log reads (before and after the
    * snapshot reads), `keepLatest` snapshot point reads, plus a walk of the snapshots above the
    * gap (O(snapshots above the gap)) only for a gapped log with neither a snapshot at its gap
-   * nor a fork seed; one `head` read of `""`. The delete is one statement.
+   * nor a fork seed; one `head` read of `""` plus, when a blank stream exists, the blank-stream census (every execution), memoized per instance while `""` is unchanged (`acceptUnattributedBlankStream` accepts unattributed runs only). The delete is one statement.
    */
   pruneSnapshots(executionId: string, options: PruneSnapshotsOptions = {}): Promise<number> {
-    // ADR 0134 D6 - serialized with `compact` on the same execution (in this process).
+    // ADR 0134 D6 - serialized with `compact` on the same execution (within this instance).
     return this.withExecution(executionId, () => this.pruneOnce(executionId, options));
   }
 
