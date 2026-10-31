@@ -14,6 +14,7 @@ export {
   agentLoop$,
   boundResponse,
   configureAgentLoopDefaults,
+  DEFAULT_STATE_GROWTH_WARN_BYTES,
   resetAgentLoopDefaults,
   MAX_RECORDED_RESPONSE_CHARS,
   memoryWriteBackEffect,
@@ -37,6 +38,12 @@ export type { TurnCounter } from "./continueEvery";
 export { chunkDeltas } from "./chunkDeltas";
 export type { ChunkDeltasOptions, ChunkedSink } from "./chunkDeltas";
 export { createAgentModelEffect } from "./createAgentModelEffect";
+export {
+  DEFAULT_SUMMARIZER_INSTRUCTION,
+  SUMMARIZER_INPUT_ORIGIN,
+  createSummarizerEffect,
+} from "./createSummarizerEffect";
+export { SUMMARIZER_TEXT_TRUNCATED, summarizerText } from "./summarizerText";
 export { isMediaResult, mediaResult, toolResultPart } from "./toolResultContent";
 export type { ToolMediaResult } from "./toolResultContent";
 export { agentStep$ } from "./agentStep$";

@@ -445,6 +445,49 @@ sharding need a read model and interest-filtered delivery.
    loopback Postgres on a laptop, which flatters the store.
 7. Only then consider batching (3.3) or partitioning (3.4), each behind its own evidence.
 
+## 5. Agent state growth (`agentLoop$` without compaction)
+
+An `agentLoop$` run with no `compaction` journals each turn's whole model input (`<id>#turn:N:input`: the
+transcript, re-sent every turn), so its folded state grows **O(turns^2)**, and resume reads the latest
+snapshot in full, so resume cost grows the same way. 97-99.9% of the state is those `frames`; tool outputs
+and variables are small. **[measured, offline harness]** (issue #721; scaled `agentLoop$` run with a
+deterministic offline model, one tool returning 1-4 kB per turn, in-memory stores; sizes are
+`JSON.stringify(state)`):
+
+| Config | Latest snapshot (what resume reads) | Per-turn state |
+|---|---|---|
+| 50 turns, no levers | 7.0 MB | ~140 kB |
+| 200 turns, no levers | 110 MB | ~550 kB |
+| ~450 turns, no levers | `RangeError: Invalid string length` serializing state | n/a |
+| 1000 turns, claim-check only (1 kB cap) | 353 MB | still quadratic |
+| 1000 turns, compaction only (`afterMessages: 20`, `keepRecent: 4`) | 28.9-32.4 MB | ~30 kB (linear) |
+| 1000 turns, compaction + claim-check | 4.2 MB | ~4 kB |
+
+Caveats: offline stubs (a real model's transcript shape differs, but the re-sent-transcript quadratic shape
+holds); in-memory stores (on-disk sizes differ, e.g. TOAST); a trivial summarizer. With a small
+`snapshotEvery` and no pruning, total bytes written are (saves x state), O(turns^3): 3.7 GB at 200 turns,
+59 GB at 1000; snapshot pruning (`keepLatest: 1`, ADR 0134) removes 98-99% of that. A Postgres JSONB value
+caps at 255 MB, which a real backend hits before V8's string limit.
+
+**The lever is compaction** (bounds the state), plus claim-check on top. Claim-check alone does not help: it
+offloads a tool RESULT's bytes, not the transcript. Compaction is **opt-in** and stays so (ADR 0137), but
+loom now tells you when you need it and ships the summarizer:
+
+```ts
+effects.register("summarize", createSummarizerEffect(provider)); // you supply the model
+agentLoop$(ctx, { definition, modelToolId: "model",
+  compaction: { toolId: "summarize", afterBytes: 256 * 1024 } }, input);
+```
+
+- With no `compaction`, the loop warns ONCE per run (through `onWarn` / `observability.onWarn`, else a process
+  warning `LOOM_AGENT_STATE_GROWTH`) when its transcript passes `warnTranscriptBytes` (default 256 KiB;
+  `false` disables). It only reports: the log and replay are unchanged.
+- `createSummarizerEffect` is an ordinary effect, so it runs in the capability ring and is journaled once and
+  served from the log on replay. Pick `afterBytes` well below the point where resume hurts; the kept suffix is
+  at most half of it.
+- Folding completed turns' inputs out of the folded state altogether would make state linear for everyone,
+  but it is a kernel change that needs its own root-cause read and ADR (not done).
+
 ## Re-measuring
 
 ```bash

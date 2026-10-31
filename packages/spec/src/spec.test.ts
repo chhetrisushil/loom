@@ -365,6 +365,9 @@ const NOT_A_CAPABILITY = new Set([
   // 0136 - opt-in lz4 TOAST compression for `snapshots.state` in the Postgres plugin (issue #707): a
   // storage-column option with a fail-soft fallback. No event, SPI, ABI or subsystem change; nothing to grade.
   "0136",
+  // 0137 - agent state growth (issue #721): a report-only warning and a built-in summarizer effect in
+  // `@loom/agent`, compaction still opt-in. No event, SPI, ABI or subsystem change; nothing to grade.
+  "0137",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

@@ -805,7 +805,7 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0136), one line per range:
+- **[ADRs](adr/)** — the full decision history (0001–0137), one line per range:
   - **0016–0026** cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series
   - **0036–0041** the three-direction arc
   - **0042** the AI-native brownfield `appgen`
@@ -922,4 +922,5 @@ Being honest about the edges:
   - **0134** snapshot pruning (Proposed): optional `SnapshotStore.pruneSnapshots` (SPI 1.2.0) and `LogLifecycle.pruneSnapshots`, off by default; keeps the latest, every compaction checkpoint and the fork points it serves; deltas and Merkle state deferred (kernel unchanged)
   - **0135** `waitForSuspend()` rejects on a terminal run (Accepted): `ExecutionTerminatedError` (state + cause) instead of a promise that never settles; settles after `waitForCompletion()`, so races are unchanged (kernel unchanged)
   - **0136** Postgres snapshot lz4 (Proposed): opt-in `snapshotCompression: "lz4"` for `snapshots.state`, fail-soft with an `onWarn` fallback; measured ~1.5x MORE bytes but ~20% faster reads than pglz, so it is not the default; events column measured only (kernel unchanged)
+  - **0137** agent state growth (Proposed): `agentLoop$` warns once per run when an uncompacted transcript crosses `warnTranscriptBytes` (256 KiB default, `false` disables), and `createSummarizerEffect(provider)` is a ready-made `compaction.toolId` shared with the conversation layer's `summarizerToolId`; compaction stays opt-in (kernel unchanged)
 - **[Presentation](presentation/loom-deck.md)** — the deck.
