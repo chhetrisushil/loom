@@ -485,21 +485,32 @@ function isLeaseStore(v: unknown): v is LeaseStore {
 }
 
 /** Validate `durability.snapshots` (TypeError on bad values; a codec this Node cannot write THROWS). */
-function resolveSnapshotCodec(snapshots: unknown): SnapshotCodecName {
-  if (snapshots === undefined) return "none";
+function resolveSnapshotCodec(snapshots: unknown): ResolvedSnapshotCodec {
+  if (snapshots === undefined) return { codec: "none" };
   if (typeof snapshots !== "object" || snapshots === null || Array.isArray(snapshots)) {
     throw new TypeError("defineConfig: durability.snapshots must be an object");
   }
   for (const k of Object.keys(snapshots)) {
-    if (k !== "codec") {
+    if (k !== "codec" && k !== "lengthLeak") {
       throw new TypeError(
-        `defineConfig: durability.snapshots.${k} is not an option (expected codec)`
+        `defineConfig: durability.snapshots.${k} is not an option (expected codec, lengthLeak)`
       );
     }
   }
   const codec = parseSnapshotCodec((snapshots as { codec?: unknown }).codec);
   assertSnapshotCodecAvailable(codec);
-  return codec;
+  const lengthLeak = (snapshots as { lengthLeak?: unknown }).lengthLeak;
+  if (lengthLeak !== undefined && lengthLeak !== "accept") {
+    throw new TypeError(
+      `defineConfig: durability.snapshots.lengthLeak must be "accept" (got ${JSON.stringify(lengthLeak)})`
+    );
+  }
+  return { codec, ...(lengthLeak === "accept" && { lengthLeak }) };
+}
+
+interface ResolvedSnapshotCodec {
+  readonly codec: SnapshotCodecName;
+  readonly lengthLeak?: "accept";
 }
 
 /** Validate `durability.heartbeat` (TypeError on bad values) and resolve the lease store (D11 "Config"). */
@@ -623,10 +634,21 @@ export interface DurabilityOptions {
    * default sealed checkpoint store for an encrypting custom event store, where the state is compressed
    * BEFORE it is sealed). A snapshot store YOU pass is already built: give it the codec yourself
    * (`sqliteStorage({ snapshotCodec: "zstd" })`, `postgresStorage({ snapshotCodec: "zstd" })`,
-   * `new EncryptingSnapshotStore(inner, keys, { sealState: true, codec: "zstd" })`). `defineConfig`
-   * warns when such a store reports a codec that disagrees with this option.
+   * `new EncryptingSnapshotStore(inner, keys, { sealState: true, codec: "zstd", lengthLeak: "accept" })`). `defineConfig`
+   * THROWS (`TypeError`) when such a store reports a codec that disagrees with this option, and warns when
+   * it reports none at all (a hand-rolled store cannot say).
    */
-  snapshots?: { codec?: SnapshotCodecName };
+  snapshots?: {
+    codec?: SnapshotCodecName;
+    /**
+     * Required, as `"accept"`, for `codec: "zstd"` to apply to a SEALED snapshot store (the default
+     * checkpoint store of an encrypting event store): compress-before-seal makes the ciphertext length a
+     * function of the compressed state, a CRIME/BREACH-style length oracle when part of a state is
+     * attacker-influenced beside a secret and stored sizes are observable. Without it that combination
+     * THROWS at boot (ADR 0140 D3).
+     */
+    lengthLeak?: "accept";
+  };
   /**
    * Take a mid-run snapshot every N committed events, and a matching one at completion,
    * bounding what a later `loadState`/resume has to fold.
@@ -1323,7 +1345,7 @@ function keyStoreProof(crypto: unknown): DestructionProof | undefined {
 function defaultSnapshotStore(
   eventStore: EventStore,
   warn: (m: string) => void,
-  codec: SnapshotCodecName
+  { codec, lengthLeak }: ResolvedSnapshotCodec
 ): SnapshotStore {
   const inner = new InMemoryAsyncSnapshotStore({ codec });
   const keys = (eventStore as { keys?: unknown }).keys;
@@ -1348,7 +1370,11 @@ function defaultSnapshotStore(
   // `EncryptingSnapshotStore({ subjectOf })` in that case (docs/compliance.md).
   // ADR 0140: the state is compressed BEFORE it is sealed (`codec`); the in-memory store below then holds
   // the envelope, which its own frame shrinks a further ~25% (base64 to bytes).
-  return new EncryptingSnapshotStore(inner, keys, { sealState: true, codec });
+  return new EncryptingSnapshotStore(inner, keys, {
+    sealState: true,
+    codec,
+    ...(lengthLeak !== undefined && { lengthLeak }),
+  });
 }
 
 function isKeyStore(keys: unknown): keys is KeyStore {
@@ -1376,22 +1402,31 @@ function isInMemoryEventStore(store: unknown): boolean {
 function buildStores(
   storage: StorageConfig,
   warn: (m: string) => void,
-  codec: SnapshotCodecName
+  resolved: ResolvedSnapshotCodec
 ): LoomStores {
+  const codec = resolved.codec;
   if (storage.kind === "custom") {
-    const reported = (storage.snapshotStore as { snapshotCodec?: unknown } | undefined)
-      ?.snapshotCodec;
-    if (codec !== "none" && reported !== undefined && reported !== codec) {
-      warn(
-        `durability.snapshots.codec is "${codec}" but the snapshotStore you supplied reports codec ${JSON.stringify(reported)}: defineConfig does not rebuild a store you pass. Give the store the codec (sqliteStorage/postgresStorage({ snapshotCodec }), EncryptingSnapshotStore({ codec })).`
-      );
+    if (codec !== "none" && storage.snapshotStore !== undefined) {
+      // The opt-in must never be silently dropped: a store the app passes is already built, and the
+      // marker travels up through every snapshot decorator (ADR 0140).
+      const reported = (storage.snapshotStore as { snapshotCodec?: unknown }).snapshotCodec;
+      if (reported === undefined) {
+        warn(
+          `durability.snapshots.codec is "${codec}" but the snapshotStore you supplied does not report a snapshot codec, so it is not known to write one: defineConfig does not rebuild a store you pass. Give the store the codec (sqliteStorage/postgresStorage({ snapshotCodec }), EncryptingSnapshotStore({ codec, lengthLeak })).`
+        );
+      } else if (reported !== codec) {
+        throw new TypeError(
+          `defineConfig: durability.snapshots.codec is "${codec}" but the snapshotStore you supplied reports codec ${JSON.stringify(reported)}; defineConfig does not rebuild a store you pass, so the opt-in would be silently dropped. Give the store the codec (sqliteStorage/postgresStorage({ snapshotCodec }), EncryptingSnapshotStore({ codec, lengthLeak })) or remove the option.`
+        );
+      }
     }
     // Bring your own backend — used verbatim. Concrete backends arrive this way via
     // a store plugin's preset (`sqliteStorage()`, `postgresStorage()`, …), so
     // `@loom/app` stays free of any vendor dependency (ADR 0043).
     return {
       eventStore: storage.eventStore,
-      snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore, warn, codec),
+      snapshotStore:
+        storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore, warn, resolved),
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
       ...defaultArchive(storage, warn),
     };

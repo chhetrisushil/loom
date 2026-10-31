@@ -140,6 +140,19 @@ zstd("SqliteSnapshotStore codec: zstd (ADR 0140)", () => {
     await s.close();
   });
 
+  it("an OLD node's read of a frame row (JSON.parse over the BLOB) throws, never yields a state (ADR 0140 D5)", async () => {
+    const path = join(dir, "old.db");
+    const store = new SqliteSnapshotStore(path, { codec: "zstd" });
+    await store.save(snap("a", 1, bigState("a")));
+    await store.close();
+    const db = new Database(path, { readonly: true });
+    const row = db.prepare("SELECT state FROM snapshots").get() as { state: Buffer };
+    db.close();
+    expect(Buffer.isBuffer(row.state)).toBe(true);
+    // pre-codec rowToSnapshot: `JSON.parse(row.state)` (the driver's Buffer coerces to its text)
+    expect(() => JSON.parse(row.state as unknown as string)).toThrow(SyntaxError);
+  });
+
   it("a corrupted frame fails loudly instead of decoding to a wrong state", async () => {
     const path = join(dir, "c.db");
     const s = new SqliteSnapshotStore(path, { codec: "zstd" });
@@ -149,7 +162,7 @@ zstd("SqliteSnapshotStore codec: zstd (ADR 0140)", () => {
     db.prepare("UPDATE snapshots SET state = X'02DEADBEEF'").run();
     db.close();
     const again = new SqliteSnapshotStore(path);
-    await expect(again.loadLatest("x")).rejects.toThrow(/does not decode/);
+    await expect(again.loadLatest("x")).rejects.toThrow(/does not decode|malformed/);
     await again.close();
   });
 

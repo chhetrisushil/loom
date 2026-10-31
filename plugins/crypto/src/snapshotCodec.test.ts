@@ -68,6 +68,25 @@ describe("EncryptingSnapshotStore codec option (ADR 0140), validation", () => {
     ).toThrow(/only applies with `sealState: true`/);
   });
 
+  it('codec + sealState REQUIRES lengthLeak: "accept" (compress-before-seal is a length oracle, D3)', () => {
+    const build = (extra: object) => () =>
+      new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), new InMemoryKeyStore(), {
+        sealState: true,
+        codec: "zstd",
+        ...extra,
+      });
+    expect(build({})).toThrow(/lengthLeak: "accept"/);
+    expect(build({ lengthLeak: "yes" })).toThrow(/lengthLeak/);
+    expect(build({ lengthLeak: "accept" })).not.toThrow();
+    // codec off needs no acknowledgment
+    expect(
+      () =>
+        new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), new InMemoryKeyStore(), {
+          sealState: true,
+        })
+    ).not.toThrow();
+  });
+
   it("rejects an unknown codec", () => {
     expect(
       () =>
@@ -104,7 +123,11 @@ zstd("compress BEFORE sealing", () => {
   it("round-trips through every read path, and the plaintext inside the envelope is a zstd frame", async () => {
     const keys = new InMemoryKeyStore();
     const inner = new InMemoryAsyncSnapshotStore();
-    const store = new EncryptingSnapshotStore(inner, keys, { sealState: true, codec: "zstd" });
+    const store = new EncryptingSnapshotStore(inner, keys, {
+      sealState: true,
+      codec: "zstd",
+      lengthLeak: "accept",
+    });
     const a = snapshot(3, "a");
     const b = snapshot(7, "b");
     await store.save(a);
@@ -134,6 +157,7 @@ zstd("compress BEFORE sealing", () => {
       const store = new EncryptingSnapshotStore(profile, new InMemoryKeyStore(), {
         sealState: true,
         ...sealOptions,
+        ...(sealOptions.codec !== undefined && { lengthLeak: "accept" as const }),
       });
       await store.save(snapshot());
       return profile.profile().maxBytes;
@@ -156,7 +180,11 @@ zstd("compress BEFORE sealing", () => {
     const keys = new InMemoryKeyStore();
     const inner = new InMemoryAsyncSnapshotStore();
     const old = new EncryptingSnapshotStore(inner, keys, { sealState: true });
-    const next = new EncryptingSnapshotStore(inner, keys, { sealState: true, codec: "zstd" });
+    const next = new EncryptingSnapshotStore(inner, keys, {
+      sealState: true,
+      codec: "zstd",
+      lengthLeak: "accept",
+    });
     const a = snapshot(3, "old");
     const b = snapshot(7, "new");
     await old.save(a);
@@ -170,7 +198,11 @@ zstd("compress BEFORE sealing", () => {
   it("the frame is authenticated: moving a sealed envelope to another slot still fails", async () => {
     const keys = new InMemoryKeyStore();
     const inner = new InMemoryAsyncSnapshotStore();
-    const store = new EncryptingSnapshotStore(inner, keys, { sealState: true, codec: "zstd" });
+    const store = new EncryptingSnapshotStore(inner, keys, {
+      sealState: true,
+      codec: "zstd",
+      lengthLeak: "accept",
+    });
     await store.save(snapshot(3));
     const moved = { ...(await inner.loadAt("e1", 3))!, sequence: 4, id: "s-4" };
     await inner.save(moved);

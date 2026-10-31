@@ -44,4 +44,23 @@ describe("ProfilingSnapshotStore size = stored bytes (ADR 0140)", () => {
       expect(p.profile().maxBytes).toBe(Buffer.byteLength(JSON.stringify(state)));
     });
   });
+
+  describe.skipIf(!zstdAvailable())("over a store that seals the whole state (ADR 0140 D3)", () => {
+    const sealing = () =>
+      Object.assign(new InMemoryAsyncSnapshotStore({ codec: "zstd" }), {
+        sealsWholeState: true as const,
+      });
+
+    it("never reports stored (compressed) size: the default is the JSON text size", async () => {
+      const p = new ProfilingSnapshotStore(sealing());
+      await p.save(snap);
+      expect(p.profile().maxBytes).toBe(Buffer.byteLength(JSON.stringify(state)));
+    });
+
+    it('an explicit measure: "stored" throws (a length oracle must not reach metrics)', () => {
+      expect(() => new ProfilingSnapshotStore(sealing(), { measure: "stored" })).toThrow(
+        /seals the whole state/
+      );
+    });
+  });
 });
