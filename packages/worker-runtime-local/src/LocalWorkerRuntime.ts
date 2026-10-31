@@ -113,8 +113,9 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // resolves on whichever the flow actually does. getState() is then authoritative for the outcome.
     try {
       await Promise.race([
-        handle.waitForSuspend().then(() => undefined),
+        // completion first (defence in depth: waitForSuspend() already settles after it)
         handle.waitForCompletion().then(() => undefined),
+        handle.waitForSuspend().then(() => undefined),
       ]);
     } catch (err) {
       // K8.5 — a cancellation rejects the completion promise, but it is a normal
