@@ -135,7 +135,7 @@ export async function runTask(
     executed: [...world.executed],
     steps: c.steps,
     toolCalls: c.toolCalls,
-    // A lean entry (ADR 0141) carries `status`; a full one is judged by its output, as ever.
+    // A lean entry (ADR 0142) carries `status`; a full one is judged by its output, as ever.
     feedbackErrors: log.filter((l) =>
       l.status !== undefined ? l.status === "error" : isErrorOutput(l.toolOutput)
     ).length,

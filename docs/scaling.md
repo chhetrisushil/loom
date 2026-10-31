@@ -556,7 +556,7 @@ still cites) and records it. The ADR 0137 warning names this opt-in too.
 `_output.toolCallLog`, a second copy of every tool result (`toolOutput`) that the tool frames already hold.
 `agentLoop$({ ..., toolCallLog: "lean" })` replaces `toolOutput` with `{ status, bytes, digest, stepId }`
 (`stepId` is the frame `<loop>#turn:<i>:tool:<j>`, so the full result stays resolvable from the frame, the log or
-the ADR 0138 archive; `digest` is sha256 of the canonical JSON of the output). The default is unchanged, and the
+the ADR 0138 archive; `digest` is sha256 of the canonical JSON of the output as the log records it - with the claim-check on, that is the ENVELOPE, whose own `digest` is the blob hash; for a failed tool the output is the failure recorded in the `<stepId>:outcome` decision). The default is unchanged, and the
 mode is pinned per run when you set it explicitly. **[measured, `leanToolCallLog.perf.test.ts`, completed
 200-turn run]**
 

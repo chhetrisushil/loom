@@ -1,4 +1,4 @@
-import type { AgentStep } from "./types";
+import type { AgentStep, LeanAgentStep } from "./types";
 
 /** The channel an interrupted agent run fails on (ADR 0060). */
 export const AGENT_INTERRUPTED = "agentInterrupted";
@@ -14,5 +14,5 @@ export interface InterruptedAgentRun {
   /** Turns begun before the interruption. */
   iterations: number;
   /** Tool calls that completed, in the model's order. */
-  toolCallLog: AgentStep[];
+  toolCallLog: AgentStep[] | LeanAgentStep[];
 }
