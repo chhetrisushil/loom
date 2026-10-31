@@ -69,6 +69,9 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
     expect(readers).toEqual([
       "packages/workflow-runtime/src/LogLifecycle.ts",
       "packages/workflow-runtime/src/WorkflowRuntime.ts",
+      // ADR 0139: reads a RESERVED stream (inbox, quarantine) through the runtime's store to MOVE its
+      // envelopes into the archive; reserved streams are exempt from the stream guard, never an owner's log.
+      "packages/workflow-runtime/src/archiveMove.ts",
       "packages/workflow-runtime/src/blankStream.ts",
       "packages/workflow-runtime/src/inbox.ts",
       "packages/workflow-runtime/src/placement.ts",

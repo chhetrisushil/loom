@@ -16,6 +16,8 @@ import {
 } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { QUARANTINE_FOLD_CAP } from "@loom/replay-vm";
+import type { ReservedStreamArchive } from "./archiveMove";
+import { ReservedStreamArchiveRequiredError } from "./checkpointGuard";
 import { SealedPayloadUnreadableError } from "./types";
 import type { InboxMessage, InboxSource } from "./types";
 
@@ -36,6 +38,13 @@ export {
 /** The stream's event kind. Not an `EVENT_SCHEMA` kind: it exists only in the control stream. */
 export const INBOX_MESSAGE_KIND = "INBOX_MESSAGE";
 export const INBOX_WORKFLOW_ID = "__loom_inbox__";
+
+/**
+ * ADR 0139: the first sequence of `stream` the archive has NOT used (its last archived `through` + 1), or
+ * `undefined` when it holds nothing for it. A stream the runtime deleted after moving its envelopes into
+ * the archive restarts there instead of at its base, so the archive's per-stream sequences stay unique.
+ */
+export type ArchiveFloor = (stream: string) => Promise<number | undefined>;
 
 /**
  * The `TimerRecord.wakeAt` of an inbox wake row. A FIXED instant, so the store's per-
@@ -264,7 +273,13 @@ export function appendInboxMessage(
   message: StoredMessage,
   now: () => number | Promise<number>,
   /** ADR 0110 D10b: write the message into its TOPIC's stream (sequences from INBOX_TOPIC_SEQ_BASE). */
-  perTopic = false
+  perTopic = false,
+  /**
+   * ADR 0139: consulted ONLY when the stream does not exist (its first message, or a send that raced
+   * the owner's terminal delete): the first sequence the archive has not already used, so a re-created
+   * stream never reuses a sequence whose envelope the archive holds (the archive is append-only).
+   */
+  archiveFloor?: ArchiveFloor
 ): Promise<number> {
   let queues = sendQueues.get(store);
   if (queues === undefined) {
@@ -275,7 +290,9 @@ export function appendInboxMessage(
   const prior = queues.get(stream) ?? Promise.resolve();
   const run = prior
     .catch(() => undefined)
-    .then(() => appendOnce(store, stream, perTopic ? INBOX_TOPIC_SEQ_BASE : 0, message, now));
+    .then(() =>
+      appendOnce(store, stream, perTopic ? INBOX_TOPIC_SEQ_BASE : 0, message, now, archiveFloor)
+    );
   const tail = run.catch(() => undefined);
   queues.set(stream, tail);
   void tail.then(() => {
@@ -289,11 +306,15 @@ async function appendOnce(
   stream: string,
   firstSequence: number,
   message: StoredMessage,
-  now: () => number | Promise<number>
+  now: () => number | Promise<number>,
+  archiveFloor?: ArchiveFloor
 ): Promise<number> {
   for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
     const head = await headOf(store, stream);
-    const sequence = head === null ? firstSequence : Math.max(head + 1, firstSequence);
+    const sequence =
+      head === null
+        ? Math.max(firstSequence, (await archiveFloor?.(stream)) ?? firstSequence)
+        : Math.max(head + 1, firstSequence);
     const envelope: EventEnvelope = {
       id: `${stream}-${sequence}`,
       workflowId: INBOX_WORKFLOW_ID,
@@ -364,9 +385,10 @@ export async function ensureInboxFloor(
   store: EventStore,
   chainId: string,
   floor: number,
-  now: () => number
+  now: () => number,
+  archiveFloor?: ArchiveFloor
 ): Promise<void> {
-  await ensureStreamFloor(store, inboxStreamId(chainId), floor, now);
+  await ensureStreamFloor(store, inboxStreamId(chainId), floor, now, archiveFloor);
 }
 
 /** {@link ensureInboxFloor} for any inbox stream (the legacy one or a topic's). */
@@ -374,20 +396,24 @@ export async function ensureStreamFloor(
   store: EventStore,
   stream: string,
   floor: number,
-  now: () => number
+  now: () => number,
+  archiveFloor?: ArchiveFloor
 ): Promise<void> {
   if (!Number.isSafeInteger(floor) || floor < 0) return;
   const head = await headOf(store, stream);
   if (head !== null && head >= floor) return;
+  // ADR 0139: a stream that was deleted after its envelopes moved to the archive must not restart
+  // below them: the marker goes at the first sequence the archive has not used.
+  const at = head === null ? Math.max(floor, (await archiveFloor?.(stream)) ?? floor) : floor;
   try {
     await store.append({
-      id: `${stream}-${floor}`,
+      id: `${stream}-${at}`,
       workflowId: INBOX_WORKFLOW_ID,
       executionId: stream,
       eventType: INBOX_FLOOR_KIND,
-      sequence: floor,
+      sequence: at,
       timestamp: now(),
-      payload: { floor },
+      payload: { floor: at },
     });
   } catch (err) {
     if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError) return;
@@ -405,13 +431,14 @@ export async function seedInboxFloors(
   store: EventStore,
   chainId: string,
   cursors: Record<string, number>,
-  now: () => number
+  now: () => number,
+  archiveFloor?: ArchiveFloor
 ): Promise<void> {
-  await ensureInboxFloor(store, chainId, maxCursor(cursors), now);
+  await ensureInboxFloor(store, chainId, maxCursor(cursors), now, archiveFloor);
   for (const [topic, cursor] of Object.entries(cursors)) {
     if (typeof cursor !== "number" || cursor < INBOX_TOPIC_SEQ_BASE) continue;
     await registerInboxTopic(store, chainId, topic, Number.POSITIVE_INFINITY, now);
-    await ensureStreamFloor(store, inboxTopicStreamId(chainId, topic), cursor, now);
+    await ensureStreamFloor(store, inboxTopicStreamId(chainId, topic), cursor, now, archiveFloor);
   }
 }
 
@@ -498,7 +525,8 @@ export async function trimInbox(
   store: EventStore,
   chainId: string,
   cursors: Record<string, number>,
-  floor = -1
+  floor = -1,
+  archive?: ReservedStreamArchive
 ): Promise<number | undefined> {
   const truncate = store.truncatePrefixKeeping
     ? (id: string, through: number) => store.truncatePrefixKeeping?.(id, through, [])
@@ -513,7 +541,11 @@ export async function trimInbox(
   if (head === null) return undefined;
   const through = Math.min(oldest === undefined ? head : oldest - 1, head - 1);
   if (through < 1 || through <= floor) return undefined; // sequence 0 is preserved by the store regardless
-  await truncate(inboxStreamId(chainId), through);
+  const stream = inboxStreamId(chainId);
+  // ADR 0139: the envelopes MOVE to the archive first (never discarded); no archive, no trim.
+  if (archive === undefined) throw new ReservedStreamArchiveRequiredError(stream);
+  await archive.moveThrough(stream, through);
+  await truncate(stream, through);
   return through;
 }
 
@@ -525,12 +557,31 @@ export async function deleteInbox(
   store: EventStore,
   chainId: string,
   /** Also find topic streams the registry does not name (a prefix scan; the orphan sweep's backstop). */
-  deep = false
+  deep = false,
+  /**
+   * ADR 0139: where each stream's envelopes MOVE before it is deleted. Without one, a chain that has
+   * ANY envelope in a stream refuses ({@link ReservedStreamArchiveRequiredError}) and deletes nothing;
+   * a chain whose streams are all empty has nothing to lose and is deleted as before. `"discard"` is
+   * the explicit whole-execution delete of the retention path (the user asked for the execution to
+   * go): nothing is archived.
+   */
+  archive?: ReservedStreamArchive | "discard"
 ): Promise<void> {
   if (store.deleteExecution === undefined) return;
   const { legacy, registry, topics, quarantine } = await (deep
     ? inboxStreamsOfChainDeep
     : inboxStreamsOfChain)(store, chainId);
+  const streams = [...topics, legacy, quarantine, ...(registry !== undefined ? [registry] : [])];
+  // Archive EVERY stream before deleting ANY: a refusal or a failure on the last one must not leave
+  // the earlier ones deleted (a retry then finds the chain whole).
+  for (const stream of streams) {
+    if (archive === "discard") continue;
+    // A point read of the head: a stream that holds nothing has nothing to lose, and most chains'
+    // streams are empty by the time they are retired.
+    if ((await headOf(store, stream)) === null) continue;
+    if (archive === undefined) throw new ReservedStreamArchiveRequiredError(stream, "delete");
+    await archive.moveAll(stream);
+  }
   for (const stream of topics) await store.deleteExecution(stream);
   await store.deleteExecution(legacy);
   // ADR 0130 residuals D9: the chain's quarantine copies go with it (sealed under the same owner key).
@@ -543,7 +594,8 @@ export async function trimTopicStream(
   store: EventStore,
   stream: string,
   cursor: number,
-  floor = INBOX_TOPIC_SEQ_BASE - 1
+  floor = INBOX_TOPIC_SEQ_BASE - 1,
+  archive?: ReservedStreamArchive
 ): Promise<number | undefined> {
   const truncate = store.truncatePrefixKeeping
     ? (id: string, through: number) => store.truncatePrefixKeeping?.(id, through, [])
@@ -555,6 +607,8 @@ export async function trimTopicStream(
   if (head === null) return undefined;
   const through = Math.min(cursor, head - 1);
   if (through < INBOX_TOPIC_SEQ_BASE || through <= floor) return undefined;
+  if (archive === undefined) throw new ReservedStreamArchiveRequiredError(stream);
+  await archive.moveThrough(stream, through);
   await truncate(stream, through);
   return through;
 }

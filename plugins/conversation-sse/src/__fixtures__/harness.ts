@@ -11,7 +11,11 @@ import {
 import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
 import type { PrincipalChain } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest, LlmStreamChunk, ReasoningStore } from "@loom/llm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
@@ -203,6 +207,7 @@ export async function boot(opts: BootOptions = {}) {
     effectRuntime: effects,
     timerStore: new InMemoryTimerStore(),
     inboxEnabled: true,
+    inboxArchive: new InMemoryArchiveStore(), // ADR 0139: an inbox trim MOVES envelopes into an archive
     continueAsNewEnabled: true,
     divergence: "fail",
     ...(opts.openRuntime !== true && {

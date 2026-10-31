@@ -2,7 +2,11 @@ import { createAgentModelEffect } from "@loom/agent";
 import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
 import type { PrincipalChain } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import type {
   LlmProvider,
@@ -225,6 +229,7 @@ export function boot(opts: BootOptions = {}) {
       snapshotStore,
       effectRuntime: effects,
       inboxEnabled: true,
+      inboxArchive: new InMemoryArchiveStore(), // ADR 0139: an inbox trim MOVES envelopes into an archive
       timerStore,
       continueAsNewEnabled: true,
       divergence: "fail",

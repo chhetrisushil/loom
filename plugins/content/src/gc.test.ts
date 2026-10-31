@@ -1621,6 +1621,136 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(await content.get(note)).not.toBeNull();
     });
 
+    /** ADR 0139: a reserved inbox stream trimmed through `trimInbox`: its consumed prefix MOVED to the archive. */
+    async function archivedInbox(content: InMemoryContentStore, clock: { now: number }) {
+      const { buildSegment, InMemoryArchiveStore, INBOX_TOPIC_SEQ_BASE } = await import(
+        "@loom/event-runtime"
+      );
+      const note = await content.put(bytes("telemetry only a trimmed inbox envelope cited"));
+      const legacy = "__loom_inbox__:chain";
+      const topic = "__loom_inbox__:chain#a1fce4363854ff88";
+      const message = (stream: string, sequence: number, cites: boolean) =>
+        evt(
+          stream,
+          sequence,
+          "INBOX_MESSAGE",
+          {
+            topic: "a",
+            messageId: `m${sequence}`,
+            payload: cites ? envelopeFor(note.__loomContent) : "plain",
+            sender: {},
+          },
+          OLD
+        );
+      const live = new InMemoryAsyncEventStore();
+      // legacy: sequence 0 (kept by every truncation) and the head; [1..2] were trimmed
+      await live.append(message(legacy, 0, false));
+      await live.append(message(legacy, 3, false));
+      // topic: a stream starts at INBOX_TOPIC_SEQ_BASE, not 0; its first two entries were trimmed
+      await live.append(message(topic, INBOX_TOPIC_SEQ_BASE + 2, false));
+      const archive = new InMemoryArchiveStore();
+      await archive.append(
+        legacy,
+        buildSegment(
+          [message(legacy, 0, false), message(legacy, 1, true), message(legacy, 2, false)],
+          "inc",
+          0,
+          2
+        )
+      );
+      await archive.append(
+        topic,
+        buildSegment(
+          [
+            message(topic, INBOX_TOPIC_SEQ_BASE, false),
+            message(topic, INBOX_TOPIC_SEQ_BASE + 1, false),
+          ],
+          "inc",
+          INBOX_TOPIC_SEQ_BASE,
+          INBOX_TOPIC_SEQ_BASE + 1
+        )
+      );
+      clock.now = NOW;
+      return { note, live, archive, legacy, topic };
+    }
+
+    it("ADR 0139 - a blob only a TRIMMED inbox envelope cites is pinned by the archive; without the archive the erasing pass refuses and erases nothing", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const { note, live, archive, legacy, topic } = await archivedInbox(content, clock);
+      const sweep = (archiveStores: unknown[]) =>
+        sweepUnpinnedContent({
+          eventStores: [live],
+          snapshotStores: [],
+          archiveStores: archiveStores as never,
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: erasing,
+        });
+      const kept = await sweep([archive]);
+      expect(kept.orphansReclaimed).toEqual([]);
+      expect(await content.get(note)).not.toBeNull();
+      // `[]` is refused for the trimmed inbox streams (they are gapped: the archive must cover them), and
+      // so is omitting the option; nothing is erased either way
+      await expect(sweep([])).rejects.toMatchObject({
+        name: "ArchiveStoresRequiredError",
+        reason: "uncovered",
+        executionIds: expect.arrayContaining([legacy, topic]),
+      });
+      await expect(
+        sweepUnpinnedContent({
+          eventStores: [live],
+          snapshotStores: [],
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: erasing,
+        })
+      ).rejects.toThrow(ArchiveStoresRequiredError);
+      expect(await content.get(note)).not.toBeNull();
+    });
+
+    it("ADR 0139 - an untrimmed inbox or topic stream (it starts at INBOX_TOPIC_SEQ_BASE) is not mistaken for a compacted log", async () => {
+      const { InMemoryArchiveStore, INBOX_TOPIC_SEQ_BASE } = await import("@loom/event-runtime");
+      const { clock, content } = clockedStore(OLD);
+      const live = new InMemoryAsyncEventStore();
+      const note = await content.put(bytes("cited by a live topic message"));
+      const topic = "__loom_inbox__:fresh#a1fce4363854ff88";
+      for (let i = 0; i < 3; i++) {
+        await live.append(
+          evt(
+            topic,
+            INBOX_TOPIC_SEQ_BASE + i,
+            "INBOX_MESSAGE",
+            {
+              topic: "a",
+              messageId: `m${i}`,
+              payload: envelopeFor(note.__loomContent),
+              sender: {},
+            },
+            OLD
+          )
+        );
+      }
+      clock.now = NOW;
+      const result = await sweepUnpinnedContent({
+        eventStores: [live],
+        snapshotStores: [],
+        archiveStores: [new InMemoryArchiveStore()],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: erasing,
+      });
+      // the pass completed (it would throw ArchiveStoresRequiredError for a "compacted" log) and needed
+      // no acknowledgment: a stream that starts at its base has lost nothing
+      expect(result.executionsScanned).toBe(1);
+      expect(result.unarchivedAcknowledged).toEqual([]);
+    });
+
     it("ADR 0138 - coverage is checked regardless of the mark: a missing segment is refused; the full archive passes; the explicit acknowledgment passes AND is reported; a dry run is exempt", async () => {
       const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
       const { clock, content } = clockedStore(OLD);

@@ -1334,7 +1334,7 @@ function defaultArchive(
   if (archive === undefined) {
     if (!isInMemoryEventStore(storage.eventStore)) {
       warn(
-        "storage.archiveStore was omitted for a custom event store that is not in-memory: `lifecycle.compact` will REFUSE (CompactionArchiveRequiredError), because compaction moves the events it removes into an archive and a volatile default would forget them on restart. Pass `archiveStore` (sqliteStorage()/postgresStorage() supply one; for an encrypting event store it is sealed under the event store's KeyStore automatically), or `durability.retention.compactionArchive`."
+        "storage.archiveStore was omitted for a custom event store that is not in-memory: `lifecycle.compact` will REFUSE (CompactionArchiveRequiredError) and, with kernel.features.inbox, the inbox's reserved streams will NOT be trimmed or deleted (ReservedStreamArchiveRequiredError, ADR 0139), because both MOVE the envelopes they remove into an archive and a volatile default would forget them on restart. Pass `archiveStore` (sqliteStorage()/postgresStorage() supply one; for an encrypting event store it is sealed under the event store's KeyStore automatically), or `durability.retention.compactionArchive`."
       );
       return {};
     }
@@ -1352,6 +1352,10 @@ function sealArchiveLike(archive: ArchiveStore, eventStore: EventStore | undefin
   const subjectOf = (eventStore as { subjectOf?: unknown } | undefined)?.subjectOf;
   return new EncryptingArchiveStore(archive, keys, {
     ...(typeof subjectOf === "function" && { subjectOf: subjectOf as never }),
+    // ADR 0139: a chain's reserved streams seal under the OWNER's subject; a custom subjectOf that reads
+    // the workflow id resolves it from the owner's first event, as the event store does.
+    ownerWorkflowId: async (chainId) =>
+      (await (eventStore as EventStore).readRange?.(chainId, 0, 0))?.[0]?.workflowId,
   });
 }
 
@@ -1749,6 +1753,18 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     config.onEvent?.(event);
   };
 
+  // ADR 0138: the compaction archive. ADR 0139: the SAME store is where the inbox's reserved streams MOVE
+  // the envelopes a trim or a terminal delete removes (resolved here, before the runtime that uses it).
+  // ADR 0130 residuals D7: compaction folds a log into a checkpoint, so it reads through the runtime's
+  // GUARDED store (a stream this node cannot open is refused, never checkpointed as ciphertext).
+  const compactionArchive =
+    config.retention?.compactionArchive !== undefined
+      ? sealArchiveLike(
+          config.retention.compactionArchive,
+          config.storage.kind === "custom" ? config.storage.eventStore : undefined
+        )
+      : stores.archiveStore;
+
   const runtime = new WorkflowRuntime({
     eventStore: stores.eventStore,
     snapshotStore: stores.snapshotStore,
@@ -1783,6 +1799,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     }),
     ...(config.kernel?.features?.inbox === true && {
       inboxEnabled: true,
+      ...(compactionArchive !== undefined && { inboxArchive: compactionArchive }),
+      ...(config.retention?.tenant !== undefined && {
+        inboxArchiveTenant: config.retention.tenant,
+      }),
       ...(config.kernel.features.inboxTopicStreams === true && { inboxTopicStreams: true }),
       ...(config.kernel.inbox?.maxTopics !== undefined && {
         inboxMaxTopics: config.kernel.inbox.maxTopics,
@@ -1924,13 +1944,6 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   };
   // ADR 0130 residuals D7: compaction folds a log into a checkpoint, so it reads through the runtime's
   // GUARDED store (a stream this node cannot open is refused, never checkpointed as ciphertext).
-  const compactionArchive =
-    config.retention?.compactionArchive !== undefined
-      ? sealArchiveLike(
-          config.retention.compactionArchive,
-          config.storage.kind === "custom" ? config.storage.eventStore : undefined
-        )
-      : stores.archiveStore;
   const lifecycle = new LogLifecycle(runtime.events, stores.snapshotStore, {
     ...(compactionArchive !== undefined && { compactionArchive }),
     ...(config.retention?.tenant !== undefined && { tenant: config.retention.tenant }),

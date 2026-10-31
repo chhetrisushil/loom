@@ -2,12 +2,18 @@ import { step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import {
+  type ArchiveStore,
   type EventStore,
+  InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
   type TimerStore,
 } from "@loom/event-runtime";
-import { EncryptingSnapshotStore, type KeyStore } from "@loom/plugin-crypto";
+import {
+  EncryptingArchiveStore,
+  EncryptingSnapshotStore,
+  type KeyStore,
+} from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
 import { z } from "zod";
 import { WorkflowRuntime } from "../WorkflowRuntime";
@@ -73,11 +79,26 @@ export function sealedSnapshots(
   return new EncryptingSnapshotStore(inner, keys as KeyStore, { sealState: true });
 }
 
+/**
+ * ADR 0139: the archive the inbox's reserved streams MOVE their trimmed envelopes into. Over a sealing
+ * event store it is sealed under the SAME KeyStore (the kernel guard refuses a plaintext one).
+ */
+export function inboxArchiveFor(
+  sealing: object,
+  inner: ArchiveStore = new InMemoryArchiveStore()
+): ArchiveStore {
+  const keys = (sealing as { keys?: unknown }).keys;
+  if (typeof keys !== "object" || keys === null) return inner;
+  return new EncryptingArchiveStore(inner, keys as KeyStore);
+}
+
 export interface Harness {
   rt: WorkflowRuntime;
   eventStore: EventStore;
   snapshotStore: SnapshotStore;
   timers: TimerStore;
+  /** The inbox archive (ADR 0139): trimmed reserved-stream envelopes live here. */
+  archive: ArchiveStore;
   effects: EffectRuntime;
   /** Build a second runtime over the SAME stores (another process / a reboot). */
   sibling(deps?: Partial<WorkflowRuntimeDeps>): WorkflowRuntime;
@@ -92,6 +113,8 @@ export function build(
     snapshotStore?: SnapshotStore;
     timers?: TimerStore | null;
     latch?: Latch;
+    /** `null`: no inbox archive at all (the refusal path). */
+    archive?: ArchiveStore | null;
   } = {}
 ): Harness {
   const eventStore = opts.eventStore ?? new InMemoryAsyncEventStore();
@@ -121,11 +144,13 @@ export function build(
     return effects;
   };
   const effects = mkEffects();
+  const archive = opts.archive === null ? undefined : (opts.archive ?? inboxArchiveFor(eventStore));
   const common = (): WorkflowRuntimeDeps => ({
     eventStore,
     snapshotStore,
     effectRuntime: effects,
     inboxEnabled: true,
+    ...(archive !== undefined && { inboxArchive: archive }),
     ...(timers !== undefined && { timerStore: timers }),
     onWarn: (m: string) => warnings.push(m),
     onStorageError: (_id: string, e: unknown) => storageErrors.push(e),
@@ -137,6 +162,7 @@ export function build(
     eventStore,
     snapshotStore,
     timers: timers as TimerStore,
+    archive: archive as ArchiveStore,
     effects,
     warnings,
     storageErrors,

@@ -204,6 +204,19 @@ export const INBOX_LAYOUT_STREAM = "__loom_inbox_layout__";
 
 const TOPIC_STREAM_SUFFIX = /#[0-9a-f]{16}$/;
 
+/**
+ * ADR 0139: the suffix of an ARCHIVE key (never a live stream) that holds envelopes of a reserved stream
+ * which could not extend the stream's main archive run (`<stream>#late-<n>`): a straggler appended below
+ * the archive's last sequence, for example by a send that raced the owner's terminal delete. It names the
+ * same chain as the stream it belongs to.
+ */
+export const RESERVED_LATE_SUFFIX = /#late-[1-9][0-9]*$/;
+
+/** The archive key of the `n`th (1-based) late run of a reserved stream (see {@link RESERVED_LATE_SUFFIX}). */
+export function reservedLateKey(streamId: string, n: number): string {
+  return `${streamId}#late-${n}`;
+}
+
 /** The 16-hex-digit stream suffix of `topic` (first 8 bytes of its SHA-256). */
 export function inboxTopicHash(topic: string): string {
   return createHash("sha256").update(topic).digest("hex").slice(0, 16);
@@ -224,7 +237,11 @@ export function inboxRegistryStreamId(chainId: string): string {
  * (`<x>#<16 hex>` or `<x>#reg`)? Such an id is refused at `start` once the inbox is on.
  */
 export function hasInboxStreamShape(id: string): boolean {
-  return id.endsWith(INBOX_REGISTRY_SUFFIX) || TOPIC_STREAM_SUFFIX.test(id);
+  return (
+    id.endsWith(INBOX_REGISTRY_SUFFIX) ||
+    TOPIC_STREAM_SUFFIX.test(id) ||
+    RESERVED_LATE_SUFFIX.test(id)
+  );
 }
 
 /**
@@ -233,7 +250,9 @@ export function hasInboxStreamShape(id: string): boolean {
  * fresh one), so a decorator that maps executions to erasure subjects can map the chain's streams
  * (legacy, per-topic and registry alike) to the same subject as its owner.
  */
-export function inboxChainOf(executionId: string): string | undefined {
+export function inboxChainOf(id: string): string | undefined {
+  // ADR 0139: an archive key of stragglers belongs to the chain of the stream it was split from.
+  const executionId = id.replace(RESERVED_LATE_SUFFIX, "");
   if (executionId.startsWith(QUARANTINE_STREAM_PREFIX)) {
     // ADR 0130 residuals D9 (reserved): the quarantine copy belongs to the chain, under the same owner subject.
     const quarantined = executionId.slice(QUARANTINE_STREAM_PREFIX.length);

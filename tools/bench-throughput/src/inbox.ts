@@ -1,7 +1,11 @@
 import { flow$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
-import { type EventStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  type EventStore,
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+} from "@loom/event-runtime";
 import {
   PostgresEventStore,
   PostgresSnapshotStore,
@@ -103,6 +107,7 @@ async function main(): Promise<void> {
       snapshotStore: s.snaps,
       effectRuntime: new EffectRuntime(),
       inboxEnabled: true,
+      inboxArchive: new InMemoryArchiveStore(), // ADR 0139: an inbox trim MOVES envelopes into an archive
       inboxMaxBacklog: 1_000_000,
       onWarn: () => {},
     });
