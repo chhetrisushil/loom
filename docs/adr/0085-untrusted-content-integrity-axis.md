@@ -195,6 +195,22 @@ is capped (8 distinct origins, then `+N more`, each at most 200 characters) so f
 inflate the journaled label. A result that carries a marker AND exceeds the scan bound is fenced with
 `unknown:taint-scan-bound-exceeded` and the loop warns once per tool (`LOOM_AGENT_TAINT_SCAN_BOUND`).
 
+**One JSON normalisation per output; an unstable one fails closed (second review round).** Stringifying
+inside `toolResultContent` still left several reads of the same live object (the log entry, the lean
+digest, the fence, the taint scan), and a stateful getter or `toJSON` answers each differently. So
+`agentLoop$` takes each tool output through ONE JSON round trip (`normalizeToolOutput`: stringify,
+then parse) the moment it settles, and the log entry, the ADR 0142 digest, the `tool_result` text and
+its fence, `sawTaintFrom`, write-back and compaction all consume that single value (a `Date` is its ISO
+string everywhere, live and on replay). A plain-JSON output is byte-identical after the round trip. What
+is RECORDED as `STEP_COMPLETED` output is the effect's own return, committed by the kernel before the
+loop sees it, so it is the store's read, not the loop's; the two agree for every output whose JSON form
+is stable. The loop therefore serialises once more and compares: an output whose JSON differs between
+reads FAILS THE RUN with an error naming the tool (nothing is shown to the model), because the
+alternative is a fence the replay cannot reproduce. An output JSON cannot represent keeps its old
+behaviour: `undefined`/function render as an absent result; a bigint, a cycle or a too-deep value
+throws when serialised, as before. Media results take the same path (their parts are JSON by
+construction: base64 `data` and refs), so the `untrusted` media taint path is unchanged.
+
 **Taint propagates through every derived artifact.** `sawTaintFrom` is now derived from the
 `tool_result` part the model is actually shown (tainted text, or a media part marked
 `untrusted: { origin }`), and a RECALLED tainted memory entry marks the run too, so an answer built on
