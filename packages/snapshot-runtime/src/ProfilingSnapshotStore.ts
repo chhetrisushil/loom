@@ -38,11 +38,16 @@ export interface SnapshotSizeProfile {
 export interface ProfilingSnapshotStoreOptions {
   /** How many largest executions to keep (default 10; 0 keeps none). Memory is O(topN). */
   topN?: number;
-  /** `onLargeSnapshot` fires when an execution's snapshot first reaches this many bytes. */
+  /**
+   * `onLargeSnapshot` fires when an execution's snapshot first reaches this many bytes.
+   * Required when `onLargeSnapshot` is given (the hook would otherwise never fire).
+   */
   largeThresholdBytes?: number;
   /**
    * Fires ONCE per execution when it first crosses `largeThresholdBytes`. A throw or a
-   * rejection is swallowed (it never fails the save).
+   * rejection is swallowed (it never fails the save). A SYNC hook runs on the save path (it
+   * delays the save's resolution); only an async hook's work is off it. Needs
+   * `largeThresholdBytes`. A save that `sampleRate` skipped fires nothing.
    */
   onLargeSnapshot?: (executionId: string, bytes: number) => void | Promise<void>;
   /**
@@ -52,7 +57,10 @@ export interface ProfilingSnapshotStoreOptions {
    * so the hook fires on EVERY over-threshold save.
    */
   dedupeCapacity?: number;
-  /** Fraction of saves to measure, `0..1` (default 1: all). */
+  /**
+   * Fraction of saves to measure, `0..1` (default 1: all). Sampling can MISS a rare huge
+   * snapshot: a sampled-out save updates neither `largest` nor the hook.
+   */
   sampleRate?: number;
   /** Source of `[0,1)` numbers for sampling; inject a fake in tests (default `Math.random`). */
   sampler?: () => number;
@@ -100,9 +108,10 @@ export function sizeBucket(bytes: number): number {
  * **Cost.** One `JSON.stringify` of the state per measured save (the backend serializes again),
  * done synchronously before the save is forwarded, plus an allocation-free UTF-8 length. Saves
  * are fire-and-forget off the resume path, but if the stringify shows up, set `sampleRate`.
- * The size is the JSON text of `snapshot.state`; a backend that stores a different encoding
- * (compression, a binary column) differs by a constant factor, and a state that cannot be
- * serialized counts as a `measurementErrors` entry.
+ * It measures the UTF-8 text size of `JSON.stringify(state)`. SQLite stores exactly that text;
+ * Postgres casts to JSONB (whitespace, key order and duplicates are normalised, and TOAST
+ * compression changes the on-disk size), so read the on-disk size there with `pg_column_size`.
+ * A state that cannot be serialized counts as a `measurementErrors` entry.
  *
  * **Reading it.** `profile()` gives totals, a power-of-two `histogram` (bucket `maxBytes` is an
  * inclusive upper bound) and `largest`, the top N executions by their latest snapshot size. A
@@ -123,8 +132,11 @@ export class ProfilingSnapshotStore implements SnapshotStore {
   private maxBytes = 0;
   private readonly counts = new Array<number>(SIZE_HISTOGRAM_BUCKETS).fill(0);
   private readonly top: BoundedTopN;
-  /** Insertion-ordered Map used as an LRU: first key = least recently saved. */
-  private readonly flagged = new Map<string, true>();
+  /**
+   * Insertion-ordered Map used as an LRU: first key = least recently saved. The value is the
+   * highest sequence seen, so a late (lower-sequence) completion cannot refresh the recency.
+   */
+  private readonly flagged = new Map<string, number>();
   private readonly dedupeCapacity: number;
   private readonly sampleRate: number;
   private readonly sampler: () => number;
@@ -147,6 +159,11 @@ export class ProfilingSnapshotStore implements SnapshotStore {
     if (!(rate >= 0 && rate <= 1)) {
       throw new RangeError(`ProfilingSnapshotStore: sampleRate must be in 0..1 (got ${rate})`);
     }
+    if (options.onLargeSnapshot !== undefined && options.largeThresholdBytes === undefined) {
+      throw new RangeError(
+        "ProfilingSnapshotStore: onLargeSnapshot requires largeThresholdBytes (it would never fire)"
+      );
+    }
     this.dedupeCapacity = dedupe;
     this.sampleRate = rate;
     this.sampler = options.sampler ?? Math.random;
@@ -160,9 +177,17 @@ export class ProfilingSnapshotStore implements SnapshotStore {
       },
       pruneSnapshots: async (id, range, keep) => {
         const deleted = await inner.pruneSnapshots!(id, range, keep);
-        // Only when rows went: the size we hold may be one of them, and the survivor's size
-        // is unknown here. The next save re-admits the execution.
-        if (deleted > 0) this.forget(id);
+        // Forget only what the prune could have removed: the held LATEST snapshot inside the
+        // range and not kept. Otherwise it survives, and so does its size and its flag.
+        if (deleted > 0) {
+          const gone = (sequence: number | undefined): boolean =>
+            sequence !== undefined &&
+            range.after < sequence &&
+            sequence < range.before &&
+            !(keep?.includes(sequence) ?? false);
+          if (gone(this.top.sequenceOf(id))) this.top.remove(id);
+          if (gone(this.flagged.get(id))) this.flagged.delete(id);
+        }
         return deleted;
       },
       // A sealed read hands back stored bytes; nothing to measure or track.
@@ -205,15 +230,19 @@ export class ProfilingSnapshotStore implements SnapshotStore {
     this.top.offer(id, bytes, snapshot.sequence);
     const threshold = this.options.largeThresholdBytes;
     if (threshold === undefined) return;
-    if (this.flagged.has(id)) {
-      // refresh recency: an execution still being saved should outlive idle ones
-      this.flagged.delete(id);
-      this.flagged.set(id, true);
+    const seen = this.flagged.get(id);
+    if (seen !== undefined) {
+      // refresh recency: an execution still being saved should outlive idle ones. A late,
+      // lower-sequence completion is not a newer save and must not.
+      if (snapshot.sequence >= seen) {
+        this.flagged.delete(id);
+        this.flagged.set(id, snapshot.sequence);
+      }
       return;
     }
     if (bytes < threshold) return;
     if (this.dedupeCapacity > 0) {
-      this.flagged.set(id, true);
+      this.flagged.set(id, snapshot.sequence);
       if (this.flagged.size > this.dedupeCapacity) {
         this.flagged.delete(this.flagged.keys().next().value as string);
       }
@@ -273,7 +302,7 @@ export class ProfilingSnapshotStore implements SnapshotStore {
       })),
       largest: this.top
         .entries()
-        .map((e) => ({ executionId: e.key, bytes: e.value, sequence: e.meta })),
+        .map((e) => ({ executionId: e.key, bytes: e.value, sequence: e.sequence })),
     };
   }
 

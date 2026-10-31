@@ -22,7 +22,7 @@
 export class BoundedTopN {
   private readonly keys: string[] = [];
   private readonly values: number[] = [];
-  private readonly meta: number[] = [];
+  private readonly sequence: number[] = [];
   private readonly index = new Map<string, number>();
 
   constructor(private readonly capacity: number) {}
@@ -31,13 +31,24 @@ export class BoundedTopN {
     return this.keys.length;
   }
 
-  /** Offer `key`'s latest value (`meta` rides along, e.g. the snapshot sequence). */
-  offer(key: string, value: number, meta: number): void {
+  /** The sequence held for `key`, or undefined when it is not retained. */
+  sequenceOf(key: string): number | undefined {
+    const at = this.index.get(key);
+    return at === undefined ? undefined : this.sequence[at];
+  }
+
+  /**
+   * Offer `key`'s latest value at `sequence` (e.g. the snapshot sequence). An offer for a
+   * retained key whose sequence is LOWER than the held one is ignored: saves can complete out
+   * of order, and the older one must not overwrite the latest.
+   */
+  offer(key: string, value: number, sequence: number): void {
     const at = this.index.get(key);
     if (at !== undefined) {
+      if (sequence < this.sequence[at]!) return;
       const old = this.values[at]!;
       this.values[at] = value;
-      this.meta[at] = meta;
+      this.sequence[at] = sequence;
       if (value > old) this.siftDown(at);
       else if (value < old) this.siftUp(at);
       return;
@@ -46,7 +57,7 @@ export class BoundedTopN {
     if (this.keys.length < this.capacity) {
       this.keys.push(key);
       this.values.push(value);
-      this.meta.push(meta);
+      this.sequence.push(sequence);
       this.index.set(key, this.keys.length - 1);
       this.siftUp(this.keys.length - 1);
       return;
@@ -55,7 +66,7 @@ export class BoundedTopN {
     this.index.delete(this.keys[0]!);
     this.keys[0] = key;
     this.values[0] = value;
-    this.meta[0] = meta;
+    this.sequence[0] = sequence;
     this.index.set(key, 0);
     this.siftDown(0);
   }
@@ -68,15 +79,15 @@ export class BoundedTopN {
     if (at === last) {
       this.keys.pop();
       this.values.pop();
-      this.meta.pop();
+      this.sequence.pop();
       return true;
     }
     this.keys[at] = this.keys[last]!;
     this.values[at] = this.values[last]!;
-    this.meta[at] = this.meta[last]!;
+    this.sequence[at] = this.sequence[last]!;
     this.keys.pop();
     this.values.pop();
-    this.meta.pop();
+    this.sequence.pop();
     this.index.set(this.keys[at]!, at);
     this.siftUp(at);
     this.siftDown(this.index.get(this.keys[at]!)!);
@@ -86,15 +97,15 @@ export class BoundedTopN {
   clear(): void {
     this.keys.length = 0;
     this.values.length = 0;
-    this.meta.length = 0;
+    this.sequence.length = 0;
     this.index.clear();
   }
 
-  /** Largest first. O(N log N), called by a reader, never on the save path. */
-  entries(): { key: string; value: number; meta: number }[] {
+  /** Largest first, ties by key ascending (deterministic). O(N log N), a reader's cost. */
+  entries(): { key: string; value: number; sequence: number }[] {
     return this.keys
-      .map((key, i) => ({ key, value: this.values[i]!, meta: this.meta[i]! }))
-      .sort((a, b) => b.value - a.value);
+      .map((key, i) => ({ key, value: this.values[i]!, sequence: this.sequence[i]! }))
+      .sort((a, b) => b.value - a.value || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   }
 
   /** Heap invariant + index consistency, for tests. */
@@ -110,13 +121,13 @@ export class BoundedTopN {
   private swap(a: number, b: number): void {
     const k = this.keys[a]!;
     const v = this.values[a]!;
-    const m = this.meta[a]!;
+    const m = this.sequence[a]!;
     this.keys[a] = this.keys[b]!;
     this.values[a] = this.values[b]!;
-    this.meta[a] = this.meta[b]!;
+    this.sequence[a] = this.sequence[b]!;
     this.keys[b] = k;
     this.values[b] = v;
-    this.meta[b] = m;
+    this.sequence[b] = m;
     this.index.set(this.keys[a]!, a);
     this.index.set(this.keys[b]!, b);
   }

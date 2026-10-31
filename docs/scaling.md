@@ -328,8 +328,15 @@ their latest snapshot size); `onLargeSnapshot(executionId, bytes)` fires once wh
 execution first crosses `largeThresholdBytes`. Placement decides the question: wrapped OUTSIDE
 `EncryptingSnapshotStore` it measures the plaintext state, around the raw backend it measures
 what is stored (ciphertext). It costs one extra `JSON.stringify` per measured save, off the
-resume path; set `sampleRate` if that shows up. Memory is bounded (a top-N heap and an LRU
-dedupe set), so an execution evicted from the dedupe set may fire again.
+resume path; set `sampleRate` if that shows up, but note sampling can MISS a rare huge snapshot
+(a sampled-out save updates neither `largest` nor the hook). The size is the UTF-8 text size of
+`JSON.stringify(state)`: SQLite stores exactly that, while Postgres casts to JSONB (normalised
+whitespace and key order, TOAST compression), so read the on-disk size there with
+`pg_column_size`. A SYNC `onLargeSnapshot` runs on the save path; only an async hook is off it,
+and the hook needs `largeThresholdBytes` (the constructor throws otherwise). Memory is bounded
+(a top-N heap and an LRU dedupe set), so an execution evicted from the dedupe set may fire
+again. Saves that complete out of order never overwrite a newer size, and a prune forgets an
+execution only when its latest snapshot was deleted.
 
 **Is your workload even write-bound?** Wrap your store in `ProfilingEventStore` and add
 `effectTimingMiddleware` to your effect runtime, run real traffic, and compare
