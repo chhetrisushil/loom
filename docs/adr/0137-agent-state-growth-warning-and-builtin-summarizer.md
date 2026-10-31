@@ -13,8 +13,9 @@
 ## Context
 
 An `agentLoop$` without `compaction` journals each turn's whole model input (the transcript is re-sent every
-turn), so its folded state grows O(turns^2) and resume reads it all. The #721 offline harness measured a
-7.0 MB latest snapshot at 50 turns, 110 MB at 200, and a `RangeError: Invalid string length` near 450
+turn), so its folded state grows O(turns^2) and resume reads it all. The #721 offline harness (re-measured with a
+cloning store; the first table was ~2x high, see issue #722) measured 3.5 MB of folded state at 50 turns,
+54.9 MB at 200, 279 MB at 450, and a `RangeError: Invalid string length` serializing it by 650
 (table and caveats in `docs/scaling.md`, "Agent state growth"). `compaction: { toolId, afterBytes }` already
 bounds it, but nothing says you need it, and opting in means writing a summarizer effect.
 
@@ -25,8 +26,9 @@ bounds it, but nothing says you need it, and opting in means writing a summarize
 run through the existing seam (`AgentLoopConfig.onWarn`, else the app's `observability.onWarn` via
 `configureAgentLoopDefaults`, else a process warning `LOOM_AGENT_STATE_GROWTH`; a throwing sink never fails
 the run). It names the fix and `docs/scaling.md`. Default threshold `DEFAULT_STATE_GROWTH_WARN_BYTES` =
-256 KiB (~64k tokens): in the harness that is roughly turn 100, tens of MB of state, early enough to act on;
-the issue's 1 MB example would already be ~100+ MB. `warnTranscriptBytes: false` turns it off. The trigger
+256 KiB (~64k tokens): in the harness that is turn ~107 and ~16 MB of folded state, early enough to act on
+(compacting there is cheap, and a 128 KiB default would warn at turn ~52 and 3-4 MB, noisier for ordinary
+agents); the issue's 1 MB example is turn ~450 and ~280 MB, past a Postgres JSONB value's 255 MB cap. `warnTranscriptBytes: false` turns it off. The trigger
 is a pure function of journaled content; nothing is written to the log; a resume in a fresh process replays
 the crossing turn from the log and warns again (once). The log and the model's requests are byte-identical
 with and without the warning (tested).
@@ -39,7 +41,10 @@ provider), so it runs inside the capability ring (grant, metering, quotas, `guar
 model call, and `ctx.execute` records it once and serves it from the log on replay with no model call. It is
 opt-in by being named in `compaction.toolId`; nothing registers it implicitly. The transcript is flattened
 with `summarizerText` and re-wrapped `tainted(..., "agent:summarizer-input")` in a USER message, never the
-system prompt.
+system prompt. `maxTokens` defaults to 1024 (~4 KiB): a summary larger than `afterBytes` is re-summarized on
+the next turn (the skip rule only covers a single oversize newest message), one summarizer call per turn until
+it fits, so keep it well under `afterBytes / 2`. An empty or whitespace summary throws `SummarizerEmptyError`
+(the summary replaces the folded transcript and is journaled permanently, so the step fails visibly instead).
 
 **D3 - reuse.** The conversation layer had no built-in summarizer (its `summarizerToolId` is also
 user-written), but it owned `summarizerText`, the bounded taint-unwrapping walker both contracts need. It moved

@@ -40,6 +40,8 @@ export type { ChunkDeltasOptions, ChunkedSink } from "./chunkDeltas";
 export { createAgentModelEffect } from "./createAgentModelEffect";
 export {
   DEFAULT_SUMMARIZER_INSTRUCTION,
+  DEFAULT_SUMMARIZER_MAX_TOKENS,
+  SummarizerEmptyError,
   SUMMARIZER_INPUT_ORIGIN,
   createSummarizerEffect,
 } from "./createSummarizerEffect";
