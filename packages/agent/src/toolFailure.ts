@@ -78,6 +78,9 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "DuplicateSequenceError",
   "EgressDeniedError",
   "SpawnLimitExceededError",
+  // a run that ended (completed, failed, cancelled, continued) before it parked, seen by a waiter on its
+  // suspend promise: not a request the model can adapt (ADR 0135)
+  "ExecutionTerminatedError",
   // a provider reported an error inside a 200 stream (overloaded, server error): transient
   // infrastructure, left to the step retry policy, not the model
   "LlmStreamError",

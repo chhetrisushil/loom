@@ -358,6 +358,10 @@ const NOT_A_CAPABILITY = new Set([
   // first-party agentic layer. A development gate like the DST runs and the fitness tests; it ships no
   // runtime subsystem, event, SPI or exported vocabulary, so there is nothing to grade.
   "0131",
+  // 0135 - `waitForSuspend()` rejects with ExecutionTerminatedError on a terminal run (issue #710): a
+  // settlement fix on the public handle of the workflow runtime. No event, SPI, ABI or subsystem change;
+  // nothing to grade.
+  "0135",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
