@@ -161,7 +161,7 @@ and compute.
   existing A2UI catalog model — so MCP Apps is a second *transport binding* for a surface
   protocol Loom already ships, not a second UI protocol, and the rendered UI is a pure function
   of (pinned template hash, logged `structuredContent`). The extension has no server push, so an
-  `ambient`/app-visibility `loom.surface.since` cursor over `EventStore.readRange` is the View's
+  `ambient`/app-visibility `loom_surface_since` cursor over `EventStore.readRange` is the View's
   refresh channel; `seenSequence` + `isStale` carry decision provenance across a long
   suspension. Egress redaction is required-by-configuration, never defaulted. The **host** role
   (iframe, CSP, postMessage) is deliberately out of scope

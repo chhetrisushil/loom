@@ -390,6 +390,16 @@ written. The gap is real but not MCP-Apps-shaped — it is identical for any thi
 result, any A2A peer response, and any fetched document — so it is tracked separately rather
 than folded in here.
 
+## Amendment (2026-10-31) — the cursor tool is `loom_surface_since`
+
+D5's tool name `loom.surface.since` is renamed `loom_surface_since` (`SURFACE_CURSOR_TOOL`). Since
+`McpClient.listTools()` hides any tool whose name is not `^[A-Za-z0-9_-]{1,64}$` unless the caller
+passes `{ anyToolName: true }`, the dotted name was a tool loom's own client hid by default. A
+clean rename with no alias (publishing both names would keep the hidden one alive); the View
+template derives the name from the constant. The decision (one app-visibility cursor over
+`readRange`) and the text above are otherwise unchanged and keep the original name as historical
+record. Breaking for any host or client that called the dotted name.
+
 ## Notes on what was rejected and why it mattered
 
 P-D ("it ships code") looked like the fatal objection — it is the exact property whose

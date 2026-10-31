@@ -24,6 +24,7 @@
 // cursor tool.
 
 import { hashResourceBody } from "@loom/plugin-mcp";
+import { SURFACE_CURSOR_TOOL } from "./surfaceCursor";
 
 /** The URI the surface-host template is published under. */
 export const SURFACE_HOST_URI = "ui://loom/surface-host";
@@ -208,7 +209,7 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
   function poll() {
     if (executionId == null) return;
     request("tools/call", {
-      name: "loom.surface.since",
+      name: "${SURFACE_CURSOR_TOOL}",
       arguments: { executionId: executionId, fromSequence: sequence }
     }).then(function (res) {
       adopt((res && res.structuredContent) || null);

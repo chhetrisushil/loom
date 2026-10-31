@@ -26,7 +26,7 @@ import { surfacePayload } from "./surfaceBridge";
 import type { SurfacePayload } from "./surfaceBridge";
 
 /** Default id for the app-visibility surface cursor tool. */
-export const SURFACE_CURSOR_TOOL = "loom.surface.since";
+export const SURFACE_CURSOR_TOOL = "loom_surface_since";
 
 export interface SurfaceCursorOptions {
   store: EventStore;
