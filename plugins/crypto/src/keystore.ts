@@ -16,7 +16,17 @@ import { randomBytes } from "node:crypto";
  * the erasure primitive, so its durability + true deletion are security-critical.
  */
 export interface KeyStore {
-  /** Get the subject's key, creating one on first use. */
+  /**
+   * Get the subject's key, creating one on first use.
+   *
+   * MUST be an ATOMIC create-if-absent across every caller and node sharing the store (ADR 0139 D22):
+   * concurrent first calls for one subject all resolve to the SAME key. Two callers that each mint and
+   * "last writer wins" leave one of them holding a key nothing else can find - erasure then destroys one
+   * key and reports success while the other copy of the data stays readable. Implement it as a conditional
+   * write (`INSERT ... ON CONFLICT DO NOTHING` then re-read; a KMS/vault create-if-not-exists /
+   * compare-and-set), never as `get` -> `write`. Held by the conformance kit
+   * (`runKeyStoreConformance`, "concurrent getOrCreate").
+   */
   getOrCreate(subjectId: string): Promise<Buffer>;
   /** Get the subject's key, or null if it never existed OR was destroyed (shredded). */
   get(subjectId: string): Promise<Buffer | null>;
@@ -69,6 +79,8 @@ export class InMemoryKeyStore implements KeyStore {
   private readonly destroyed = new Set<string>();
 
   async getOrCreate(subjectId: string): Promise<Buffer> {
+    // Atomic create-if-absent: no await between the lookup and the set (single-threaded), so concurrent
+    // callers all see the one key.
     if (this.destroyed.has(subjectId)) {
       throw new Error(`key for subject "${subjectId}" was destroyed (shredded); cannot recreate`);
     }

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { EventEnvelope } from "@loom/core";
 import {
   InMemoryArchiveStore,
@@ -8,7 +9,12 @@ import { describe, expect, it } from "vitest";
 import { EncryptingArchiveStore } from "./EncryptingArchiveStore";
 import { EncryptingEventStore } from "./EncryptingEventStore";
 import { InMemoryKeyStore } from "./keystore";
-import { SenderErasedError, isSealedSender } from "./senderSeal";
+import {
+  SenderEraseIncompleteError,
+  SenderErasedError,
+  SenderMasterLostError,
+  isSealedSender,
+} from "./senderSeal";
 
 // ADR 0139 N6/N7/N3 - the sender of an inbox message is sealed BY DEFAULT under an opaque, keyed handle that
 // erasing the sender makes unlinkable; the sealed sender is bound to its message; two erased senders stay
@@ -177,5 +183,175 @@ describe("N7: a sealed sender is bound to its message (a swap is detected)", () 
       actor: "alice",
       tenant: "t1",
     });
+  });
+});
+
+// ── ADR 0139 D22 - round 3 ───────────────────────────────────────────────────────────────────────────
+
+/** A KeyStore whose create-if-absent is NOT atomic (get -> yield -> write, last writer wins): the KMS shape. */
+class RacyKeys extends InMemoryKeyStore {
+  private readonly table = new Map<string, Buffer>();
+  override async getOrCreate(subjectId: string): Promise<Buffer> {
+    const seen = this.table.get(subjectId);
+    if (seen !== undefined) return seen;
+    if ((await this.wasDestroyed(subjectId)) === true) throw new Error("destroyed");
+    await new Promise((r) => setImmediate(r)); // another caller's get() lands here
+    const key = randomBytes(32);
+    this.table.set(subjectId, key); // upsert: last writer wins
+    return key;
+  }
+  override async get(subjectId: string): Promise<Buffer | null> {
+    return this.table.get(subjectId) ?? null;
+  }
+  override async destroy(subjectId: string): Promise<void> {
+    this.table.delete(subjectId);
+    await super.destroy(subjectId);
+  }
+}
+
+describe("D22 blocker: concurrent first sends mint ONE seed, ONE handle", () => {
+  it("Promise.all of first sends from one sender stores ONE handle, and erasing it reaches every message", async () => {
+    const keys = new RacyKeys();
+    const { inner, store } = make(keys);
+    await Promise.all(Array.from({ length: 8 }, (_, i) => store.append(message(i + 1, "alice"))));
+    const handles = new Set(
+      (await inner.read(STREAM)).map((e) => (senderOf(e) as { subject: string }).subject)
+    );
+    expect(handles.size).toBe(1);
+    expect(await store.eraseSender({ actor: "alice", tenant: "t1" })).toBe(true);
+    for (const e of await store.read(STREAM)) expect(senderOf(e)).toMatchObject({ erased: true });
+  });
+
+  it("two stores over one KeyStore (two nodes) with an atomic getOrCreate agree on the handle", async () => {
+    const keys = new InMemoryKeyStore();
+    const a = make(keys);
+    const b = make(keys);
+    await Promise.all([a.store.append(message(1, "alice")), b.store.append(message(2, "alice"))]);
+    const h = async (x: ReturnType<typeof make>) =>
+      (senderOf((await x.inner.read(STREAM))[0]) as { subject: string }).subject;
+    expect(await h(a)).toBe(await h(b));
+  });
+});
+
+describe("D22 erase verifies, and fails loud on a lost master", () => {
+  /** Drop a key as a store that LOST it would (no tombstone). */
+  const lose = (keys: InMemoryKeyStore, subject: string) =>
+    (keys as unknown as { keys: Map<string, Buffer> }).keys.delete(subject);
+
+  it("a master lost while sealed senders exist is a loud SenderMasterLostError, never a quiet false", async () => {
+    const keys = new InMemoryKeyStore();
+    const { store } = make(keys);
+    await store.append(message(1, "alice"));
+    lose(keys, "__loom_sender_master__");
+    const restarted = make(keys); // a fresh node: no cached master
+    await expect(restarted.store.eraseSender({ actor: "alice", tenant: "t1" })).rejects.toThrow(
+      SenderMasterLostError
+    );
+    // and a send does not silently mint a NEW master either
+    await expect(restarted.store.append(message(2, "alice"))).rejects.toThrow(
+      SenderMasterLostError
+    );
+  });
+
+  it("a destroyed master is SenderMasterLostError, not SenderErasedError", async () => {
+    const keys = new InMemoryKeyStore();
+    const { store } = make(keys);
+    await store.append(message(1, "alice"));
+    await keys.destroy("__loom_sender_master__");
+    const restarted = make(keys);
+    const err = await restarted.store
+      .eraseSender({ actor: "alice", tenant: "t1" })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SenderMasterLostError);
+    expect(err).not.toBeInstanceOf(SenderErasedError);
+  });
+
+  it("a store that never sealed a sender still answers false (no master, no marker)", async () => {
+    const { store } = make();
+    expect(await store.eraseSender({ actor: "alice", tenant: "t1" })).toBe(false);
+  });
+
+  it("the crash window between the two destroys surfaces SenderErasedError on a send", async () => {
+    const keys = new InMemoryKeyStore();
+    const { inner, store } = make(keys);
+    await store.append(message(1, "alice"));
+    const handle = (senderOf((await inner.read(STREAM))[0]) as { subject: string }).subject;
+    await keys.destroy(handle); // crash after the first destroy: the seed is still live
+    await expect(store.append(message(2, "alice"))).rejects.toThrow(SenderErasedError);
+    // and the retry of the erase finishes it
+    expect(await store.eraseSender({ actor: "alice", tenant: "t1" })).toBe(true);
+  });
+
+  it("fails loud when a destroy did not take (a live key remains)", async () => {
+    class Stubborn extends InMemoryKeyStore {
+      override async destroy(subjectId: string): Promise<void> {
+        if (subjectId.startsWith("__loom_sender_seed__:")) return; // silently keeps the seed
+        await super.destroy(subjectId);
+      }
+    }
+    const { store } = make(new Stubborn());
+    await store.append(message(1, "alice"));
+    await expect(store.eraseSender({ actor: "alice", tenant: "t1" })).rejects.toThrow(
+      SenderEraseIncompleteError
+    );
+  });
+});
+
+describe("N7+: the sealed sender is bound to the message id too", () => {
+  it("a sealed sender pasted onto a message at the same position with another messageId fails to open", async () => {
+    const { inner, store, keys } = make();
+    await store.append(message(1, "alice"));
+    const [orig] = await inner.read(STREAM);
+    const forged = new InMemoryAsyncEventStore();
+    await forged.append({
+      ...(orig as EventEnvelope),
+      payload: { ...((orig as EventEnvelope).payload as object), messageId: "other" },
+    });
+    const reader = new EncryptingEventStore(forged, keys, { sensitive: {} });
+    await expect(reader.read(STREAM)).rejects.toThrow();
+  });
+});
+
+describe("D22 owner ruling: an erased sender stays blocked until an operator reinstates them", () => {
+  it("erased -> blocked -> reinstated -> sends under a NEW handle; old messages stay erased and unlinkable", async () => {
+    const { inner, store, keys } = make();
+    await store.append(message(1, "alice"));
+    const oldHandle = (senderOf((await inner.read(STREAM))[0]) as { subject: string }).subject;
+    await store.eraseSender({ actor: "alice", tenant: "t1" });
+    await expect(store.append(message(2, "alice"))).rejects.toThrow(SenderErasedError);
+
+    const result = await store.reinstateSender({ actor: "alice", tenant: "t1" });
+    expect(result).toMatchObject({ reinstated: true, epoch: 1 });
+    expect(JSON.stringify(result)).not.toContain("alice");
+
+    await store.append(message(2, "alice"));
+    const raw = await inner.read(STREAM);
+    const newHandle = (senderOf(raw[1]) as { subject: string }).subject;
+    expect(newHandle).not.toBe(oldHandle);
+    const [oldMsg, newMsg] = await store.read(STREAM);
+    expect(senderOf(oldMsg)).toEqual({ erased: true, ref: oldHandle });
+    expect(senderOf(newMsg)).toEqual({ actor: "alice", tenant: "t1" });
+    expect(await keys.get(oldHandle)).toBeNull();
+
+    // idempotent: already reinstated, and a live sender is not "reinstated"
+    expect(await store.reinstateSender({ actor: "alice", tenant: "t1" })).toMatchObject({
+      reinstated: false,
+    });
+    // erasing again erases the NEW epoch, and a second reinstate opens epoch 2
+    expect(await store.eraseSender({ actor: "alice", tenant: "t1" })).toBe(true);
+    await expect(store.append(message(3, "alice"))).rejects.toThrow(SenderErasedError);
+    expect(await store.reinstateSender({ actor: "alice", tenant: "t1" })).toMatchObject({
+      reinstated: true,
+      epoch: 2,
+    });
+    await store.append(message(3, "alice"));
+  });
+
+  it("reinstating a sender who never sent, or one that is live, does nothing", async () => {
+    const { store } = make();
+    expect((await store.reinstateSender({ actor: "nobody" })).reinstated).toBe(false);
+    await store.append(message(1, "alice"));
+    expect((await store.reinstateSender({ actor: "alice", tenant: "t1" })).reinstated).toBe(false);
+    await expect(store.append(message(2, "alice"))).resolves.toBeUndefined();
   });
 });

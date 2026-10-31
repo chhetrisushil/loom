@@ -1166,3 +1166,79 @@ describe("erasure redaction and deletion are atomic, recorded and fail closed (A
 });
 
 type ErasableArchiveLike = InMemoryArchiveStore;
+
+describe("loadParked loads the parked set even when archive recovery fails (ADR 0139 D22)", () => {
+  it("a failing archive is warned loudly, the parked erasure is still known, and recovery stays retryable", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "x1", "dan");
+    const index = SubjectIndex.fromEvents(await store.read("x1"), subjectOf);
+    await new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: vi.fn(async () => {}),
+    }).eraseSubject("dan"); // parks dan (a live execution)
+
+    const inner = new InMemoryArchiveStore();
+    let down = true;
+    const flaky = Object.assign(Object.create(inner) as InMemoryArchiveStore, {
+      listExecutions: async (...a: Parameters<InMemoryArchiveStore["listExecutions"]>) => {
+        if (down) throw new Error("archive unreachable");
+        return inner.listExecutions(...a);
+      },
+    });
+    const warnings: string[] = [];
+    const booted = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: vi.fn(async () => {}),
+      archives: [flaky],
+      onWarn: (m) => warnings.push(m),
+    });
+    await expect(booted.loadParked()).resolves.toBeUndefined(); // does not abort
+    expect(booted.pendingSubjects()).toEqual(["dan"]); // the key-window guard's set is loaded
+    expect(warnings.join("\n")).toMatch(/archive unreachable/);
+    expect(warnings.join("\n")).toMatch(/recoverArchiveRedactions/);
+    down = false;
+    await expect(booted.recoverRedactions()).resolves.toEqual([]); // retry works
+  });
+});
+
+describe("reinstateSender is a recorded operator verb (ADR 0139 D22, owner ruling 2026-10-31)", () => {
+  it("journals the intent then the completion with who/when and a keyed ref, never the identity", async () => {
+    const store = new InMemoryAsyncEventStore();
+    const reinstate = vi.fn(async () => ({ reinstated: true, ref: "ref-123", epoch: 1 }));
+    const coord = new EraseCoordinator({
+      index: new SubjectIndex(subjectOf),
+      eventStore: store,
+      shred: vi.fn(async () => {}),
+      reinstateSender: reinstate,
+    });
+    const r = await coord.reinstateSender("alice", "t1", { by: "ops-bob" });
+    expect(r).toEqual({ reinstated: true, ref: "ref-123", epoch: 1 });
+    expect(reinstate).toHaveBeenCalledWith("alice", "t1");
+    const journal = await store.read(ERASURE_STREAM);
+    expect(journal.map((e) => e.eventType)).toEqual([
+      "SENDER_REINSTATE_INTENDED",
+      "SENDER_REINSTATED",
+    ]);
+    expect(journal[1]?.payload).toMatchObject({
+      by: "ops-bob",
+      tenant: "t1",
+      reinstated: true,
+      ref: "ref-123",
+      epoch: 1,
+      intentId: journal[0]?.id,
+    });
+    expect(typeof (journal[1]?.payload as { at?: unknown }).at).toBe("number");
+    expect(JSON.stringify(journal)).not.toContain("alice");
+  });
+
+  it("refuses when no reinstater is wired", async () => {
+    const coord = new EraseCoordinator({
+      index: new SubjectIndex(subjectOf),
+      eventStore: new InMemoryAsyncEventStore(),
+      shred: vi.fn(async () => {}),
+    });
+    await expect(coord.reinstateSender("alice")).rejects.toThrow(TypeError);
+  });
+});

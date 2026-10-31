@@ -28,6 +28,7 @@ import type { KeyStore } from "./keystore";
 import {
   SenderHandles,
   type SenderIdentity,
+  type SenderReinstatement,
   type SenderSubjectOf,
   isSealedSender,
   openSender,
@@ -486,6 +487,16 @@ export class EncryptingEventStore implements EventStore {
    */
   async eraseSender(sender: SenderIdentity): Promise<boolean> {
     return (await this.senderHandles?.erase(sender)) ?? false;
+  }
+
+  /**
+   * ADR 0139 D22 (owner ruling) - REINSTATE an erased sender: the operator verb that lets a sender erased by
+   * {@link eraseSender} send again, under a NEW handle (the old messages stay erased and unlinkable to it).
+   * Without it sends from an erased sender keep throwing `SenderErasedError`. Journal it (the
+   * `EraseCoordinator.reinstateSender` verb does). `{ reinstated: false }` under an app-supplied mapping.
+   */
+  async reinstateSender(sender: SenderIdentity): Promise<SenderReinstatement> {
+    return (await this.senderHandles?.reinstate(sender)) ?? { reinstated: false };
   }
 
   /** ADR 0139 D12: seal an inbox message's sender under the SENDER's subject (a no-op elsewhere). */
