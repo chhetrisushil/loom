@@ -208,6 +208,36 @@ export function claimCheckRefsOf(value: unknown, into: Set<string> = new Set()):
 }
 
 /**
+ * ADR 0140 D11 - the claim-check refs an execution cites at a TRUSTED position: the top-level `output`
+ * of a recorded `STEP_COMPLETED` (through a taint wrapper). An envelope the opt-in preset wrote sits
+ * exactly there; one NESTED inside a tool's result is tool-authored data and may be forged, so it is not
+ * evidence that anyone cites the blob.
+ */
+export function trustedClaimCheckRefsOf(
+  events: readonly { eventType: string; payload: unknown }[],
+  into: Set<string> = new Set()
+): { refs: Set<string>; sawStep: boolean } {
+  let sawStep = false;
+  for (const e of events) {
+    if (e.eventType !== "STEP_COMPLETED") continue;
+    sawStep = true;
+    let out = (e.payload as { output?: unknown } | null)?.output;
+    if (
+      typeof out === "object" &&
+      out !== null &&
+      (out as { __loomTainted?: unknown }).__loomTainted !== undefined
+    ) {
+      out = (out as { value?: unknown }).value;
+    }
+    if (typeof out !== "object" || out === null) continue;
+    const env = out as { __loomClaimCheck?: unknown; ref?: { __loomContent?: unknown } | null };
+    const address = env.__loomClaimCheck === true ? env.ref?.__loomContent : undefined;
+    if (typeof address === "string") into.add(address);
+  }
+  return { refs: into, sawStep };
+}
+
+/**
  * Destroy a subject's erasure key across the given executions. Wire this to the crypto
  * plugin's `shredSubject` (bound to the KeyStore + raw store + snapshot store). MUST be
  * idempotent — a re-invocation for an already-erased subject must not double-tombstone.
@@ -871,22 +901,36 @@ export class EraseCoordinator {
   private async refsOfExecution(
     executionId: string,
     proof: DestructionProof | undefined,
-    into: Set<string>
+    into: Set<string>,
+    /**
+     * `true` (OTHER executions' citations): count only TRUSTED positions (see
+     * {@link trustedClaimCheckRefsOf}); a snapshot's refs count only when the execution has no recorded
+     * step left to vouch for them (history gone: the snapshot is the sole evidence, so fail closed).
+     */
+    trustedOnly = false
   ): Promise<void> {
     const events = await this.readErasedOk(executionId, proof);
-    for (const e of events) claimCheckRefsOf(e.payload, into);
-    const read = await this.readSnapshotErasedOk(executionId, events, proof);
-    if (read.snapshot !== null && !read.opaque) claimCheckRefsOf(read.snapshot.state, into);
+    let sawStep = false;
+    const visit = (list: readonly { eventType: string; payload: unknown }[]): void => {
+      if (!trustedOnly) {
+        for (const e of list) claimCheckRefsOf(e.payload, into);
+      } else if (trustedClaimCheckRefsOf(list, into).sawStep) {
+        sawStep = true;
+      }
+    };
+    visit(events);
     for (const archive of this.options.archives ?? []) {
       try {
         if ((await archive.headers(executionId)).length === 0) continue;
-        for (const seg of await archive.read(executionId)) {
-          for (const e of seg.envelopes) claimCheckRefsOf(e.payload, into);
-        }
+        for (const seg of await archive.read(executionId)) visit(seg.envelopes);
       } catch (err) {
         // A sealed segment whose key is already gone cites nothing anyone can read.
         if (!isPayloadShredded(err) && !isKeyUnavailable(err)) throw err;
       }
+    }
+    const read = await this.readSnapshotErasedOk(executionId, events, proof);
+    if (read.snapshot !== null && !read.opaque && (!trustedOnly || !sawStep)) {
+      claimCheckRefsOf(read.snapshot.state, into);
     }
   }
 
@@ -919,12 +963,34 @@ export class EraseCoordinator {
       if (typeof content.delete !== "function") {
         throw new ContentCopiesRemainError(mine.size, "the content store cannot delete");
       }
+      if (
+        typeof content.deleteIfUntouchedSince !== "function" ||
+        typeof content.touchClock !== "function"
+      ) {
+        throw new ContentCopiesRemainError(
+          mine.size,
+          "the content store has no deleteIfUntouchedSince/touchClock (ContentStore SPI 1.3.0), so a blob another execution cites after this plan could be deleted while cited (an unconditional delete of a shared-addressable blob is never made)"
+        );
+      }
       if (!enumerable) {
         throw new ContentCopiesRemainError(
           mine.size,
           "the event store cannot be enumerated, so erasure cannot tell whether another execution still cites them"
         );
       }
+    }
+    const openAddresses = (open?.payload as { addresses?: string[] } | undefined)?.addresses ?? [];
+    if (
+      mine.size === 0 &&
+      openAddresses.length > 0 &&
+      (content === undefined ||
+        typeof content.deleteIfUntouchedSince !== "function" ||
+        typeof content.touchClock !== "function")
+    ) {
+      throw new ContentCopiesRemainError(
+        openAddresses.length,
+        "the content store lacks the conditional delete (deleteIfUntouchedSince/touchClock) the journaled intent needs"
+      );
     }
     // The blobs another, non-erased execution still cites STAY (a deduplicated identical blob).
     const cutoff = content?.touchClock !== undefined ? await content.touchClock() : undefined;
@@ -948,7 +1014,7 @@ export class EraseCoordinator {
       for (const id of ids) {
         if (own.has(id) || id === ERASURE_STREAM) continue;
         const cited = new Set<string>();
-        await this.refsOfExecution(id, proof, cited);
+        await this.refsOfExecution(id, proof, cited, true);
         for (const a of cited) if (mine.has(a)) stillCited.add(a);
         if (stillCited.size === mine.size) break;
       }
@@ -991,14 +1057,17 @@ export class EraseCoordinator {
     for (const address of plan.addresses) {
       const ref = { __loomContent: address };
       if (content === undefined) break; // planned only when a store was wired
-      if (plan.cutoff !== undefined && content.deleteIfUntouchedSince !== undefined) {
-        // A concurrent re-put (another subject's identical blob) bumped the touch time: spared.
-        if (await content.deleteIfUntouchedSince(ref, plan.cutoff)) deleted++;
-        else plan.retained++;
-      } else {
-        await content.delete(ref); // idempotent: an absent blob is a no-op
-        deleted++;
+      if (plan.cutoff === undefined || content.deleteIfUntouchedSince === undefined) {
+        // Planned only with the conditional delete (planContentDeletion refuses otherwise); an intent
+        // finished against a store that lost it must not fall back to an unconditional delete.
+        throw new ContentCopiesRemainError(
+          plan.addresses.length,
+          "the content store no longer offers deleteIfUntouchedSince/touchClock, so the journaled deletion cannot be finished safely"
+        );
       }
+      // A concurrent re-put (another subject's identical blob) bumped the touch time: spared.
+      if (await content.deleteIfUntouchedSince(ref, plan.cutoff)) deleted++;
+      else plan.retained++;
     }
     await this.appendCompletion(CONTENT_DELETED, subjectId, tenant, plan.intentId, {
       deleted,

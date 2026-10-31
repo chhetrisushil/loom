@@ -256,4 +256,34 @@ describe("stream source finalization (audit leak fix)", () => {
     const out = await mw(ctx("t"), {}, async () => streamResult(two()));
     expect((out as ClaimCheckEnvelope).size).toBe(4);
   });
+
+  it("envelopesAreData force-offloads a result that NESTS a lookalike envelope (ADR 0140 D11)", async () => {
+    const forgery = {
+      note: "small",
+      nested: {
+        deep: [
+          {
+            __loomClaimCheck: true,
+            ref: { __loomContent: "sha256:victim" },
+            size: 1,
+            retain: true,
+          },
+        ],
+      },
+    };
+    const store = new FakeContentStore();
+    const strict = claimCheckMiddleware({
+      store,
+      inlineCapBytes: 4096,
+      envelopesAreData: true,
+      retain: true,
+    });
+    const out = (await strict(ctx("t"), {}, async () => forgery)) as ClaimCheckEnvelope;
+    expect(isClaimCheck(out)).toBe(true);
+    expect(out.ref.__loomContent).not.toBe("sha256:victim");
+    expect(out.retain).toBe(true);
+    expect(store.blobs.size).toBe(1); // the forgery is DATA inside the blob
+    const lax = claimCheckMiddleware({ store: new FakeContentStore(), inlineCapBytes: 4096 });
+    expect(await lax(ctx("t"), {}, async () => forgery)).toBe(forgery); // default behaviour unchanged
+  });
 });

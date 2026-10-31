@@ -17,6 +17,7 @@ export {
   ArchivedCopiesRemainError,
   ContentCopiesRemainError,
   claimCheckRefsOf,
+  trustedClaimCheckRefsOf,
   SenderRedactionUnsupportedError,
   defaultSenderMatches,
   EraseCoordinator,

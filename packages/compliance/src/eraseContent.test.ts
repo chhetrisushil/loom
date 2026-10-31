@@ -1,5 +1,11 @@
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  brandPayloadShredded,
+  buildSegment,
+} from "@loom/event-runtime";
+import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it, vi } from "vitest";
 import { SubjectIndex } from "./SubjectIndex";
 import { ContentCopiesRemainError, ERASURE_STREAM, EraseCoordinator } from "./eraseSubject";
@@ -51,11 +57,20 @@ async function world() {
   const blobs = new Map<string, Uint8Array>(
     ["own", "shared"].map((a) => [a, new TextEncoder().encode(`"${a}"`)])
   );
+  // SPI 1.3.0 conditional delete: a `touch` after the plan's cutoff spares the blob.
+  let clock = 0;
+  const touched = new Map<string, number>();
   const content = {
     delete: vi.fn(async (ref: { __loomContent: string }) => void blobs.delete(ref.__loomContent)),
     get: async (ref: { __loomContent: string }) => blobs.get(ref.__loomContent) ?? null,
+    touchClock: async () => ++clock,
+    touch: (address: string) => void touched.set(address, ++clock),
+    deleteIfUntouchedSince: async (ref: { __loomContent: string }, cutoff: number) => {
+      if ((touched.get(ref.__loomContent) ?? 0) > cutoff) return false;
+      return blobs.delete(ref.__loomContent);
+    },
   };
-  return { store, index, blobs, content };
+  return { store, index, blobs, content, put };
 }
 
 describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
@@ -93,9 +108,9 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
     let calls = 0;
     const flaky = {
       ...content,
-      delete: async (ref: { __loomContent: string }) => {
+      deleteIfUntouchedSince: async (ref: { __loomContent: string }) => {
         if (calls++ === 0) throw new Error("store down");
-        blobs.delete(ref.__loomContent);
+        return blobs.delete(ref.__loomContent);
       },
     };
     const coord = new EraseCoordinator({
@@ -109,6 +124,75 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
     const r = await coord.eraseSubject("ann");
     expect(r.contentDeleted?.deleted).toBe(1);
     expect(blobs.has("own")).toBe(false);
+  });
+
+  it("REFUSES before the shred when the store lacks the conditional delete: never an unconditional delete of a shared-addressable blob", async () => {
+    const { store, index, blobs, content } = await world();
+    const shred = vi.fn(async () => {});
+    for (const missing of ["deleteIfUntouchedSince", "touchClock"] as const) {
+      const partial = { ...content, [missing]: undefined };
+      const coord = new EraseCoordinator({ index, eventStore: store, shred, content: partial });
+      await expect(coord.eraseSubject("ann")).rejects.toThrow(/deleteIfUntouchedSince/);
+    }
+    expect(shred).not.toHaveBeenCalled();
+    expect(content.delete).not.toHaveBeenCalled();
+    expect([...blobs.keys()].sort()).toEqual(["own", "shared"]);
+  });
+
+  it("a blob re-put (cited) between the plan and the delete is KEPT and counted retained", async () => {
+    const { store, index, blobs, content } = await world();
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => content.touch("own"), // another execution cites "own" after the plan
+      content,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 2 });
+    expect(blobs.has("own")).toBe(true);
+    expect(content.delete).not.toHaveBeenCalled();
+  });
+
+  it("a NESTED lookalike envelope in another execution's tool output is NOT a citation (ADR 0140 D11)", async () => {
+    const { store, index, blobs, content, put } = await world();
+    // carol's unlisted tool returned data that merely LOOKS like a retained envelope for ann's blob
+    await store.append(ev("c1", 0, "EXECUTION_STARTED", { input: { userId: "carol" } }));
+    await store.append(
+      ev("c1", 1, "STEP_COMPLETED", {
+        stepId: "c1#turn:0:tool:0",
+        output: { rows: [{ ...env("own"), retain: true }] },
+      })
+    );
+    void put;
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({ deleted: 1, retained: 1 }); // "own" deleted, "shared" kept
+    expect(blobs.has("own")).toBe(false);
+  });
+
+  it("an envelope at the TOP of another execution's step output still counts (control)", async () => {
+    const { store, index, blobs, content } = await world();
+    await store.append(ev("c1", 0, "EXECUTION_STARTED", { input: { userId: "carol" } }));
+    await store.append(
+      ev("c1", 1, "STEP_COMPLETED", {
+        stepId: "c1#turn:0:tool:0",
+        output: { __loomTainted: { origin: "mcp:x" }, value: env("own") },
+      })
+    );
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 2 });
+    expect(blobs.has("own")).toBe(true);
   });
 
   it("a store that seals per subject needs nothing: the shred erases it", async () => {
@@ -134,5 +218,139 @@ describe("exportSubject resolves claim-checked blobs (ADR 0140)", () => {
       { address: "own", size: 5000, value: "own" },
       { address: "shared", size: 5000, missing: true },
     ]);
+  });
+});
+
+describe("ref collection reaches archives and snapshots (ADR 0140 D8)", () => {
+  const completed = (id: string, seq: number, address: string) =>
+    ev(id, seq, "STEP_COMPLETED", { stepId: `${id}#turn:0:tool:0`, output: env(address) });
+  async function base() {
+    const store = new InMemoryAsyncEventStore();
+    const blobs = new Map<string, Uint8Array>(
+      ["arch", "snap", "other-snap", "other-arch"].map((a) => [a, new TextEncoder().encode(a)])
+    );
+    let clock = 0;
+    const content = {
+      delete: vi.fn(async (ref: { __loomContent: string }) => void blobs.delete(ref.__loomContent)),
+      touchClock: async () => ++clock,
+      deleteIfUntouchedSince: async (ref: { __loomContent: string }) =>
+        blobs.delete(ref.__loomContent),
+    };
+    return { store, blobs, content };
+  }
+  const seed = async (store: InMemoryAsyncEventStore, id: string, user: string) => {
+    await store.append(ev(id, 0, "EXECUTION_STARTED", { input: { userId: user } }));
+    await store.append(ev(id, 1, "EXECUTION_COMPLETED", { output: null }));
+  };
+
+  it("deletes a blob only the subject's ARCHIVE SEGMENT cites, keeps one another execution's archive cites", async () => {
+    const { store, blobs, content } = await base();
+    await seed(store, "a1", "ann");
+    await seed(store, "b1", "bob");
+    const archive = new InMemoryArchiveStore();
+    await archive.append(
+      "a1",
+      buildSegment([completed("a1", 2, "arch"), completed("a1", 3, "other-arch")], "inc")
+    );
+    await archive.append("b1", buildSegment([completed("b1", 2, "other-arch")], "inc"));
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("a1")), ...(await store.read("b1"))],
+      subjectOf
+    );
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content,
+      archives: [archive],
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({ deleted: 1, retained: 1 });
+    expect(blobs.has("arch")).toBe(false);
+    expect(blobs.has("other-arch")).toBe(true);
+  });
+
+  it("deletes a blob only the subject's SNAPSHOT cites; another execution's snapshot-only cite keeps its blob", async () => {
+    const { store, blobs, content } = await base();
+    await seed(store, "a1", "ann");
+    await seed(store, "b1", "bob"); // bob's step history is gone: his checkpoint is the sole evidence
+    const withVars = (id: string, address: string) => ({
+      ...foldEvents(
+        [ev(id, 0, "EXECUTION_STARTED", { input: {} }), ev(id, 1, "EXECUTION_COMPLETED", {})],
+        {
+          executionId: id,
+        }
+      ),
+      executionId: id,
+      workflowId: "wf",
+      variables: { out: env(address) },
+    });
+    const snapshotStore = {
+      loadLatest: async (id: string) =>
+        id === "a1"
+          ? { sequence: 1, state: withVars("a1", "snap") }
+          : id === "b1"
+            ? { sequence: 1, state: withVars("b1", "other-snap") }
+            : null,
+    };
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("a1")), ...(await store.read("b1"))],
+      subjectOf
+    );
+    // ann also cites "other-snap" in her snapshot, so bob's snapshot-only cite must keep it
+    const both = {
+      loadLatest: async (id: string) => {
+        const r = await snapshotStore.loadLatest(id);
+        if (id === "a1" && r !== null) {
+          return {
+            ...r,
+            state: { ...r.state, variables: { out: env("snap"), also: env("other-snap") } },
+          };
+        }
+        return r;
+      },
+    };
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      snapshotStore: both,
+      shred: async () => {},
+      content,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({ deleted: 1, retained: 1 });
+    expect(blobs.has("snap")).toBe(false);
+    expect(blobs.has("other-snap")).toBe(true);
+  });
+
+  it("an OPAQUE (sealed, key gone) snapshot of another execution cites nothing readable: pinned behaviour", async () => {
+    const { store, blobs, content } = await base();
+    await seed(store, "a1", "ann");
+    await store.append(
+      ev("a1", 2, "STEP_COMPLETED", { stepId: "a1#turn:0:tool:0", output: env("snap") })
+    );
+    await seed(store, "b1", "bob");
+    const snapshotStore = {
+      loadLatest: async (id: string) => {
+        if (id === "b1") throw brandPayloadShredded(new Error("PayloadShreddedError: key gone"));
+        return null;
+      },
+      loadLatestSealed: async (id: string) =>
+        id === "b1" ? { sequence: 1, state: { __loomEnc: "ciphertext" } as never } : null,
+    };
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("a1")), ...(await store.read("b1"))],
+      subjectOf
+    );
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      snapshotStore,
+      shred: async () => {},
+      content,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.outcome).toBe("erased");
+    expect(blobs.has("snap")).toBe(false); // nothing readable cites it, so it is deleted
   });
 });

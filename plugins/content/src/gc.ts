@@ -9,7 +9,7 @@ import {
 } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
-import { visitCitedAddresses } from "./citations";
+import { retainRootsOf, visitCitedAddresses } from "./citations";
 
 // ── K10.6 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
 //
@@ -675,14 +675,18 @@ export async function sweepUnpinnedContent(
       executionsScanned++;
       const events = await eventStore.read(executionId);
       for (const event of events) {
-        visitCitedAddresses(event.payload, (address, inEnvelope) => {
-          const prior = lastCited.get(address);
-          if (prior === undefined || event.timestamp > prior) {
-            lastCited.set(address, event.timestamp);
-          }
-          if (pinnedKinds.has(event.eventType)) pinned.add(address);
-          if (!inEnvelope) loadBearing.add(address);
-        });
+        visitCitedAddresses(
+          event.payload,
+          (address, inEnvelope) => {
+            const prior = lastCited.get(address);
+            if (prior === undefined || event.timestamp > prior) {
+              lastCited.set(address, event.timestamp);
+            }
+            if (pinnedKinds.has(event.eventType)) pinned.add(address);
+            if (!inEnvelope) loadBearing.add(address);
+          },
+          retainRootsOf(event)
+        );
       }
       // Did compaction touch this log, and where is its checkpoint (ADR 0106)? Compaction
       // removes its checkpoint's own slot and, whenever it keeps pinned-kind events, never
