@@ -1170,7 +1170,7 @@ Five things to get right:
 - **App→journaled calls are denied by default.** A View can call any tool the host proxies for
   it. Enrichment is harmless, but a call that appends to the log is a state transition requested
   by the *user's UI*, so it needs its own authority rather than the flow's.
-- **There is no server push.** The View polls the `ambient`, app-only `loom.surface.since`
+- **There is no server push.** The View polls the `ambient`, app-only `loom_surface_since`
   cursor. It is worse than SSE — the extension's limitation, contained behind one tool.
 
 **Staleness across a long suspension.** `resume()` already refuses stale flow *code* (K11),

@@ -1803,7 +1803,7 @@ correct.
 *** No server push — the View polls its own cursor
 
 The extension has no server→View channel after ~ui/notifications/tool-result~. The only seam it
-offers is repeatable view-initiated ~tools/call~, so the template polls ~loom.surface.since~.
+offers is repeatable view-initiated ~tools/call~, so the template polls ~loom_surface_since~.
 This is polling and it is worse than SSE — the extension's limitation, contained behind one
 tool. A cursor read returns either ~{ changed: false }~ or a *complete* model, never a delta: a
 tail fold is a partial state that only looks like one (a nested patch yields ~{a:{b:1}}~, which a

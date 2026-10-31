@@ -214,7 +214,7 @@ pnpm --filter @loom/db-observability start
   over HTTP, a real `McpClient`, and the **real published template** — fetched from
   `ui://loom/surface-host` and executed in jsdom by a minimal host that bridges its
   `postMessage` JSON-RPC. Shows the content-pinned template round-tripping its pin,
-  the `ambient`/app-only `loom.surface.since` cursor the View polls (the extension
+  the `ambient`/app-only `loom_surface_since` cursor the View polls (the extension
   has no server push), audience-scoped tool lists, and app-originated *journaled*
   calls denied until a grant is presented. Its spine is **decision provenance**: a
   release gate stays open while CI keeps reporting, so an approval clicked from a

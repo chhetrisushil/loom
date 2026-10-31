@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SEEN_SEQUENCE_FIELD, isStale } from "./provenance";
 import { surfaceHostResource } from "./serve";
 import { surfacePayload } from "./surfaceBridge";
-import { surfaceCursorTool } from "./surfaceCursor";
+import { SURFACE_CURSOR_TOOL, surfaceCursorTool } from "./surfaceCursor";
 import {
   SURFACE_HOST_MIME_TYPE,
   SURFACE_HOST_TEMPLATE,
@@ -391,7 +391,9 @@ describe("the template's client half", () => {
   // D5 claimed the cursor closes the missing-server-push gap. That is only true
   // end to end if the VIEW actually polls it.
   it("polls the surface cursor and tracks its own sequence", () => {
-    expect(SURFACE_HOST_TEMPLATE).toContain("loom.surface.since");
+    // The published name must pass loom's own client's default tool-name filter.
+    expect(SURFACE_CURSOR_TOOL).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+    expect(SURFACE_HOST_TEMPLATE).toContain(`name: "${SURFACE_CURSOR_TOOL}"`);
     expect(SURFACE_HOST_TEMPLATE).toContain("fromSequence");
     expect(SURFACE_HOST_TEMPLATE).toContain("setInterval");
   });
@@ -544,9 +546,7 @@ describe("MCP server — audience and seam boundaries", () => {
       url: s.url,
       headers: { "x-audience": "app" },
     });
-    expect((await asApp.listTools({ anyToolName: true })).map((t) => t.definition.id)).toEqual([
-      "loom.surface.since",
-    ]);
+    expect((await asApp.listTools()).map((t) => t.definition.id)).toEqual([SURFACE_CURSOR_TOOL]);
   });
 
   // The heart of it: a View can call any tool the host proxies. Enrichment is
@@ -610,7 +610,7 @@ describe("MCP server — audience and seam boundaries", () => {
     const client = new McpClient({ transport: "http", url: s.url });
     // Reported as unknown rather than forbidden — a "you may not" reply would
     // confirm the tool exists.
-    await expect(client.callTool("loom.surface.since", { executionId: "x" })).rejects.toThrow(
+    await expect(client.callTool(SURFACE_CURSOR_TOOL, { executionId: "x" })).rejects.toThrow(
       /unknown tool/
     );
   });
