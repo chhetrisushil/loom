@@ -1150,7 +1150,7 @@ Loom kernel manifest
   event schema    1.25.0  (34 event types)
   wire ABI        1.0.0
   event store SPI 2.5.0
-  snapshot SPI    1.1.0
+  snapshot SPI    1.2.0
   branch SPI      1.2.0
   dispatcher SPI  1.0.0
   memory SPI      2.1.0

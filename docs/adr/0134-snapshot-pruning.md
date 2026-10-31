@@ -11,7 +11,7 @@
   coverage), [ADR 0074](0074-storage-scale-out-decorators.md) (every decorator must decide every
   optional SPI method), [ADR 0083](0083-second-consumer-rule.md).
 - Placement: **kernel (`@loom/workflow-runtime` `LogLifecycle`)** for the safety rule, plus one
-  additive SPI method. **KERNEL_ABI unchanged (1.1.0)**: no syscall changes. **EVENT_SCHEMA
+  additive SPI method. **KERNEL_ABI unchanged (1.3.0)**: no syscall changes. **EVENT_SCHEMA
   unchanged**: no event kind, payload or fold changes. **SnapshotStore SPI 1.1.0 → 1.2.0** (additive
   MINOR): optional `pruneSnapshots`. Default OFF: nothing prunes unless an operator or an app's own
   schedule calls `LogLifecycle.pruneSnapshots`.
@@ -80,7 +80,14 @@ policy can call this operation later; nothing in it needs to change. Resolves wi
 
 It reads the log once (as `compact` does) and a bounded number of snapshot points: `keepLatest` reads to
 find the cutoff, and for a gapped log one read at the gap (a compaction's own checkpoint), or one exact read
-of a branch's fork seed, or else a walk down from the tip. The delete is one statement.
+of a branch's fork seed, or else a walk down from the tip, which is **O(snapshots above the gap)**, not
+bounded by a constant (it runs only when the log has neither). It reads the log twice (the second read,
+just before the delete, is D6's guard) and the blank stream's head once. The delete is one statement.
+Future work: with no `pinnedEventTypes` configured a gap could be detected from a two-row `readRange`
+instead of a full read; not done, because it is not proven equivalent for every log shape ADR 0106
+describes (gap-free, gapped, `[0]`).
+Over `EncryptingEventStore`/`SealGuardedSnapshotStore` stacks the log read needs the subject's key, so
+pruning an erased (shredded) execution is refused by the read, never a wrong delete.
 
 ### D3 — The safety invariant
 
@@ -118,7 +125,20 @@ cutoff` for a gap-free log), minus `keepSequences`.** It never deletes:
 The tests assert fork equivalence at every point of the folded range before and after pruning (gap-free and
 compacted), that a resume after pruning re-runs no step (effect call counts), that the checkpoint survives,
 and a negative control: the same delete WITHOUT the anchor bound makes forks differ, so the guard is shown
-to fire.
+to fire. Further tests cover a branch of a compacted parent (the fork seed above the gap is the anchor,
+not the gap) and a gapped log with no snapshot at its gap (the walk-down); both fail under the mutation
+`after = gap`.
+
+**Exception: `workflowVersion`.** A snapshot carries the flow version it was taken under; no event records
+it (sequence 0's envelope has `workflowId` only, and the start payload carries `flowHash`/`codeHash`, not
+the version; the fold takes it from its seed). A fork with no snapshot at or below `at` folds from 0 with the
+version registered NOW. So if a flow was re-registered at a new version after the snapshots were taken,
+pruning can change a fork's `state.workflowVersion` (never any other field) from the old version to the
+current one, at fork points that used to be served by a pruned snapshot. The same already happens without
+pruning wherever no snapshot exists at or below `at`. We did not fix it here: recording the version needs an
+event or payload change (EVENT_SCHEMA), and keeping "the oldest snapshot of each version" needs an
+enumeration the SPI does not have. The kept snapshots (latest, anchor and below) still carry their version.
+A test pins this exactly.
 
 ### D4 — Decorators
 
@@ -140,15 +160,30 @@ that D3 keeps: they stay, though the sweep does not count their refs (an existin
 
 ### D6 — Accepted residuals
 
-- **Pre-0106 blank-identity snapshots** are the proof `loom repair blank-stream` uses to attribute stray
-  events (ADR 0107 D5). A gap-free log can still hold them above the latest, and pruning would delete that
-  proof. Finish the repair before pruning an execution that a pre-0106 build ran. The SPI cannot enumerate
-  snapshots, so the operation cannot detect them cheaply.
 - **A fork after pruning may fold more events** (a longer replay), by design; the cost moves from storage to
   the rare old-point fork.
-- **A concurrent `fork` or `compact` racing the prune** reads whichever snapshot set it sees; both outcomes
-  are correct (a missing older base only widens the window the fold reads, and the anchor is never removed).
-  Operators should still prefer a quiet window for a first prune.
+- **A concurrent `fork` racing the prune** reads whichever snapshot set it sees; either is correct (a missing
+  older base only widens the window the fold reads).
+- **A concurrent `compact` racing the prune is NOT harmless** (found in review). Prune reads a gap-free log
+  and decides `after = -1`; `compact` then saves a checkpoint `C < before` and truncates through `C`; the
+  delete removes `C`. State is not lost (the log is the truth for what survives and the latest snapshot is
+  kept) but forks at `1..C`, which a sequential order serves from snapshots, now throw
+  `CompactedForkPointError`. A completed execution triggers it (latest snapshot at the terminal `T`, compact
+  checkpoint at `T-1`, ADR 0116 Q3). So: (a) `compact` and `pruneSnapshots` are serialized per execution
+  inside `LogLifecycle` (an in-process promise chain per execution id; the entry is removed when the chain
+  drains, so the map is bounded by the executions in flight); (b) after the snapshot reads, prune re-reads the
+  log and **deletes nothing (resolves `0`) if the gap moved**, which narrows the cross-process window to the
+  re-read-to-delete gap. It does not close it. **Operators must not run `compact` and `pruneSnapshots` on one
+  execution from different processes at once**; a retry after an aborted prune is always safe.
+- **The pre-0106 blank stream.** Pruning refuses, with `BlankStreamUnrepairedError` and before any delete,
+  while `loom repair blank-stream` still has work: the blank-identity snapshots of an execution are the proof of
+  whose the stray events in `""` are (ADR 0107 D5). "Repaired" is not "the stream is empty": the repair leaves
+  `""` in place as evidence (ADR 0107), so the check is a `head` read of `""` (nothing there: proceed, one read)
+  and only if there is a stream the census, refusing while any segment is `rehomable` or any run is
+  unattributed. Segments in a terminal state (`rehomed`, `occupied`, `superseded`, `conflict`, `invalid`) do
+  not block. The census enumerates every execution, but only a store that still has a blank stream pays it.
+- **Bounds are safe integers.** `keepSequences` entries and the computed bounds must be safe integers
+  (backends disagree otherwise); `pruneSnapshots` throws `RangeError` before any delete.
 
 ### D7 — Deferred: delta snapshots (fix 2) and Merkle state (fix 3)
 
