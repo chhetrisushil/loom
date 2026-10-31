@@ -77,7 +77,9 @@ describe("EncryptingSnapshotStore codec option (ADR 0141), validation", () => {
       });
     expect(build({})).toThrow(/lengthLeak: "accept"/);
     expect(build({ lengthLeak: "yes" })).toThrow(/lengthLeak/);
-    expect(build({ lengthLeak: "accept" })).not.toThrow();
+    // Acknowledged: constructs where zstd exists; otherwise the (later) availability check refuses.
+    if (zstdAvailable()) expect(build({ lengthLeak: "accept" })).not.toThrow();
+    else expect(build({ lengthLeak: "accept" })).toThrow(/needs Node/);
     // codec off needs no acknowledgment
     expect(
       () =>

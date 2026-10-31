@@ -680,13 +680,14 @@ function resolveSnapshotCodec(snapshots: unknown): ResolvedSnapshotCodec {
     }
   }
   const codec = parseSnapshotCodec((snapshots as { codec?: unknown }).codec);
-  assertSnapshotCodecAvailable(codec);
   const lengthLeak = (snapshots as { lengthLeak?: unknown }).lengthLeak;
   if (lengthLeak !== undefined && lengthLeak !== "accept") {
     throw new TypeError(
       `defineConfig: durability.snapshots.lengthLeak must be "accept" (got ${JSON.stringify(lengthLeak)})`
     );
   }
+  // Configuration errors first, so they are the same on every Node; availability last.
+  assertSnapshotCodecAvailable(codec);
   return { codec, ...(lengthLeak === "accept" && { lengthLeak }) };
 }
 
