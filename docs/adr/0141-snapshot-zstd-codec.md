@@ -1,4 +1,4 @@
-# ADR 0140 — An opt-in zstd snapshot codec: a format byte, a BYTEA/BLOB frame, compress before sealing
+# ADR 0141 — An opt-in zstd snapshot codec: a format byte, a BYTEA/BLOB frame, compress before sealing
 
 - Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
 - Date: 2026-10-31
@@ -155,7 +155,7 @@ JSONB re-save never leaves a stale frame (D2).
 **Rollout order.** Upgrade every node to a build that reads frames first, then opt in.
 
 **An older node reading a frame row is NOT harmless, so the row is built to make it fail loudly.** A first
-design dropped `state`'s `NOT NULL` and left `state NULL` on a frame row; review showed a pre-0140 reader would
+design dropped `state`'s `NOT NULL` and left `state NULL` on a frame row; review showed a pre-0141 reader would
 take that NULL as "no state" (or an empty fold). So `state` stays `NOT NULL` and holds `SNAPSHOT_FRAME_SENTINEL`,
 a top-level string `__loomEnc`, a shape every older reader already refuses: the runtime's `SealGuardedSnapshotStore`
 reads it as an unopened sealed checkpoint (`SealedStreamUnreadableError`); the content sweep counts it as a sealed

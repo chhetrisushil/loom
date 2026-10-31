@@ -8,10 +8,10 @@ import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { SealGuardedSnapshotStore, SealedStreamUnreadableError } from "./sealGuard";
 
-// ADR 0140 D5 - what a node that PREDATES the zstd snapshot codec does with a frame row. Postgres keeps
+// ADR 0141 D5 - what a node that PREDATES the zstd snapshot codec does with a frame row. Postgres keeps
 // `state` NOT NULL and writes SNAPSHOT_FRAME_SENTINEL there, so the old reader hands the sentinel up as
 // the state. It must fail loudly, never read as "no state" or an empty fold.
-describe("an old node reading a zstd frame row's sentinel (ADR 0140 D5)", () => {
+describe("an old node reading a zstd frame row's sentinel (ADR 0141 D5)", () => {
   const row: Snapshot = {
     id: "a",
     executionId: "x",

@@ -16,7 +16,7 @@ interface SnapshotRow {
   execution_id: string;
   workflow_id: string;
   sequence: number;
-  // TEXT for a pre-codec row (JSON text); a BLOB (Buffer) for an ADR 0140 codec frame. SQLite is dynamically
+  // TEXT for a pre-codec row (JSON text); a BLOB (Buffer) for an ADR 0141 codec frame. SQLite is dynamically
   // typed, so the TEXT-declared column holds either; the storage class IS the format discriminator.
   state: string | Buffer;
   created_at: number;
@@ -24,7 +24,7 @@ interface SnapshotRow {
 
 export interface SqliteSnapshotStoreOptions {
   /**
-   * ADR 0140 - how NEW snapshots are written. `"none"` (default): JSON text, byte-identical to before.
+   * ADR 0141 - how NEW snapshots are written. `"none"` (default): JSON text, byte-identical to before.
    * `"zstd"`: a BLOB frame (format byte + zstd-compressed JSON) in the same `state` column. Reads accept
    * BOTH whatever this is set to, and nothing is rewritten. Throws at construction on a Node without zstd
    * (>= 22.15). No schema change: SQLite's column affinity keeps a BLOB a BLOB.
@@ -47,7 +47,7 @@ function rowToSnapshot(row: SnapshotRow): Snapshot {
 
 export class SqliteSnapshotStore implements SnapshotStore {
   private readonly db: Database.Database;
-  /** ADR 0140 - the codec new snapshots are written with (structural; `ProfilingSnapshotStore` reads it). */
+  /** ADR 0141 - the codec new snapshots are written with (structural; `ProfilingSnapshotStore` reads it). */
   readonly snapshotCodec: SnapshotCodecName;
 
   constructor(dbPath: string, options: SqliteSnapshotStoreOptions = {}) {

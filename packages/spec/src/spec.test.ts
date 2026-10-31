@@ -374,6 +374,9 @@ const NOT_A_CAPABILITY = new Set([
   // wires the existing claim-check middleware (ADR 0054) with a default digest. No event, SPI, ABI or subsystem
   // change; nothing to grade.
   "0140",
+  // 0141 - the opt-in zstd snapshot codec (issue #733): a store-level storage format behind a format byte,
+  // `durability.snapshots.codec`. SNAPSHOT_STORE_SPI, KERNEL_ABI and EVENT_SCHEMA unchanged; nothing to grade.
+  "0141",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

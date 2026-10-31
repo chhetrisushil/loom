@@ -2095,7 +2095,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(await content.get(cited)).not.toBeNull();
     });
 
-    it("an ERASING pass over a zstd FRAME row as an older node reads it (the fixed sentinel in `state`) refuses, never reads it as cites-nothing (ADR 0140 D5)", async () => {
+    it("an ERASING pass over a zstd FRAME row as an older node reads it (the fixed sentinel in `state`) refuses, never reads it as cites-nothing (ADR 0141 D5)", async () => {
       const { clock, content } = clockedStore(OLD);
       const cited = await content.put(bytes("a ref only the sealed checkpoint cites"));
       const live = new InMemoryAsyncEventStore();

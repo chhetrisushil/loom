@@ -19,8 +19,8 @@ interface SnapshotRow {
   execution_id: string;
   workflow_id: string;
   sequence: string; // BIGINT → string
-  state: unknown; // JSONB → parsed object (the fixed sentinel on an ADR 0140 codec row; never NULL)
-  state_z?: Buffer | null; // BYTEA codec frame (ADR 0140); absent until a store provisions the column
+  state: unknown; // JSONB → parsed object (the fixed sentinel on an ADR 0141 codec row; never NULL)
+  state_z?: Buffer | null; // BYTEA codec frame (ADR 0141); absent until a store provisions the column
   created_at: string; // BIGINT → string
 }
 
@@ -38,7 +38,7 @@ function rowToSnapshot(row: SnapshotRow): Snapshot {
   // WITHOUT a frame is corruption (or the column was dropped), and must not seed a fold.
   if (isSnapshotFrameSentinel(state)) {
     throw new Error(
-      `snapshot ${row.id} is marked as a codec frame (ADR 0140) but snapshots.state_z is empty or missing; refusing to read it as a state`
+      `snapshot ${row.id} is marked as a codec frame (ADR 0141) but snapshots.state_z is empty or missing; refusing to read it as a state`
     );
   }
   return {
@@ -53,7 +53,7 @@ function rowToSnapshot(row: SnapshotRow): Snapshot {
 
 export interface PostgresSnapshotStoreOptions {
   /**
-   * ADR 0140 - how NEW snapshots are written. `"none"` (default): JSONB, exactly as before and the
+   * ADR 0141 - how NEW snapshots are written. `"none"` (default): JSONB, exactly as before and the
    * schema is untouched. `"zstd"`: a codec frame (format byte + zstd-3 JSON) in `snapshots.state_z
    * BYTEA`, provisioned at boot by `ensureSnapshotZstd` (opt-in, fail soft: if the column cannot be
    * added, one warning and this store keeps writing JSONB). Reads accept BOTH formats whatever this is.
@@ -71,7 +71,7 @@ export class PostgresSnapshotStore implements SnapshotStore {
   private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
-  /** ADR 0140 - the codec REQUESTED for new snapshots (structural; `ProfilingSnapshotStore` reads it). */
+  /** ADR 0141 - the codec REQUESTED for new snapshots (structural; `ProfilingSnapshotStore` reads it). */
   readonly snapshotCodec: SnapshotCodecName;
   // True once `state_z` is provisioned and a codec was requested; until then (or on a soft failure) JSONB.
   private writeFrames = false;
@@ -100,7 +100,7 @@ export class PostgresSnapshotStore implements SnapshotStore {
       this.hasFrameColumn = await this.probeFrameColumn();
       if (this.hasFrameColumn && !zstdAvailable()) {
         warn(
-          `loom: @loom/plugin-postgres found snapshots.state_z (the zstd snapshot codec, ADR 0140) but this Node (${process.versions.node}) cannot decode zstd (needs >= 22.15). Snapshots written as frames will FAIL to load here, loudly. Run Node >= 22.15 on every node that reads this database.`
+          `loom: @loom/plugin-postgres found snapshots.state_z (the zstd snapshot codec, ADR 0141) but this Node (${process.versions.node}) cannot decode zstd (needs >= 22.15). Snapshots written as frames will FAIL to load here, loudly. Run Node >= 22.15 on every node that reads this database.`
         );
       }
     });

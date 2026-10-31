@@ -68,12 +68,12 @@ export interface ProfilingSnapshotStoreOptions {
   /**
    * What a "size" is. `"json"` (default when the wrapped store writes no codec): the UTF-8 text of
    * `JSON.stringify(state)`. `"stored"`: the bytes a codec frame occupies, i.e. what the backend keeps
-   * (ADR 0140: with `codec: "zstd"` that is the compressed size); it needs the wrapped store to report
+   * (ADR 0141: with `codec: "zstd"` that is the compressed size); it needs the wrapped store to report
    * `snapshotCodec`, else it is the same as `"json"` plus the one format byte. Default `"stored"` when
    * the wrapped store reports `snapshotCodec: "zstd"`, so a zstd deployment's histogram shows real bytes.
    * `"stored"` compresses once per measured save (synchronously, like the stringify): use `sampleRate`.
    * NEVER stored size over a store that seals the whole state (`sealsWholeState`): compress-before-seal
-   * makes that size a length oracle (ADR 0140 D3), so such a store is always measured as `"json"` and an
+   * makes that size a length oracle (ADR 0141 D3), so such a store is always measured as `"json"` and an
    * explicit `"stored"` throws. (Wrapped around the raw backend BELOW such a store, the profiler is handed
    * only the envelope and cannot tell: do not expose that placement's sizes to untrusted metrics readers.)
    */
@@ -182,13 +182,13 @@ export class ProfilingSnapshotStore implements SnapshotStore {
     }
     const innerCodec = (inner as { snapshotCodec?: unknown }).snapshotCodec;
     this.codec = innerCodec === "zstd" ? "zstd" : "none";
-    // ADR 0140 D3: a store that seals the WHOLE state compresses before it seals, so its stored length is
+    // ADR 0141 D3: a store that seals the WHOLE state compresses before it seals, so its stored length is
     // a function of the compressed plaintext (a length oracle). Metrics must never carry it: such a store
     // is measured by the JSON text size only, and `measure: "stored"` is refused outright.
     const sealing = (inner as { sealsWholeState?: unknown }).sealsWholeState === true;
     if (sealing && options.measure === "stored") {
       throw new TypeError(
-        'ProfilingSnapshotStore: `measure: "stored"` is refused over a store that seals the whole state (ADR 0140 D3): its stored size reveals the compressed length of the plaintext. Use the default (JSON text size).'
+        'ProfilingSnapshotStore: `measure: "stored"` is refused over a store that seals the whole state (ADR 0141 D3): its stored size reveals the compressed length of the plaintext. Use the default (JSON text size).'
       );
     }
     this.stored =

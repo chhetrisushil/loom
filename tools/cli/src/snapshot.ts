@@ -5,7 +5,7 @@ import { type StoreFlags, resolveStores } from "./stores";
 /**
  * `loom snapshot show <executionId> [--at SEQ] [--redact a,b]` - print one stored snapshot, DECODED.
  *
- * ADR 0140: a snapshot may be stored as a zstd frame (a BYTEA/BLOB), which `SELECT state->…` cannot
+ * ADR 0141: a snapshot may be stored as a zstd frame (a BYTEA/BLOB), which `SELECT state->…` cannot
  * traverse and `psql` prints as hex. This reads it through the same `SnapshotStore` the runtime resumes
  * from (so an encrypting store opens it, and either storage format decodes), and prints the snapshot as
  * indented JSON: `{ id, executionId, workflowId, sequence, createdAt, state }`. Read-only.

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteSnapshotStore } from "./SqliteSnapshotStore";
 import { sqliteStorage } from "./preset";
 
-// ADR 0140 - the zstd snapshot codec on SQLite. Skipped on a Node without zlib.zstd (needs >= 22.15).
+// ADR 0141 - the zstd snapshot codec on SQLite. Skipped on a Node without zlib.zstd (needs >= 22.15).
 const zstd = describe.skipIf(!zstdAvailable());
 
 function snap(id: string, sequence: number, state: unknown): Snapshot {
@@ -65,7 +65,7 @@ describe("SqliteSnapshotStore default (codec off) is byte-identical to before", 
   });
 });
 
-zstd("SqliteSnapshotStore codec: zstd (ADR 0140)", () => {
+zstd("SqliteSnapshotStore codec: zstd (ADR 0141)", () => {
   runSnapshotStoreConformance(
     () => new SqliteSnapshotStore(":memory:", { codec: "zstd" }),
     "SqliteSnapshotStore (zstd)"
@@ -140,7 +140,7 @@ zstd("SqliteSnapshotStore codec: zstd (ADR 0140)", () => {
     await s.close();
   });
 
-  it("an OLD node's read of a frame row (JSON.parse over the BLOB) throws, never yields a state (ADR 0140 D5)", async () => {
+  it("an OLD node's read of a frame row (JSON.parse over the BLOB) throws, never yields a state (ADR 0141 D5)", async () => {
     const path = join(dir, "old.db");
     const store = new SqliteSnapshotStore(path, { codec: "zstd" });
     await store.save(snap("a", 1, bigState("a")));

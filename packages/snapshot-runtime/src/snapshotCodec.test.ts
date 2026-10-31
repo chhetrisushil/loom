@@ -58,7 +58,7 @@ function adversarialStates(): Record<string, unknown> {
   };
 }
 
-zstd("snapshot codec (ADR 0140)", () => {
+zstd("snapshot codec (ADR 0141)", () => {
   for (const [name, state] of Object.entries(adversarialStates())) {
     for (const codec of ["none", "zstd"] as const) {
       it(`${codec}: ${name} round-trips deep-equal and byte-identical as JSON`, () => {
@@ -211,7 +211,7 @@ describe("snapshot codec availability", () => {
   });
 });
 
-describe("SNAPSHOT_FRAME_SENTINEL (ADR 0140 D5)", () => {
+describe("SNAPSHOT_FRAME_SENTINEL (ADR 0141 D5)", () => {
   it("is exactly one top-level string __loomEnc, and only that value is recognised", () => {
     expect(isSnapshotFrameSentinel(SNAPSHOT_FRAME_SENTINEL)).toBe(true);
     expect(isSnapshotFrameSentinel({ ...SNAPSHOT_FRAME_SENTINEL })).toBe(true);

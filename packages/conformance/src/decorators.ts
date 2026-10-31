@@ -55,7 +55,7 @@ export interface DecoratorConformanceOptions<M extends string, S = unknown> {
   tenantScope?: "own";
   /**
    * `"own"`: the decorator reports a snapshot codec of its own (a sealing store that compresses before it
-   * seals) rather than forwarding its inner store's (ADR 0140). Default: it must forward the inner's.
+   * seals) rather than forwarding its inner store's (ADR 0141). Default: it must forward the inner's.
    */
   snapshotCodec?: "own";
 }
@@ -238,7 +238,7 @@ export function tenantMarkerProblems(
 }
 
 /**
- * Problems with how a SNAPSHOT decorator carries the codec marker (`snapshotCodec`, ADR 0140) of the
+ * Problems with how a SNAPSHOT decorator carries the codec marker (`snapshotCodec`, ADR 0141) of the
  * store it wraps. `defineConfig` reads it on the OUTERMOST store to refuse an opt-in a wrapper would
  * silently drop; a decorator that hides it makes a zstd store read as "reports nothing", and one that
  * invents its own would lie about what is written. `own`: the decorator reports a codec of its own
@@ -376,7 +376,7 @@ export function runSnapshotStoreDecoratorConformance(
       ).toEqual([]);
     });
 
-    it("carries the inner store's snapshot codec (the `snapshotCodec` marker survives, ADR 0140)", () => {
+    it("carries the inner store's snapshot codec (the `snapshotCodec` marker survives, ADR 0141)", () => {
       expect(
         snapshotCodecMarkerProblems(label, wrap as never, inner, options.snapshotCodec === "own")
       ).toEqual([]);

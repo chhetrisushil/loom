@@ -3,7 +3,7 @@ import { type Snapshot, type SnapshotStore, zstdAvailable } from "@loom/snapshot
 import { describe, expect, it } from "vitest";
 import { defineConfig, normalizeConfig } from "./defineConfig";
 
-// ADR 0140 - `durability.snapshots.codec`. Opt-in; the default wiring is unchanged.
+// ADR 0141 - `durability.snapshots.codec`. Opt-in; the default wiring is unchanged.
 
 class ReportingStore implements SnapshotStore {
   constructor(readonly snapshotCodec: string) {}
@@ -29,7 +29,7 @@ const snap = (sequence: number): Snapshot => ({
   createdAt: sequence,
 });
 
-describe("durability.snapshots (ADR 0140)", () => {
+describe("durability.snapshots (ADR 0141)", () => {
   it("is a durability group option, lifted to the flat shape", () => {
     const resolved = normalizeConfig({
       storage: { kind: "memory" },

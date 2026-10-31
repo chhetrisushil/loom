@@ -338,7 +338,7 @@ and the hook needs `largeThresholdBytes` (the constructor throws otherwise). Mem
 again. Saves that complete out of order never overwrite a newer size, and a prune forgets an
 execution only when its latest snapshot was deleted.
 
-**Make snapshots smaller (opt-in zstd codec, [ADR 0140](adr/0140-snapshot-zstd-codec.md)).** The
+**Make snapshots smaller (opt-in zstd codec, [ADR 0141](adr/0141-snapshot-zstd-codec.md)).** The
 codec stores each state as zstd-3 compressed JSON behind a format byte: a `state_z BYTEA` column on
 Postgres (storage `EXTERNAL`), a BLOB in SQLite's `state` column, a frame in memory. Measured on a
 running agent execution at 200 turns (`snapshotCodec.perf.test.ts`, `pnpm test:perf`): 138 KB vs

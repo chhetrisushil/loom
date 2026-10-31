@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 import { ensureSnapshotZstd, migrate } from "./schema";
 
-// ADR 0140 - the zstd snapshot codec on Postgres. Gated on LOOM_TEST_POSTGRES_URL, and skipped on a Node
+// ADR 0141 - the zstd snapshot codec on Postgres. Gated on LOOM_TEST_POSTGRES_URL, and skipped on a Node
 // without zlib.zstd (needs >= 22.15).
 const PG_URL = process.env.LOOM_TEST_POSTGRES_URL;
 const suite = PG_URL && zstdAvailable() ? describe : describe.skip;
@@ -37,7 +37,7 @@ const bigState = (tag: string): unknown => ({
   ),
 });
 
-suite("PostgresSnapshotStore codec: zstd (ADR 0140)", () => {
+suite("PostgresSnapshotStore codec: zstd (ADR 0141)", () => {
   const schema = `loom_zstd_${process.pid}`;
   const opened: Pool[] = [];
   const openPool = (): Pool => {

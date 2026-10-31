@@ -36,7 +36,7 @@ export interface InMemoryAsyncSnapshotStoreOptions {
   /** Artificial per-operation delay (ms) to model network latency. Default 0. */
   latencyMs?: number;
   /**
-   * ADR 0140 - `"zstd"` stores each state as a codec frame (zstd-compressed JSON) and decodes it on
+   * ADR 0141 - `"zstd"` stores each state as a codec frame (zstd-compressed JSON) and decodes it on
    * every read, so a caller gets a fresh, independent copy and the store exercises the same format the
    * durable stores write. Default `"none"`: the very object saved is held and returned (today's behaviour).
    * Throws at construction on a Node without zstd (>= 22.15).
@@ -52,7 +52,7 @@ export interface InMemoryAsyncSnapshotStoreOptions {
 export class InMemoryAsyncSnapshotStore implements SnapshotStore {
   private readonly snapshots = new Map<string, Snapshot[]>();
   private readonly latencyMs: number;
-  /** ADR 0140 - the codec this store WRITES (`"none"` holds the saved object itself). Structural, read by `defineConfig`. */
+  /** ADR 0141 - the codec this store WRITES (`"none"` holds the saved object itself). Structural, read by `defineConfig`. */
   readonly snapshotCodec: SnapshotCodecName;
   // Codec frames, keyed by the held snapshot (whose own `state` is then a placeholder). Empty when `"none"`.
   private readonly frames = new WeakMap<Snapshot, Buffer>();
