@@ -3052,17 +3052,29 @@ export class WorkflowRuntime {
       }
     }
 
+    // Issue #712 - a run whose COMPLETED / FAILED is committed (the handle lingers until its drain
+    // settles) is terminal: report it as the durable path does (`cancelSettled` -> false), write nothing.
+    // The live fold reads terminal the instant the event is COMMITTED, before it is durable: if the
+    // drain then fails (storage error, lost lease) the log folds `running` and recovery re-drives, so
+    // "already terminal" is only true once the DURABLE fold says so. Read it (never await the drain:
+    // a cancel issued from inside that drain, an onEvent or an append hook, would deadlock on itself);
+    // a log that is not terminal takes the fenced durable path below (the handle's own cancel is a
+    // no-op by then, so it must not be the verdict).
+    let durableOnly = false;
     if (live !== undefined) {
-      // Issue #712 - a run whose COMPLETED / FAILED is committed (the handle lingers until its drain
-      // settles) is terminal: report it as the durable path does (`cancelSettled` -> false), write nothing.
       const liveStatus = live.getState().status;
-      if (liveStatus === "completed" || liveStatus === "failed") return false;
-      live.cancel(reason);
-      // ADR 0109 D2 (i) — a successor may have started in the start-to-commit window.
-      if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
-      return true;
+      if (liveStatus === "completed" || liveStatus === "failed") {
+        const durable = await this.foldStateForCancel(executionId);
+        if (durable !== null && isSettledStatus(durable.status)) return false;
+        durableOnly = true;
+      } else {
+        live.cancel(reason);
+        // ADR 0109 D2 (i) — a successor may have started in the start-to-commit window.
+        if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
+        return true;
+      }
     }
-    const r = await this.cancelOne(executionId, reason);
+    const r = await this.cancelOne(executionId, reason, durableOnly);
     if (r.state === null) {
       throw new Error(`No execution found for id: ${executionId}`);
     }
@@ -3095,7 +3107,8 @@ export class WorkflowRuntime {
    */
   private async cancelOne(
     executionId: string,
-    reason: unknown
+    reason: unknown,
+    durableOnly = false
   ): Promise<{ performed: boolean; live?: true; state: ExecutionState | null }> {
     const store = this.eventStore;
     let lost: unknown;
@@ -3106,7 +3119,7 @@ export class WorkflowRuntime {
         if (ms > 0) await new Promise<void>((resolve) => setTimeout(resolve, ms));
       }
       const liveNow = this.liveHandles.get(executionId);
-      if (liveNow !== undefined) {
+      if (liveNow !== undefined && !durableOnly) {
         liveNow.cancel(reason); // fires the abort signal either way
         if (!fencedHere) return { performed: true, live: true, state: liveNow.getState() };
         // Fenced out by our own earlier round: its CANCELLED write cannot land. Stay durable.
@@ -9143,8 +9156,16 @@ export class WorkflowRuntime {
           if (durable) await this.retireInbox(chainIdOf(vm.peekState(), executionId));
           return;
         }
+        // Set BEFORE the commit (a synchronous onEvent subscriber that cancels on COMPLETED fires inside
+        // it), but only stands if the commit lands: the divergence guard throws on the way in and
+        // nothing is written, so a cancel in the refusal park must still be a real cancel.
         terminalCommitted = true;
-        journal.commit("EXECUTION_COMPLETED", { output });
+        try {
+          journal.commit("EXECUTION_COMPLETED", { output });
+        } catch (refusal) {
+          terminalCommitted = false;
+          throw refusal;
+        }
         // ADR 0112 D3 — nothing from this execution's own (abandoned) work follows its terminal.
         ctx.seal();
         await journal.drain(); // durability barrier
