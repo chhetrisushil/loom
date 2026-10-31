@@ -983,16 +983,33 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
     }) as unknown as EventStore;
     const fault = { on: false };
     const reports: unknown[] = [];
-    const n = node(store, undefined, {
-      principalResolver: {
-        resolve: (rec: { identity?: Record<string, string> }) => {
-          if (fault.on) throw new Error(CAUSE);
-          return rec.identity !== undefined ? { ...rec.identity } : undefined;
-        },
-      },
-      onStorageError: (_id: string, e: unknown) => reports.push(e),
+    // the run must be LIVE (not parked): a parked run's start record is dropped as soon as its
+    // handle settles, so a test racing that cleanup would read the store instead
+    let openGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      openGate = r;
     });
-    await (await n.h.rt.start(n.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+    const live = () =>
+      flow("secret", async (ctx) => {
+        await ctx.run(echo, { ssn: SECRET });
+        await gate;
+        return null;
+      });
+    const n = node(
+      store,
+      undefined,
+      {
+        principalResolver: {
+          resolve: (rec: { identity?: Record<string, string> }) => {
+            if (fault.on) throw new Error(CAUSE);
+            return rec.identity !== undefined ? { ...rec.identity } : undefined;
+          },
+        },
+        onStorageError: (_id: string, e: unknown) => reports.push(e),
+      },
+      live
+    );
+    const handle = await n.h.rt.start(n.f, {}, { executionId: E, principal: OWNER });
     fault.on = true;
     seqZeroReads = 0;
     // `cancel` of a live execution has no anchor in hand: the start record answers (no store read)
@@ -1005,7 +1022,8 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
     expect(n.denied).toEqual([]);
     expect(reports.map((r) => (r as Error).message)).toContain(CAUSE);
     fault.on = false;
-    expect((await n.h.rt.loadState(E, { principal: OWNER }))?.status).toBe("suspended");
+    openGate();
+    expect((await handle.waitForCompletion()).status).toBe("completed");
   });
 
   describe("send to a CONTINUED chain: the second check against the resolved head", () => {
