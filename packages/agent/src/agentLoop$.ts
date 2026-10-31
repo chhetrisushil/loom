@@ -1692,9 +1692,14 @@ export async function agentLoop$(
         );
       }
 
+      // Issue #722 - what this turn SENDS is journaled as the step's input, and the kernel journals the
+      // reference it is handed (a store may serialize after `append` returns). The loop keeps pushing to
+      // `messages` (and growing `tools`) after the turn, so hand over a per-turn copy: a message object is
+      // never mutated once pushed (the transcript only changes by push / replace-slot / truncate), so a
+      // shallow copy of each array is a faithful snapshot.
       const turnRequest = {
-        messages,
-        ...(tools.length > 0 && { tools }),
+        messages: [...messages],
+        ...(tools.length > 0 && { tools: [...tools] }),
         ...(system !== undefined && { system }),
       } satisfies AgentModelCall;
 
@@ -1806,11 +1811,7 @@ export async function agentLoop$(
           toolId: config.modelToolId as string,
           ...(config.turnTimeoutMs !== undefined && { timeoutMs: config.turnTimeoutMs }),
         },
-        {
-          messages,
-          ...(tools.length > 0 && { tools }),
-          ...(system !== undefined && { system }),
-        } satisfies AgentModelCall
+        turnRequest
       );
 
       lastContent = response.content;
