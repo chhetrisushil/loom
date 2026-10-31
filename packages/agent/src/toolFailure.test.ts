@@ -73,6 +73,7 @@ const FEEDBACK = new Set([
   "RedriveExhaustedError",
   "UnsafeCompactionError",
   "CompactionCheckpointMissingError",
+  "BlankStreamUnrepairedError",
 ]);
 
 /** Reaches the runtime. */
