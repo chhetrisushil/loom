@@ -17,7 +17,7 @@ import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { LIFECYCLE_STREAM, LogLifecycle } from "./LogLifecycle";
+import { BlankStreamUnrepairedError, LIFECYCLE_STREAM, LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import type { WorkflowRuntimeDeps } from "./WorkflowRuntime";
 import { REHOMED_FROM_KEY } from "./blankStream";
@@ -963,5 +963,58 @@ describe("ADR 0107 (B) — review round 2", () => {
       })
     ).rejects.toThrow(/\$shredded/);
     expect(seqs(await app.raw.read("e1"))).toEqual([0]);
+  });
+});
+
+describe("ADR 0134 D6 - snapshot pruning refuses while the blank stream is unrepaired", () => {
+  const countSnapshots = async (app: App, id: string, top: number) => {
+    let n = 0;
+    for (let q = 0; q <= top; q++) if ((await app.snapshotStore.loadAt(id, q)) !== null) n++;
+    return n;
+  };
+
+  it("refuses with a re-homable blank stream, deletes nothing; succeeds after the repair (which leaves \"\" in place)", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "resumed");
+    const before = await countSnapshots(app, "e1", h.done);
+    expect(before).toBeGreaterThan(0);
+    let deletes = 0;
+    const inner = app.snapshotStore.pruneSnapshots!.bind(app.snapshotStore);
+    app.snapshotStore.pruneSnapshots = async (...a) => {
+      deletes++;
+      return inner(...a);
+    };
+
+    await expect(app.life.pruneSnapshots("e1")).rejects.toThrow(BlankStreamUnrepairedError);
+    expect(deletes).toBe(0);
+    expect(await countSnapshots(app, "e1", h.done)).toBe(before);
+
+    await app.life.rehomeBlankStream({ apply: true });
+    expect(await headOf(app.eventStore, "")).not.toBeNull(); // the evidence stays
+    await expect(app.life.pruneSnapshots("e1")).resolves.toBeGreaterThanOrEqual(0);
+  });
+
+  it("refuses with an unattributed run (the repair cannot settle it unassisted)", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "completed");
+    await app.life.rehomeBlankStream({ apply: true });
+    await expect(app.life.pruneSnapshots("e1")).rejects.toThrow(BlankStreamUnrepairedError);
+  });
+
+  it("proceeds when there never was a blank stream, with one head read and no census", async () => {
+    const app = boot();
+    const h = await app.runtime.start({ definition, runner }, { n: 1 }, { executionId: "ok" });
+    await h.waitForSuspend();
+    let listed = 0;
+    const list = app.eventStore.listExecutions?.bind(app.eventStore);
+    if (list !== undefined)
+      app.eventStore.listExecutions = async (...a: []) => {
+        listed++;
+        return list(...a);
+      };
+    await expect(app.life.pruneSnapshots("ok")).resolves.toBeGreaterThanOrEqual(0);
+    expect(listed).toBe(0);
   });
 });

@@ -59,7 +59,9 @@ export interface SnapshotStore {
    * the CALLER decides the range and keep-set (`LogLifecycle.pruneSnapshots`); a store applies
    * them literally and never decides what is safe. Both bounds are exclusive on purpose: a
    * caller that passes the sequence of a snapshot it must keep as a bound cannot delete it by
-   * an off-by-one. An empty or inverted range deletes nothing. Several snapshots sharing one
+   * an off-by-one. `range.after`, `range.before` and every `keep` entry are SAFE INTEGERS: the
+   * backends disagree about anything else (Postgres throws on 3.5, SQLite deletes nothing on NaN,
+   * memory deletes), so `LogLifecycle.pruneSnapshots` refuses a non-integer before any delete. An empty or inverted range deletes nothing. Several snapshots sharing one
    * sequence are all deleted or all kept. Idempotent. Every decorator must decide it
    * (forward it, or refuse it with a reason) — its `DecoratorPlan` does not compile otherwise.
    */
