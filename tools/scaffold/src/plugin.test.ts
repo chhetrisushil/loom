@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SEAM_KEYS, listSeams, pluginFiles } from "./plugin";
+import { SEAM_KEYS, joinNoun, listSeams, pluginFiles, pluginNextSteps } from "./plugin";
 
 describe("pluginFiles", () => {
   it("scaffolds a first-party store plugin under plugins/ with the @loom/plugin- name", () => {
@@ -10,6 +10,8 @@ describe("pluginFiles", () => {
       "plugins/acme/src/index.test.ts",
       "plugins/acme/src/index.ts",
       "plugins/acme/tsconfig.json",
+      "plugins/acme/tsconfig.test.json",
+      "plugins/acme/vitest.config.ts",
     ]);
     const pkg = JSON.parse(files["plugins/acme/package.json"]!);
     expect(pkg.name).toBe("@loom/plugin-acme");
@@ -189,5 +191,128 @@ describe("pluginFiles", () => {
       }
     }
     expect(listSeams()).toMatch(/sandbox[\s\S]*NOT defineConfig/);
+  });
+
+  it("does not repeat the seam's noun in a class name (sandbox: CloudrunSandboxBackend)", () => {
+    const index = pluginFiles("sandbox", "cloudrun-sandbox", { firstParty: false })[
+      "loom-plugin-cloudrun-sandbox/src/index.ts"
+    ]!;
+    expect(index).toContain("export class CloudrunSandboxBackend implements SandboxBackend");
+    expect(index).toContain("export interface CloudrunSandboxBackendOptions");
+    expect(index).not.toContain("SandboxSandbox");
+    // A name that does not end in the noun is unchanged.
+    expect(
+      pluginFiles("sandbox", "my-box", { firstParty: false })["loom-plugin-my-box/src/index.ts"]
+    ).toContain("class MyBoxSandboxBackend ");
+    // The README and the test agree with the class.
+    const files = pluginFiles("sandbox", "cloudrun-sandbox", { firstParty: false });
+    expect(files["loom-plugin-cloudrun-sandbox/README.md"]).toContain(
+      "new CloudrunSandboxBackend("
+    );
+    expect(files["loom-plugin-cloudrun-sandbox/src/index.test.ts"]).toContain(
+      "new CloudrunSandboxBackend()"
+    );
+  });
+
+  it("does not repeat the noun for another seam either (lease: foo-lease-store)", () => {
+    const index = pluginFiles("lease", "foo-lease-store", { firstParty: false })[
+      "loom-plugin-foo-lease-store/src/index.ts"
+    ]!;
+    expect(index).toContain("export class FooLeaseStore implements LeaseStore");
+    expect(index).not.toContain("LeaseStoreLeaseStore");
+    expect(joinNoun("FooTimer", "TimerStore")).toBe("FooTimerStore");
+    expect(joinNoun("Foo", "TimerStore")).toBe("FooTimerStore");
+    expect(joinNoun("fooTelemetry", "Telemetry")).toBe("fooTelemetry");
+    expect(joinNoun("acmeStore", "Storage")).toBe("acmeStoreStorage");
+  });
+
+  it("no seam's description repeats its seam word back-to-back", () => {
+    for (const seam of SEAM_KEYS) {
+      for (const firstParty of [false, true]) {
+        const files = pluginFiles(seam, "probe", { firstParty });
+        const dir = firstParty ? "plugins/probe" : "loom-plugin-probe";
+        const description = (JSON.parse(files[`${dir}/package.json`]!) as { description: string })
+          .description;
+        const readmeIntro = files[`${dir}/README.md`]!.split("\n")[2]!.replace(/\*\*/g, "");
+        for (const text of [description, readmeIntro]) {
+          expect(text, `${seam}: ${text}`).not.toMatch(/\b(\w+)[\s-]+\1\b/i);
+        }
+        expect(description, seam).not.toMatch(/\bsandbox plugin — Sandbox/i);
+      }
+    }
+    const desc = JSON.parse(
+      pluginFiles("sandbox", "x", { firstParty: false })["loom-plugin-x/package.json"]!
+    ).description as string;
+    expect(desc.startsWith("A Loom plugin — Sandbox backend")).toBe(true);
+  });
+
+  it("every seam ships a vitest config, @types/node and (third-party) engines + files", () => {
+    for (const seam of SEAM_KEYS) {
+      const tp = pluginFiles(seam, "probe", { firstParty: false });
+      const pkg = JSON.parse(tp["loom-plugin-probe/package.json"]!);
+      expect(tp["loom-plugin-probe/vitest.config.ts"], seam).toContain('from "vitest/config"');
+      expect(pkg.devDependencies["@types/node"], seam).toBeDefined();
+      expect(pkg.engines.node, seam).toBeDefined();
+      expect(pkg.files, seam).toEqual(["dist"]);
+      const fp = pluginFiles(seam, "probe", { firstParty: true });
+      const fpkg = JSON.parse(fp["plugins/probe/package.json"]!);
+      expect(fp["plugins/probe/vitest.config.ts"], seam).toBe(
+        'import { loomTest } from "../../vitest.shared";\n\nexport default loomTest();\n'
+      );
+      expect(fpkg.devDependencies["@types/node"], seam).toBeDefined();
+      expect(fpkg.scripts["typecheck:tests"], seam).toBe("tsc -p tsconfig.test.json");
+      expect(fp["plugins/probe/tsconfig.test.json"], seam).toBeDefined();
+    }
+  });
+
+  it("the sandbox stub explains non-JS fixtures and the shape of a remote evaluate (as comments)", () => {
+    const files = pluginFiles("sandbox", "x", { firstParty: false });
+    const index = files["loom-plugin-x/src/index.ts"]!;
+    const live = index.replace(/^\s*\/\/.*$/gm, "");
+    expect(index).toMatch(/\/\/.*fixtures[\s\S]*language: "javascript"/);
+    expect(index).toContain("JAVASCRIPT_FIXTURES");
+    expect(index).toContain("signal: request.signal");
+    expect(index).toContain("never the response body");
+    expect(index).toContain('kind: "infrastructure"');
+    expect(live).not.toContain("fetch(");
+    const test = files["loom-plugin-x/src/index.test.ts"]!;
+    expect(test).toContain("fixtures");
+    expect(test).toContain("JAVASCRIPT_FIXTURES");
+    expect(test).toContain("timeoutMs");
+    expect(files["loom-plugin-x/README.md"]).toContain("timeoutMs");
+    expect(files["loom-plugin-x/README.md"]).toContain("300_000");
+  });
+});
+
+describe("pluginNextSteps", () => {
+  it("is truthful per seam: says un-comment only where the conformance test is commented out", () => {
+    for (const seam of SEAM_KEYS) {
+      const files = pluginFiles(seam, "probe", { firstParty: false });
+      const test = files["loom-plugin-probe/src/index.test.ts"]!;
+      const live = /^(?!\s*\/\/).*\brun\w+Conformance\(/m.test(test);
+      const text = pluginNextSteps(files, { firstParty: false, root: "r" }).join("\n");
+      expect(/un-comment/.test(text), `${seam}: ${text}`).toBe(!live);
+    }
+    const sandbox = pluginNextSteps(pluginFiles("sandbox", "x", { firstParty: false }), {
+      firstParty: false,
+      root: "r",
+    }).join("\n");
+    expect(sandbox).not.toContain("un-comment");
+    expect(sandbox).toContain("already wired");
+  });
+
+  it("names the @loom/* packages a third-party plugin needs overridden, and not for first-party", () => {
+    const tp = pluginNextSteps(pluginFiles("sandbox", "x", { firstParty: false }), {
+      firstParty: false,
+      root: "r",
+    }).join("\n");
+    expect(tp).toMatch(/depends on: .*@loom\/conformance.*@loom\/sandbox/);
+    expect(tp).toContain("override");
+    expect(tp).toContain("link:");
+    const fp = pluginNextSteps(pluginFiles("sandbox", "x", { firstParty: true }), {
+      firstParty: true,
+      root: "r",
+    }).join("\n");
+    expect(fp).not.toContain("override");
   });
 });

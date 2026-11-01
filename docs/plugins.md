@@ -290,7 +290,7 @@ Seams: `store`, `dispatcher`, `telemetry`, `middleware`, `timer`, `lease`, `cont
 `durable-state`, `read-model`, `keystore`, `memory`, `projection`, `worker`, `llm`,
 `authorizer`, `execution-authorizer`,
 `resume-authenticator`, `timer-dispatcher`, `policy`, `sandbox`. Then implement
-the SPI, un-comment the conformance test, and run your formatter.
+the SPI, un-comment the conformance test (where it ships commented out; `sandbox` and `policy` ship it live), and run your formatter.
 
 **`policy` is the one seam that is not a `defineConfig` contributor.** Every other seam is
 passed to the composition root; a `Policy` ([ADR 0080](adr/0080-learning-substrate.md)) is
@@ -325,6 +325,11 @@ loom plugin new sandbox my-box
   worst case (`network: "open"`, `freshPerRun: false`, soft clock, `memory: false`, `cpu: false`)
   and each stronger value must be earned by the kit. `memory: false` / `cpu: false` mean an
   in-process backend can exhaust the host.
+- The kit's `timeoutMs` (default 60 s) applies to every case; a backend that cold-starts an instance
+  per run needs a larger one (e.g. `300_000`) for the `fresh per run` case. A non-JavaScript backend
+  passes its own `fixtures`. The scaffold's remote-`evaluate` comment shows the shape: pass
+  `request.signal` to `fetch`, cap the response bytes, map any unexpected response to `infrastructure`
+  with your own message, never the body.
 - A backend that never settles loses: the effect races it against the caller's abort and a
   `wallClockMs + backendGraceMs` deadline (default 60 s) and hands it a combined signal; whatever it
   throws is untyped and bounded, never a channel.

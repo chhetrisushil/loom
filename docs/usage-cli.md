@@ -1246,7 +1246,7 @@ Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy,
 
 ### `loom plugin new <seam> <name> [--first-party] [--dir .]`
 
-Scaffolds a plugin package for a seam: a `package.json`, `tsconfig.json`, a preset/SPI stub, a conformance-wired test, and a README. It **never overwrites** an existing file.
+Scaffolds a plugin package for a seam: a `package.json` (peer dependencies are per seam: only the `@loom/*` packages the stub imports; `@types/node`, plus `engines` and `files` for third-party), `tsconfig.json`, a `vitest.config.ts` (first-party also gets `tsconfig.test.json`), a preset/SPI stub, a conformance-wired test, and a README. Class names do not repeat the seam's noun (`cloudrun-sandbox` gives `CloudrunSandboxBackend`). It **never overwrites** an existing file.
 
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
@@ -1260,7 +1260,7 @@ npx loom plugin new store redis                 # → loom-plugin-redis/
 npx loom plugin new store redis --first-party   # → packages/… as @loom/plugin-redis
 ```
 
-Exit `0` when at least one file was written, `1` when everything was skipped (the package already exists). The scaffold's conformance test ships commented out — un-comment it once your SPI impl is real, and run your formatter over the generated files.
+Exit `0` when at least one file was written, `1` when everything was skipped (the package already exists). For most seams the scaffold's conformance test ships commented out — un-comment it once your SPI impl is real (the `sandbox` and `policy` seams ship it live, and the printed `next:` line says which applies). For a third-party plugin the command also prints the `@loom/*` packages it depends on: an unpublished Loom checkout needs a `pnpm.overrides` `link:` entry for each (the command never edits your root `package.json`). Run your formatter over the generated files.
 
 ### `loom plugin check [--dir .] [--publish]`
 

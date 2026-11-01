@@ -934,10 +934,9 @@ async function dispatch(
           ...skipped.map((p) => `  skipped ${p} (already exists)`),
         ];
         if (written.length > 0) {
+          const { pluginFiles, pluginNextSteps } = await import("@loom/scaffold");
           lines.push(
-            "",
-            `next: implement the SPI in ${root}/src/index.ts, un-comment the conformance`,
-            "      test, and run your formatter (e.g. biome/prettier) to tidy the scaffold."
+            ...pluginNextSteps(pluginFiles(seam, name, { firstParty }), { firstParty, root })
           );
         }
         out(lines.join("\n"));

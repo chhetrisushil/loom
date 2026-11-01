@@ -4671,7 +4671,12 @@ export const JAVASCRIPT_FIXTURES: SandboxFixtures = {
 export interface SandboxConformanceOptions {
   /** Required for any backend whose `capabilities.language` is not `"javascript"`. */
   fixtures?: SandboxFixtures;
-  /** Per-test timeout. Default 60_000: a runaway or allocation bomb may take a remote kill. */
+  /**
+   * Per-test timeout, applied to EVERY case (the `fresh per run` case included: 16 sequential
+   * runs plus a concurrent batch of 8, each a full backend round trip). Default 60_000: a runaway
+   * or allocation bomb may take a remote kill. A backend that cold-starts an instance per run
+   * needs a larger value, e.g. `300_000`; the run counts do not change.
+   */
   timeoutMs?: number;
   label?: string;
 }
@@ -4884,15 +4889,19 @@ export function runSandboxBackendConformance(
   }
 
   describe(`${label} conformance (Sandbox backend SPI)`, () => {
-    it("declares complete capabilities and is accepted by the effect", async () => {
-      await withBackend(async ({ backend }) => {
-        const c = backend.capabilities;
-        expect(typeof c.language).toBe("string");
-        expect(["none", "allowlist", "open"]).toContain(c.network);
-        expect(["hard", "soft"]).toContain(c.wallClock);
-        for (const flag of [c.memory, c.cpu, c.freshPerRun]) expect(typeof flag).toBe("boolean");
-      });
-    });
+    it(
+      "declares complete capabilities and is accepted by the effect",
+      { timeout: timeoutMs },
+      async () => {
+        await withBackend(async ({ backend }) => {
+          const c = backend.capabilities;
+          expect(typeof c.language).toBe("string");
+          expect(["none", "allowlist", "open"]).toContain(c.network);
+          expect(["hard", "soft"]).toContain(c.wallClock);
+          for (const flag of [c.memory, c.cpu, c.freshPerRun]) expect(typeof flag).toBe("boolean");
+        });
+      }
+    );
 
     it("echo: input round-trips as the result", { timeout: timeoutMs }, async () => {
       await withBackend(async ({ run, fx }) => {
@@ -4903,26 +4912,38 @@ export function runSandboxBackendConformance(
       });
     });
 
-    it("rich value: unicode, escapes, large integers and nesting cross the boundary exactly", async () => {
-      await withBackend(async ({ run, fx }) => {
-        // Out of the script, then in through `input` and back out again.
-        expect(await run(fx.richValueScript)).toEqual(fx.richValue);
-        expect(await run(fx.echo, fx.richValue)).toEqual(fx.richValue);
-      });
-    });
+    it(
+      "rich value: unicode, escapes, large integers and nesting cross the boundary exactly",
+      { timeout: timeoutMs },
+      async () => {
+        await withBackend(async ({ run, fx }) => {
+          // Out of the script, then in through `input` and back out again.
+          expect(await run(fx.richValueScript)).toEqual(fx.richValue);
+          expect(await run(fx.echo, fx.richValue)).toEqual(fx.richValue);
+        });
+      }
+    );
 
-    it("throw: the script's exception is a scriptError carrying its message", async () => {
-      await withBackend(async ({ run, fx }) => {
-        const err = expectSandboxChannel(await sandboxFailureOf(run(fx.throws)), "scriptError");
-        expect((err.payload as { message: string }).message).toContain(fx.throwsMessage);
-      });
-    });
+    it(
+      "throw: the script's exception is a scriptError carrying its message",
+      { timeout: timeoutMs },
+      async () => {
+        await withBackend(async ({ run, fx }) => {
+          const err = expectSandboxChannel(await sandboxFailureOf(run(fx.throws)), "scriptError");
+          expect((err.payload as { message: string }).message).toContain(fx.throwsMessage);
+        });
+      }
+    );
 
-    it("syntax error: a script that does not parse is a scriptError", async () => {
-      await withBackend(async ({ run, fx }) => {
-        expectSandboxChannel(await sandboxFailureOf(run(fx.syntaxError)), "scriptError");
-      });
-    });
+    it(
+      "syntax error: a script that does not parse is a scriptError",
+      { timeout: timeoutMs },
+      async () => {
+        await withBackend(async ({ run, fx }) => {
+          expectSandboxChannel(await sandboxFailureOf(run(fx.syntaxError)), "scriptError");
+        });
+      }
+    );
 
     it(
       "runaway loop: killed as limitExceeded cpu or wallClock (finishing inside the timeout is the proof)",
@@ -5020,15 +5041,22 @@ export function runSandboxBackendConformance(
       }
     );
 
-    it("composition (not the backend): an oversized thrown message reaches the log bounded and storable", async () => {
-      await withBackend(async ({ run, fx }) => {
-        const err = expectSandboxChannel(await sandboxFailureOf(run(fx.hugeThrow)), "scriptError");
-        const { message, name } = err.payload as { message: string; name?: string };
-        expect(message.length).toBeLessThanOrEqual(2048);
-        expect(message).not.toMatch(SANDBOX_LONE_SURROGATE);
-        expect(message).not.toContain("\u0000");
-        if (name !== undefined) expect(name.length).toBeLessThanOrEqual(128);
-      });
-    });
+    it(
+      "composition (not the backend): an oversized thrown message reaches the log bounded and storable",
+      { timeout: timeoutMs },
+      async () => {
+        await withBackend(async ({ run, fx }) => {
+          const err = expectSandboxChannel(
+            await sandboxFailureOf(run(fx.hugeThrow)),
+            "scriptError"
+          );
+          const { message, name } = err.payload as { message: string; name?: string };
+          expect(message.length).toBeLessThanOrEqual(2048);
+          expect(message).not.toMatch(SANDBOX_LONE_SURROGATE);
+          expect(message).not.toContain("\u0000");
+          if (name !== undefined) expect(name.length).toBeLessThanOrEqual(128);
+        });
+      }
+    );
   });
 }

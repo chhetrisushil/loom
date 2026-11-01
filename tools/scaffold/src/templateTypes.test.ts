@@ -81,6 +81,46 @@ describe("a scaffolded package declares what its own code needs", () => {
   });
 });
 
+describe("a scaffolded package declares exactly the @loom/* packages its source imports", () => {
+  /** Peer dependencies a seam declares without importing them in src/index.ts (none today). */
+  const JUSTIFIED_UNIMPORTED: Record<string, string[]> = {};
+
+  /** `@loom/*` module specifiers in non-comment import/export-from statements. */
+  function importedLoom(source: string): string[] {
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    const out = new Set<string>();
+    for (const m of code.matchAll(/from\s+"(@loom\/[a-z0-9-]+)(?:\/[^"]*)?"/g))
+      out.add(m[1] as string);
+    return [...out];
+  }
+
+  it("peerDependencies cover every @loom import, and carry nothing unimported", () => {
+    for (const seam of SEAM_KEYS) {
+      const files = pluginFiles(seam, "probe", { firstParty: false });
+      const src = files["loom-plugin-probe/src/index.ts"] as string;
+      const pkg = JSON.parse(files["loom-plugin-probe/package.json"] as string) as {
+        peerDependencies: Record<string, string>;
+      };
+      const peers = Object.keys(pkg.peerDependencies);
+      const imported = importedLoom(src);
+      expect(peers, `${seam}: imported but not a peer`).toEqual(expect.arrayContaining(imported));
+      const extra = peers.filter(
+        (p) => !imported.includes(p) && !(JUSTIFIED_UNIMPORTED[seam] ?? []).includes(p)
+      );
+      expect(extra, `${seam}: peer dependencies nothing imports`).toEqual([]);
+      // the sandbox backend never touches @loom/core
+      if (seam === "sandbox") expect(peers).not.toContain("@loom/core");
+      // first-party tsconfig references follow the same list
+      const fp = pluginFiles(seam, "probe", { firstParty: true })[
+        "plugins/probe/tsconfig.json"
+      ] as string;
+      for (const i of imported) {
+        expect(fp, `${seam}: ${i}`).toContain(`../../packages/${i.replace("@loom/", "")}`);
+      }
+    }
+  });
+});
+
 describe("seam templates typecheck against the real SPIs", () => {
   afterAll(() => rmSync(PROBE, { recursive: true, force: true }));
 
