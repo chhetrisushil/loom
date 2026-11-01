@@ -74,6 +74,9 @@
       "path": "../orchestration"
     },
     {
+      "path": "../sandbox"
+    },
+    {
       "path": "../../plugins/sandbox"
     }
   ]
