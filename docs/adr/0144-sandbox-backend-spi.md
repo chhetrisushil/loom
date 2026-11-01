@@ -1,6 +1,6 @@
 # ADR 0144 — Sandbox backend SPI: bring your own sandbox, keep loom's guarantees
 
-- Status: **Proposed** (2026-11-01)
+- Status: **Accepted** (2026-11-01) — proposed 2026-11-01, implemented and merged (PR #747); accepted by the owner
 - Date: 2026-11-01
 - Amends: [ADR 0064](0064-sandbox-eval-plugin.md) (the sandbox effect, its channels and its security
   list) and [ADR 0089](0089-sandbox-worker-pool.md) (worker-thread evaluation). Nothing in either is
