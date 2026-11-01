@@ -6,6 +6,11 @@
 
 export { SandboxEvalEffect } from "./SandboxEvalEffect";
 export {
+  DEFAULT_INTERRUPT_BUDGET,
+  QuickJsSandboxBackend,
+  type QuickJsSandboxBackendOptions,
+} from "./QuickJsSandboxBackend";
+export {
   SandboxWorkerPool,
   type SandboxWorkerPoolOptions,
   SandboxWorkerStartupError,

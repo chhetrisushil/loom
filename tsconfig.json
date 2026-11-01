@@ -137,6 +137,9 @@
       "path": "packages/memory"
     },
     {
+      "path": "packages/sandbox"
+    },
+    {
       "path": "packages/knowledge"
     },
     {

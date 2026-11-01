@@ -1240,9 +1240,9 @@ Loom plugin seams (loom plugin new <seam> <name>):
   …
 ```
 
-The current seams are **`store`**, **`dispatcher`**, **`telemetry`**, **`middleware`**, **`timer`**, **`lease`**, **`content`**, **`durable-state`**, **`read-model`**, **`keystore`**, **`memory`**, **`projection`**, **`worker`**, **`llm`**, **`authorizer`**, **`execution-authorizer`**, **`resume-authenticator`**, **`timer-dispatcher`**, and **`policy`** — one for every SPI that publishes a conformance kit, which is the rule a fitness test now holds rather than a list someone remembers to extend.
+The current seams are **`store`**, **`dispatcher`**, **`telemetry`**, **`middleware`**, **`timer`**, **`lease`**, **`content`**, **`durable-state`**, **`read-model`**, **`keystore`**, **`memory`**, **`projection`**, **`worker`**, **`llm`**, **`authorizer`**, **`execution-authorizer`**, **`resume-authenticator`**, **`timer-dispatcher`**, **`policy`**, and **`sandbox`** — one for every SPI that publishes a conformance kit, which is the rule a fitness test now holds rather than a list someone remembers to extend.
 
-Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy, context, actions)`), not in `defineConfig`.
+Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy, context, actions)`), not in `defineConfig`; so is `sandbox` (`registerSandboxBackend(effects, scripts, backend)`, [ADR 0144](adr/0144-sandbox-backend-spi.md)).
 
 ### `loom plugin new <seam> <name> [--first-party] [--dir .]`
 

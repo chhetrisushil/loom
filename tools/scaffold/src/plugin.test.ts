@@ -73,6 +73,7 @@ describe("pluginFiles", () => {
       "resume-authenticator",
       "timer-dispatcher",
       "policy",
+      "sandbox",
     ]);
     const text = listSeams();
     for (const k of SEAM_KEYS) expect(text).toContain(k);
@@ -153,5 +154,40 @@ describe("pluginFiles", () => {
     const text = listSeams();
     expect(text).toMatch(/policy[\s\S]*NOT defineConfig/);
     expect(text).toContain("decideWithPolicy(");
+  });
+
+  it("scaffolds a sandbox backend wired to the kit, with the remote-backend checklist (ADR 0144 D6)", () => {
+    for (const firstParty of [false, true]) {
+      const files = pluginFiles("sandbox", "my-box", { firstParty });
+      const dir = firstParty ? "plugins/my-box" : "loom-plugin-my-box";
+      const index = files[`${dir}/src/index.ts`] as string;
+      const test = files[`${dir}/src/index.test.ts`] as string;
+      const readme = files[`${dir}/README.md`] as string;
+      const pkg = JSON.parse(files[`${dir}/package.json`] as string) as Record<string, unknown>;
+      expect(index).toContain("class MyBoxSandboxBackend implements SandboxBackend");
+      // The most conservative honest claims: the worst case, every stronger value to be earned.
+      expect(index).toMatch(
+        /network: "open"[\s\S]*wallClock: "soft"[\s\S]*memory: false[\s\S]*cpu: false[\s\S]*freshPerRun: false/
+      );
+      expect(index).not.toMatch(/network: "none"|freshPerRun: true/);
+      expect(index).toContain("EARNED");
+      expect(readme).toMatch(/memory: false.*cpu: false.*exhaust the host/s);
+      expect(test).toContain("runSandboxBackendConformance(");
+      expect(JSON.stringify(pkg)).toContain("@loom/sandbox");
+      // Registered from flow code: the README must not invent a defineConfig key.
+      expect(readme).toContain("registerSandboxBackend");
+      expect(readme).not.toContain("@loom/app");
+      for (const item of [
+        "No service account",
+        "Egress denied",
+        "One request per instance",
+        "hard kill",
+        "Memory and CPU caps",
+        "No shared writable state",
+      ]) {
+        expect(readme, item).toContain(item);
+      }
+    }
+    expect(listSeams()).toMatch(/sandbox[\s\S]*NOT defineConfig/);
   });
 });

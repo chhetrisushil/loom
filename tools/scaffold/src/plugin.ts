@@ -34,6 +34,14 @@ interface SeamDef {
   index: (name: string) => string;
   /** `src/index.test.ts` body. */
   test: (name: string) => string;
+  /**
+   * Set when the seam is consumed from flow code rather than `defineConfig`: the README then
+   * shows `readmeWire` instead of a `defineConfig({ … })` snippet that would name a key that
+   * does not exist.
+   */
+  readmeWire?: (name: string, packageName: string) => string[];
+  /** Extra README sections (checklists the author must read before shipping). */
+  readmeExtra?: (name: string) => string[];
 }
 
 const SEAMS: Record<string, SeamDef> = {
@@ -1414,6 +1422,138 @@ const SEAMS: Record<string, SeamDef> = {
       ].join("\n");
     },
   },
+
+  sandbox: {
+    key: "sandbox",
+    spi: "SandboxBackend",
+    title: "Sandbox backend (run model-written code in your own isolation boundary)",
+    // Like `policy`, not a defineConfig contributor: the effect is registered from flow code, where
+    // the content store that holds the scripts is in hand (ADR 0144 D6).
+    wiring:
+      "registerSandboxBackend(effects, scripts, new <Name>SandboxBackend(), { … })  — flow code, NOT defineConfig",
+    spiDeps: ["@loom/sandbox"],
+    conformance: ["runSandboxBackendConformance"],
+    readmeWire: (name, packageName) => [
+      "```ts",
+      'import { registerSandboxBackend } from "@loom/sandbox";',
+      `import { ${pascal(name)}SandboxBackend } from "${packageName}";`,
+      "",
+      "// Registered from flow code, next to the content store that holds the scripts.",
+      "// There is no defineConfig key for it.",
+      "const effect = registerSandboxBackend(",
+      "  effects,",
+      "  scripts,",
+      `  new ${pascal(name)}SandboxBackend({ /* endpoint, image, … */ })`,
+      ");",
+      "await effect.warm(); // boot",
+      "await effect.close(); // shutdown",
+      "```",
+    ],
+    readmeExtra: () => [
+      "## Before you ship a remote backend",
+      "",
+      "The effect owns the limits, channels and replay rules. You own the isolation boundary, and",
+      "these are the things that make it one:",
+      "",
+      "- **No service account, no credentials.** The sandbox runs with no identity and no secrets",
+      "  of the platform that launches it.",
+      "- **Egress denied at the network layer**, not by the script's language. Declare",
+      '  `network: "none"` only if the network itself refuses.',
+      "- **One request per instance.** Nothing a script wrote survives to the next request",
+      "  (`freshPerRun: true`), which may belong to another tenant.",
+      "- **The request timeout is the hard kill.** Enforce `request.limits.wallClockMs` outside the",
+      '  script\'s own process (`wallClock: "hard"`).',
+      "- **Memory and CPU caps** on the instance (`memory: true`, `cpu: true`).",
+      "- **No shared writable state**: no shared volume, cache or temp directory between instances.",
+      "- Report what happened as a `SandboxOutcome`; never throw a typed failure, never return text",
+      "  you did not bound — the effect bounds it again, but a log is append-only.",
+      "",
+      'The generated backend declares the worst case (`network: "open"`, `freshPerRun: false`,',
+      '`wallClock: "soft"`, `memory: false`, `cpu: false`). Each stronger value must be earned by',
+      "`src/index.test.ts` (the conformance kit) passing with it; the kit passes the effect the",
+      "`allowNetwork` / `allowReusedEnvironment` opt-ins exactly when your declaration needs them.",
+      "",
+      "- **`memory: false` / `cpu: false` mean an in-process backend can exhaust the host.** Nothing",
+      "  caps a script's heap or CPU, so a runaway or allocation bomb takes down the process that runs",
+      "  the backend. Declare them `true` only for a backend that enforces the caps (an engine memory",
+      "  limit, or a separate process or instance); never run an uncapped backend inside your host.",
+      "",
+      "A non-JavaScript backend must pass its own `fixtures` to `runSandboxBackendConformance`.",
+    ],
+    index: (name) => {
+      const P = pascal(name);
+      return [
+        "import type {",
+        "  SandboxBackend,",
+        "  SandboxBackendCapabilities,",
+        "  SandboxOutcome,",
+        "  SandboxRequest,",
+        '} from "@loom/sandbox";',
+        "",
+        `export interface ${P}SandboxBackendOptions {`,
+        "  /** Whatever your backend needs — a service URL, an image, a token source. */",
+        "  endpoint?: string;",
+        "}",
+        "",
+        "/**",
+        " * A `SandboxBackend` — the ENGINE: run one verified script against one bounded input and",
+        " * report what happened. Register it from flow code with `registerSandboxBackend(...)`;",
+        " * `SandboxEffect` owns the limits, content-address check, channels and replay form",
+        " * (ADR 0144), so do not re-implement any of them here.",
+        " *",
+        " * The capabilities below are the most conservative honest claims: they assume the WORST",
+        " * (open network, a reused environment, a soft clock, no memory or CPU cap). Each stronger",
+        " * value must be EARNED: change it only when the conformance kit (index.test.ts) passes with",
+        ' * it. The effect refuses `network` other than "none" and `freshPerRun: false` unless the',
+        " * operator opts in, and then is not `idempotent`.",
+        " */",
+        `export class ${P}SandboxBackend implements SandboxBackend {`,
+        "  readonly capabilities: SandboxBackendCapabilities = {",
+        '    language: "javascript",',
+        '    network: "open",',
+        '    wallClock: "soft",',
+        "    memory: false,",
+        "    cpu: false,",
+        "    freshPerRun: false,",
+        "  };",
+        "",
+        `  constructor(private readonly options: ${P}SandboxBackendOptions = {}) {}`,
+        "",
+        "  async evaluate(request: SandboxRequest): Promise<SandboxOutcome> {",
+        "    // TODO: run `request.script` with `request.inputJson` parsed as the script's `input`,",
+        "    // inside your isolation boundary, honouring `request.limits` and `request.signal`.",
+        "    // Report a closed outcome: { ok: true, value } | limit | threw | inputTooLarge | infrastructure.",
+        "    void request;",
+        "    return {",
+        "      ok: false,",
+        '      kind: "infrastructure",',
+        '      message: `not implemented (${this.options.endpoint ?? "no endpoint"})`,',
+        "    };",
+        "  }",
+        "",
+        "  /** Optional: pre-warm pools or connections. */",
+        "  async warm(): Promise<void> {}",
+        "",
+        "  /** Optional: release pools, connections and instances. */",
+        "  async close(): Promise<void> {}",
+        "}",
+        "",
+      ].join("\n");
+    },
+    test: (name) => {
+      const P = pascal(name);
+      return [
+        'import { runSandboxBackendConformance } from "@loom/conformance";',
+        `import { ${P}SandboxBackend } from "./index";`,
+        "",
+        "// The SPI kit: runs ADR 0064's security list through SandboxEffect — echo, throw, syntax",
+        "// error, runaway loop, allocation bomb, no network, fresh per run, abort, outcome hygiene.",
+        "// It fails until evaluate() is real. For a language other than JavaScript, pass `fixtures`.",
+        `runSandboxBackendConformance(() => new ${P}SandboxBackend(), { label: "${P}SandboxBackend" });`,
+        "",
+      ].join("\n");
+    },
+  },
 };
 
 export const SEAM_KEYS = Object.keys(SEAMS);
@@ -1549,6 +1689,17 @@ function pluginReadme(
   firstParty: boolean
 ): string {
   const wire = seam.wiring.replace(/<name>/g, camel(name)).replace(/<Name>/g, pascal(name));
+  const wireBlock =
+    seam.readmeWire !== undefined
+      ? seam.readmeWire(name, packageName)
+      : [
+          "```ts",
+          'import { defineConfig } from "@loom/app";',
+          `// import { … } from "${packageName}";`,
+          "",
+          `export const app = defineConfig({ ${wire} });`,
+          "```",
+        ];
   return [
     `# ${packageName}`,
     "",
@@ -1556,13 +1707,9 @@ function pluginReadme(
     "",
     "## Wire it",
     "",
-    "```ts",
-    'import { defineConfig } from "@loom/app";',
-    `// import { … } from "${packageName}";`,
+    ...wireBlock,
     "",
-    `export const app = defineConfig({ ${wire} });`,
-    "```",
-    "",
+    ...(seam.readmeExtra !== undefined ? [...seam.readmeExtra(name), ""] : []),
     "## Contract",
     "",
     "- Implement the SPI; keep the preset a pure function.",

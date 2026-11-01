@@ -1,7 +1,7 @@
 {
   "name": "@loom/spec",
   "version": "0.0.1",
-  "description": "The Loom kernel manifest \u2014 the single machine-readable source of truth aggregating every kernel/SPI version constant, the capability maturity registry, and a deployment compatibility validator. Read-only; imports the real exported constants so it can never drift.",
+  "description": "The Loom kernel manifest — the single machine-readable source of truth aggregating every kernel/SPI version constant, the capability maturity registry, and a deployment compatibility validator. Read-only; imports the real exported constants so it can never drift.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -26,6 +26,7 @@
     "@loom/memory": "workspace:*",
     "@loom/plugin-content": "workspace:*",
     "@loom/replay-vm": "workspace:*",
+    "@loom/sandbox": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/wire-abi": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"

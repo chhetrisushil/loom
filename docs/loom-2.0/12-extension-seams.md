@@ -81,6 +81,7 @@ that is what pins the contracts.
 | **Scheduler** | `Scheduler` (`@loom/scheduler`) | M6 bounded concurrency + priority (advisory; zero-overhead default) | `createScheduler` |
 | **Warmer** | `Warmer` (`@loom/effect-runtime`) | M6 advisory pre-warm (latency-only, off-log) | ADR 0027 |
 | **Policy** | `Policy<A>` (`@loom/learning`) | Choose an action from an observation — `select(context, actions)`. The **only seam consumed from flow code** rather than `defineConfig`: a learned choice reaches a run through `decideWithPolicy` → `ctx.decide`, so it stays recorded and replayable (ADR 0080). Conformance: `runPolicyConformance` | `loom-plugin-linucb` (3P) |
+| **Sandbox backend** | `SandboxBackend` (`@loom/sandbox`) | Run model-written code in YOUR isolation boundary (gVisor, Firecracker, E2B, an internal service) — `evaluate(request) → SandboxOutcome` is the ENGINE only; `SandboxEffect` keeps the input/output ceilings, content-address check, typed channels, cancellation precedence and the JSON replay form, and refuses a backend that declares egress or a reused environment unless the operator opts in (ADR 0144). Consumed from flow code (`registerSandboxBackend`), not `defineConfig`. Conformance: `runSandboxBackendConformance` | `QuickJsSandboxBackend` (`@loom/plugin-sandbox`, 1P) |
 
 ## Observability & projection seams
 

@@ -37,7 +37,7 @@ const RECHECK_MS = 20;
  * parsing the input, creating the runtime and seeding it on a contended host, none of which
  * is the script's fault.
  */
-const DEFAULT_STARTUP_LIVENESS_MS = 10_000;
+export const DEFAULT_STARTUP_LIVENESS_MS = 10_000;
 /**
  * How long a cold worker may take to spawn and compile its WASM module before it is treated
  * as wedged. Its OWN allowance, measured from the moment the worker starts warming — never
@@ -46,7 +46,7 @@ const DEFAULT_STARTUP_LIVENESS_MS = 10_000;
  * worker cold again, and loop (retry middleware multiplies it) — the failure ADR 0089 D4
  * exists to prevent. 10 s is two orders of magnitude over a measured unloaded cold start.
  */
-const DEFAULT_COLD_START_MS = 10_000;
+export const DEFAULT_COLD_START_MS = 10_000;
 
 /**
  * A worker never started a run: a cold worker did not finish compiling within `coldStartMs`
@@ -81,7 +81,7 @@ export class SandboxWorkerStartupError extends Error {
 }
 
 /** Milliseconds past `wallClockMs` before the pool stops asking and terminates. */
-const DEFAULT_HARD_KILL_GRACE_MS = 2_000;
+export const DEFAULT_HARD_KILL_GRACE_MS = 2_000;
 
 export interface SandboxWorkerPoolOptions {
   /** Threads to run. */

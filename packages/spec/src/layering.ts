@@ -55,6 +55,11 @@ export const SPI_PACKAGES: readonly string[] = [
   // decide what a backend indexes and what counts as a term, so a plugin carrying its own
   // copy can answer a different question than the app asked and still pass conformance.
   "@loom/memory",
+  // Defines the `SandboxBackend` SPI (ADR 0144) plus the effect that owns every guarantee around
+  // it. Listed so `loom plugin check` holds a sandbox backend to the peer-dependency rule: a
+  // bundled copy is a duplicate CONTRACT (the limits, channels and replay form), not just a
+  // duplicate type.
+  "@loom/sandbox",
 ];
 
 /** Packages that must stay free of any `plugins/*` dependency (kernel ∪ SPI). */

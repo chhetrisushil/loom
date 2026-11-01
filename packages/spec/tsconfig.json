@@ -12,6 +12,7 @@
     { "path": "../dispatcher" },
     { "path": "../event-runtime" },
     { "path": "../memory" },
+    { "path": "../sandbox" },
     { "path": "../replay-vm" },
     { "path": "../snapshot-runtime" },
     { "path": "../wire-abi" },

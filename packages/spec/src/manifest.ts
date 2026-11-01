@@ -9,6 +9,7 @@ import {
 import { MEMORY_STORE_SPI_VERSION } from "@loom/memory";
 import { CONTENT_STORE_SPI_VERSION } from "@loom/plugin-content";
 import { EVENT_SCHEMA_VERSION, knownEventTypes } from "@loom/replay-vm";
+import { SANDBOX_BACKEND_SPI_VERSION } from "@loom/sandbox";
 import { SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
 import { WIRE_ABI_VERSION } from "@loom/wire-abi";
 import { KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "@loom/workflow-runtime";
@@ -39,6 +40,8 @@ export interface KernelManifest {
     contentStore: string;
     /** `@loom/event-runtime` — where `LogLifecycle.compact` MOVES the events it removes (ADR 0138). */
     archiveStore: string;
+    /** `@loom/sandbox` — the engine seam a sandbox backend implements (ADR 0144). */
+    sandboxBackend: string;
   };
   /** The compiler manifest schema version. */
   compilerManifest: { version: string };
@@ -65,6 +68,7 @@ export function kernelManifest(): KernelManifest {
       memoryStore: MEMORY_STORE_SPI_VERSION,
       contentStore: CONTENT_STORE_SPI_VERSION,
       archiveStore: ARCHIVE_STORE_SPI_VERSION,
+      sandboxBackend: SANDBOX_BACKEND_SPI_VERSION,
     },
     compilerManifest: { version: COMPILER_MANIFEST_VERSION },
   };
@@ -87,6 +91,7 @@ export interface DeploymentVersions {
   memoryStoreSpi?: string;
   contentStoreSpi?: string;
   archiveStoreSpi?: string;
+  sandboxBackendSpi?: string;
   leaseStoreSpi?: string;
   compilerManifest?: string;
 }
@@ -123,6 +128,7 @@ export function checkCompatibility(actual: DeploymentVersions): CompatReport {
     ["memoryStoreSpi", actual.memoryStoreSpi, m.spis.memoryStore],
     ["contentStoreSpi", actual.contentStoreSpi, m.spis.contentStore],
     ["archiveStoreSpi", actual.archiveStoreSpi, m.spis.archiveStore],
+    ["sandboxBackendSpi", actual.sandboxBackendSpi, m.spis.sandboxBackend],
     ["leaseStoreSpi", actual.leaseStoreSpi, m.spis.leaseStore],
     ["compilerManifest", actual.compilerManifest, m.compilerManifest.version],
   ];

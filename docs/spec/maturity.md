@@ -16,6 +16,7 @@ by a conformance test; `L4` requires a committed bench; `L2`/`L3` require a pass
 | Event Store SPI | `L5` | @loom/event-runtime | `EVENT_STORE_SPI_VERSION` · test · bench |
 | Execution Dispatcher SPI | `L5` | @loom/dispatcher | `DISPATCHER_SPI_VERSION` · test |
 | Replay VM | `L5` | @loom/replay-vm | `EVENT_SCHEMA_VERSION` · test |
+| Sandbox Backend SPI | `L5` | @loom/sandbox | `SANDBOX_BACKEND_SPI_VERSION` · test |
 | Snapshot Store SPI | `L5` | @loom/snapshot-runtime | `SNAPSHOT_STORE_SPI_VERSION` · test |
 | Tiered Memory | `L5` | @loom/memory | `MEMORY_STORE_SPI_VERSION` · test · used: loom-examples: runbook-recall, agent-network |
 | Wire ABI | `L5` | @loom/wire-abi | `WIRE_ABI_VERSION` · test |
@@ -65,6 +66,7 @@ by a conformance test; `L4` requires a committed bench; `L2`/`L3` require a pass
 
 ## Notes
 
+- **Sandbox Backend SPI** (`L5`): ADR 0144 — QuickJS (in-process and worker mode) passes the same runSandboxBackendConformance kit a 3P Cloud Run / Firecracker / E2B backend must pass. @loom/isolate stays separate: it runs TRUSTED tool code, this seam runs UNTRUSTED scripts.
 - **Tiered Memory** (`L5`): ADR 0090/0091 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P loom-plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. ADR 0091 took the SPI to 2.0.0: entry `id` (REQUIRED to round-trip, so the read-filter-replace fallback has something to match) plus the optional `remove`, because `search` ranks within one key while a document — the unit a corpus is actually edited in — is a subset of it. MAJOR because a backend that decomposes an entry into columns drops a field nobody told it to keep, which is silent in every case that only checks `content`. L3 → L5 once MEMORY_STORE_SPI_VERSION landed: the level bar is a versioned contract pinned by a conformance kit, and this seam is the first whose implementations live OUTSIDE this repo, which is what made an unversioned contract an actual hazard rather than a formality. As with every SPI here, nothing forces the constant to be bumped when the shape changes — the version is a declaration, the kit is the check.
 - **Batched Content Resolution** (`L4`): TS-10 (ADR 0062) — the read-side sequel to ADR 0059's putStream. Optional-method + conformance-skip idiom; interactive budget p95 ≤ 150ms for ≤ 50 refs (asserted in batchedResolution.test.ts against an injected-latency backend).
 - **Deterministic Simulation Testing** (`L4`): Test/dev-only harness, not a wire contract → cannot be L5; L4 via its append-overhead bench. Production overhead is structurally zero (no runtime package imports it).
