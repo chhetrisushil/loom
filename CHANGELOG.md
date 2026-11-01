@@ -22,46 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ProfilingSnapshotStore` measures snapshot sizes (`@loom/snapshot-runtime`, issue #708; no kernel, SPI or ABI change).** Before building anything bigger for snapshot growth (#706), the open question is whether huge states occur. A decorator in the shape of `ProfilingEventStore` (zero cost when unwired) records, per save that reached the wrapped store, the UTF-8 byte length of `JSON.stringify(state)`; `profile()` returns saves, measured saves, total and max bytes, a fixed 41-bucket power-of-two histogram (inclusive upper bounds) and `largest`, the top N (default 10) executions by LATEST snapshot size. Memory is O(1) in executions: the top N is a size-capped min-heap plus an id-to-position index (`BoundedTopN`: O(1) reject, O(log N) update on grow or shrink and on removal; an evicted execution is forgotten and re-admitted only by a larger later save), and `onLargeSnapshot(executionId, bytes)` fires once when an execution first reaches `largeThresholdBytes`, deduped by an LRU of `dedupeCapacity` (default 1024) executions: an execution evicted from it MAY fire again if saved over the threshold later (documented). A throwing or rejecting hook, or a state that cannot be serialized, never fails or alters the save (reported through the optional `onMeasurementError`). `sampleRate` (with an injectable `sampler`) skips the extra stringify on the unsampled saves. Decides every optional method: `deleteExecution` drops the execution from the top N and the dedupe set, and a `pruneSnapshots` does so only when it deleted the held latest snapshot; a late (lower-sequence) save completion never overwrites a newer size; ties in `largest` order by executionId; `onLargeSnapshot` without `largeThresholdBytes` throws; `loadLatestSealed` forwards. Placement: OUTSIDE `EncryptingSnapshotStore` it measures plaintext state, around the raw backend it measures stored bytes (ciphertext). Runs the snapshot decorator conformance kit. See `docs/scaling.md`.
 
-### Changed
-
-- **BREAKING (`@loom/middleware`, ADR 0140 D10): the classic `claimCheckMiddleware` now records an offloaded result that carried an ADR 0085 taint marker (top level or nested) as `tainted(envelope, origin)`.** A consumer that read `result.digest` / `result.ref` / `result.size` straight off a recorded tainted result must UNWRAP first (`isTainted(x) ? x.value : x`). Untainted results are unchanged. Also additive: `EffectContext.taskKind` (`@loom/effect-runtime`), and (D11) under `envelopesAreData` a result that NESTS an envelope lookalike is force-offloaded as data; the content sweep honours `retain: true` only on an envelope at the top level of a recorded `STEP_COMPLETED` output (a nested lookalike pins nothing and is not a citation for `eraseSubject`); `eraseSubject` refuses (`ContentCopiesRemainError`) before the shred over a content store without `deleteIfUntouchedSince`/`touchClock` instead of ever deleting unconditionally.
-
-- **BREAKING: trimming or deleting a reserved stream (the inbox, its topic streams, the quarantine copies) now MOVES the envelopes into the archive and refuses without one ([ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md), issue #728; `@loom/workflow-runtime`, `@loom/plugin-crypto`, `@loom/plugin-content`, `@loom/compliance`, `@loom/app`; `EVENT_STORE_SPI` 2.5.0 -> 2.6.0 (additive, optional `deleteThrough`); `ARCHIVE_STORE_SPI` 1.0.0 -> 1.1.0 in the second review round below; no kernel ABI, EVENT_SCHEMA or WIRE_ABI change).** `trimInbox`, `trimTopicStream`, `trimQuarantine` and the terminal `deleteInbox` (owner terminal, `reclaimInbox`, a send that raced the terminal) deleted envelopes whose ids, timestamps and sender metadata survive nowhere else (the payload lives on in `MESSAGE_CONSUMED`). They now take a `ReservedStreamArchive`, append the exact envelopes to the SAME `ArchiveStore` compaction uses (keyed by the stream id) and only then remove; crash order is archive first (a duplicate, never a gap). **Without an archive they refuse** (`ReservedStreamArchiveRequiredError`, `op: "trim" | "delete"`): `WorkflowRuntime` deps take `inboxArchive` / `inboxArchiveTenant`; `defineConfig` hands over the compaction archive, so `storage: { kind: "memory" }`, `sqliteStorage()` and `postgresStorage()` need nothing, while a custom durable storage must pass `storage.archiveStore` or `durability.retention.compactionArchive` (the boot warning now says so). A hand-built runtime with `inboxEnabled` and no `inboxArchive` is REFUSED at construction (`InboxArchiveRequiredError`) unless its event store is in-memory (it then defaults an in-memory archive, sealed under the log's KeyStore when the log seals) or it says `inboxArchive: "none"` (`kernel.inbox.archive: "none"` in `defineConfig`): then it trims and deletes NOTHING, says so at boot through `onWarn`, and reports every skipped maintenance through `onStorageError` (or `onWarn` when none is wired); sends continue until `inboxMaxRetained` refuses them (`InboxFullError` names the missing archive). The erasure and tenant guards of compaction apply; `EncryptingArchiveStore` seals a reserved stream's segments under the chain OWNER's subject (new `ownerWorkflowId` option for a custom `subjectOf`); a re-created stream starts above the archive's last sequence (`appendInboxMessage`, `seedInboxFloors`, `appendQuarantineCopy` take an `ArchiveFloor`); a straggler goes to a late run keyed `__loom_late__:<stream>@<n>` (a reserved-prefix archive key no live id can have; `inboxChainOf` is unchanged, `archiveChainOf` resolves the chain of an archive key). The terminal delete is BOUNDED by what was archived: new optional `EventStore.deleteThrough(id, through)` (one atomic `DELETE ... WHERE sequence <= through`, sequence 0 included; memory, SQLite, Postgres, every decorator and the conformance kit), so a message appended after the archive's read survives as a live remainder that the sender's re-check or `reclaimInbox` archives and deletes the same way; a store without it REFUSES the delete (`ReservedStreamDeleteUnsupportedError`, the stream is kept) and never falls back to a whole-stream delete. A segment's range covers exactly the envelopes it holds (a stream trimmed before the archive existed reports its lost range, never reads as covered), a re-created stream's sequence 0 is compared byte-exact like any other, the archive incarnation is the chain OWNER's bootstrap digest (a reused chain id refuses the previous run's segments), and the audit reads see late runs and a DELETED stream's own extent. New reads: `LogLifecycle.readReservedWithArchive` (now `{ events, lateRuns }`) / `reservedArchiveCoverage` / `readReservedArchive`, and `exportSubject` returns `reservedStreams`. Erasure (owner ruling 2026-10-31): over a PLAINTEXT archive `EraseCoordinator` (new `archives` option, wired by `defineConfig`) DELETES the subject's archived copies and records it (`ERASURE_ARCHIVE_DELETED`, `archivedCopiesDeleted`), refuses BEFORE the shred when a plaintext archive cannot delete (`ArchivedCopiesRemainError`), and redacts the erased subject's identity from OTHER chains' archived reserved segments (`ERASURE_SENDER_REDACTED`); an inbox envelope's sender (actor, tenant, onBehalfOf) is sealed under the SENDER's own subject by `EncryptingEventStore` / `EncryptingArchiveStore` (opt-in via `senderSubjectOf` in this first cut; the second review round below makes it the DEFAULT for a sealing deployment, `senderSubjectOf: false` opts out) (an erased sender reads `{ erased: true }`, the owner's message stays); a reserved segment's digest masks the sender (the one erasable field). `applyRetention`'s plain delete removes the chain's archived reserved segments; a KEPT execution moves its streams to the compaction archive. The content sweep no longer mistakes a topic stream (it starts at `INBOX_TOPIC_SEQ_BASE`) for a compacted log; a trimmed reserved stream needs its archive in an erasing pass (`acknowledgeUnarchivedLogs` for streams trimmed before this change). Hot-path cost: per trim one ranged read and one archive append (+8.7% store calls in the worst case, 40 messages consumed one at a time); zero per message in a burst; nothing reads the archive on resume.
-- **BREAKING (the `KeyStore` contract, hash-chained inbox deployments, the on-disk sender shape): third review round of the reserved-stream archive ([ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md) D22-D25, #729; `@loom/plugin-crypto`, `@loom/conformance`, `@loom/compliance`, `@loom/app`; no EVENT_SCHEMA, KERNEL_ABI, WIRE_ABI or SPI version change, but a NEW REQUIREMENT on `KeyStore`).** (D22, blocker) The sender seed mint raced: `KeyStore.getOrCreate` is now documented as REQUIRING an atomic create-if-absent (a store whose write is an upsert lets two nodes mint two seeds, so erasure destroys one and the other copy of the identity stays readable), `SenderHandles` shares one in-flight mint per key, `runKeyStoreConformance` gains a concurrent-`getOrCreate` case that a non-atomic third-party store FAILS, and `eraseSender` re-reads and fails loud (`SenderEraseIncompleteError`) if any seed or handle of the sender is still live. (D23) A lost or destroyed sender master is `SenderMasterLostError` on erase, reinstate and send (`eraseSender` no longer answers `false` for it; a send does not mint a new master over live sealed senders); the crash window between erase's two destroys surfaces as `SenderErasedError`; the sealed sender's AAD binds the message id. (D24, owner ruling) `app.reinstateSender(actor, tenant?, { by })` is the explicit, journaled operator verb (`SENDER_REINSTATE_INTENDED` then `SENDER_REINSTATED`; never the identity) that lets an erased sender send again under a NEW handle. (D25) `loadParked` loads the parked erasures before the archive recovery, which now warns through `onWarn` instead of aborting boot. **BREAKING / BEHAVIOUR CHANGES:** (a) a hash-chained inbox deployment needs `allowCompaction` on `hashChainedEventStore` for the terminal inbox delete to run (without it the delete REFUSES, the streams are kept and the refusal reaches `onStorageError` / `onWarn`); (b) a sealed sender is stored as `{ $loomSender: 1, subject, ct }` (not `__loomEnc`), and a keyless node (one without the KeyStore) keys its dedupe by the sealed handle, which differs from the identity-based key an opening node computes; (c) a sender sealed by the first review round's AAD does not open under the new context - round 1 never shipped, so nothing in the field is affected; (d) a sender erased by `eraseSubject` is BLOCKED (`SenderErasedError` on send) until `reinstateSender` runs. A `KeyStore` in another repo (the KMS plugin's `KmsKeyStore` and its backing stores) must implement `getOrCreate` atomically to pass the conformance kit.
-- **Second review round of the reserved-stream archive ([ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md) D14-D21, #729; `ARCHIVE_STORE_SPI` 1.0.0 -> 1.1.0, additive; no EVENT_SCHEMA, KERNEL_ABI, WIRE_ABI or EventStore SPI change).** (N1) Erasure's redaction of a sender in a PLAINTEXT archive is one atomic compare-and-swap, the new optional `ArchiveStore.replaceSegments(key, expected, next)` (memory, SQLite, Postgres, tenant, encrypting, conformance kit): a trim on another node that appended a segment after the read made the old read/delete/re-add LOSE it; now the swap rejects with `ArchiveConflictError` and the key is re-read and retried; a stage an earlier build left is restored at boot (`loadParked`) and by `app.recoverArchiveRedactions()`; the runtime forgets its remembered archive sequence for a key erasure changed (`WorkflowRuntime.invalidateInboxArchive`). The Postgres `archive_segments` table gains a nullable `sender_digest` column (guarded add) and SQLite adds it on open. (N2/N8) A KEPT retention derives the chain's incarnation before the owner is deleted and the archive falls back to its own segments' incarnation once the owner is gone, so the archived inbox still reads and live streams are moved; a kept execution with a retention archive but no compaction archive REFUSES (`ReservedStreamArchiveRequiredError`) while its inbox holds envelopes instead of dropping them. (N3) An erased sender carries a stable non-identifying `ref`, so two different erased senders no longer dedupe against each other. (N4) `eraseSubject` journals its intent (`ERASURE_ARCHIVE_DELETE_INTENDED`, `ERASURE_SENDER_REDACTION_INTENDED`) before deleting or redacting and the completion after; a crash between is finished by the retry. (N5) A plaintext archive that holds the subject as a sender and cannot swap a segment refuses BEFORE the shred (`SenderRedactionUnsupportedError`). (N6, **BEHAVIOUR CHANGE**) A sealing deployment seals message senders BY DEFAULT under an opaque handle derived with a keyed function from KeyStore material (`SenderHandles`; `senderSubjectOf: false` opts out and `defineConfig` warns); `eraseSubject` also erases the subject as a sender (`EncryptingEventStore.eraseSender`), which destroys the sealing key and the seed so the handle is unlinkable. (N7) A plaintext reserved segment carries a `senderDigest` (the segment digest masks the sender) that a redaction recomputes in the same swap, and a sealed sender is bound by AEAD to its message (`chain|topic|inbox-sequence`) so a swap is detected. `hashChainedEventStore` offers `deleteThrough` only with `allowCompaction` (a delete that leaves a remainder breaks the chain), and the ADR's D9 wording is corrected: sequence 0 joins the first consecutive run.
-
-- **BREAKING: the MCP App surface-cursor tool `loom.surface.since` is renamed `loom_surface_since` (`@loom/plugin-mcp-app`; no kernel, SPI or ABI change).** `SURFACE_CURSOR_TOOL` now holds the new name and the View template derives its poll from it. The dotted name failed `^[A-Za-z0-9_-]{1,64}$`, so loom's own `McpClient.listTools()` hid the tool loom's MCP App published unless the caller passed `{ anyToolName: true }`. Clean rename, NO alias (publishing both would keep the hidden name alive). Anything that called `loom.surface.since` directly must switch; `surfaceHostPin()` changes with the template, so a pin recorded against the old template reports `TemplateDriftError` and must be re-pinned deliberately. ADR 0072 carries a dated amendment.
-
-- **`@loom/plugin-postgres`: opt-in lz4 compression for `snapshots.state` ([ADR 0136](docs/adr/0136-snapshot-lz4-compression.md), issue #707; no kernel, SPI or ABI change).** `migratePostgresStores(pool, { snapshotCompression: "lz4" })` (also on `PostgresEventStore` and `postgresStorage`; the first migrator of a pool decides) runs `ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4` behind a catalog probe (a no-op that takes no lock on later boots), in its own short transaction after the main commit (its lock wait is min(`lockTimeoutMs`, 200 ms), so a held table stalls snapshot I/O for at most that per boot), and FAILS SOFT: a server older than 14, one built without lz4, a non-owner role or a lock wait past that keeps the default compression and reports one message through `onWarn`. Default OFF, because it was measured (`snapshotCompression.perf.test.ts`, `pnpm test:perf`) to store about 1.5x MORE bytes than pglz (1 MB state: 262 kB pglz vs 392 kB lz4) while reading about 20% faster (`loadLatest` 5.6 ms vs 4.5 ms) and writing about 1.5-2.4x faster; it is a speed trade, not a size one. Applies to new values only: existing rows keep pglz until rewritten and nothing rewrites them. The `events` payload column was measured only (1.20x more bytes, ~1.4-1.8x faster inserts in a scratch table) and is unchanged; SQLite is unchanged; compress-before-encrypt for `EncryptingSnapshotStore` was out of scope here (it leaks size); the zstd codec entry above ships it behind an explicit `lengthLeak: "accept"`.
-
-- **Superseded snapshots can be pruned, opt in ([ADR 0134](docs/adr/0134-snapshot-pruning.md), issue #706 fix 1; `@loom/snapshot-runtime`, `@loom/workflow-runtime`, the SQLite, Postgres, crypto and content plugins; no kernel ABI or EVENT_SCHEMA change).** A long-lived execution kept every snapshot it ever took (suspend, fork, each `snapshotEvery` cadence) until the whole execution was deleted, so storage grew as snapshots x state size. SnapshotStore SPI 1.1.0 -> **1.2.0** adds the OPTIONAL `pruneSnapshots(executionId, { after, before }, keep?)`: delete `after < sequence < before` minus the keep-set in ONE statement (a single DELETE on SQLite and Postgres, using `idx_snapshots_exec`; a slice in memory), resolving with the count. `LogLifecycle.pruneSnapshots(executionId, { keepLatest?, keepSequences? })` decides what is safe from the log and **never prunes** the latest `keepLatest` (default 1), a compacted log's checkpoint (the lowest snapshot at or above its gap) nor anything at or below it (the exact fork points of ADR 0107 D2), a log compacted through its tip (`[0]`), a `compactionExempt` execution, or a `keepSequences` entry. So every `fork(parent, at)` returns the same state as before (an old fork may fold more events), a resume re-runs no step, and `fold` is unchanged. DEFAULT OFF: the runtime never prunes on its own, and a store without the method returns `0`. `TenantScopedSnapshotStore` scopes the id; `EncryptingSnapshotStore`, `ContentTouchingSnapshotStore` and the kernel's `SealGuardedSnapshotStore` forward (a range delete reads no state). The content sweep (ADR 0055 D6) pins only the latest snapshot and the checkpoint, both of which are kept, so no sweep decision changes. Delta snapshots and Merkle state (fixes 2 and 3) are deferred in the ADR. Review fixes: `compact` and `pruneSnapshots` are serialized per execution within one `LogLifecycle` instance (two instances over the same stores do not exclude each other; a `pinned`/`compactionExempt` callback that calls `compact`/`pruneSnapshots` on the same execution re-entrantly hangs), and a prune aborts (resolves `0`) when the log's gap moved while it decided (cross-process runs of the two on one execution must still be excluded by the operator), because a racing compaction's new checkpoint could otherwise be deleted; `keepSequences` and bounds must be safe integers (`RangeError`); pruning REFUSES with `BlankStreamUnrepairedError` while `loom repair blank-stream` still has events to re-home (its blank snapshots are the attribution proof; the census enumerates every execution, so a verdict with no re-homable segment is memoized per instance on the head of `""`, never a refusal; `pruneSnapshots(id, { acceptUnattributedBlankStream: true })` proceeds when only unattributed runs block, a re-homable segment always refuses; a store that cannot enumerate executions refuses with the typed `BlankStreamCensusUnavailableError`); known exception: after a flow is re-registered at a new version, a fork formerly served by a pruned snapshot reports the current `workflowVersion`.
-- **BREAKING (behaviour): `ExecutionHandle.waitForSuspend()` rejects with `ExecutionTerminatedError` when the run ends without parking (`@loom/workflow-runtime`, behaviour change, ADR 0135; no kernel, SPI or ABI change).** It used to stay pending forever when the run completed, failed, was cancelled or continued as new, so a caller awaiting it alone hung (issue #710: the "second resume of a compacted execution" was simply the last gate, completing; compaction was not involved). It now rejects with the new `ExecutionTerminatedError` (`state`: the terminal folded state, `status`, and `cause`: the failure or cancellation), in every terminal path including continue-as-new, AFTER `waitForCompletion()` has settled (the returned promise settles at least a microtask later, so a late-attached race still resolves with the completion or the original failure), in either array order; a storage, lease or seal failure still rejects both with that error. No unhandled rejection for a caller that never calls it; a bare `.then` on it needs a `.catch`. Callers that awaited `waitForSuspend()` alone on a run that may finish must race the two or catch the error. The `continueAsNew` doc no longer says it "never resolves".
-- **`LlmHttpError` carries a closed `kind: "auth"` for a refused credential (`@loom/llm`, `@loom/agent`, minor; no kernel, SPI or ABI change).** `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` set `kind: "auth"` on a 401 or 403. Google's Generative Language API reports an invalid or expired API key as HTTP 400 `INVALID_ARGUMENT`, which a status-only caller took for a malformed request (permanent, blamed on the input); `GeminiProvider` now reads a 400 body (at most 16 KiB, parsed defensively, never stored or put in the message) for at most 2 s (a stalled body gives up and still throws promptly) only to look for a `google.rpc.ErrorInfo` detail (matched by its `@type`) with `reason: "API_KEY_INVALID"` (the only documented key-rejection reason in `google/api/error_reason.proto`) and sets `kind: "auth"` on a match. Any other reason, invalid JSON or an over-bound body leaves `kind` unset; the message is still `Gemini API error 400` and the error still keeps no body. `isTerminalToolError` (`@loom/agent`) treats `kind: "auth"` as terminal configuration, like 401/403, so the Gemini bad-key 400 no longer comes back to the model as feedback; `classifyModelCallError` is unchanged (it already classifies every `LlmHttpError` as `provider`).
-- **Provider error messages no longer carry the response body (`@loom/llm`, behaviour change; no kernel, SPI or ABI change).** `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` now fail a non-2xx response with `<Provider> API error <status>` (it used to be `<Provider> API error <status>: <body>`); the body can echo the prompt, so it is cancelled and never read or kept. Code that matched on the body text must branch on `LlmHttpError.status` instead.
-
-### Fixed
-
-- **BREAKING BEHAVIOUR CHANGE: a tool result with a taint wrapper NESTED anywhere inside it is now fenced as untrusted (`@loom/agent`, `@loom/classify`, `@loom/middleware`, [ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md) amendment, issue #735)**. `toolResultContent` checked taint at the top level only, so an A2A reply (`{ raw, content: tainted(...) }`) was flattened into plain tool_result text and `sawTaintFrom` was never set: `writeBack` memory and compaction summaries were stored untainted (a durable memory-poisoning path). Now `scanTaint` / `nestedTaintOrigin` (`@loom/classify`; iterative, cycle-safe, depth 64 / 100,000 nodes, FAILS CLOSED past the bound with origin `unknown:taint-scan-bound-exceeded`) finds the wrapper; the WHOLE tool_result is fenced (structure stays readable inside), `agentLoop$` records the origin so write-back is tainted and the compaction summary fenced, and the claim-check envelope uses the same helper. The stored value is untouched (A2A's untainted `raw` still feeds control flow); clean results are byte-identical; a top-level wrapper is unchanged. Review round: the scan covers the SERIALIZED text (what the model sees and the log holds) - `toJSON` classes, Date subclasses, changing getters and stringified wrappers are fenced and recorded, live and on replay alike; a result without a `__loomTainted` marker in its text is never walked (a clean result nested past the bound is no longer fenced). The joined origin label is capped (8 origins then `+N more`), and a marker-carrying result past the scan bound warns once per tool (`LOOM_AGENT_TAINT_SCAN_BOUND`). **BREAKING BEHAVIOUR CHANGE: `agentLoop$` JSON-normalises each tool output ONCE (stringify, parse) as soon as it settles, and the log entry, lean digest, `tool_result` text and fence, run taint, write-back and compaction all consume that single value, so the live run sees what replay sees (a `Date` is its ISO string in `toolCallLog` too; plain-JSON outputs are byte-identical). An output whose JSON form differs between two reads (a stateful getter or `toJSON`) now FAILS THE RUN with an error naming the tool, instead of showing the model text a replay cannot reproduce.** **BEHAVIOUR CHANGES: (a) a RECALLED tainted memory entry now marks the run, so the next answer is written back tainted (taint used to be lost after one hop); (b) a media part marked `untrusted` now marks the run (write-back tainted) and makes a compaction summary over it tainted.**
-- **FIX: erasure now deletes the ADR 0138 compaction archive's plaintext copies ([ADR 0138](docs/adr/0138-compaction-archives-what-it-removes.md) follow-up, with [ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md); `@loom/compliance`, `@loom/app`).** `eraseSubject` over a plaintext (non-sealing) compaction archive used to destroy the key and report `erased` while the subject's moved events stayed readable in the archive. `EraseCoordinator` now takes the archive(s) (`archives`; `defineConfig` wires the compaction archive), deletes the subject's execution segments after the shred, records what it deleted, and refuses before shredding when the archive cannot delete. Over a sealing archive the shred is enough (unchanged).
-
-- **`agentLoop$` journals a copy of the transcript per turn (`@loom/agent`, issue #722; no kernel, SPI or ABI change).** The loop handed the kernel its LIVE `messages` array (and `tools`) as each turn step's input and kept pushing to it, and the journal is write-behind, so a store that serializes a payload after `append` is called (or the in-memory store, which never clones, plus the in-process fold) recorded every turn's `STEP_STARTED` input as the transcript the run had grown into: per-turn lengths `[11,11,11,11,11,11]` instead of `[1,3,5,7,9,11]`. The model was always sent the right messages and replay serves recorded outputs, so nothing diverged, but the audit record (analytics, eval `diffRuns`, the inspector timeline) and the in-process snapshot size were wrong (the ~2x-high first #721 figures). Each turn now passes a shallow per-turn copy (message objects are never mutated after push). Cost: under 1 microsecond per turn for a 5000-message transcript.
-- **`cancel()` during the completion drain no longer commits `EXECUTION_CANCELLED` after `EXECUTION_COMPLETED` (`@loom/workflow-runtime`, issue #712; no kernel, SPI, ABI or EVENT_SCHEMA change).** `handle.cancel()` was guarded only by `cancelled || rotated`, so a `runtime.cancel(id)` landing while the live handle still sat in `liveHandles` after its terminal was committed appended a second terminal event and rejected `waitForCompletion()` for a run that had finished. A cancel that arrives once `EXECUTION_COMPLETED` or `EXECUTION_FAILED` is committed now writes nothing and `runtime.cancel(id)` returns `false`, exactly what it already returned for an execution that is terminal on disk (the continue-as-new terminal was already guarded by `rotated`); the completion promise resolves with the completed state. A cancel between a committed park and a leased handle's deferred `resolveSuspend` is a real cancel of a suspended run (the log holds `SUSPENDED` then `CANCELLED`) and the handle reports it, so handle and log agree; pinned by a test. A log that ALREADY holds `CANCELLED` after `COMPLETED` (written by the old bug) still folds without throwing, last-terminal-wins by order, keeping the completed `_output`. Deterministic regression tests inject the cancel from inside the event store's append.
-- **An inbox discard or duplicate advance no longer lands in a resumed owner's log (`@loom/workflow-runtime`; no kernel, SPI or ABI change).** On an unfenced park, `advanceInbox` (behind `discardInbox`, the notify path's duplicate advance and the quarantine verbs) folded whatever was appended since its read of the park and appended at that tip without checking that the park was still open. A delivery that resumed the owner in that window let the fact land in a RUNNING owner's log, at the sequence the owner's own next append needed, so the owner never parked again (and a discard retry loop spun forever). It now refuses (`not-parked`, retryable for a discard) when the tail answered the park or holds a newer one. Deterministic regression test on all three backends. Also de-flaked the interest-filtered NOTIFY "hung lookup" test, whose 50 ms budget could drop a REAL lookup on a loaded runner.
-- **A non-retryable error on the conversation's own agent loop ends that turn failed, not the whole conversation (`@loom/agent`, `@loom/conversation`; behaviour change, no kernel, SPI or ABI change).** `classifyModelCallError` treated any error that set `retryable === false` as terminal, so an app's model adapter mapping a 400/401 to a non-retryable error failed the conversation execution (the same regression class as the provider-error fix below). New `classifyModelCallFailure` decides: control flow (a park, a cancel, a kill switch, a replay divergence, a lost fence or lease, a nested authority error) stays terminal and reaches the runtime; everything else ends the TURN failed with a fixed reason and the conversation survives, in solo and shared mode: `denied` (the error itself is a top-level authority refusal; solo now matches shared instead of failing the conversation), `rate-limited` (`RateLimitExceededError`), `quota` (`QuotaExceededError`), `tool-error` and `model-error`. **Disclosure:** the catch wraps the whole agent loop, so a TOOL that throws a non-retryable (or otherwise tool-terminal) error now also ends the turn failed, with `tool-error`, instead of failing the conversation; `isTerminalToolError` and the tool loop are unchanged (rate limit and quota stay terminal there). Remaining solo/shared difference: control flow (kill switch, cancel, park) fails or parks the conversation execution in solo, but only the turn's own execution in shared (the asker sees `turn-failed` and the conversation lives on).
-- **One system-prompt rule for `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` (`@loom/llm`; no kernel, SPI or ABI change).** `OpenAiProvider` ignored `LlmRequest.system`, and the three disagreed otherwise (Anthropic used only the first system-role message, Gemini merged both). Now, for `complete` and `stream` alike (Gemini has no stream): a non-empty `request.system` wins and the system-role messages in `messages` are dropped; an empty string counts as unset; with no `request.system`, the system-role messages are joined in order (blank-line separated). Documented on `LlmRequest.system`. Behaviour change: Gemini no longer appends system-role messages to `request.system`, and Anthropic no longer drops all but the first system-role message.
-- **A provider failure on the conversation's own model call fails that turn again, not the conversation (`@loom/conversation`; no kernel, SPI or ABI change).** Since the status-based `LlmHttpError` and `LlmStreamError` classification in `isTerminalToolError` (`@loom/agent`), the conversation reused it for its own model call and rethrew a 401/403/429/5xx or a mid-stream provider error, failing the whole conversation execution (the conversation became unusable and waiting callers hung). `conversation.ts` and `turn.ts` now check for a provider error (`LlmHttpError` of any status, `LlmStreamError`) before consulting `isTerminalToolError`: the turn ends `failed` with the fixed `model-error` reason and no error text, the host's `onError` gets the real error, and later turns run. Provider errors are matched the way `isTerminalToolError` matches (new `classifyModelCallError` in `@loom/agent`): `LlmHttpError` by name with a numeric `status`, `LlmStreamError` by name or a constructor name on the prototype chain (so another copy of the package or an adapter's class counts), along the same bounded `cause` chain (5 levels); a terminal non-provider error anywhere in that chain (a denial, a park) still wins and propagates. A park, cancel, authority stop or any other terminal non-provider error still propagates; the agent tool-loop classification is unchanged.
-- **`EraseCoordinator` finishes an erasure after a crash in the destroy window when the app seals snapshots (`@loom/compliance`, `@loom/event-runtime`; no kernel, SPI or ABI change).** Between `keys.destroy` and the `PAYLOAD_SHREDDED` tombstones (a crash, a write conflict: `ShredIncompleteError`) the coordinator's fold read the sealing snapshot store's `loadLatest`, which raises `KeyUnavailableError` for a sealed checkpoint whose key is gone, so with `EncryptingSnapshotStore` (`sealState` especially) the retry threw and the erasure could never complete. The event read already tolerated the window and so did `shredSubject` (`loadLatestSealed`); the snapshot read now does too, through the optional `loadLatestSealed`, under ONE shared gate (`isErasureWindow`, new in `@loom/event-runtime`, which `erasureWindowView` now uses): this subject's `ERASURE_PENDING` in the log AND the destruction proof (or a recorded shred). A whole-state sealed checkpoint has no readable status and none is guessed from the intent: an uncompacted log is folded whole by its plaintext event types (so a `continued`, `suspended` or re-opened execution reads as it is, and a parked owner stays parked exactly as with path sealing); a compacted log is judged by `shredSubject`'s own rule, now the shared `isQuiescent` (`@loom/event-runtime`), and its inbox streams are purged only when the tail shows a non-`continued` terminal. A checkpoint of another execution is refused even when sealed. An unavailable key with no intent, or not proved destroyed, still throws. Nothing re-drives a crashed erasure automatically; call `eraseSubject` again (also after a restart) and the retry runs every step. Known residual: a log compacted through its tip whose checkpoint is sealed, with no tail evidence, is read as terminal on the erase intent alone (`shredSubject`'s own rule), so a parked owner in exactly that shape would be shredded and left suspended (this does not apply to an uncompacted log); its inbox streams are kept. `EraseCoordinatorOptions.snapshotStore` gains the optional `loadLatestSealed`. New tests run on the in-memory and Postgres stores (`packages/workflow-runtime/src/eraseDestroyWindow.test.ts`).
-- **`shredSubject` (`@loom/plugin-crypto`) can erase an execution that holds a fence (no kernel, SPI or ABI change).** The shredder appended `ERASURE_PENDING` and `PAYLOAD_SHREDDED` with no fencing token, so any execution that had ever acquired a fence (a fenced resume or inbox wake, a remote cancel, a worker or recovery, and every parked owner that `eraseSubject({ parked: "shred" })` cancels, because `runtime.cancel` fences the cancel) refused the append with `StaleFenceError` and the erasure could never complete (under the default `defer` mode it was retried forever). It now follows the repair `LogLifecycle.rehomeExecution` makes: try the plain append, and only on `StaleFenceError` take a fence and retry under it (reused for the execution's next lifecycle append), so an execution that was never fenced is not given one. The escalation is guarded: the fence is taken only when the log shows no runner (the last answering event is a terminal kind or a park, so a terminal followed by a re-open reads as live; with none above the snapshot, the snapshot status, opened with the subject key when `sealState` seals it), by compare-and-set (`acquireFenceIf`) on the head it classified, so a resume in between makes the shred refuse; a direct `shredSubject` on a live fenced execution still refuses with `StaleFenceError` before the key is destroyed. `EraseCoordinator` shreds only terminal executions, so the guard always passes there. New tests run the real shredder behind the real `EraseCoordinator` on the in-memory and Postgres stores (`packages/workflow-runtime/src/erasureFenced.test.ts`); `@loom/workflow-runtime` gains a dev dependency on `@loom/compliance`.
-
-### Security
-
-- **LLM providers never follow a redirect and bound the response size (`@loom/llm`, `@loom/agent`; no kernel, SPI or ABI change).** `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` called `fetch` with no `redirect` option, so a 307/308 from the configured base URL (or a man-in-the-middle on plain http) re-sent the POST, with the full request body (prompts, document text) and EVERY credential header, to another origin: undici strips only `authorization`, `cookie` and `proxy-authorization` on a cross-origin redirect, so Anthropic's `x-api-key`, Gemini's `x-goog-api-key` and any `headers` option value (for example `anthropic-workspace-id`) all went along. Every fetch (complete and stream) now sets `redirect: "manual"` and a 3xx is thrown as `LlmHttpError(provider, status)` (body cancelled, no `Location` kept, `retryable = false`), so a host can tell a redirect from a DNS/TLS failure and nothing retries it; `@loom/agent` classifies a 3xx as terminal, and a conversation turn that meets one ends `failed` with the fixed `model-error` reason while the conversation survives. Responses are bounded: a complete body is read through a byte cap after decompression (`maxResponseBytes`, default 8 MiB; an oversized `Content-Length` is refused before reading), a stream is capped on total bytes (`maxStreamBytes`, default 128 MiB: SSE costs ~250-300 B per token on the wire, and memory is bounded by the line cap) and on one line (`maxLineBytes`, UTF-8 bytes, default 1 MiB). Over a cap the body is cancelled and a typed `LlmResponseLimitError` (`provider`, `reason`: `"body" | "stream" | "line"`, no body text) is thrown; a 2xx body that is not JSON throws `LlmResponseInvalidError` (fixed message, no cause; the parser's own error quotes the body). Both are terminal in the agent loop and fail a conversation turn with `model-error`. Behaviour change: an endpoint that legitimately answers with a redirect must be configured at its final URL.
-
-- **Every codegen sink escapes untrusted text, and a replayed `--from-spec` lockfile is validated field by field (no kernel, SPI or ABI change).** A capability's `intent` was written into a `//` comment of the generated flow file unescaped, so a newline (or U+2028/2029) in it ended the comment and the rest became code in the user's project: a code-injection channel for model output and user-typed text (and a syntax error in benign cases). The same shape existed in every other place a generator interpolates a string. All of them now go through one set of helpers (`commentText` / `blockCommentText` / `tsStringLiteral` / `templateLiteralText` / `markdownText`, in `@loom/scaffold`, re-exported by `@loom/appgen`), which strip or escape C0/C1 controls, line and paragraph separators and every Unicode format character (`\p{Cf}`: bidi overrides and isolates, zero-width, BOM, soft hyphen, interlinear annotation U+FFF9-FFFB, the Unicode tag block U+E0000-E007F used for ASCII smuggling, musical formatting U+1D173-1D17A) plus U+034F and lone surrogates, with the `u` flag so astral code points are matched (escaped as surrogate pairs in a string literal): Trojan Source and ASCII smuggling cannot reach generated source. **The sinks, all covered:** (1) the `// Generated ... from intent:` header and (2) the reasoning-ladder comments (`baseModel`, `elevateTo`) of the generated `flow.ts`; (3) every id, name and strategy string literal of the flow, `main.ts` and the smoke test; (4) the stub handler's template literal; (5) the generated README (project name heading, compute target; the heading is single-line with markdown/HTML metacharacters escaped); (6) `app/config.ts`, where `wireGrantsIntoConfig` wrote capability and tool ids into the `GrantTable` authorization list with a bare `JSON.stringify` (U+2028/2029 and bidi passed raw) and now uses `tsStringLiteral`; (7) `app/loom.gen.ts`, where `generateRegistration` interpolated raw file and folder names into `import ... from "<path>"` (shared by `loom gen`, `loom dev` and `loom appgen`): specifiers are string literals now, and `loom gen` skips (and reports) a file or folder whose name is not a plain module name (letters, digits, `. _ -`; deliberately looser than the `loom new` kebab rule so existing `getWeather.ts` files keep registering). Capability and step ids are re-checked at the generator with the strict new-id rule (`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, the rule the validator applies to every `create`; the generator only renders NEW flows and steps, existing ones are edited in place by path, so regenerating an existing app with legacy loose ids is unaffected). `validateChangeSpec` also refuses the same characters and over-long text (intent 500, labels 200) in intent, names, compute target, reasoning models and `wireGrants`, with a repair message; ordinary quotes, backticks and `${` are escaped, not refused. **`readLockfile`** (a `--from-spec` replay never reaches the validator) used to check only capability and step ids; it now validates EVERY field with the very predicates the validator uses (`changeSpecDataIssues`: types, ops, id shapes, plan name, compute target, capability name, intent, reasoning models, `wireGrants`, elevations) and refuses with a message listing each problem. Not changed: the `"${name}"` templates of `loom new` (the CLI validates the name with `constructNameProblem` first).
-- **`loom appgen` (and `gen`, `new`, `plugin new`) never write through a symbolic link (no kernel, SPI or ABI change).** `appgen`'s containment check (`resolveInside`) was lexical, so a symlinked `app/flows/<id>/flow.ts` was scanned as a flow, planned as an in-place edit, and the write followed the link and overwrote a file OUTSIDE the project (found by the S3 evals work and reproduced with the real `cmdAppgen`). Now: no path component below `--dir` may be a symlink on any write or delete (the target, a flow folder, `app/`, `.loom/`), whether the link points outside or back inside the project, with an error naming the link and its target; the scanner skips (and warns about) a linked `app`, `app/flows`, flow folder or `flow.ts` instead of planning an edit; the default writer writes a temp file (`O_EXCL|O_NOFOLLOW`) and renames it over the target; `app/loom.gen.ts` and the lockfile directory are checked too. `loom gen`, `loom new`, `loom dev`'s generation and `loom plugin new` use the same writer, and so does the `.loom/appgen` lockfile writer (the writer lives in `@loom/appgen`, which the CLI already depends on). Never trust a symlink below the cwd, classified by REAL path and never by spelling (so `--dir /tmp/proj/app` from `/private/tmp/proj`, or a shell's logical `$PWD/app`, is no bypass): when the real path of the cwd is an ancestor of `--dir` (typed, defaulted or aliased, so a scaffolded project's own `loom gen --dir app` too) the containment root is the cwd and `--dir` itself is checked, so a cloned repo's own `app -> /outside` link is refused; a `--dir` whose real location is OUTSIDE the cwd is its own root, and is classified by NATIVE real path (`realpathSync.native`, canonical case and Unicode form, so `../PROJ` or a decomposed spelling cannot masquerade as outside). The FINAL component of `--dir` is never allowed to be a symbolic link, wherever it points (policy change: an outside `--dir` that is itself a link is now refused; pass its real path); links above it (`/tmp`) and the cwd reached through a link are fine. `appgen` (including its default writer and the lockfile writer, via `writeLockfile`'s new optional `containment` argument) and `plugin new` use the same rule as `gen`/`new`/`dev`. `cmdGen`, `cmdNew`, `genWatch` and `runDev` derive the same root when none is passed (exported `containmentRootFor(dir, cwd?)`). `safeWriteFile` has no test hooks in its public signature (the race seams are internal). Before opening the temp file and again before the rename the parent's `realpath` is compared with `realpath(root)` + the relative parent, and the open, rename and cleanup use the resolved parent. Residual, precisely: it needs a concurrent writer, with an identity able to modify a directory on the path, who swaps a parent directory in the window between the final realpath check and the `rename` syscall (Node has no `openat`/`renameat`); the temp file is removed on every failure path (except that a swap-displaced directory keeps its own stray temp). `create-loom-app --force` refuses to write through a planted symlink (it checks every target first, then writes temp + rename). `loom-compiler` (`outDir`) is unchanged: it writes build output into a directory you name and is not a scaffold into a cloned tree. `loom kernel-manifest --emit-docs <dir>` writes to a directory you name explicitly and is unchanged. **Round 6 - containment by FILESYSTEM IDENTITY, superseding every "real path" sentence above:** comparing path strings (even native real paths) is bypassable (macOS firmlinks: `/System/Volumes/Data/Users/...` and `/Users/...` are one directory, one st_dev/st_ino, two strings). The root is now the nearest ancestor of `--dir`, in the spelling typed, whose `stat` has the same `dev` and `ino` as the cwd (so a planted mid-path link such as `x -> ../victim` in `--dir <any spelling>/x/app` is walked and refused); if no spelled ancestor matches but the target's PHYSICAL parent chain reaches the cwd, the command FAILS CLOSED ("resolves inside the project through a spelling the containment check cannot walk; pass a path relative to the project"); only a target whose physical chain never meets the cwd is genuinely outside, and its final component is never a link. The writer's pre-open and pre-rename parent check also compares identity (and re-lstats the parent chain) instead of strings; a replaced file keeps its mode with group/other write bits (and setuid) masked out. **`create-loom-app` now REFUSES a symlinked target** (policy change: it used to follow `demo -> elsewhere` and name the package after the link; with `--force` that overwrote `elsewhere/package.json`) and any symlink on the path below the cwd, by the same identity rule (a small inlined copy; no new dependency edge). **`loom migrate-config --apply`** refuses a config reached through a linked directory below the cwd (`sub -> /outside`), and a path genuinely outside the cwd is checked from its own parent. The cwd itself is trusted even when reached through a link (a repository cannot make you `cd`); be aware of `cd repo/examples/demo` where `demo -> ../../..`.
-
-### Added
-
 - **`thinkingBudget` option on `GeminiProvider` (`@loom/llm`, minor; no kernel, SPI or ABI change).** Sent as `generationConfig.thinkingConfig.thinkingBudget` (merged with `includeThoughts` when both are set) so thinking tokens, which count against `maxOutputTokens`, cannot consume the whole output budget; `0` disables thinking on models that allow it. `-1` is dynamic; a value below -1 or a non-integer throws `RangeError` at construction. Unset, nothing is sent.
 - **Providers throw a typed `LlmHttpError` (`@loom/llm`, minor; no kernel, SPI or ABI change).** `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` throw `LlmHttpError` (`status`, `provider`) on a non-2xx response, from `complete` and `stream`, so a caller can tell a 429 from a 401 without parsing text. The response body is cancelled, never read. `LlmHttpError`, `LlmStreamError` (an error event inside a 200 stream: provider and error type only) and `LlmHttpProvider` are exported from the package entry. `@loom/agent` classifies `LlmHttpError` by status: 401/403/429/5xx stop the run (terminal), other statuses are fed back to the model; `LlmStreamError` is terminal.
 - **`OpenAiProvider` reads `reasoning` and can request it (`@loom/llm`, minor; no kernel, SPI or ABI change).** Reasoning is read from `reasoning_content`, else `reasoning` (the field Ollama's OpenAI-compatible API sends), in `complete` and `stream`. New `reasoningEffort` option (`"none" | "minimal" | "low" | "medium" | "high"`) sends `reasoning_effort`; unset, nothing is sent.
@@ -86,60 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Every driver holds a heartbeat lease ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D11, slice S7c; kernel; KERNEL_ABI, EVENT_SCHEMA and every SPI version unchanged).** New optional `WorkflowRuntimeDeps.heartbeat` (`HeartbeatOptions`: `leaseStore`, `ttlMs?`, `renewEveryMs?`, `onStoreError?`, `nodeId?`; the runtime owns ONE `LeaseKeeper`; `runtime.leaseKeeper`, `runtime.acquireDriverLease(id)`, `runtime.closeHeartbeat()`). With it, `start`, `resume`/`resumeAs`/`restoreFromState`, the `send`/notify winner, a continue-as-new successor and a `LocalWorkerRuntime` attempt each hold a lease from BEFORE the fence and the first append until the suspend/terminal commit, released AWAITED before the handle settles (the successor is leased before its `EXECUTION_STARTED`, while the predecessor still holds its own). A driver that finds another live owner stands down with the new `LeaseHeldError` (a caller-chosen `start` reads as `ExecutionAlreadyExistsError`) WITHOUT taking the fence; `isSupersededRefusal` settles both `LeaseHeldError` and `LeaseLostError`. A lost lease (taken over, or past the local self-fencing deadline) aborts the run's existing `AbortController` with `LeaseLostError`, rejects the handles with it, appends nothing (no `EXECUTION_FAILED`/`CANCELLED`), and a validity gate refuses every effect dispatch and every append once the lease is no longer valid. `TimerService` and `recoverAbandoned` claim through the runtime keeper when it exists (reference-counted holds, so a claimant never drops the lease of the run it started); `renewWhileHeld` stays for runtimes without a keeper. `onStoreError: "continue"` was REJECTED at construction until slice S7d (below). Review round: every keeper `acquire`/`release` store call is bounded (`storeTimeoutMs`, default `min(ttl/6, 1000)` ms; new `LeaseStoreTimeoutError`), so a store that never answers cannot wedge a handle or a `start`; a caller-chosen `start` / successor / `LocalWorkerRuntime.allocate` that finds a lease but NO sequence 0 (a ghost lease) stands down with the retryable `StartLeaseHeldError` (not `ExecutionAlreadyExistsError`, not settled by `isSupersededRefusal`) and `TimerService` retries the occurrence; `isSupersededRefusal` also settles a `StorageWriteError` whose cause is a `LeaseLostError`/`LeaseHeldError` naming the id; `LeaseKeeper.close()` reports `LeaseLostError("closed")` for every held id; a poller/sweep that dispatches takes its fence while it still holds the claim; a timer wake that lost its lease keeps its row. When a runtime has a keeper, `TimerService`'s own `timers.leases` store/owner is ignored for claiming. Absent `heartbeat` = byte-identical to before (G2).
 
 - **`LeaseKeeper`: one batched heartbeat per node ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D11, slice S7b; internal building block, not wired into any driver yet).** `@loom/workflow-runtime` gains `LeaseKeeper` (owner `<nodeId>:<incarnation uuid>`; group-committed `acquire`/`release`; ONE renew per tick for everything held, TTL 30 s / renew every 10 s by default and configurable; the held set a renew returns drives `onLost`), plus `LeaseLostError` and `LeaseStoreQuietError`. Each id carries a local MONOTONIC deadline `lastRenewSent + ttl - ttl/6` (injectable clock, never wall time): past it `onLost` fires and `validNow(id)` is false even if the store never answered (self-fencing). A store error opens a one-TTL quiet period with no acquire attempts. It uses the optional batch methods (`acquireMany`/`renewMany`/`releaseMany`, LeaseStore SPI 2.2.0, slice S7a) when the store has them and falls back to single-id calls otherwise; no SPI change here. `renewWhileHeld` is untouched (it moves onto the keeper in S7c).
-
-### Changed
-
-- **`loom appgen` deletes need explicit consent everywhere (`loom appgen`, `cmdAppgen`; no kernel, SPI or ABI change).** Behaviour change: a non-TTY `loom appgen` run WITHOUT `--yes` (including `--from-spec` replays in CI) now refuses any plan that deletes a flow or a step (exit 1, nothing written); add `--yes` to scripted replays that delete. Library callers of `cmdAppgen` that pass neither a `confirm` callback nor the new `allowDeletes: true` option get the same refusal (`aborted: true`, the deletions in the new `refusedDeletes`); plans without deletions are unaffected. `applyChanges` only plans (it writes nothing), so the gate lives in `cmdAppgen`. Also: `validateChangeSpec(spec, appModel, request?)` rejects a model-planned delete unless the user's request contains a delete-like verb (delete, remove, drop, get rid of, discard, retire, deprecate, unregister), with a one-line repair message.
-- **BEHAVIOUR CHANGE for apps relying on `IntentRuntime`'s keyword fallback after a model reply: a configured model's answer is now FINAL (`@loom/intent`; no kernel, SPI or ABI change).** With a `reasoning` or `provider` configured, `route()` no longer falls back to the offline keyword matcher when the model answers `NONE` or an unusable reply; it returns `null` (and `run()` throws `No capability matched intent`). The keyword matcher runs only when NO model is configured (unchanged). Reply parsing: the first whitespace token is a capability id (exactly, or after stripping surrounding quotes, backticks and punctuation) -> that capability; else that token is `none` in any case (`NONE.`, ` none `, `"None"`, `None of these fit`) -> NONE; else exactly one distinct catalogue id appearing in the reply as a whole token (not inside a longer id, e.g. "The best fit is `diagnose-cpu`.") -> that capability, two or more different ids -> ambiguous, no route; none -> no route. A model/provider error still propagates (fail closed, unchanged). New `IntentRuntime.routeExplained()` returns `{ route, reason }` (`model-routed | model-none | model-unparseable | model-ambiguous | keyword-match | keyword-no-match | empty-catalog`); `route()` keeps its type. Apps that want the old "model first, keywords if it fails" behaviour can call `route()` on a second `IntentRuntime` built without a model.
-- **BEHAVIOUR CHANGE for third-party and decorator stores: a shredded payload is recognised by a realm-safe brand, no longer by the error NAME alone ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md), amendment 2026-10-17 (c)).** An `Error` that merely named itself `PayloadShreddedError` was treated as a PROVEN erasure by the kernel (unknown owner, which `unknownOwner: "allow"` admits; also the cancel redacted fold and the ownership pin). It now needs the brand `Symbol.for("loom.payloadShredded")`, which `@loom/plugin-crypto`'s `PayloadShreddedError` sets in its constructor (so the 1P stores are unchanged). A store, decorator or wrapper that throws its OWN erasure error must adopt `brandPayloadShredded(err)` (or re-throw the real class) from `@loom/event-runtime`; until it does, its error is a fault (`ExecutionStoreUnavailableError` via `onStorageError`, retryable) and nobody is admitted. `Symbol.for` survives duplicated package copies. A serialized error that crossed a process boundary has lost the brand by design. Consumers moved to the one predicate `isPayloadShredded`: `WorkflowRuntime`, `@loom/orchestration`, `@loom/compliance` (`EraseCoordinator`), `@loom/plugin-content` (GC), the CLI. Error `name` and shape are unchanged. No event shape, `EVENT_SCHEMA`, `KERNEL_ABI` or SPI version change.
-- **Caller-visible error type: under an owner-resolution fault the OWNER (and a stranger) now gets the retryable `ExecutionStoreUnavailableError`, not `ExecutionDeniedError` ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md) amendment 2026-10-17, second).** Code that treated a denial from an authorizer-gated op as final should retry on `retryable === true`; an app that matched `ExecutionDeniedError` to detect a resolver outage must match the new error instead. A legitimately unresolvable owner (resolver returns `undefined`, shredded or malformed record) is unchanged: unknown owner, the policy decides.
-- **PRODUCT-VISIBLE: the OWNER of an execution whose recorded principal was erased now gets `ExecutionDeniedError`, not `PayloadShreddedError`, from `loadState`/`resume` under an execution authorizer (ADR 0039 amendment 2026-10-17).** With a crypto-shredded (sealed) principal the owner is unknown, so a strict policy (`unknownOwner` unset) refuses every caller, the former owner included; the kernel itself (system grant) and a policy with `unknownOwner: "allow"` keep the erasure outcome (and an authorized `cancel` still works through the redacted fold). `app/sealedPrincipal.test.ts` pins both. Apps that branch on `PayloadShreddedError` from an authorizer-gated call with a sealed principal must also handle `ExecutionDeniedError`.
-- **`@loom/saga` behaviour change: a failed rollback out of `withSaga` throws `SagaCompensationError` (original error as `cause`), not the original error.** Callers matching the original's type (e.g. a `TypedFailure`) must read `err.cause`; when every compensator succeeds the original is re-thrown unchanged. Runtime signals thrown by a compensator (`SuspendError`, `ExecutionCancelledError` / abort, `LeaseLostError` / `LeaseHeldError` / `StaleFenceError`, `FlowDivergenceError`, `SealedPayloadUnreadableError`, `StorageWriteError`) are no longer folded into `compensationErrors`: they propagate unwrapped at once and no further compensator runs. A failed (untyped) compensator is retried on resume (at-least-once); only completed ones are not re-run.
-- **BREAKING for apps combining `AgentRunner` / `agentStep$` / `asEffect()` with an `idempotent: false` tool: the runner now REFUSES it (K9.3; [ADR 0121](docs/adr/0121-one-canonical-agent-loop.md) amendment 2026-10-15).** The single-frame runner runs nested tool calls inside one outer step with no `STEP_*` frames of their own, so the in-doubt protection of [ADR 0021](docs/adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) A3 never covered them: a crash re-ran the whole agent including every tool that already fired. The constructor (over the agent's and its skills' tools) and the call site (a tool reached at run time) now throw the terminal `IdempotentToolRefusedError` before the effect runs; it is never fed back to the model. **Migration:** use `agentLoop$` (one frame per tool call), or pass the new `acceptAtLeastOnce: true` (on `AgentConfig` and `agentStep$`) to knowingly keep at-least-once re-run. Undeclared and `idempotent: true` tools are unchanged.
-- **BREAKING-BY-DESIGN: the kernel refuses a plaintext checkpoint when the event store seals ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D8, slice S3).** When the event store reports a non-empty `sealingCapability().covers`, `new WorkflowRuntime` / `defineConfig` now throws the new `PlaintextCheckpointError` (`reason: "not-sealed" | "keys-not-shared"`) unless the snapshot store reports `sealsWholeState` (`EncryptingSnapshotStore({ sealState: true })`) AND shares the event store's `KeyStore`; the same rule is re-checked at every checkpoint `save` (a breach reaches `onStorageError`, writes nothing and never fails the run) and applies to `LogLifecycle`'s archive snapshot store (`unsafe-archive`). **Migration:** build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` over the SAME KeyStore (run `loom doctor` first: `snapshot-plaintext-under-encrypting-events`, `archive-snapshot-plaintext-under-encrypting-events`), or keep a plaintext checkpoint explicitly with the escape hatch `security.crypto.allowPlaintextCheckpoints: true` (new on `PrincipalCryptoOptions`, exposed as `app.security.crypto.allowPlaintextCheckpoints`; `allowPlaintextCheckpoints` on `WorkflowRuntimeDeps` / `LogLifecycle` options). Event stores without the 2.5.0 capability and apps with no sealing are unaffected. Snapshots already written in plaintext are not rewritten. User ruling (2026-10-14): with encrypting events, `defineConfig` builds the DEFAULT in-memory snapshot store (`storage: { kind: "custom", eventStore }` with `snapshotStore` now optional) with `sealState` on the same KeyStore instead of refusing to boot; an explicit plaintext store is still refused. `@loom/plugin-crypto` moves from `devDependencies` to `dependencies` of `@loom/app` for this.
-
-### Fixed
-
-- **`WorkflowRuntime.cancel` no longer loses a race with a wake that answers the park it is cancelling (`@loom/workflow-runtime`; no kernel, SPI or ABI change).** `cancel` folded the log (parked at N), then took an UNCONDITIONAL fence. If a wake (an inbox delivery such as a just-sent close message, a resume, a timer) answered the park in between, the fence evicted the freshly woken runner and `EXECUTION_CANCELLED` then lost slot N+1 with `DuplicateSequenceError`: `cancel` rejected, nothing was written, and the execution was left `running` with no driver and no terminal event (only boot recovery could revive it, and `eraseSubject({ parked: "shred" })` deferred on it forever). Both routes now share one protocol: a cancel addressed to the execution itself and a cancel addressed to a rotated-out (`continued`) conversation id, which walks the chain to its head. Each round re-folds, answers a parked owner with `acquireFenceIf` ([ADR 0118](docs/adr/0118-acquire-if-parked-fence.md)) so a concurrent wake wins cleanly (its runner is then aborted if it is live on this node, or fenced out and the cancel lands at the true tip if it is on another node), re-reads the tail under the token it holds, appends at the tip, and retries a lost slot after a small jittered backoff, up to 8 rounds. A local runner that this very call has already fenced out is never trusted to write the terminal event: its abort signal is fired and the cancel stays on the durable path. Public signature unchanged. Outcome changes: `cancel` resolves `true` once the execution is cancelled (durably, or by aborting a healthy local runner whose own journal then writes it); it resolves `false`, where it used to throw, when the execution finished meanwhile (completed, failed or already cancelled). After 8 contended rounds it rethrows the last lost-slot error, which is one of `DuplicateSequenceError`, `StaleFenceError`, `ResumeRefusedError` (`not-suspended`) or `ResumeContendedError`: all mean "still contended, retry". What this guarantees: with a store that fences appends, a `cancel` that resolves `true` has either written `EXECUTION_CANCELLED` or aborted a healthy live runner, and a cancel that cannot settle throws rather than returning with the execution left resumed and driverless. What it does not: on a fenced-out remote runner the effect it already started keeps running until its next append (the documented kill semantics), a store without fencing keeps the old last-writer behaviour, and `eraseSubject({ parked: "shred" })` still does not itself cancel a RUNNING owner. A `cancel` retried on an execution that an older runtime already stranded in that state still repairs it (this worked before; it still does). `retireAbandonedBranches` no longer counts a branch that finished on its own during the pass as `retired`.
-- **`loom appgen` deterministic planner: delete resolves ids like extend.** With an existing minted flow `item-2fa`, "create 2fa" extended it but "delete 2fa" and "delete step 3d from 2fa" silently did nothing, because delete looked up only the legacy slug. Delete now uses the same rule (the legacy slug if the app has it, else the minted `item-` id if THAT exists) and never mints: if neither exists nothing is planned, as before.
-- **appgen backlog hardening (no kernel, SPI or ABI change).** (1) A lockfile's top-level `intent` is held to the same text rule as every other plan field (no control / line-break / bidi / tag characters, at most 500 characters). (2) `readLockfile` now applies the model validator's structural checks (duplicate step ids per flow, step ids that generate the same const name, a flow created twice, `modify`/`delete` inside a flow being created) through ONE shared `specStructureIssues` in `@loom/appgen`, which `validateChangeSpec` also calls (its messages are unchanged). (3) The `loom new` templates escape the name at every sink (`tsStringLiteral` in string positions, `templateLiteralText` in template literals, `commentText` in comments) and assert the derived export name is an identifier (`pascalIdent`); output for valid names is byte-identical (golden test). (4) The deterministic planner's slug always yields a valid NEW id: a digit-led phrase gets an `item-` prefix (`2fa login` -> `item-2fa-login`), symbol/unicode-only input becomes `capability-<8 hex of the text>`, and double/leading/trailing dashes collapse; lookups of EXISTING ids (delete) keep the loose legacy slug.
-- **`IntentRuntime` overrode a model's explicit `NONE` with a keyword guess (`@loom/intent`).** The S3 planner eval saw "Find me a good Italian restaurant for dinner tonight." routed to `diagnose-cpu` on shared words after the model had answered `NONE` (route accuracy was 11/12). A model's `NONE` is now honoured and a prose reply that names exactly one capability id is accepted instead of discarded; the planner eval's route accuracy is 12/12 (floor raised to 11/12; the pinned "known gap" test now asserts the NONE is honoured; PROVENANCE updated).
-- **`@loom/appgen-model`: `validateChangeSpec` rejects duplicate step ids.** A flow that declared the same step id twice (within one operation, or across two operations on the same flow) passed validation and failed only at `tsc` (`const <id>Step` declared twice). The validator now reports `flow "<flow>" declares step id "<id>" more than once`, which also feeds the self-repair prompt. Uniqueness is per flow; the same id in two flows stays valid.
-- **`@loom/appgen-model`: `validateChangeSpec` also rejects step ids whose generated names collide, and tightens the id rule (no kernel, SPI or ABI change).** Two distinct step ids that generate the same const (`a-b` and `a--b` both give `aBStep`, including against the existing flow's scanned steps) are rejected with a one-line repair message naming both ids and the name. A NEW step id (and a newly `create`d flow id) must match `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`: no leading digit (`1-run` gave the invalid identifier `1RunStep`), no trailing or double dash. An EXISTING flow or step keeps the loose rule, so `extend`/`modify`/`delete` of a legacy id still works. Also rejected: two `create` operations for one flow id, and a `modify`/`delete` step op inside a newly created flow.
-- **A shredded payload is no longer classified by error NAME alone ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md), amendment 2026-10-17 (c); see the Changed entry for the third-party-store impact).** The kernel's own synthetic erasure errors (built from a `PAYLOAD_SHREDDED` tombstone) are branded too.
-- **CLI: `<store>` in `loom --help` / `loom <cmd> --help` / the docs read as a positional path; it is flags (no behaviour change; no kernel, SPI or ABI change).** `loom logs .data/events.db <id>` takes the path for the execution id (and `loom ls .data/events.db` is refused: "pass --config or --db") because the store is given by `--db <events.db>` (+ `--snap`/`--branches`/`--leases`) or `--config <module>`, never positionally. Every usage line now says `<store-flags>`, with a legend in `loom help` and in the per-command help; `docs/usage-cli.md` (incl. its verbatim USAGE block), the cheatsheet, operations doc and two ADR notes follow. A test pins that no usage line or help text contains a bare `<store>` and that `<store-flags>` only appears on commands that parse `--db`/`--config`.
-
-- **A fault while RESOLVING an execution's owner is retryable, no longer a false denial of the real owner or an admission of a stranger ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md) amendment 2026-10-17, second; kernel; KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged).** After sequence 0 had been read fine, `ownerForAuthz` turned ANY failure (the `principalResolver` / `principalCodec` throwing, the sequence-0 read it does itself when the caller holds no anchor, a store fault on a parent link of the lineage walk) into an "unknown owner". Under the default `unknownOwner: "deny"` that denied the real owner with a non-retryable `ExecutionDeniedError` and a false `onExecutionDenied`; under `unknownOwner: "allow"` it admitted a stranger on a transient fault. Only a proven erasure on `ownerForAuthz`'s own sequence-0 read is an unknown owner now (never a throw of the app's resolver or codec, even one that names itself `PayloadShreddedError`); every other failure is the sanitized, retryable `ExecutionStoreUnavailableError` (as `readAnchor` already raised for the anchor read), identical for the owner and a stranger, the real cause on `onStorageError`, nothing appended. Tests pin each gated op (owner, stranger, `unknownOwner: "allow"`, retry after the fault clears, erasure unchanged, system grant unchanged) and cover the previously unguarded re-read of an erased anchor for `send`, `discardInbox`, `quarantineInbox`, `releaseInbox` and `recordOutcome` (an authorized caller still gets `PayloadShreddedError`, not "No execution found").
-- **Review follow-ups (FU-A; no kernel, SPI or ABI change).** `@loom/saga`: an abort is recognised only as a `DOMException` named `AbortError`, so a compensator throwing a plain `Error` that merely names itself `AbortError` is collected as a compensator failure instead of aborting the rollback. `loadLoomApp` (CLI) serializes overlapping loads so concurrent calls cannot capture each other's `LOOM_NO_AUTOSTART` / `LOOM_QUIET` as the value to restore. `@loom/testing` `fireDueTimers` no-progress and re-arming errors now have regression tests. ADR 0039 records the key-outage existence oracle (`ExecutionStoreUnavailableError` for an existing encrypted id) as an accepted residual.
-
-- **The execution authorizer decides BEFORE the log is folded: a denied caller can no longer tell, from the error a fold or decrypt raises, a shredded, sealed or corrupt execution from an ordinary one ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md) amendment 2026-10-17; kernel; KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged).** `loadState` (and so `parkedAtSequence` and `followToHead`), `resume` and `resumeAs` folded or read the log first and asked the authorizer after, so a principal the authorizer would refuse (another tenant) got `PayloadShreddedError`, `SnapshotIdentityMismatchError` or a checkpoint failure instead of `ExecutionDeniedError`: an existence-and-status oracle (no payload content). `resumeAs` also ran the caller's `transformState` over the recorded input before authorizing. `send`, `discardInbox`, `quarantineInbox`, `releaseInbox`, `recordOutcome`, `fork` and `acquireFence` asked first but read sequence 0 unguarded (the same error when the recorded principal is sealed and shredded). Now every gated op reaches its verdict from sequence 0 alone. Reads: one indexed point read of sequence 0 per call, handed on to the fold and the owner lookup (`loadState` now makes ONE sequence-0 read where it made two; the carried-scanner `resume` path makes the one it always made; the first, uncarried `resume` and `resumeAs`, which read the whole log, pay ONE added point read, the inherent cost of a verdict that precedes that read). A sequence 0 unreadable BECAUSE OF AN ERASURE (`PayloadShreddedError`, or a `KeyUnavailableError` whose view records the erase intent) is an existing execution with an unknown owner, so the policy decides as for any unknown-owner execution. Any other failure to read sequence 0 (a storage fault, a transient key-service error) is NOT evidence about the execution: it throws the new sanitized, retryable `ExecutionStoreUnavailableError` (exported from `@loom/workflow-runtime`; `op`, `executionId`, `retryable: true`, no cause or execution-derived detail, identical for the owner and a stranger; the real cause goes to `onStorageError`), never a denial of the legitimate owner and never a "this id exists" answer for a missing one. Also: a "missing" id whose orphan checkpoint fails to load reads as not found to a caller the authorizer is consulted for (the system grant keeps the real error); `onExecutionDenied` for a sealed refusal now carries the plaintext workflow id instead of `""`; an authorized caller of `acquireFence` or `fork` with an unreadable sequence 0 still gets the original error. What is now indistinguishable is the error thrown by the fold or decrypt path. The denial REASON can still reveal an unknown owner (an erased principal, a sealed or legacy stream is refused with "the execution's owner is unknown to this policy", an owned execution of another tenant with "belongs to another tenant"): a documented residual of the unchanged policy, pinned by a test. A read denial writes nothing; a denied `resume`/`resumeAs`/`cancel` keeps its best-effort `EXECUTION_DENIED`, placed at the folded tip found after the verdict (skipped when that fold is unreadable, which includes `resume`/`resumeAs` of a shredded execution). `fork` now checks a caller-chosen child id (`assertCreatable`) after the authorizer, not before. Missing-vs-denied for an identified caller is unchanged (documented residual).
-- **`@loom/saga`: a `handler$`-only compensator now runs, and a failing compensator no longer aborts the rollback (no kernel, SPI or ABI change).** `rollback()` rewrote a compensator's step id to `<id>#compensate:<i>` and the runtime resolves a step's effect on `step.toolId ?? step.id`, so the derived id was never registered: a compensator declared with `handler$` and no `toolId` threw `No effect registered for toolId: "<id>#compensate:<i>"`, the remaining compensators never ran and the original error was replaced (forward side effects left uncompensated). The compensation step now keeps `toolId: step.toolId ?? step.id` (the derived id remains the journal/fold identity, so each compensation is still journaled and replayed under its own id; grants and middleware keyed on the original tool id apply, and no authority is widened). Rollback now continues past a failing compensator and throws the new `SagaCompensationError` (`compensationErrors`; out of `withSaga`, `cause` is the ORIGINAL error); a `SuspendError` still propagates at once.
-
-- **`AgentRunner` gives each nested tool call its own `idempotencyKey`.** Every call inherited the outer step's key, so a provider deduping on it could collapse two distinct calls into one. With an outer key the nested call now gets `<outer>:t<turn>:c<position>`, identical on a re-run for the same position (the model's tool-call id is not stable across a re-run, so it is not used); no outer key, no key. Adds a crash test that `agentLoop$` with an `idempotent: false` tool parks `EFFECT_INDOUBT` and does not re-fire the tool.
-- **K9.3: `STEP_STARTED` is durable before an `idempotent: false` effect is dispatched ([ADR 0021](docs/adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) A3 amendment; kernel; KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged).** The journal is write-behind, so a non-idempotent effect could run before its `STEP_STARTED` was appended; a crash in that gap left no "running" frame and recovery silently re-ran the effect instead of parking `EFFECT_INDOUBT`. `executeLive` now awaits the journal's durable tail after committing `STEP_STARTED` and before the dispatch gate, for tools declared `idempotent: false` ONLY (one awaited store round trip on those steps; undeclared and `idempotent: true` tools are unchanged). A refused write throws before dispatch (the effect never runs; the run fails as any storage failure). Covers `ctx.run` and `ctx.parallel`/fan-out (both pass through `executeLive`); middleware retries are covered because they run inside the single `execute` that follows the one drained `STEP_STARTED`, not because they re-enter `executeLive`. If the context is SEALED during the drain (terminal), the effect is not dispatched; a park decided during the drain does not block it: the draining step is in flight like any other, runs to completion and journals its result before `EXECUTION_SUSPENDED` (no `parkDrainMs` stall, no stranded `STEP_STARTED`, so resume never parks `EFFECT_INDOUBT`). When a non-terminal seal (a sealed-inbox refusal, a park-barrier give-up, a divergence) lands during the drain, the effect never starts but `STEP_STARTED` is already durable, so the frame stays running and a later recovery parks it `EFFECT_INDOUBT` (conservative; the operator's `retry-fresh` resolves it). A CANCEL seal instead settles the call (the abort throws), so the live handle and lease are released promptly rather than held for `parkDrainMs`.
-- **`@loom/plugin-postgres` `migrate` no longer hangs behind a long-held table lock.** `CREATE INDEX IF NOT EXISTS` takes a SHARE lock before it notices the index exists, so under `lock_timeout=0` it waited indefinitely behind a SHARE UPDATE EXCLUSIVE holder (an anti-wraparound autovacuum). Every index in the DDL is now created behind a `to_regclass` catalog probe (`idx_events_exec`, `idx_snapshots_exec`, `idx_lineage_parent`, `idx_timers_wake`, `idx_timers_refused`, `idx_leases_expiry`, `idx_rm_rows_order`, `idx_rm_rows_fields`, `idx_memory_entries_key`, `idx_memory_entries_fts`, `idx_memory_entries_id`).
-- **`quarantineInbox` / `releaseInbox` work on a node that cannot open the owner's sealed checkpoint ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D9, slice S5b).** With sealed checkpoints a key-less node sharing the snapshot table was refused as an unknown owner on the very verbs built for it. The verbs (and only they; replay, resume, `loadState` and `send` still refuse per D7) now fold the owner from sequence 0 of the log when the log is complete (contiguous from 0 and reaching the checkpoint's sequence); a compacted log is the typed `InboxQuarantineRefusedError` reason `checkpoint-unreadable-log-compacted` (not retryable: run the verb on a capable node), nothing appended. Authorization is unchanged and runs first. Additive union member on `InboxQuarantineRefusedError.reason`.
-- **The quarantine log fold reads past sealed payload values (user ruling 2026-10-14, [ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D7/D9, S5b round 2).** A log holding a sealed `MESSAGE_CONSUMED` (a capable node delivered a sealed message earlier) used to hit the D7 stream guard, so the S5b fallback rarely helped. For the two verbs' reads ONLY (the owner fold, the tip classification, the park walk and the release-fact search), an envelope whose `metadata.seal.covers` lists only `MESSAGE_CONSUMED.payload` (or `.payload.*`) is left in place as an opaque ciphertext value: never decrypted, no key asked. Any other covered field (another event type or path, empty covers, a sealed `waitId`/`topic`/`messageId`/`inboxSeq`) is still the ordinary denial; the sealed-principal case, `loadState`, replay, resume, `send`, `notifyInbox` and `fork` are unchanged. The folded state is branded transient and frozen: `SealGuardedSnapshotStore.save` and `restoreFromState` refuse it, and the verbs return only ids. Pinned by `sealGuardFitness.test.ts`. The raw read is an SPI method, not a hidden protocol: EventStore SPI 2.5.0 (unreleased) gains the OPTIONAL `readAtRest()` (a read-only view of the envelopes as stored, never decrypted), implemented by `EncryptingEventStore`, forwarded by every decorator (routed per shard by `ShardedEventStore`) and covered by the store and decorator conformance kits. The transient-fold save refusal now recognises only the kernel cipher id (`loom/aes-256-gcm`): user data merely shaped like an envelope saves.
-
-- **A replay refusal leaves a head-stamped REFUSAL row, and the timer poll re-drives a `running` execution that carries one ON EVIDENCE of abandonment ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D10, residual R-d; additive optional `TimerRecord.refused`; `TimerStore` is unversioned, so no SPI constant moves; EVENT_SCHEMA and KERNEL_ABI unchanged).** A node that cannot open a recorded sealed answer refuses the run attempt at replay (nothing failed, nothing journaled). `run()` now leaves a REFUSAL row for both refusals (`SealedPayloadUnreadableError` at replay, `SealedStreamUnreadableError` inside the attempt): a timer-store row (never an event-log append) carrying `refused: { head, holds? }`, the log head at refusal, at an ordinary `wakeAt` of now. New optional `TimerRecord.refused?: { head: number; holds?: number }` (mirrors `redrive`): a nullable JSONB/TEXT `refused` column added by the guarded migration in `@loom/plugin-postgres` / `@loom/plugin-sqlite`, upserted (never cleared by a plain schedule; a same-key upsert keeps the MAX head and MAX holds in every store; a partial index covers refusal rows), passed through `due`, plus `due({ refused: false })` to exclude refusal rows BEFORE the limit; `InMemoryTimerStore` and the `runTimerStoreConformance` kit cover it. This PR is unreleased: the interim `REFUSAL_WAKE_BASE`/`refusalWakeAt`/`refusalHeadOf` exports (a stamp smuggled in the timestamp, which also reserved the negative range) are removed outright. ONLY such a row is a re-drive candidate; every other inbox row on a `running` execution (a contended notify pass, an ambiguous-tail send) is retired as before. The poll re-drives only when ALL hold: this node is not driving or starting the execution; the log head still equals the stamped head (else the row is stale and retired); there is EVIDENCE of abandonment, the sweep's own (the new `TimerServiceOptions.isAbandoned` predicate, or with `leases` an EXISTING lease that has expired; an absent lease is never evidence, since no normal driver holds one; with both, both must hold); the fence is taken CONDITIONALLY on that head (`appendIfUnchanged` observation + `acquireFenceIf`), so exactly one contender wins and a driver that appended makes the poll back off; and the attempt cap (`maxRedriveAttempts`, then retire + ONE `RedriveExhaustedError`) and the new `maxRecoveries` have room. **Default configuration: with neither `isAbandoned` nor a lease store the node cannot prove abandonment and does not fetch refusal rows (`due({ refused: false })`), so recovery comes from a configured `recoverAbandoned` sweep.** A row the poll may not act on yet is rescheduled in the store to `wakeAt + back-off(holds + 1)` (not held in memory; deterministic, no jitter, so concurrent pollers upsert ONE successor row instead of multiplying it; a stamp that merged onto a real timer's own key is judged as the timer BEFORE any hold), so it is not due again until then and cannot starve `due()`. `isAbandoned` on the poll carries the sweep's contract (a sweep-grade predicate; a time heuristic during a long silent step can double-enter it, a residual closed by the S7 heartbeat leases). Mixed fleet: a node that predates `refused` sees a plain-looking row it cannot match to a park and retires it as obsolete, never re-driving it. The re-drive is the shared `redriveAbandoned` routine; the sealed back-off is ONE per-runtime map judged on the runtime clock (`runtime.clock`) by both the sweep and the poll, so a refusal seen by either suppresses the other. On an unmarked legacy stream the incapable node's backed-off re-drive appends its own `EXECUTION_RECOVERED` marker (bounded by the attempt cap and `maxRecoveries`); a marked stream is refused before any fence acquire and writes nothing. Residual: on a store without `appendIfUnchanged`/`acquireFenceIf` the head check and the fence acquire are not atomic.
-
-- **`defineConfig` wires the erase/export destruction proof; the operator assertion is per call ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D7, round 6).** `compliance.erase.destroyed` now defaults to `(s) => keys.wasDestroyed(s)` when the key store behind `security.crypto` implements `wasDestroyed`, so the genuine ShredIncomplete retry window completes through `app.eraseSubject` and `app.exportSubject` with nothing configured (an explicit value overrides; a store without the method still fails closed). `eraseSubject` and `exportSubject` (`EraseCoordinator`, `app.*`) gain the per-call `force?: "key-destroyed-elsewhere"` mirroring `ShredOptions.force`; `Shredder` receives it as an optional third argument. `destroyed` is documented as a proof function only (`() => true` is no longer suggested). The scaffold's key-store template emits `wasDestroyed` as a commented-out optional method instead of one that throws.
-- **A dangling erase intent on a wrong-key node is no longer taken for a destroyed key ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D7, round 5).** The log proves erase INTENT, never destruction: a crash between `ERASURE_PENDING` and `keys.destroy` left the key alive, and a retry of `shredSubject` on a node whose key store lacked it wrote a false `PAYLOAD_SHREDDED` (and `eraseSubject`/`exportSubject` accepted the redacted view). `KeyStore` gains the OPTIONAL `wasDestroyed(subjectId)` (true only if this store destroyed the key; `InMemoryKeyStore` implements it; `runKeyStoreConformance` covers it and skips stores without it; the scaffold template includes it; additive, no version constant exists for the KeyStore SPI). `shredSubject` completes a window retry only on that proof, else throws `KeyUnavailableError` and writes nothing; the operator override is `force: "key-destroyed-elsewhere"`. `EraseCoordinator`, `exportSubject` and `defineConfig` `compliance.erase` take a `destroyed` proof; `erasureWindowView(err, destroyed)` is now async and fails closed without one. Third-party key stores should implement `wasDestroyed`.
-- **Content GC survives a crypto-shredded subject under a `sealState` snapshot store ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md)).** Every sealed snapshot is an envelope, so a shredded subject's snapshot threw `PayloadShreddedError` from the `sweepUnpinnedContent` scan and aborted every later pass. A load that throws it (matched by name; `@loom/plugin-content` does not import plugin-crypto) now skips that execution's erased snapshot and lists it in the new `shreddedSnapshots` report field (also under `dryRun`); blobs another live owner cites stay pinned. Every other load error still aborts the pass. The sealed-scan check is top-level `__loomEnc` only.
-
-- **A sealed inbox payload is never delivered to a node that cannot open it ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md); kernel; EVENT_SCHEMA stays 1.24.0, no SPI or ABI change).** A node whose store was not configured to open a sealed inbox path (or that has no crypto plugin) used to hand the flow the `{ __loomEnc }` envelope as the user's payload AND journal it as `MESSAGE_CONSUMED`, making the corruption durable and replayable. One shared check, `assertDeliverable`, now runs before any consumption at both inbox delivery sites (`ctx.receive`/`select` live, and the notify path behind `afterInboxPark`, `TimerService` and `recoverAbandoned`): a payload holding an own `__loomEnc` key with a STRING value at any depth (bounded iterative walk, 100 000 nodes, fail closed on exhaustion) is not delivered and appends nothing. The message stays in the inbox; the live run parks (it does not fail) and the notify path throws the new `SealedPayloadUnreadableError` (executionId, messageId, topic; never the ciphertext; TERMINAL in `@loom/agent`'s tool-failure classification) to `onStorageError`; a correctly configured node then consumes it. `send` refuses a payload containing `__loomEnc` (`InboxMessageRefusedError`): sealing happens below `send`, so a raw payload carrying it is always forged (the walk covers the persisted JSON, so a `toJSON` cannot bypass it). Fix round: a REPLAYED recorded answer that is still sealed on the node refuses that run attempt (nothing appended, no `EXECUTION_FAILED`, a capable node completes it); a refusal leaves a durable `INBOX_WAKE_AT` row; `TimerService` backs off an incapable node without ever retiring the row. Head-of-line blocking is per execution; residuals (other sealed kinds, the snapshot store) are named in the ADR.
-
-- **A pure flow runner no longer reads as "no runner-body analysis".** `@loom/compiler` dropped a flow's `runnerReach` from the manifest when it was empty, so a runner the analysis read and found reaching nothing (`async (_ctx, input) => reduce(input)`) looked exactly like a runner it never read, and `loom verify` / `loom doctor` reported the flow as unanalysed (genUI's `apply-authoring-operation` and `presubmit`). The compiler now keeps an empty `runnerReach` when a followed runner is BOUND to the flow: the analysis now also reports how many followed runners are bound (internal `analyzeReachRegion`; the public `analyzeReachNode` is unchanged), where bound means in the same object literal or class as the `flow$` call, or passed to `registerFlow(def, …)` with `def` naming that `flow$`; an unrelated runner elsewhere in the module (object property, class field, nested function, another registration) does not count. An empty reach counts as analysed only when a runner is bound AND the module declares exactly one flow (the reach is module-wide, so with several flows a runner found here may be a sibling's). A runner the analysis cannot follow was already reported `unresolved`, never silently empty; a module with no runner (one registered from elsewhere) still reads as unanalysed. Manifest shape unchanged.
-
-- **A cross-node Postgres subscriber now sees an execution's events in commit order.** `PostgresEventStore` turned each NOTIFY into an event with its own pooled `SELECT` and emitted when that lookup completed, so under load two lookups could finish out of order and a subscriber on another node received `[0, 2, 1]`. Lookups still run concurrently, but each execution's emits now queue behind its previous delivery. Events committed by other nodes now arrive in commit order relative to each other; a local append is still emitted synchronously and may overtake a cross-node event in flight (the `EventStore.subscribe` doc says so: order by `sequence` for total order). A cross-node lookup that never returns is bounded (`deliveryLookupTimeoutMs`, default 30 s): that one delivery is dropped with an `onWarn` and later events proceed.
-
-- **A malformed `source.degradedFrom` no longer throws in the React and terminal renderers.** It was already the error placeholder in the DOM renderer; all three now draw `[Renderer for <kind> failed]` (React: `data-placeholder="error"` inside the frame) and never the cause or the value. The rule is wider than before: a `degradedFrom` that is not an array of objects (e.g. a string entry, which the DOM renderer used to draw as `undefined@undefined`) is now the same placeholder everywhere.
-
-### Removed
-
-- **BREAKING: `A2AEffect` is no longer exported from `@loom/effect-runtime`.** The deprecated copy ([ADR 0115](docs/adr/0115-open-vocabularies.md)) is deleted; import `A2AEffect` from `@loom/plugin-a2a`. No in-repo or sibling-repo source imported it from effect-runtime.
-
-### Added
 
 - **`LeaseStore` SPI 2.2.0: batch leases and a gated `steal` ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D11, slice S7a; storage only, nothing is wired to it yet; no EVENT_SCHEMA / EVENT_STORE_SPI / KERNEL_ABI change).** `LEASE_STORE_SPI_VERSION` 2.1.0 to 2.2.0, additive and optional: `acquireMany`, `renewMany` (returns the HELD set, the ids this owner still holds after the call, so a keeper can diff the lost ones; never resurrects a released or taken lease) and `releaseMany`, and an `acquire` `steal: { fence }` option (single id only: `acquireMany` REJECTS `steal` with `TypeError`, since a fence belongs to one execution) that takes a lease another owner holds unexpired ONLY with a conditional-fence proof (the proof is shape-only, a positive safe integer, 0 being the inert park token; callers MUST pass a fence actually won, and never an explicit `now` in production; a bogus steal is a liveness attack, never log corruption, since the fence is the write guard; anything else throws `TypeError` and changes nothing; the displaced owner's renew reports it lost). `InMemoryLeaseStore`, `SqliteLeaseStore` (one transaction per batch) and `PostgresLeaseStore` (one multi-row statement per call, `ANY($ids)`, ids sorted so concurrent batches cannot deadlock, database-clock expiry) implement it. The Postgres `leases` table gains `fillfactor = 70` and an aggressive per-table autovacuum through a guarded, idempotent migration (only a table with no storage options is touched, under `loom.migration_lock_timeout`; it fails SOFT, a warning and a retry on a later boot, when the lock cannot be had, so optional tuning never takes the event log down). `sqliteStorage()` and `postgresStorage()` return a co-located `leaseStore` next to `eventStore` (accessor only; the SQLite one is a lazy getter closed with the event store). `runLeaseStoreConformance` gains the batch == single-id, held-set, no-resurrection, steal-gating and store-clock-skew cases, a `spiVersion` option, `leaseBatchProblem` and `leaseBatchDeclarationProblem`. The batch methods stay OPTIONAL: with no `spiVersion` the cases run only for a store that implements ANY of them (then all three are required), so a 2.1.0-shaped store passes with no options; `spiVersion: "2.2.0"` forces them.
 
@@ -176,52 +82,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`OversizedInlinePartError.scope` (`@loom/llm`; additive).** The constructor already took `scope: "part" | "request"` but dropped it, so a caller could not tell the per-part cap from the per-request inline total except by `limit` or message text. It is now a `readonly scope` property. Tested for both scopes.
 - **Inbox follow-ups: erasure reaches in-flight payloads, and an operator can discard ([ADR 0110](docs/adr/0110-durable-inbox-and-receive-select.md), amendment 2026-10-11; EVENT_SCHEMA stays 1.23.0, KERNEL_ABI stays 1.3.0, EventStore SPI unchanged; additive).** **Erasure (D9):** the inbox stream `__loom_inbox__:<chainId>` now resolves to the erasure subject of its OWNER in `EncryptingEventStore` (`subjectOf` is asked about the chain id), `defineConfig` registers `INBOX_MESSAGE.payload` as sensitive when `security.crypto` and `kernel.features.inbox` are on, so `shredSubject` makes an unconsumed payload unreadable; a read of an inbox stream never throws `PayloadShreddedError` and a payload whose key is gone reads as `{ $shredded: true }` (a consumer delivers the marker, journaled in the owner's log, so a replay is identical); `EraseCoordinator` also deletes the inbox stream of each chain head among the subject's executions (resolved before the shred, since a decrypting store cannot read afterwards; takes an optional `deleteExecution`). `INBOX_STREAM_PREFIX`, `inboxChainOf` and `chainIdOfFirst` are now exported from `@loom/event-runtime`. **Discard (D8):** `runtime.discardInbox(id, { topic, throughSeq, reason? }, { principal })` advances one topic's cursor as a journaled `MESSAGE_CONSUMED` fact (reserved `waitId` `__loom_discard__`, `payload: null`, the operator as `sender`; the fold is unchanged and a wire vector pins it), authorized as the new `ExecutionOp` `"discard"` (closed by default in `executionAccessPolicy`; `ExecutionAuthorizer` implementations answering ops exhaustively gain a case, the conformance kit checks it), parked owners only (`InboxDiscardRefusedError` `not-parked`/`contended`/`invalid`), bounded to the stream's head, idempotent, and it releases a pinned stream (cached verdicts forgotten, trim forced). **D10 (per-topic streams, optional journaled TTL) was a design here; D10a and D10b are built since (see their entries).** **Review fixes (same PR):** a discard racing a delivery now wins (the notifier's batch is judged against the cursors of the VM it runs from, after its fence is held, and refolded when stale; the fold is unchanged); `discardInbox` REQUIRES a principal (`ExecutionDeniedError` without one, whatever the policy or `strict`); a discarded `messageId` joins the dedupe window (newest 1024); `runtime.send` refuses a payload that is exactly the erasure marker `{ $shredded: true }`; inbox decrypt failures are the marker only for a DESTROYED key, else `PayloadUndecryptableError` (`@loom/plugin-crypto`), `subscribe` redacts to the marker, `subjectOf` gets the owner's workflow id; `defineConfig` also registers `MESSAGE_CONSUMED.payload` (new writes; a record holding only the marker is stored verbatim); `EraseCoordinator.eraseSubject(subject, tenant, { parked: "shred" })` is an opt-in that shreds a subject whose non-terminal owners are all PARKED (default unchanged: a parked owner defers the erasure). **Review round 2:** `parked: "shred"` now CANCELS each parked owner (reason `erased`, via the new `EraseCoordinatorOptions.cancel`, wired by `defineConfig` to the runtime's system-authority cancel) before shredding, so no owner is left stuck (it throws without `cancel`); `runtime.cancel` of an owner shredded some other way folds the redacted view (`PayloadShreddedError.redacted`) and still appends `EXECUTION_CANCELLED`, while `resume`/`loadState` stay strict; the verbatim erasure-marker exception is scoped to `MESSAGE_CONSUMED.payload`; an inbox owner whose workflow id cannot be resolved fails the send (`OwnerUnresolvedError`) instead of sealing under `""`, and the crypto layer refuses `""` as a sealing subject. Documented: plaintext written before crypto was enabled survives a shred (ADR 0110 D9, docs/compliance.md), snapshot `_waitAnswers` is not sealable.
 
-### Changed
-
-- **`@loom/workflow-runtime` no longer constructs `AsyncLocalStorage` at import.** Verified: bundling it for a browser with `node:async_hooks` externalized to an empty module threw `AsyncLocalStorage is not a constructor` at load. The step/decide scope stores are now created on first use; where no `AsyncLocalStorage` exists, entering a step/decide scope throws `AsyncContextUnavailableError` (a scope lost at the first `await` would record steps under the wrong identity; documented in the user guide). Node behaviour is unchanged.
-- **`runAgentOnce` prints the permissive-defaults notice at most once per process** (it built a fresh `defineConfig` per call). A caller's own `security.strict` or `observability.onWarn` is honoured each call; `defineConfig` itself is unchanged.
-- **`anyToolName` now validates the name (`@loom/plugin-mcp`; behaviour change).** It still relaxes only the CHARSET, but a name must now be non-empty, at most 256 characters, and free of `\p{Cc}\p{Cf}\p{Zl}\p{Zp}` characters (control, zero-width/format, line and paragraph separators). Before, any string passed. A name that fails is skipped through the same visible path as above (`onSkippedTool`, `strictToolNames`, the warning). Dotted names are unaffected (`mcpInvoke$` is fine). Names become effect ids, map keys, log text and prompts, so this closes an injection and log-forging vector.
-- **`PrincipalUnrestorableError` message and `PrincipalResolver` JSDoc now say what a resolver receives and must return (`@loom/workflow-runtime`).** A resolver gets the recorded record (identity plus a delegation DIGEST, not the token) and must re-mint an equivalent delegation token, e.g. from the app's grant table; a codec instead stores an opaque ref. Wording only.
-- **`@loom/memory` no longer imports `node:crypto`** (`embedding.ts` hashes with `@loom/core`'s pure `sha256Hex`; entry keys are byte-identical, the in-process text tag is now hex). Browser bundles of `@loom/memory` stop warning.
-
-### Documentation
-
-- **Two proposed kernel follow-ups, design only ([ADR 0128](docs/adr/0128-decision-order-through-checkpoints.md), [ADR 0129](docs/adr/0129-creation-marker-incarnation.md); Proposed, no runtime change).** 0128: decision order is lost through a checkpoint (key order of `_decisions`, which Postgres `jsonb` reorders), so the discounted terminal credit of a compacted execution can be wrong; proposes a recorded `seq` per folded decision (EVENT_SCHEMA 1.24.0). 0129: `creationMarker` (`timestamp:id`) cannot tell a deleted-and-recreated id apart under a frozen clock; proposes a store-assigned incarnation outside the envelope (EventStore SPI 2.3.0), keeping replay byte-identical. Each lists the decisions needed from the user.
-- **User guide: "Browser bundles".** Which `@loom/*` packages are browser-safe and which carry `node:` imports (and why `workflow-runtime`/`effect-runtime` keep HMAC and `AsyncLocalStorage`).
-
-- **Docs/DX batch.** `execution.registerEffects` (how `agentLoop$` gets its model and tool effects in a `defineConfig` app) is documented in the user guide and ADR 0121's migration steps, and its JSDoc shows the grouped spelling. ADR 0121 D5 / the `cacheScope` JSDoc now say `cacheScope` is a direct-path-only requirement (the ring bypasses the response cache). The SSE `/history` default direction (`forward`) and how to request `backward` are documented. ADR 0120 gains "Authorizing under dedupe" (a `ContentResolver`'s owner is a SET of tenants). The `@loom/conversation` README gains a security section on the raw inbox path (never expose `runtime.send(…, runtime.systemOptions())` into a conversation inbox).
-
-### Changed
-
-- **Test infra: each `plugins/postgres` test FILE now gets its own Postgres database (`loomTest({ pgDatabasePerFile: true })`, `vitest.pgFileSetup.ts`).** `migrate()` holds a database-wide advisory lock with no timeout, so one file's slow migration blocked `migrate()` in every sibling file (a 61 s flake). Databases are named `<package db>_<file slug>_<hash>`, created on first use and REUSED (never dropped; bounded by the file count). Connections are unchanged (`max_connections` is server-wide: concurrent files x pool size, plus one short admin connection). `LOOM_TEST_PG_SHARED=1` still opts out. Guard: `pgFileIsolation.test.ts`. CI needs no change (the `postgres` superuser already creates the per-package DB).
-- **`@loom/agent` skill activation no longer imports `node:crypto` (ADR 0125 D14, R22d; kernel untouched).** The instruction digest used `createHash` from `node:crypto`, so a Vite browser bundle that included `@loom/agent` warned about externalising it. It now uses the dependency-free `sha256Hex` from `@loom/core`. The recorded digest is byte-identical (lowercase hex sha256 of the UTF-8 instructions; pinned by the NIST "abc" vector and a multi-byte comparison against `node:crypto` in the test), so old logs replay unchanged. `@loom/agent` itself has no other `node:` import; its dependencies still do (`@loom/effect-runtime` authz, `@loom/memory` embedding, `@loom/workflow-runtime` inbox/approvalBinding/signedResumeAuthenticator/WorkflowContext), so a browser bundle may still warn from those.
-- **`ContentTouchingSnapshotStore` is branded, and `sweepUnpinnedContent` reports and warns on unbranded snapshot stores (ADR 0055 D6 amendment 2; `@loom/plugin-content`; kernel untouched).** `snapshotsTouchContent: true` stays a required assertion about the WRITER (a sweep, and `loom sweep content`, read a raw store over the tables a wrapped one wrote, so an unbranded store proves nothing and nothing is refused; a branded store vouches only for itself and does not waive the flag). New exports `isContentTouchingSnapshotStore(store)` and `CONTENT_TOUCHING_SNAPSHOT_STORE`. `ContentSweepReport` gains `snapshotStoresTouching` / `snapshotStoresUnbranded`, and an erasing pass handed a MIX (some branded, some not, so a host probably wrapped some writers and forgot others) emits one `LOOM_CONTENT_SNAPSHOT_UNWRAPPED` process warning. No behaviour change otherwise.
-
-- **BREAKING: `sweepUnpinnedContent({ reclaimOrphans })` now requires `{ completeScan: true }` ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment; `@loom/plugin-content`; kernel untouched).** Orphan reclamation erases every blob no scanned log, snapshot or root cites, so a host that left out an event store or snapshot store lost, silently, every blob only that store cited, while still cited; only `dryRun` guarded it. A bare `reclaimOrphans: true` (or `{}`, `{ completeScan: false }`, any other value) now throws the new `ReclaimOrphansAckError` (a `TypeError`) before anything is read or erased. A `dryRun` is exempt (it erases nothing and is how you check completeness): `dryRun: true` still accepts `reclaimOrphans: true`. The acknowledgement also covers scan ORDER: each live store before its archive. **Migration:** `reclaimOrphans: true` becomes `reclaimOrphans: { completeScan: true }` once `eventStores` (live AND every archive), `snapshotStores` and `roots` cover everything that cites content; dry-run first. Absent/`false` is unchanged, and so is the TTL floor. The conditional delete (D5) closes the re-cite race only for a re-cite through `put`; **KNOWN GAP:** a citation copied without a `put` (a fork's `copyPrefix`, a ref kept in an `append` payload) is not protected, so do not run an orphan sweep concurrently with forks or deletes of the executions it scans (ADR 0055 D6 amendment). `loom sweep content --orphans` is unchanged for users (it passes the acknowledgement after its own archive and snapshot checks). The `loom-examples` `media-gallery` sweep needs the same one-line change.
-- **`agentLoop$({ needsApproval })` replaces `requireApproval`, which is deprecated ([ADR 0121](docs/adr/0121-one-canonical-agent-loop.md) amendment; 1P `@loom/agent`, kernel untouched).** `requireApproval` was an auto-approve policy (`true` proceeds, `false` parks) and read backwards. `needsApproval: (call, turn, onMenu?) => boolean` parks on `true` and runs on `false` (anything but an explicit `false` parks). `requireApproval` keeps its old polarity as a deprecated alias and emits one `LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED` process warning; supplying both throws `AgentLoopConfigError`. The recorded log for the same effective decision is identical, so old logs replay unchanged. Migrate `requireApproval: (c) => c.name !== "x"` to `needsApproval: (c) => c.name === "x"`. `conversation$` refuses both spellings. Also fixed: two tests built `QuotaExceededError` with three arguments (its constructor takes one, `reason`).
-
-- **`decideWithPolicy` / `decideWithRollout` no longer consult the policy on replay ([ADR 0124](docs/adr/0124-learning-lifecycle.md) R18 follow-up; 1P `@loom/learning`, kernel untouched).** The registry read, the resolver and every `select` (the shadow/other arm included) moved INSIDE the decider passed to `ctx.decide`, so a served decision runs none of them: a model-backed or side-effecting policy is no longer run for an answer that was thrown away. The recorded `DECISION_RECORDED` payload (choice, propensity, `policy.rollout`, shadow, refs) is byte-identical to before (pinned by a golden captured from the old code) and old logs replay unchanged. The options object handed to `ctx.decide` is completed by the decider (the kernel reads `opts` when it commits, after the decider settled).
-
-### Fixed
-
-- **`textOf` refuses a `tainted()` wrapper used as an element of a `tool_result`'s parts (`@loom/llm`).** It was skipped silently there (no leak, but inconsistent with every other placement, which throws `TaintedContentError`). `summarizerText` already unwrapped it.
-- **Test infra: `plugins/mcp` test servers bind `127.0.0.1` (the `uiDispatch.test.ts` flake).** Five suites (`uiDispatch`, `ingress`, `McpClient`, `mcpInvoke`, `taintedIngress`) called `server.listen(0)` (wildcard `::`) and then dialled `http://127.0.0.1:<port>`. On macOS the ephemeral counter is system-wide and a wildcard bind does not conflict with another process's 127.0.0.1-specific bind, so under `turbo test` (or with Ollama / a throwaway Postgres on a high port) the fake server could be handed a port someone else held on 127.0.0.1 and the client reached that server instead. Occupying the next ports on 127.0.0.1 reproduced it 17/20; after the fix 0/100. Test-only, no product change (the 1P servers already default to `127.0.0.1`). Guard: `packages/spec/src/testServerBinding.test.ts` refuses a hostless `listen(0…)` in any `*.test.ts`.
-- **`PostgresEventStore` refuses an `executionId` over 1024 UTF-8 bytes with `ExecutionIdTooLongError` (`@loom/plugin-postgres`; kernel untouched).** Each append folds a `pg_notify` into its insert, and Postgres caps a NOTIFY payload at 8000 bytes, so an id near 7.9 KB made the APPEND itself fail ("payload string too long"), not just cross-node delivery. `append`, `appendBatch` (any envelope; none of the batch lands) and `appendIfUnchanged` (with an event), `copyPrefix` (the fork target id), `acquireFence` and `acquireFenceIf` now throw the typed `ExecutionIdTooLongError` (a `RangeError`, exported with `MAX_EXECUTION_ID_BYTES`) before any write (no events and no `fences` row). **Catching it:** the runtime wraps it, so `start()` rejects with `StorageWriteError` whose `cause` is the `ExecutionIdTooLongError`; check `err.cause`. Under `TenantScopedEventStore` the cap counts the scoped id (`tenant:` prefix included) and the error carries the scoped id. **Keep ids well below the cap (at most 900 bytes):** derived streams are longer than their execution (inbox `__loom_inbox__:${chainId}` +15 bytes, continueAsNew `~N` +2 to 4), so an id at 1010-1024 bytes starts but its inbox `send` / continueAsNew is refused. **Behaviour change:** ids between 1025 bytes and ~7.9 KB were accepted before and are now refused; an id at or under 1024 bytes is unchanged. The limit leaves headroom for the worst-case JSON-escaped tag (1024 x 6 + schema + sender). The kernel has no executionId length rule and the other stores (SQLite, in-memory) are unchanged. Test: `plugins/postgres/src/executionIdLimit.test.ts`.
-- **SECURITY: a signed shared-mode `close` envelope is now authorized by the conversation body, not only the client (`@loom/conversation`; kernel untouched).** The client's `close` demanded the "manage" rule (owner or a `manageParticipants` manager), but the body acted on a validly signed `{ kind: "close", asker }` BEFORE any participant check (that check covered user turns only), so a holder of the envelope key could name a non-participant as `asker` and close the conversation for everyone. The body now requires the closer to be the owner, the service principal, or a host manager (`manageParticipants`), recorded as a decision (replay-stable); anything else is recorded as a rejected `unauthenticated` entry and the conversation stays open. A plain participant who is not a manager may not close, matching the client. Owner mode is unchanged. **Upgrade note:** a shared-mode close whose `conv#closed` was recorded before the upgrade but whose completion was not (a crash in that window) is re-judged on recovery; if the closer is no longer authorized, the conversation stays open, and `history().closed` can then disagree with `status()`.
-- **`PostgresEventStore.subscribe` delivered an event TWICE when another schema in the same database appended the same execution id and sequence (`@loom/plugin-postgres`; kernel untouched).** NOTIFY channels are database-wide, but a log lives in one schema (the pool's `search_path`: schema-per-tenant, or isolated test schemas). A listener that got a notification for an execution it was subscribed to re-read `(executionId, sequence)` from its OWN schema and delivered that row. So another schema's append re-delivered an event the subscriber already had, or announced one of its own events early. Every notification (`append`, `appendBatch`, `appendIfUnchanged`) now carries the schema of the store's `events` table as a 4th tag element (`[sender, executionId, sequence, schema]`, resolved once after migration), and a listener drops a notification from a different schema. A 3-element tag from an older node is still delivered, so rolling upgrades keep working. Duplicates from not-yet-upgraded nodes continue until every node runs this version. The schema is identified by NAME (not OID, which changes on dump/restore): after `ALTER SCHEMA ... RENAME` while nodes run, restarted nodes compute the new name and the two groups drop each other's cross-node deliveries until every node restarts, so restart every node after a schema rename. This caused the intermittent conformance failure "subscribe delivers appended events; unsubscribe stops them" (`[0, 0, 1]`) when two runs shared a database. Regression test: `plugins/postgres/src/notifySchemaIsolation.test.ts`.
-- **Cross-replica `subscribe` was silently lost when replicas shared a pid (`@loom/plugin-postgres`; kernel untouched).** The NOTIFY sender tag was `${process.pid}-${counter}`, and a store skips any notification carrying its own tag. Container replicas commonly all run as pid 1 and build stores in the same order, so every replica's first store was `"1-1"`: replica B treated every append from replica A as its own and ignored it, so live wake-ups (`subscribe`, and the consumers built on it: live-query, the conversation feed and barge-in, conversation-sse, the broadcasting projection runtime, `useAgentSurface`) never crossed nodes. The log itself stayed correct; only live delivery was lost. The tag is now a per-process random prefix (`randomBytes(8)`, generated once) plus the per-store counter, unique across hosts and processes (it also covers `worker_threads`, which share a pid, and a package loaded twice in one process). The sender element keeps its position and type, and an old id (decimal pid) can never equal a new one (16 hex characters), so mixed-version nodes interoperate.
-- **Content-GC data-loss race: a fork or an append that carries an existing ref no longer lets an orphan sweep erase the blob ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment 2; `@loom/plugin-content`, `@loom/plugin-sqlite`, `@loom/conformance`; kernel untouched).** Touch times were bumped only by `put`, so a citation copied by `ContentResolvingEventStore.copyPrefix`, or kept in an `append` payload (recalled memory, `scriptRef`), was invisible to `deleteIfUntouchedSince`, and `reclaimOrphans` could erase a blob a live fork still cites (replay then threw `ContentMissingError`).
-  - ContentStore SPI **1.3.0 -> 1.4.0** (additive MINOR) adds optional `touch(addresses): Promise<string[]>` (bump without a put, max semantics, unknown addresses a no-op returned as the missing list). `SqliteContentStore`, `InMemoryContentStore` and `CachingContentStore` implement/forward it, the conformance kit checks it, and the compatibility matrix lists SPI 1.4.0. A 3P store with the 1.3.0 set adds one method to keep `--orphans --apply` working.
-  - `ContentResolvingEventStore` calls `touch` for the refs in a forked range and in the input payload of `append`/`appendBatch`/`appendIfUnchanged`, before and after the write (nothing when the store has no `touch`). The new `ContentTouchingSnapshotStore` does the same for a saved snapshot's citations, closing the fork-of-a-compacted-parent seed path (refs only in the truncated prefix). Fork read I/O roughly doubles on a store with `touch`.
-  - **Behaviour change:** an append, `appendBatch`, `appendIfUnchanged` or fork that carries a ref now FAILS if the content store's `touch` throws (the touch before the write aborts it), which it did not before.
-  - **Behaviour change:** an ERASING `reclaimOrphans` pass (not `dryRun`) now throws `ReclaimOrphansTouchError` for a content store without `touch`; `ReclaimOrphansMarginError` for `olderThanMs <= 0` or a cutoff within `MIN_ORPHAN_ERASE_MARGIN_MS` (60 s) of the store's clock (the CLI's `--ttl 0 --orphans --apply` refuses); and the new `ReclaimOrphansClockError` for a store with `deleteIfUntouchedSince` but no `touchClock` (its margin cannot be measured, so `touchedBefore: Date.now()` used to pass).
-  - **Behaviour change (new acknowledgement):** an ERASING pass given `snapshotStores` must also pass `reclaimOrphans: { completeScan: true, snapshotsTouchContent: true }`, the host's assertion that every snapshot store the runtime saves to is wrapped in `ContentTouchingSnapshotStore`; otherwise `ReclaimOrphansSnapshotAckError`. loom never builds `ContentResolvingEventStore` or the snapshot store for the host, so the wrapping is the host's. Not needed without `snapshotStores`. `loom sweep content --orphans --apply` needs the new `--snapshots-touch-content` flag. A `dryRun` is exempt from all of these.
-  - The guarantee is D5's: the touch before a write protects while its touch-to-commit window is shorter than the sweep's margin (`touchClock() - olderThanMs`); the touch after it is a best-effort extension. Failures of it, and a cited bare ref found missing, reach the new `onTouchError` option; with no hook, one `LOOM_CONTENT_TOUCH` process warning is emitted. A hook that returns a rejecting promise is swallowed.
-- **A2A peer tools keep loom-authored schema text ([ADR 0125](docs/adr/0125-tool-search.md) D14 residual, R22f; `@loom/core`, `@loom/agent`, `@loom/plugin-a2a`; kernel untouched).** The model-facing spec of an un-vouched remote tool stripped ALL Zod `.describe()` text, including text loom itself authored on `A2APeerClient`'s static `peerInputSchema`. Additive, opt-in `ToolDefinition.schemaOrigin?: "local"` marks a loom/host-authored Zod schema; `toolSpecFor` then treats the schema as first-party (no sanitizing at all: `.describe()` text, property keys, enum/const values and patterns pass as authored) while the remote DESCRIPTION stays withheld. It is an authorship claim: set it only when every string in the schema is a literal in your own source. `A2APeerClient` sets it. Fail-closed: an unmarked remote tool still strips, and the flag never applies beside a `jsonInputSchema` (MCP unchanged). No behaviour change today (the peer schema carries no `.describe()`).
-- **`PromotionRefusedError.reasons` listed each reason twice** when the registry floor and the per-call thresholds failed the same check; the reasons are now de-duplicated, in first-seen order (`@loom/learning`).
-
-### Added
-
 Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel untouched; no existing signature changes.
 
 - **`signInboxEnvelope(key, body)` (`@loom/conversation`).** Builds a host-signed inbox envelope, so a test or a TRUSTED bridge can write to a conversation's inbox (`runtime.send(id, { topic: CONVERSATION_TOPIC, payload })`) without capturing a real one. It is the same signer `sendTurn` uses (domain-separated HMAC) and validates the body up front with the conversation's own shape rules (throws `InvalidEnvelopeError`). **The key is the authority of a trusted bridge, not a harmless token.** A holder of the key can speak as ANY participant in shared mode (the body checks only that the named `asker` is a participant), edit that asker's turns (`editOf` is only as strong as the asker), bypass the client-only checks (`maxQueuedPerAsker`, "a delegated sender needs `principalFor`"), write to every conversation the runtime's `send` policy admits (the key is per flow, not per tenant), and skew the staleness floor (an `iat` up to 60 s ahead is accepted; once that id leaves the replay set the floor moves forward and legitimate envelopes issued in the next ~60 s are refused `stale`). In owner mode the `asker` = owner comparison is a consistency check; the runtime access policy decides who may write. What still holds against a key holder: the conversation binding, replayed ids, the staleness floor and age window, the owner-mode voice, the shared-mode participant check for user turns, a shared-mode close needing the owner / service principal / a `manageParticipants` manager (see Fixed), `maxTurnChars` and the shape checks. Also exports `InboxEnvelopeBody` and `InvalidEnvelopeError`. Real users: this repo's tests and trusted bridges that write to the inbox. (`incident-shared-chat`'s attack deliberately holds no key, so it is not a consumer.)
@@ -254,201 +114,6 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
 - **A durable inbox, `ctx.receive` / `ctx.select`, concurrent waits and an authorized `runtime.send` ([ADR 0110](docs/adr/0110-durable-inbox-and-receive-select.md), R2, now Accepted; KERNEL_ABI 1.3.0 gains `receive` and `select` in `KERNEL_SYSCALLS`, EVENT_SCHEMA unchanged: every shape was frozen at W2-0).** Behind `kernel.features.inbox` (default off: an execution that has parked with `waits` cannot be driven by an older node). `ctx.select([{ gate }, { inbox }, { timer }])` registers waits and the runtime parks when the flow is quiescent, writing ONE kernel-stamped `EXECUTION_SUSPENDED` that lists every wait (`condition.waits`; a single gate keeps the legacy fields byte-identically); the first answered arm settles the select, a later answer to a sibling is refused (`wait-settled`), a timer arm's wake is recorded once at first registration, and answers are keyed by `waitId` (`<scopePath>#<ordinal>`), so a body edit that shifts an ordinal raises `FlowDivergenceError` instead of mis-delivering. `runtime.send(id, { topic, payload, messageId? }, { principal })` is the only writer of the inbox (a separate reserved stream `__loom_inbox__:<chainId>`, never the owner's log), authorized as the new `ExecutionOp` `"send"` against the owner of the chain head (strict mode refuses a principal-less send; nothing is appended); the payload is delivered TAINTED (ADR 0085) and the sender's identity subset is recorded in `MESSAGE_CONSUMED`. Delivery is FIFO per topic and exactly-once within a bounded dedupe window; consumption is a journaled `MESSAGE_CONSUMED`, replay never reads the inbox. **No lost wakeup:** the quiescence commit reads each inbox wait's topic and consumes live; after the park is durable a second read self-resumes under `acquireFenceIf` (ADR 0118); a cross-process send leaves ONE coalesced due-now `TimerStore` row that `TimerService` turns into the notify path, and the `[MESSAGE_CONSUMED, EXECUTION_RESUMED]` pair is one atomic `appendBatch` (a half-written pair on a non-batching store is healed by the next notify). `ResumeEvent.waitId` answers one wait of a multi-wait park; `viewDigest` (ADR 0117) and the `signedResumeAuthenticator` signature bind to the WAIT (`ResumeVerificationContext.waitId` / `waitRegisteredAtSequence`; `signResume` takes `waitRegisteredAtSequence` for an addressed event). The stream is bounded: `head() + 1` allocation, a trim below the oldest unconsumed message (never the head), `InboxFullError` past `maxBacklog` (10 000), deleted with its chain. New: `InboxClosedError`, `InboxMessageRefusedError`, `InboxFullError`, `FlowDivergenceError`, `InboxSource`, `WorkflowRuntime.notifyInbox`, `kernel.inbox.{maxBacklog,dedupeWindow,maxPayloadBytes}`; `ResumeRefusalReason` gains `ambiguous-wait`, `wait-settled`, `inbox-wait`; `recoverAbandoned` wakes parked inbox waits (`inboxWoken`). **Fixed on the way:** `recoverAbandoned`, `orphanCensus` and `reconcileTimers` now skip reserved control streams (an inbox stream folds to `pending` and was reported as an orphan), and `reconcileTimers` re-arms a multi-wait park's timer arms. Not in this change: the 1P `@loom/inbox` package. See the ADR's implementation notes for the deviations, residuals and measurements (send is flat in stream length; 10 000 sends to one parked chain write one timer row).
 
 - **Open vocabularies: `EffectKind`, `TaskKind` and metering dimensions ([ADR 0115](docs/adr/0115-open-vocabularies.md), R15, now Accepted; EVENT_SCHEMA stays 1.23.0, KERNEL_ABI stays 1.3.0).** `EffectKind` and `TaskKind` become `Known | (string & {})`: any name matching `VOCABULARY_NAME_PATTERN` (`/^[a-z][a-z0-9._-]{0,63}$/`, exported from `@loom/core`) is a kind, and `EffectRuntime.register` refuses one that does not. `"human"` is the one kind with kernel semantics (it parks). `ResourceDimension` is open: a custom name is metered through `RESOURCE_METERED.custom` (folded into `_resources.custom`, reserved at W2-0), accepted by `negotiateBudget`, `meteringMiddleware` (`pricing` returns `custom`, `budget.maxCustom` trips `QUOTA_EXCEEDED`) and `nestedBudgetMiddleware` (ledger included), and `WorkflowRuntimeDeps.meterCeilings` / `kernel.meterCeilings` overrides the per-increment ceiling at the userspace-emit guard. `DecideOptions.estimatedCost` is the per-dimension spelling beside `estimatedCostUsd` (descriptive; additive within the unreleased 1.23.0). No unit or price registry. `A2AEffect` now lives in `@loom/plugin-a2a`; `@loom/effect-runtime` keeps a deprecated copy for one minor.
-
-### Changed
-
-- **ADR 0125 D14 (R22d) closes three tool-search/skill-activation residuals; 1P `@loom/agent`, kernel untouched, `EVENT_SCHEMA` unchanged.** (1) **Behaviour change:** the model-facing tool spec of an un-vouched remote tool (`origin: "remote"`, a `jsonInputSchema`, or `kind: "a2a"`) now carries the fixed text `"Third-party tool; description withheld"` instead of the peer's description unless `trustJsonSchemaText` is set (A2A: `trustDescriptions` on the peer config); this was already true for MCP tools and now covers A2A tools (and any `origin: "remote"` tool) with no `jsonInputSchema`, so existing A2A users no longer show the peer's description to the model. A tainted description on a remote tool is withheld even when vouched (it used to throw a `TypeError`). Replay is unaffected (model responses are journaled; request bytes are never compared). (2) An accepted skill activation now records `digest` (sha256 of the delivered instructions) in its decision; a replay or an already-active re-delivery whose current text differs returns the new typed error `instructions_changed`, keeps the skill's tools on the menu, records nothing and emits a `LOOM_AGENT_SKILL_CHANGED` process warning. Records without a digest behave as before. (3) A `toolSearch.ranker` or `skillActivation.skillRanker` that ignores `limit` is clamped to the count it was asked for before admission (O(limit)). **Review round 1:** the activation record also carries `bytes` (UTF-8 length of the delivered instructions as serialized), and when a replay or re-delivery cannot deliver the same text the byte-triggered compaction counts that recorded size, so a one-character or length-changing skill edit no longer diverges a resume with a recorded `#turn:t:compact` frame (records without `bytes` keep the old behaviour); a remote tool without vouching now also loses its Zod `.describe()` text in the spec; `@loom/plugin-a2a` gains `A2APeerConfig.trustDescriptions` (the equivalent of MCP's) to vouch for a peer's card text; the `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning no longer says "JSON schema". **Review round 2:** the activation record also carries `resultBytes` (UTF-8 length of the whole live activation result: envelope, tool ids and instructions), so the byte-triggered compaction is exact on replay even when the skill's tool list (not only its text) changed since; records written by round 1 (with `bytes`, without `resultBytes`) keep round 1's behaviour.
-- **BREAKING: LLM content parts, tool-call threading and provider capabilities ([ADR 0120](docs/adr/0120-llm-content-parts-and-tool-threading.md), R5; EVENT_SCHEMA and KERNEL_ABI unchanged).** `@loom/llm` MAJOR. `LlmMessage.content` is `string | LlmContentPart[]` (text, image, audio, file, `tool_use`, `tool_result`); there is no `tool` role (results are `tool_result` parts in a `user` message, mapped per provider: Anthropic content blocks, OpenAI `tool_calls` + `role: "tool"`, Gemini `functionCall` / `functionResponse`, which `GeminiProvider` now supports with tools). Media is claim-checked: a `{ kind: "ref", ref: { address } }` source is journaled as the address and resolved by `createLlmEffect({ resolveContent })` / `createAgentModelEffect(provider, { resolveContent })` / `AgentConfig.resolveContent` only on a live call; inline `{ kind: "data" }` is capped at 64 KiB (`MAX_INLINE_BYTES`). `LlmProvider.capabilities` declares accepted modalities/media types (absent = text + tools only) and an undeclared one throws `UnsupportedModalityError` before any network call. `guardRequest` now also enforces part structure (`InvalidLlmRequestError`), the inline cap (`OversizedInlinePartError`) and tool_result pairing, and keeps ADR 0085 for parts (tainted tool results fenced in the `tool_result`; media marked `untrusted: { origin }` is bracketed by the fence tags and refused outside `user`; a tainted `tool_use` input is refused). `LlmStreamChunk.toolDelta` streams tool-call input fragments (transient). `agentLoop$` / `AgentRunner` replace the `"(tool calls)"` placeholder and per-result user JSON with an assistant message of `tool_use` parts and one user message of `tool_result` parts (`isError` for refusals and failing tools); tools return media with the new `mediaResult(parts)`; compaction never starts its kept tail on a `tool_result`. **Migration:** (1) code that READS `message.content` as a string (a custom provider, a VCR/middleware, a test asserting on the transcript) must call `textOf(content)`; code that only WRITES strings is unchanged and old recordings still replay; (2) a custom `LlmProvider` should call `assertRequestSupported(request, this.capabilities)` at the top of `complete` / `stream` and declare `capabilities` if it takes media: `runLlmProviderConformance` now fails a provider that silently accepts an undeclared image (`tools/scaffold` emits the call); (3) a compaction effect (`compaction.toolId`) receives messages whose `content` may be parts; (4) a test asserting that the turn after a tool call holds `"(tool calls)"` plus a `{"tool":..,"result":..}` user message must now expect `tool_use` / `tool_result` parts (the JSON envelope is the `tool_result`\'s text); (5) an in-flight `agentLoop$` execution resumes (completed turns are served from the log; later turns are built in the new shape; the compaction trigger is measured over a virtual pre-R5 transcript so `#turn:<t>:compact` frames land on the same turns); (6) `ContentResolver` is `(ref, context) => bytes | null` where `context` is `{ executionId, stepId, principal, origin, maxBytes, signal }` (was `(ref, signal)`) and **MUST authorize the ref**; (7) `mediaResult(...)` is honoured only for a tool declared `returnsMedia: true` (new optional `ToolDefinition` field) and never for a tainted output; (8) **behaviour change:** shipped providers now declare media only for known media-capable model families (OpenAI gpt-4o/4.1/5, o1/o3 non-mini, o4, dated gpt-4-turbo; Claude 3+; Gemini 1.5+/2.x; OpenAI audio only for `audio` models); any other model id, and any non-default `baseUrl`, refuses media locally with `UnsupportedModalityError` (one-line fix: pass `capabilities: { image: [...] }`); `capabilities: {}` is text-only; (8b) `resolveContent` needs its context (`ReasonOptions.resolveContext`) and a declared `ref.size` must be a non-negative safe integer; an over-cap model `tool_use` is refused at dispatch with a placeholder in the transcript; (9) inline media is capped at 256 KiB per request in total as well as 64 KiB per part; (10) content GC (`sweepUnpinnedContent`) now pins blobs cited as media refs `{ kind: "ref", ref: { address } }`. Companion changes in `loom-examples`, `loom-ui` and `genUI` are listed in the PR.
-- **Behavioural (ADR 0109, R1b): a caller-chosen execution id whose root segment (the text before the first `::`) is `<x>~<digits>` is refused at creation, whether or not `kernel.features.continueAsNew` is on** (`ReservedSuccessorIdError`; `start`, and `fork`'s child id). `a~b`, `a~1x` and `a::b~1` are unaffected, existing logs stay readable and resumable, and a `::`-derived child of an existing successor-shaped parent (`chain~1::g#0`) still starts. An app that used ids like `task~1` renames them. **`cancel` of a `continued` execution is no longer a no-op: it cancels the chain's live generation.** **`recordOutcome` no longer refuses a `continued` execution.** **Fixed:** a run whose cancel landed before its flow returned (a deadline already past when a parked execution is resumed, with a flow that returns without running a step) appended `EXECUTION_COMPLETED` after `EXECUTION_CANCELLED`; the cancel now owns the outcome. **Source-level:** `ExecutionStatus` gained `"continued"` at W2-0, so an exhaustive `switch` over it needs a case; `ExecutionContext` gained `continueAsNew`, so a hand-written implementation of the interface (a test double) needs one too.
-- **BREAKING: `ctx.ui` leaves the kernel ([ADR 0114](docs/adr/0114-ctx-ui-leaves-the-kernel.md), R14, now Accepted; KERNEL_ABI stays at the reserved 1.3.0, EVENT_SCHEMA unchanged).** `@loom/workflow-runtime` no longer depends on `@loom/agent-surface` (package.json, imports and tsconfig refs are gone). `ExecutionContext` extends an empty `ExecutionContextExtensions`; `@loom/agent-surface` merges `readonly ui: SurfaceEmitter` into it, so `ctx.ui` type-checks only where agent-surface is in the program. At runtime the accessor comes from a new injected factory `WorkflowRuntimeDeps.surface`, which `defineConfig` (`@loom/app`) supplies, so every composed app (and `@loom/testing`'s `createTestApp`) is unaffected. `@loom/app` re-exports `type SurfaceEmitter`, so composed apps keep `ctx.ui` typed with only `@loom/app` imported; bare-runtime users import `@loom/agent-surface`. `@loom/agent-surface` declares `@loom/workflow-runtime` as an optional peer. **A bare `new WorkflowRuntime(...)` with no `surface` dep now THROWS on `ctx.ui`**, with a message naming the dep (the user's "break now" decision; removing `ctx.ui` is a later MAJOR). Migrate by spelling it `surface(ctx)` (new export of `@loom/agent-surface`, works on any context with `emit`, emits byte-identical `SURFACE_PATCH` events), or pass `surface: createSurfaceEmitter` in the runtime deps. The `ui` ABI entry is marked `deprecated: true` (`KernelSyscall.deprecated?`), and the missing `negotiateBudget` entry is added to `KERNEL_SYSCALLS` (`since: "1.3.0"`, `kind: "call"`); a test asserts the table and the `ExecutionContext` interface agree. The layering guard gains the inverse rule `findKernelClosureViolations`: a kernel package depends only on kernel packages (red on `main` against the `workflow-runtime` -> `agent-surface` edge; `@loom/classify`, a zero-dependency leaf `effect-runtime` already imported, joins `KERNEL_PACKAGES`). `@loom/appgen` now generates `surface(ctx).set(...)` with its import, and the scaffold's package.json adds `@loom/agent-surface`; about 17 docs and decks show `surface(ctx)`.
-- **`SafetyViolationError` is non-retryable (`retryable = false`).** `retryMiddleware`'s default classifier used to retry a blocked call, so a stream severed by a delta validator (ADR 0119) re-called the provider up to `maxRetries` more times. A violation is a policy decision, not a transient fault; an app that wants "regenerate on violation" passes an explicit `isRetryable`.
-- **BREAKING (ADR 0119 review 2): the CONFIGURED stream sink is guarded on every path.** `createLlmEffect({ onDelta })`, `AgentRunner` `config.onDelta` and `createAgentModelEffect({ onDelta })` used to receive raw deltas before any output validator on a durable `ctx.run`, on a transient call without a per-call sink, and when the per-call sink was refused. The runtime now puts a guarded delta channel on `ctx.onDelta` for durable and transient calls and forwards to the configured sink (`Effect.deltaSink`) only after the middleware delta guards accepted the text; a PII delta validator severs it before the leak. **Apps streaming past an output validator without a delta form (e.g. `schemaValidator`) stop streaming**: the configured sink receives nothing and the call completes non-streamed (warning: "streaming disabled: <middleware> inspects output without a delta form"). Deltas remain live-only. New `createLlmEffect({ onReset })`. `redactionMiddleware` now sets `inspectsOutput` when `redactOutput` is configured. A middleware that rejects or rewrites output after `next()` MUST set `inspectsOutput` (or provide a `deltaGuard`).
-
-### Documentation
-
-- **Wave 2 coordinated kernel design (agentic-readiness, Part R; design only, no runtime change).** One design document ([`docs/requirements/2026-10-05-wave2-kernel-design.md`](docs/requirements/2026-10-05-wave2-kernel-design.md)) and nine **Proposed** ADRs, planned together so the contract bumps happen once (KERNEL_ABI 1.2.0 → 1.3.0, EVENT_SCHEMA 1.22.0 → 1.23.0, EventStore SPI 2.0.0 → 2.1.0; nothing is bumped by this change). Each ADR is accepted at its own implementation PR.
-  - [ADR 0109](docs/adr/0109-bounded-history-and-continue-as-new.md) bounded history: `ctx.continueAsNew`, a deterministic successor started first and then `EXECUTION_CONTINUED` (new `continued` status; existing recovery repairs a crash; promotes ADR 0052's frozen draft).
-  - [ADR 0110](docs/adr/0110-durable-inbox-and-receive-select.md) a durable inbox (1P stream) with kernel `ctx.receive` / `ctx.select`, `MESSAGE_CONSUMED`, concurrent waits, an authorized `runtime.send`, and a no-lost-wakeup protocol.
-  - [ADR 0111](docs/adr/0111-durable-principal.md) the execution's principal recorded on `EXECUTION_STARTED` and rehydrated on every path (recovery, timers, supervisor, children); the effect principal becomes the owner, not the resumer.
-  - [ADR 0112](docs/adr/0112-structured-concurrency.md) cancellation scopes, a park barrier, and the cancel cascade (1P, in `@loom/orchestration`).
-  - [ADR 0113](docs/adr/0113-body-aware-code-fingerprint-and-dynamic-id-migration.md) SHA-256 structural hash, an opt-in body fingerprint, replay-divergence detection, dynamic-id `replay-check`.
-  - [ADR 0114](docs/adr/0114-ctx-ui-leaves-the-kernel.md) `ctx.ui` leaves the kernel (drops the `workflow-runtime` → `agent-surface` dependency; layering guard extended).
-  - [ADR 0115](docs/adr/0115-open-vocabularies.md) open `EffectKind` / `TaskKind` and custom metering dimensions.
-  - [ADR 0116](docs/adr/0116-late-outcome-attach.md) `runtime.recordOutcome` for a late reward on a finished execution (authorized, terminal-only, sequence-CAS, idempotent; no fence).
-  - [ADR 0118](docs/adr/0118-acquire-if-parked-fence.md) a conditional `acquireFenceIf` on the fence token and an unanswered park (EventStore SPI, optional), a retryable `ResumeContendedError` with a timer-backed re-driver, closing the R8 supervisor's residual TOCTOU, and a retention pin for children a parent is parked on.
-
-### Known issues
-
-- _None open._ The principal known issue (effects run under the resumer's principal, not the owner's) is **resolved by R3k** for every execution started on 1.23.0 — see Security below. Executions started before 1.23.0 recorded no principal and keep the old behaviour exactly (see "Legacy logs" in the R3k entry).
-
-### Security
-
-- **The execution's principal is durable: effects run as the OWNER on every path, not as whoever drove the last `execute()` (R3k, [ADR 0111](docs/adr/0111-durable-principal.md), now Accepted; EVENT_SCHEMA 1.23.0 payload fields, no ABI or DISPATCHER_SPI change). Resolves the "Known issue" this changelog carried.** `EXECUTION_STARTED` now records `principal` (a `PrincipalRecord { v: 1, ref?, identity?, delegation? }`, `{ v: 1 }` at least — an anonymous start included) and `parent`; the fold keeps them at `_principal` / `_parent`. Every `execute()` rehydrates the effect principal ONCE from sequence 0 of the execution's own LOG (never from a caller-supplied state) through the default resolver, a `principalResolver`, or a `principalCodec`'s `fromRef`.
-  - **Acting principal != lifecycle caller.** `options.principal` keeps ONE job: the caller of the lifecycle op (`ExecutionAuthorizer`, `ResumeAuthenticator.verify`). The effects of an execution run as its recorded owner on `start`, `resume`, `resumeAs`, `restoreFromState` (a doctored or stripped `_principal` in the supplied state is ignored), timer wakes, `recoverAbandoned`, the dispatcher / remote worker re-drive and supervisor child starts. After an approval the effects run as the OWNER (the approver is recorded in `APPROVAL_GRANTED`); after a timer wake or recovery they run as the owner (tenant `policy$` DENY rules, `stopTenant` and `perTenant` now fire); a delegated child keeps its attenuation across a crash.
-  - **BREAKING (new executions only).** An execution started on 1.23.0 whose flow relied on the approver's or resumer's principal reaching its effects now runs as its owner: pass the approver explicitly as data. Only `{ tenant, actor, onBehalfOf }` (each <= 256 characters) is recorded and rebuilt, so **extra `PrincipalChain` fields (`roles`, custom claims) no longer reach the effects of a restarted run — nor, for uniformity, of the first run**; carry them with a `principalCodec`/`principalResolver`. A principal that carries a `delegation` and has nothing able to restore it is REFUSED at `start` with `PrincipalUnrestorableError` (log empty); `superviseChildren({ delegation })` composes the restoring codec itself (`orchestrationPrincipalCodec`), a hand-built runtime supplies `principalCodec` or `principalResolver`.
-  - **Legacy logs.** An execution with NO record (started before 1.23.0) keeps today's behaviour exactly — `options.principal` reaches the effects — and replays byte-identically; "absent" means legacy only because every 1.23.0 start writes a record. A record that is present but malformed or of an unknown version denies (never falls back).
-  - **The delegation token is never written** (a bearer credential in a permanent log): only a SHA-256 digest of its signature and its expiry. The kernel denies an unrestorable delegation itself — `EFFECT_DENIED` BEFORE any authorizer, so a `PolicyAuthorizer` or a 3P authorizer that allows everything cannot authorize it (`PrincipalChain.delegationUnresolved`, `principalShredded`, `principalUnresolved`; `DelegationAuthorizer` keeps its own deny). A crypto-shredded record denies every effect and never runs as the resumer.
-  - **Identity is never written verbatim under an erasure obligation.** `defineConfig` resolves how the identity subset is recorded: outside `security.strict` / a composed `security.compliance` the verbatim subset is the zero-config default (its non-redactability is a documented non-goal); with `security.crypto: { events, snapshots }` (your `EncryptingEventStore` / `EncryptingSnapshotStore`, which gain `registerSensitive`) `principal.identity.*` is registered sensitive, encrypted at rest and shredded with the subject; otherwise strict/compliance REQUIRE `security.principalCodec` (the log carries `{ v: 1, ref }` only) and `defineConfig` throws `PrincipalRecordingRefusedError` naming the three ways out. **BREAKING for strict apps:** `security.strict: true` without crypto or a `principalCodec` no longer composes (the scaffold generates a codec).
-  - **A fork acts as the FORKER.** `fork` stamps `forkedBy` (the forker's record) into the metadata of every copied envelope; the resolver prefers it and a fork's owner for authorization is the forker. Acting as the owner needs `fork(…, { actAs: "owner" })`, authorized as the new `ExecutionOp` `"actAsOwner"` on the parent (**default deny** in `executionAccessPolicy`); the log records `forkActAs: "owner"`. Under crypto-without-codec a fork refuses (`PrincipalUnrestorableError`) because envelope metadata is not encrypted.
-  - **`ExecutionAuthzRequest.owner`** is filled by the kernel from sequence 0 for `resume`/`cancel`/`query`/`actAsOwner` on an existing execution, so **`executionAccessPolicy` drops its in-process owner table**: **BREAKING** — `ownerOf`, `adopt`, `tracked` and `maxTracked` are removed and a restart no longer loses ownership. `resolveOwner` is consulted only for a legacy log; `committed` stays on the SPI. A supervisor child started with no principal has no owner of its own and effects stay anonymous; its lifecycle follows its parent's owner (`parentOwner`, round 2).
-  - `PrincipalCodec`, `PrincipalResolver`, `PrincipalRecord`, `PrincipalIdentityMode`, `PrincipalUnrestorableError` (`@loom/workflow-runtime`); `delegationDigest`, `principalBlocked` (`@loom/effect-runtime`); `orchestrationPrincipalCodec` (`@loom/orchestration`); `WorkflowRuntime.composePrincipalCodec`. The authorizer conformance kit gains `"actAsOwner"` and an `owner` case.
-  - **Review round 1.** (P1) A `ref` record is restored by the composed `principalCodec` FIRST, then the resolver; a resolver answering `undefined` for any non-empty record now DENIES instead of dropping the principal (a resolver written for identity records no longer widens a `superviseChildren({ delegation })` child to the base authorizer). (P2) The start's record is held for the life of its live execution, so an immediate `cancel`/`query` by the owner is not denied while sequence 0 is still being journalled; `parent` is recorded only at a trusted start, so a starter cannot pin another execution's retention (round 2: the lineage grant, in every mode). (P3) The orchestration `ref` is MACed (`loom:orch:v2:`, key derived from the supervisor secret; unsigned refs refused), `storedPrincipalOf` refuses any envelope that is not sequence 0 / `EXECUTION_STARTED`, and `fork(…, { actAs: "owner" })` without an `executionAuthorizer` is documented as unrestricted like every op. **Follow-up:** forks of an identified forker are refused under crypto without a codec; either the scaffold always generates a codec or the crypto plugin encrypts the `forkedBy` metadata path.
-  - **Review round 2.** (Decided, user) A principal-less supervised child's LIFECYCLE follows its parent's owner again, durably: `ExecutionAuthzRequest.parentOwner` (additive) is the nearest recorded owner up the child's recorded `parent` chain (max 8 hops, cycle-safe, unknown beyond), (round 3 widens it to delegated children, below); `executionAccessPolicy` uses it for every op except `actAsOwner`. The child's effects stay anonymous. `parent` is now recorded ONLY at a trusted start in every mode (a caller's `parentExecutionId` is omitted, including with no authorizer); trust is a new narrow `LineageGrant` (`WorkflowRuntime.lineageOptions()`, `RunOptions.lineage`) the child supervisor presents in every mode, not the system grant. (Decided, user) Threat model: write access to the event store is INSIDE the principal trust boundary (it can forge any event); integrity comes from the store's access control plus audit-chain/crypto where composed; the orchestration ref stays MACed as defence in depth. See ADR 0111.
-  - **Review round 3.** (Decided, user) Resume stays in the parent's reach: the parent's owner may query, cancel AND resume a supervised child (`inherited` covers every op except `actAsOwner`). CONSEQUENCE: under the default "tenant" rule scope a same-tenant principal can approve a gate inside a supervised child; tighten `rules.resume` to `"owner"` to narrow it. (Decided, user) A DELEGATED child (own owner = its child id) is now ALSO reachable through its trusted recorded parent: the kernel fills `ExecutionAuthzRequest.parentOwner` for any execution whose recorded `parent` is trusted (anonymous or delegated; a shredded/unrestorable record gets none), and `executionAccessPolicy` allows an owner match on the child's own owner OR on `parentOwner` for query/cancel/resume, never `actAsOwner`. The child's EFFECTS still run under its attenuated delegation. The kernel reads sequence 0 once per authorization (`recordedPrincipal` returns `parent` with the principal, so the lineage walk's first hop costs no re-read). `parentExecutionId` is recorded only when trusted (lineage or system grant), in every mode: a non-supervisor caller passing `parentExecutionId` no longer gets a parent recorded, even with no authorizer. A start whose runtime call throws synchronously removes only its own live start record. See ADR 0111.
-
-- **Approvals are bound to what the approver saw, there is a first-party `ResumeAuthenticator`, and the A2A bus no longer auto-approves (R13, [ADR 0117](docs/adr/0117-approvals-bound-to-what-the-approver-saw.md); behavioural tightening, no ABI change).** `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
-  - **View binding.** `ctx.suspend({ on, viewDigest })` records a digest of the proposal in the suspend condition (durable, fold-visible; `viewDigest()` / `approvalViewDigest()`). A resume answering that gate must echo it as `payload.viewDigest`; a stale or missing echo is refused before the append (`ResumeRefusedError`, reason `view-digest-mismatch`, nothing recorded). `answerApproval(state, decision)` builds the resume. A gate that declares no digest is unaffected; a timer wake is exempt.
-  - **BREAKING (`agentLoop$`).** `requireApproval` gates now declare a digest of position + tool + input, so a bare `{ approved: true }` resume is refused. Resume with `answerApproval(state, { approved })`, or pass `bindApproval: false`. A `resumeSchemas` entry for that gate must let `viewDigest` through.
-  - **`signedResumeAuthenticator({ gates, keys, authorize?, requireActor?, now? })` + `signResume`** (`@loom/workflow-runtime`): HMAC-SHA256 over the whole event (payload incl. the echoed digest, `discardLegacyAnswers`, actor, REQUIRED expiry) and the park it answers (`executionId` + the parking `EXECUTION_SUSPENDED` sequence, via the new additive optional `ResumeAuthenticator.verify(event, context?)`), so a signature is single-use: refused at another execution, a fork, or a later park of the same gate. The proof's actor must equal the calling principal's. Secrets under 16 bytes are refused; `keys` may return several secrets (rotation). Records `APPROVAL_GRANTED { actor, verifiedBy: "hmac-sha256" }`. Passes `runResumeAuthenticatorConformance` (which gains a context case). `runtime.parkedAtSequence(id)` gives the approver the value to sign.
-  - **`viewDigest` is SHA-256 (`v2:`)**, not 64-bit FNV; an execution parked with a `v1:` digest still resumes by echoing it. A UI renders the proposal from the tool call in the log and recomputes `approvalViewDigest(correlationKey, tool, input)`; the proposal is not copied into the condition. `agentLoop$` gate keys now include the loop id, and a tool input too deep to digest is refused to the model rather than failing the run.
-  - **`TIMER_FIRED` is the kernel's wake.** A caller-supplied `TIMER_FIRED { approved: true }` used to answer a timed approval gate past the digest and the authenticator. On a fail-closed runtime a `TIMER_FIRED` resume without the system grant is refused (`timer-wake-not-system`); everywhere the recorded payload is exactly `{ wakeAt }`.
-  - **Bus.** `unsafeAutoApprove` warns once; `ApprovalDecision.proof` + `approvalPayload(request, decision)` let a strict app approve through the bus with a signed proof; `resolveApproval` on an unknown/evicted task names `runtime.resume` + `answerApproval`. The scaffold's approver keys fail closed (unset/empty/odd-named actor verifies nothing).
-  - **BREAKING (`signResume`).** It requires `exp`, `executionId` and `parkedAtSequence`; the authenticator rejects an event it is given no park context for.
-  - **BREAKING (strict).** `security.strict` now REQUIRES `security.resumeAuthenticator` (config error otherwise); `strict: { requireResumeAuthenticator: false }` acknowledges an app with no approval gates. The scaffold generates one.
-  - **BREAKING (`InProcessA2ABus`).** With no `onApproval` the gate stays suspended: `dispatch` returns `{ status: "working", suspended }`, answered later with `bus.resolveApproval(taskId, decision)`. Demos opt in with `onApproval: unsafeAutoApprove`. `onApproval` now receives `{ executionId, gate, viewDigest }` and the bus echoes the digest; the resume uses the gate's own name (it hard-coded `"ApprovalGranted"`).
-  - **R13 review round 2.**
-    - **The park is located exactly, for any number of events after it.** `runtime.parkedAtSequence(id)`, `resume`, `resumeAs`, `restoreFromState` and the bus all use one lookup: the newest `EXECUTION_SUSPENDED` in the events in hand, else a walk back in 64-event indexed range reads from the snapshot (no whole-log read; cost = events between the park and the snapshot). Round 1 probed only 16 events back and then bound the TIP, so a signed approval was rejected ("signature does not verify") once 16+ events (denials by varying principals, parallel siblings) trailed the park on a resume's fast path. `restoreFromState` bound the preloaded state's tip and the bus the result's tip; both now bind the park. No fold, `EVENT_SCHEMA` or `KERNEL_ABI` change.
-    - **A park that is no longer in the log is refused, never guessed.** If the `EXECUTION_SUSPENDED` was compacted away (or the log does not hold it) a signed approval is refused with `ApprovalRejectedError` reason `park-not-located: ...`, and `parkedAtSequence` returns `undefined`. The tip is never substituted.
-    - **Remote approvers** must obtain `parkedAtSequence` from `runtime.parkedAtSequence(id)` or the bus `ApprovalRequest` to sign; `state.sequence` is NOT the park once anything trails it.
-    - **`agentLoop$` deep input.** The deep-input refusal can change replay of a main-era execution whose approved tool call had input nested more than 1024 levels deep (negligible: such an input was already unbounded recursion on the digest path).
-
-- **A2A and MCP servers are authenticated by default, loopback-bound, and A2A tasks are owned by their creator (R12; behavioural tightening, no ABI change).** `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
-  - **BREAKING (defaults).** `createA2AServer` and `createMcpServer` now THROW at creation unless the caller supplies `authenticate` (new: returns the caller's `PrincipalChain`, or `undefined` for a 401) or `authorize`, or passes `insecure: true` (logs a loud warning). They previously ran unauthenticated when neither was set. They also bind `127.0.0.1` instead of every interface; pass `host: "0.0.0.0"` (or an interface address) to widen. `server.url` now carries the bound host, not `localhost`. Migration for a demo or test: add `insecure: true`. `loom-examples` that need it: `a2a-mesh`, `agent-network`, `mcp-app-release-approval` (all `port: 0`, same-process clients).
-  - **Strict.** The app does not construct these servers, so they cannot be refused from `defineConfig`; pass `strict: app.strict`. Under strict `insecure: true` is a config error, and the A2A server additionally requires `authenticate` or `resolvePrincipal` (every task must carry a principal).
-  - **A2A task ownership.** The HTTP server namespaces every task id by the caller's principal (tenant + actor + onBehalfOf): the execution the runtime sees is `a2a.<namespace>.<client id>`, and the client only ever sees the id it chose. A caller cannot read, resume, or collide with another caller's task by guessing or choosing an id; the lookup lands in its own namespace and finds nothing (404). Previously `task.id` became the `executionId` verbatim, so any caller could read any execution's folded state, and a colliding id re-drove the victim's execution. Callers that pass only a boolean `authorize` (no principal) share ONE namespace; use `authenticate` for per-caller ownership. `LoomAgentExecutor` takes `{ namespaceByPrincipal }` (off for direct in-process use; the server turns it on). The server has no cancel route, so there is nothing to cancel across callers; R3's `executionAccessPolicy` still governs cancel on the runtime.
-  - **MCP per-tool authorization.** `mcp.invoke` is one registered effect, so a `GrantTable` could allow all of a server's tools or none. `Effect.resourceOf` / `ToolEffectOptions.resourceOf` (new, optional) lets an effect name the sub-resource a call targets; the runtime passes it as `CapabilityRequest.resource`, and `GrantTable`, `PolicyAuthorizer` (allow/deny/`match.effect`) and `DelegationAuthorizer` accept the qualified id `<effectId>:<resource>` (`capabilityIds`). `mcp.invoke` presents `<server>/<tool>`: grant ONE tool with `mcpToolCapability(server, tool)` = `mcp.invoke:<server>/<tool>`. A grant on bare `mcp.invoke` still means "every tool on every server", unchanged. A resolver that throws, or an effect without one, fails closed against a qualified grant. `McpInvokeOptions.server` is the server identity (default: see the review-round note below).
-  - **MCP server per-tool exposure.** `createMcpServer({ authorizeTool })` decides per caller whether a tool is listed and callable; a refused tool is reported as unknown (never as forbidden). Tool handlers receive `ctx.principal` from `authenticate`. Default unchanged: every authenticated caller may use every served tool.
-  - **R12 review round 1 (all behavioural tightening, no ABI change).**
-    - **A2A principals must carry an `actor`.** `principalNamespace` now THROWS unless `principal.actor` is a non-empty string, and `createA2AServer` answers 401 (warning once) when `authenticate`/`resolvePrincipal` yields such a principal. A principal identifying callers by another field (`{ sub }`) used to hash to ONE shared namespace, so callers could read each other's tasks. `executionAccessPolicy` likewise refuses (and never records an owner for) a principal whose actor is empty. When both `authenticate` and `resolvePrincipal` are set, `authenticate` wins and `resolvePrincipal` is ignored.
-    - **A2A execution id shape.** The runtime sees `a2a.<ns>.<client id>`, where `<ns>` is a 24-hex-char hash of tenant + actor + onBehalfOf. Anyone reading A2A executions by their raw client id (`loadState("my-task")`) must use the new id.
-    - **`PolicyAuthorizer` matching.** DENY globs (`deny` list, `match.deny`) match both the bare effect id and the qualified `<effect>:<resource>` id. ALLOW entries (`allow` list, allow `match.effect`) match the qualified id only when the pattern itself contains `:` and the text before the first `:` equals the request's effect id exactly; `allow: ["*.search"]` no longer allows `mcp.invoke` on a resource named `srv/wipe.search`. Bare `allow: ["mcp.invoke"]` still allows every resource.
-    - **Denial reasons name the resource** (`PolicyAuthorizer`, `GrantTable`, `DelegationAuthorizer`), so an audit can tell which tool was refused (`EFFECT_DENIED` has no `resource` field and gaining one would change `EVENT_SCHEMA`).
-    - **`McpInvokeOptions.server` now defaults to the client URL's hostname (plus `_<port>` when non-default)** (was the literal `"server"`). Grants written as `mcp.invoke:server/<tool>` must name the host, or set `server` explicitly. A `server` containing `/` or `:` is rejected.
-    - **Strict defaults from the runtime.** `createA2AServer` defaults `strict` from `workflowRuntime.requiresPrincipal` (new read-only accessor); `createMcpServer` takes `runtime: { requiresPrincipal }` for the same. Explicit `strict` still overrides. Under strict an A2A caller that resolves to no principal (authorize-only) is refused 401 instead of joining the shared namespace.
-    - **MCP resources follow `authorizeTool`.** `resources/list`/`resources/read` hide a `ui://` template tied to a tool the caller may not use. `authorizeAppJournaledCall(tool, req, principal)` now receives the principal. `resourceOf` is evaluated on the pre-middleware input: a middleware that rewrites the tool name must not be relied on for authorization.
-  - **R12 review round 2.**
-    - **`startWorkerServer` (the container entrypoint) binds `0.0.0.0`** by default (`options.host` / `$HOST` override); round 1's loopback default made the Cloud Run image unreachable. `createWorkerServer` keeps the loopback default. Set `authorize` on a reachable worker.
-    - **`McpClient.serverHost` keeps a non-default port** (`localhost:3001` -> `localhost_3001`; default ports omitted) so two servers on one host no longer share a grant id. Grants written for a ported server's default id must add the `_<port>` suffix.
-    - **A whitespace-only A2A `actor` is refused** like no actor (401).
-    - **`createMcpServer` without `runtime` or `strict` warns once** that strictness is advisory.
-    - Docs: a bare-id allow pattern (`mcp.invoke`, `mcp.*`) allows every resource of the effect; scope with `mcp.invoke:<server>/<tool>`.
-    - **`createWorkerServer` binds `127.0.0.1` by default** (was all interfaces); pass `host` to widen. `server.url` carries the bound host.
-    - **A2A `publicUrl`** sets the URL the agent card advertises (a `0.0.0.0` bind otherwise advertises `localhost`).
-    - **REQUIRED alongside this merge:** the companion `loom-examples` PR (`a2a-mesh`, `agent-network`, `mcp-app-release-approval` need `insecure: true` or `authenticate`).
-
-### Fixed
-
-- **`superviseChildren` is restart-safe (R8; no ABI change).** Spawn specs, group aggregation and the started set lived only in process memory, filled by live `onEvent`, so after a restart a recovered child's completion hit `if (!started.has(id)) return` and the parent was never resumed, and a group with 2 of 3 members settled lost its results. The supervisor now rebuilds a parent's state from the log: a child terminal event it did not see spawned triggers a per-parent rehydration (the parent's park, its spawn `DECISION_RECORDED`, each child's terminal event), and the new `supervisor.recover({ source?, pageSize? })` does a boot catch-up (resume parents whose children all settled while down, start children recorded but never started, adopt the rest; returns `{ scanned, parked, resumed, started }`). Double resume is harmless: a lost race is swallowed, a start whose id exists is not an error, and a resume is dropped unless the parent is parked on that exact child/group key (the resume gate checks only the gate NAME, so a late duplicate used to be able to answer the parent's next `awaitChild`). `ChildSupervisor` gains the `recover` method (additive for callers; a hand-written `ChildSupervisor` must add it). `recover()` costs one store scan + one fold per execution; there is no parked-parent index. Restart policies remain out of scope. `KERNEL_ABI` and `EVENT_SCHEMA` unchanged.
-- **`superviseChildren` R8 review round 1 (multi-supervisor safety; no ABI change).** (P1-a) The duplicate-resume window is closed with no kernel change: `awaitChild`/`awaitChildren` park with `viewDigest: <key>` (R13) and the supervisor's resume echoes it, so a slow supervisor's stale resume is refused pre-append (`view-digest-mismatch`) instead of answering the parent's next `awaitChild` with the previous child's output; old parks without a digest are unaffected. (P1-b) Group members that settle on different nodes no longer hang the parent: a settling member re-reads its unsettled siblings from the log (after its own terminal is durable) and `recover()` re-derives even an already-known park. (P1-c) A losing resume's in-memory re-run starts no phantom child: children start only once the parent is durably parked on that exact key, and from the durable spawn decision. (P2-a) `resume()` failures are observed: `resumed` counts only a durable resume, a failed append reaches `onError`, `StaleFenceError` is no longer treated as a lost race (the supervisor takes its own fence; see round 2 for the bound and the residual). (P2-b) A member whose execution retention deleted (`EXECUTION_DELETED` in the lifecycle stream) settles as a typed failure instead of being started again. (P3) per-park supervisor state is dropped when the park is answered; `recover()` crosses tenants unless the store is tenant-scoped; a compacted terminal event loses the error text / cancel reason. `ChildSupervisor` gains `size()` (`@internal`, a leak check). Follow-up outside this package: `LogLifecycle` should refuse to delete a child whose parent is still parked on it. `KERNEL_ABI` and `EVENT_SCHEMA` unchanged.
-
-- **`superviseChildren` R8 review round 2 (no ABI change).** (P2-1) The live path no longer gives up silently on a slow store: its ~1s wait for the parent's park distinguishes "parent terminal" (stop) from "bound exhausted" (back off exponentially and `adopt` from the log while the parent is non-terminal; a give-up after 10 minutes is reported through `onError`); a park that stays on a different key is a losing resume's phantom and stops quietly. `recover()` is opt-in and not needed for this. (P2-2) Fence acquisition is bounded to two per resume with the park re-read before each; the supervisor does NOT fence up front (the earlier "as `TimerService` does" was inaccurate: `TimerService` does). Residual that needs a kernel SPI, named for the Wave 2 kernel design: an **acquire-if-parked fence SPI** — `acquireFence` is unconditional, so a rival fencing between the acquire and the append fails the resume, and one landing between the durable resume and the read-back supersedes the holder of the already-running parent body; a resume still stale is reported. A live resume refused `not-suspended` is quiet when the durable log shows the park answered (it used to retry 10x and then `onError`). (P3-1) State held for a park answered elsewhere (adopt-then-answered-on-another-node) is dropped by a periodic sweep, by every adoption and by `recover()`. (P3-2) The retention-deletion facts are a bounded map keyed by id and compared with the spawn decision's time (a reused parent id no longer fails its fresh member), counted in `size()` as `reclaimed`. (minor) An observed resume with no durable evidence within a bound is "unknown": not counted, retried through `adopt`. `SupervisorDeps` gains an `@internal` `tuning`. `KERNEL_ABI` and `EVENT_SCHEMA` unchanged.
-
-- **Fold, live-commit and resume cost were super-linear (R1a; no ABI change).** Folded state is
-  byte-identical, `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
-  - `DECISION_RECORDED` spread the whole `_decisions` map per event: folding 5k / 10k / 20k
-    decisions took 2.3 s / 10 s / 42 s (20k steps: 5 ms). The map is now a fold-owned container
-    written in place, like `frames` and the audit lists.
-  - A live commit was its own fold pass, so fold ownership was reset on every event and every
-    commit re-copied the whole frames map (5k commits 2.6 s, 20k 45 s, 40k 192 s). `ReplayVM`
-    now keeps its own ownership set across `applyEvent`s and retires it when a state escapes
-    through `getState()`, so a state a caller holds is still never written to. New
-    `ReplayVM.peekState()` is the borrowed read for the runtime's hot path (`WorkflowContext`,
-    `ExecutionJournal`); `getState()` keeps its meaning.
-  - `WorkflowRuntime.resume` read the whole log on every call. With a snapshot it now takes the
-    execution's identity from sequence 0 and folds snapshot + tail. The one consumer of the full
-    log, the ADR 0104 legacy stray-passthrough scan, still runs over the whole log on the first
-    resume of an execution in a process and on every resume of a log it flags; `discardLegacyAnswers`
-    always forces it. After a CLEAN scan the runtime keeps the scanner itself (not a "clean" flag)
-    and feeds it only the events appended since, so a PRE-0104 kernel appending to the same log
-    afterwards (a mixed-version fleet during a rolling upgrade, an old node running
-    `recoverAbandoned`) is detected by the warm runtime as a fresh one detects it; a flagged
-    result, a gap in the tail, a log that no longer reaches the scanned sequence, or a different
-    flow definition falls back to the full read, and `feed` is idempotent across concurrent
-    resumes. A refused scan never leaves a remembered entry. Residuals (ADR 0104 amendment): a
-    `truncatePrefix` after a clean scan (can only drop the advisory "unverifiable" warning), a
-    log erased and re-created under the same id to at least the scanned length, and step kinds
-    resolved per fed event.
-  - The snapshot written at every suspend is kept: with `snapshotEvery` unset it is the only
-    thing that bounds a resume's tail. It hands the state to the store by reference (no copy).
-
-- **MCP-mapped tools showed the model `{}` for their arguments (R4b).** R4 sent each tool's Zod
-  schema as JSON Schema, but an MCP tool's schema is already JSON Schema and its Zod form is a
-  `z.unknown()` placeholder. New optional `ToolDefinition.jsonInputSchema` (and
-  `trustJsonSchemaText`); `@loom/plugin-mcp` `mapTool` sets it from the server's `inputSchema`,
-  and `toolInputJsonSchema(zod, json?, { trustText })` prefers it. The schema is THIRD-PARTY
-  bytes bound for a prompt, so it is sanitised first (`sanitizeJsonSchema`): a keyword
-  allowlist (unknown / `x-*` / `default` / `examples` dropped), depth 16, 1000 nodes, 64KB,
-  remote `$ref` dropped (nothing is fetched), cyclic or oversized refused
-  as a whole and sent as `{ type: "object" }` with a `LOOM_AGENT_TOOL_SCHEMA`
-  warning per tool id (the run never fails). **The text that must stay is constrained, not
-  merely capped** (a per-item cap still admitted ~64KB of prose per tool): property and
-  `$defs`/`definitions` keys must match `^[A-Za-z0-9_.-]{1,64}$` (else the entry is dropped,
-  and its `required` mention; `required` only names kept properties); `enum`/`const` strings are
-  at most 64 chars with no control / zero-width / bidi characters (else the keyword is dropped);
-  `format` only from JSON Schema's standard list; `pattern` at most 128 chars and must compile
-  under `new RegExp(p, "u")` (compiled, never run); a `$ref` survives only if it names a kept
-  `$defs`/`definitions` entry or `#`; and ALL of that attacker-controlled text together is
-  budgeted at 4096 characters per tool, past which the whole schema is refused. A hostile
-  server can still say a few words inside the budget; the description is the default-deny
-  surface. **Taint:** `description`/`title` inside the schema, and the
-  MCP tool's own description, were read as instructions yet never passed `guardRequest`
-  (a plain string carries no taint). They are now stripped (the description becomes the fixed
-  string "Third-party tool; description withheld") unless the operator opts in with
-  `listTools/registerInto({ trustDescriptions: true })` (a trusted description is still capped
-  at 1000 chars, with a one-time `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning per tool).
-  Strip-by-default rather than taint-and-refuse: `guardRequest` refuses the WHOLE request on a
-  tainted description, so every MCP agent would fail to run; ADR 0085's MCP producer is
-  likewise opt-in (`taintResults`) and its `unwrapTainted` is the operator's visible
-  decision, which `trustDescriptions` mirrors. **Tool names:** the name is the effect id and
-  what the model sees, so `listTools` skips (with a `LOOM_MCP_TOOL_NAME` warning) any tool whose
-  name is not `^[A-Za-z0-9_-]{1,64}$` (providers 400 on one, and a long name is prompt text);
-  `listTools({ anyToolName: true })` opts out for tools never shown to a model (`mcpInvoke$` and an
-  app view use it: `loom.surface.since` is a legitimate dotted name).
-  **Validation:** an MCP tool now checks its own call's shape INSIDE its effect
-  (object input, `required` keys present, declared top-level property types) and returns a
-  recorded `{ error: { code: "invalid_tool_input", ... } }` RESULT; nested rules, enums and
-  bounds stay the server's job. The check reads the RAW schema, so its refusal echoes only
-  identifier names (`^[A-Za-z0-9_.-]{1,64}$`) and JSON Schema type names — any other name is
-  reported without it (the refusal is a model-visible tool result). It is in the effect, not in the agent loop before
-  `ctx.execute`, so replay is deterministic: the schema comes from a LIVE `tools/list` at
-  boot, and a gate outside the journaled step would refuse, after server schema drift, a call
-  the log records as executed. Note a direct flow caller of an MCP tool now also receives that
-  result, instead of the server's error, for a malformed call. **Hazard (R4b vs R4):** R4's
-  zod gate reads a STATIC definition the deployer controls (hence "drain before upgrading");
-  R4b's schema is remote and drifts on its own, so it is kept out of the gate. What the model
-  is SHOWN still comes from the live listing, so a drifted schema changes the menu on the next
-  model call of a resumed run (the recorded model responses still replay). Pre-R4b executions
-  are unaffected (MCP tools were `z.unknown()`, nothing was gated). No new dependency.
-
-- **Agent loops executed any effect id the model named, with unvalidated input, and showed the model no argument schemas (R4).**
-  `agentLoop$` ran `ctx.execute({ toolId: toolCall.name })` and `AgentRunner` (hence `agentStep$`)
-  ran `effectRuntime.execute(toolCall.name, ...)` for WHATEVER name the model returned, so under
-  the default permissive config a hallucination or a prompt injection could reach any registered
-  effect; and every `LlmToolSpec.inputSchema` was `{}`. Now a call runs only if its name is on
-  the loop's tool menu (agent tools + selected skills' tools) and its input passes the tool's Zod
-  `inputSchema`; otherwise nothing is executed and the model gets a structured
-  `{ error: { code: "tool_not_on_menu" | "invalid_tool_input", ... } }` result (issues bounded)
-  so it can recover. The refusal is deterministic from the recorded model output and appends
-  nothing. Schema faults (async or throwing refinements, pathologically deep input) are
-  refusals too (`invalid_tool_input`, fixed message), never throws; input deeper than 64
-  levels or 100k nodes is refused before Zod runs; echoed names/paths are capped at 200
-  chars. `requireApproval` now receives `onMenu` as a third argument.
-  **Replay caveat:** an in-flight `agentLoop$` execution whose log recorded an off-menu or
-  invalid-input call (written before this change) replays a refusal in its place, so its
-  `toolCallLog` / later transcript diverge from the recorded run; drain in-flight `agentLoop$`
-  executions before upgrading. `agentStep$` / `AgentRunner` (one step) are unaffected. Each tool's Zod schema is sent as JSON Schema
-  (`toolInputJsonSchema`, a minimal in-package converter; no new dependency). **Behavioural
-  tightening:** code that relied on calling an off-menu effect, or on sending input its tool's
-  schema rejects, now gets the refusal result instead of an execution. Tools whose schema is
-  `z.unknown()` (MCP-mapped tools) are unaffected for validation but are still described as `{}`.
-- **A flow whose only reach is a ctx hand-off lost its runner-body analysis (backlog L36).**
-  `@loom/compiler` kept a flow's `runnerReach` in the manifest only when it had steps,
-  unresolved targets or suspends, ignoring L32 `escapes`. A flow that only hands `ctx` to a
-  library (`planner.compose(input, ctx)`) therefore read as "no runner-body analysis" instead
-  of the undeclared-hand-off warn, so declaring the library's reach had no effect on it. Found
-  by a genUI review: its `generate-dashboard` flow was silently unanalysed.
-
-### Added
 
 - **R6: structured concurrency — `ctx.parallel` is a cancellation scope, a park drains before it commits, and cancelling a parent cancels its children ([ADR 0112](docs/adr/0112-structured-concurrency.md), now Accepted; EVENT_SCHEMA 1.23.0 shapes as frozen at W2-0, KERNEL_ABI unchanged).** **BREAKING (behaviour; no source change) ONLY WITH `kernel.features.scopes: true` (default off: `ctx.parallel` stays the pre-R6 bounded `Promise.all`; turn it on once every node folds the record):** (1) a failed `parallel` now ABORTS its still-running siblings (their effect `signal` fires, they record `STEP_CANCELLED`) and journals the outcome as a kernel-stamped `PARALLEL_COMPLETED { scopePath, failedBranch, error, cancelled[] }`; a re-run SERVES the scope from that record (nothing that was not already completed starts again; the SAME error value is thrown by the first run and every re-run: a `TypedFailure` stays typed, a class in `execution.errorClasses` or the built-in `Error` family is rebuilt from the recorded message, else a `ParallelScopeFailedError` with `errorName`; the first run no longer throws the original object), so replay no longer depends on timing. Flows that relied on a failed `parallel` leaving siblings running must pass `{ failFast: false }`. (2) A park commits only after every step in flight has settled: a parallel sibling's `STEP_COMPLETED`/`STEP_FAILED` now lands BEFORE `EXECUTION_SUSPENDED`, never after it (and `_failedWhileParked` can no longer be produced by this kernel; the fold keeps it for old logs). New step starts freeze once a park is decided. A step that outlives `parkDrainMs` (default 30 s, `WorkflowRuntimeDeps.parkDrainMs`) is aborted and its append dropped with a warning (it re-runs on resume under the same idempotency key).
   - `ctx.parallel` accepts branch functions `(b: BranchContext) => Promise<T>` beside `[step, input]` pairs, and options `{ limit, failFast (default true), onPark: "drain" | "abort" }`. Each call is a scope with a deterministic path (`<parent>/<k>.<branch>`, exposed as `b.scopePath`), the identity R2 keys waits by. A `SuspendError` in a branch is a barrier, not a failure. Step ids are unchanged; the `PARALLEL_COMPLETED` writer is not flagged (an older node ignores the record and re-runs the scope live, as before).
@@ -721,1233 +386,6 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
   existing `() => T` deciders and `invokeTransient` callers are unchanged. No EVENT_SCHEMA
   change. ADR 0083 (second-consumer rule) for the new exported types: consumers are the loom-ui
   Planner and genUI's planner decisions.
-
-### Changed
-
-- **`@loom/plugin-sandbox`: `SandboxWorkerPool.run` renamed to `runJson`** (backlog L19
-  round-1 review). It is public API (exported from the package), and its second parameter
-  used to be the raw `input` value, `JSON.stringify`d internally. It now takes that JSON
-  TEXT directly instead (see the L19 entry under **Fixed**) — had the method kept its old
-  name, an external caller still passing a raw value under the new semantics would get no
-  compile error and a silently wrong VM input: `run(script, "42", …)`, meant as the STRING
-  `"42"`, is `JSON.parse`d as pre-serialized JSON and seeds the NUMBER `42` instead. The
-  rename makes that a compile error for any caller outside this package. `@loom/sdk/sandbox`
-  does not re-export this class, so nothing else in this repo was affected.
-
-### Fixed
-
-- **`PostgresLeaseStore` stamps and judges leases on DATABASE time (backlog L29, closes the
-  L28 known limitation).** It used each caller NODE's `Date.now()`, so the `acquire` takeover
-  clause compared node A's stamp against node B's clock: skew beyond the ~40s slack (60s TTL,
-  renewal every ttl/3) let a fast node steal a live lease or made a slow node's healthy lease
-  look expired every cycle (fencing rejected the loser's writes, but effects ran twice). When
-  `now` is omitted, `acquire`/`renew` now stamp `expires_at` and the takeover condition and
-  `expired()` compare against `(extract(epoch from clock_timestamp()) * 1000)::bigint` in the
-  same statement, one clock for every node. The reading is a scalar subquery
-  (`(SELECT ...)`, one reading per statement, and `acquire` takes it once via a CTE): a bare
-  volatile `clock_timestamp()` in `expired()`'s WHERE is re-evaluated per row and turned
-  `idx_leases_expiry` into a full-index Filter (143 ms at 200k live leases vs 0.026 ms as an
-  InitPlan with a real Index Cond); a test EXPLAINs the real query (`LEASE_EXPIRED_SQL`).
-  `clock_timestamp()` rather than `now()`: `now()` is frozen at transaction start, so a lease
-  written through a caller-supplied client inside a long transaction would be stamped and
-  judged on a stale reading. An explicit `now` is honoured verbatim (tests, simulated clocks);
-  mixing explicit and DB time on one lease table is unsupported. A fractional `ttlMs` is now
-  rounded up (Postgres rejected it as `bigint`). `SqliteLeaseStore` is unchanged: single host,
-  the process clock is its one clock. **LeaseStore SPI 2.1.0 (MINOR, additive):** optional
-  `LeaseStore.storeNow?(): Promise<number>` returns the store's own clock; `PostgresLeaseStore`
-  implements it (DB time) and `orphanCensus` (hence `loom census`) judges lease expiry on it
-  when present instead of the CLI host's `Date.now()` (executions are still aged by wall
-  clock; an explicit `now` overrides both). `Lease.expiresAt` is documented as on the store's
-  clock. Stores without `now()` behave exactly as before. `runLeaseStoreConformance` gains a
-  `storeNow()` case (skipped when absent; `leaseStoreNowProblem` is exported and negative-proved:
-  a store whose `storeNow()` is an hour off its stamping clock fails).
-
-- **`recoverAbandoned` judged lease expiry on the wall clock, not the store's** (backlog L28,
-  double-execution hazard under an injected clock). It called `leases.store.expired(Date.now())`
-  while `acquire`/`renew` stamped `expiresAt` with the store's own `now`. With
-  `InMemoryLeaseStore({ now: sim })` at sim ~ 1000, every live lease (expiry ~ 61000) read as
-  expired, so recovery re-drove executions healthy holders were still running. Now
-  `LeaseStore.expired`'s `now` is OPTIONAL and defaults to the store's own clock, and
-  `recoverAbandoned` passes none. **LeaseStore SPI 2.0.0 (MAJOR, BREAKING for implementers,
-  following the MemoryStore 2.0.0 precedent):** an implementation MUST default `now` to the
-  clock that stamps its leases. A 1.x store declared `expired(now: number)` still type-checks
-  against `expired(now?: number)`, but given `undefined` it returns `[]` (`expiresAt <=
-  undefined` is false, SQL `<= NULL` is false), so an UNCHANGED third-party store silently
-  recovers nothing. Callers passing an explicit `now` are unaffected. `LEASE_STORE_SPI_VERSION`
-  is now in `kernelManifest().spis` and the compatibility matrix, and the cheatsheet banner is
-  checked against it (the banner test used to exempt LeaseStore). The in-repo SQLite and
-  Postgres stores already default to `Date.now()`, which is what they stamp with (Postgres
-  now stamps and judges on database time instead: see L29 below). The conformance case for `expired()` with no argument now takes an optional
-  `clocked` factory (`LeaseStoreConformanceOptions`) and drives the store's injected clock
-  instead of sleeping, so it discriminates the L28 bug (the check is exported as
-  `leaseExpiredDefaultProblem` for third-party kits); `checkCompatibility` accepts a
-  `leaseStoreSpi` deployment version; backends with no injectable clock keep
-  the wall-clock form. `orphanCensus` keeps its own explicit `now` option (it also ages
-  executions by it; documented to be given the lease store's clock when that is not the wall).
-
-- **L27: timer wake times use the runtime's clock** (kernel; behavioural for hand-wired setups,
-  and for `defineConfig` with a non-default `execution.now` plus `timers`).
-  `ctx.sleep` and `suspend({ timeout })` computed `wakeAt` with raw `Date.now()` while
-  `TimerService` judged it with its own `now`, so one simulated clock given to both made
-  sleeps never fire (clock behind the wall) or fire at once (clock ahead). `wakeAt` is now
-  `runtime.now() + ms`, and `TimerService`'s `now` defaults to the runtime's clock (new
-  read-only `WorkflowRuntime.clock`, the same way it already reads `runtime.events`), so a
-  simulated or offset `WorkflowRuntimeDeps.now` (`defineConfig` `execution.now`) alone drives
-  sleeps, suspend timeouts and cron cursors. An explicit `TimerService` `now` still wins; if it
-  disagrees with the runtime's clock, timers fire early (it runs ahead) or never (it runs
-  behind). Default wall-clock setups are unchanged. **Fixed clock:** under a FIXED clock
-  (including `defineConfig` `execution.now` plus `timers`) sleeps, `suspend({ timeout })` and cron
-  schedules now never fire, where they used to fire on wall time; advance the clock or drive
-  `tick(now)` yourself. **Offset clock:** an offset is safe only if every runtime touching the log
-  uses the same one; this covers wake times and cron, and applies across an upgrade (timers parked
-  before it carry wall-clock `wakeAt`, so an offset runtime fires them |offset| early or late,
-  never under a fixed clock; old and new nodes disagree during a rolling upgrade).
-  `sleepUntil(absolute)` targets and cron occurrences are measured on the runtime clock. `tools/dst` is unaffected (its runtimes
-  keep the wall clock; drivers still jump to `wakeAt` themselves); to virtualise sleeps pass
-  `now: world.clock.now` to the runtime.
-
-- **L26 round 2: invalid `timeoutMs`/`deadlineMs` are rejected** (behavioural tightening).
-  `step$`/`flow$` now throw on NaN, 0, negative and Infinity (NaN armed a 1ms timer, 0 and
-  negatives breached at once, Infinity never fired; omit the field for no deadline). The same
-  check runs again in the runtime (`registerFlow`, `start` of an inline definition, `ctx.run`
-  before `STEP_STARTED`) for specs that bypass the builders, so an invalid budget can no longer
-  fire at 1ms. A per-call `options.deadlineMs` is validated at the top of `start`, `resume` and
-  `resumeAs`, before any read or append, so a rejected call leaves the log untouched (a
-  caller-chosen `executionId` is not burned and can be retried). No in-repo or loom-examples caller passed such a value. Also documented: under a
-  FIXED `now`, a budget above 2^31-1 ms (~24.8 days) never fires within a single run (each
-  chunk re-arms; test added), and the deadline timers are deliberately not `unref`'d.
-
-- **Step `timeoutMs` and execution `deadlineMs` mixed two clocks** (backlog L26, latent, P3 in
-  production). The deadline anchor is a journal timestamp written with the runtime's injectable
-  `now` (`WorkflowRuntimeDeps.now`), but the remaining budget was computed from raw
-  `Date.now()`. With any `now` that is not the wall clock the remaining time was either hugely
-  negative (every `timeoutMs` step failed with `StepTimeoutError`, every `deadlineMs` execution
-  was cancelled at start) or above 2^31 ms (Node clamps the timer to 1ms). Both are now measured
-  with `now`; `EXECUTION_DENIED` and cancel-of-a-suspended-execution envelopes are stamped with
-  it too. The `setTimeout` still waits real milliseconds, so `now` must advance in real time for
-  a deadline to fire on time; the option's TSDoc said "never fold-relevant" and now says
-  deadline-relevant. The default clock is unchanged. Also fixed on the same lines: a
-  `timeoutMs`/`deadlineMs` above 2^31-1 ms (~24.8 days) made Node clamp the timer to 1ms, so
-  `deadlineMs: 30 days` durably cancelled the execution ~1ms after start. The remaining budget
-  is now capped at the declared budget (a clock stepping backwards cannot grant more) and a
-  longer wait is armed in chunks of at most 2^31-1 ms, recomputing from `now` at each chunk.
-  Caveats: a FIXED `now` silently disables the crash-surviving deadline (elapsed is always 0,
-  so every resume re-grants the full budget), and an offset `now` is safe only if every
-  runtime touching the log uses the same offset. (`ctx.sleep`/`suspend({timeout})` wake times
-  were fixed in L27 and lease expiry in L28, both above.)
-- **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
-  The workspace links every package everywhere, so nothing in the suite noticed; a consumer
-  installing the PUBLISHED package would get "Cannot find module" at load. Moved to
-  `dependencies` (the repo's convention, no peers): `@loom/plugin-worker-server` -> `@loom/core`;
-  `@loom/app` -> `@loom/classify`; `@loom/orchestration` -> `@loom/effect-runtime`; `@loom/cli`
-  -> `@loom/effect-runtime`, `@loom/snapshot-runtime`; `@loom/agent` and `@loom/plugin-a2a` ->
-  `zod`. New fitness test `packages/spec/src/runtimeDeps.test.ts` scans every workspace
-  package's non-test `src/` (AST, so multi-line, `export ... from`, `require` and literal
-  `import()` count; `import type` / all-`type` specifiers do not) and fails naming the package
-  and import when it is not in dependencies, peerDependencies or optionalDependencies.
-  The same test also requires TYPE-only imports in shipped `src/` to be declared (the emitted
-  `.d.ts` names the package): `@loom/capability` type-imported `zod` from its public types while
-  declaring it only in `devDependencies`, so it moved to `dependencies`; the one other hit,
-  `@loom/worker-runtime-local`'s `spiShapeProof.ts` (type-imports the dev-only `@loom/conformance`),
-  is an exact, justified exemption because the file is emitted but unreachable (not exported, and
-  the `exports` map exposes only the entry). It additionally scans the hand-written subpath shims
-  a package ships outside `dist/` (`event-runtime` `memory.js`/`sequence.js`, `snapshot-runtime`
-  `memory.js`) and requires the JSX import source (`react`) to be declared for any package
-  whose tsconfig uses the automatic JSX runtime. Known limit, documented in the test: non-literal
-  `import(spec)`/`require(x)` (tools/cli, packages/isolate runner) are invisible to a static scan.
-- **`@loom/isolate`: `timeoutMs` charged child-process startup, and a brokered fetch never timed
-  out** (backlog L23 + L24; same class as the L13 sandbox clock). (L23) The run clock started
-  at spawn, so under load a 150 ms tool was killed before its module finished loading, and
-  since a kill discards the child the next call cold-started and died again, forever. The
-  parent now warms the child first (`booted` -> `warm` -> `ready`); `timeoutMs` opens only when
-  the child is ready. Startup has its own allowance, new `coldStartMs` (default 10 000, finite
-  and > 0, else `RangeError`); a child that exceeds it, or exits or disconnects while warming
-  (any exit code), fails with the typed `IsolatedToolStartupError` (exported) instead of
-  hanging, and is replaced on the next call. Its `phase` is `"spawn"` (the runner never booted:
-  the environment) or `"load"` (the tool module's top-level code hung or exited: a TOOL fault);
-  a module that throws at load fails the load phase with a plain tool `Error`, once, instead of
-  being re-executed by the run. **`coldStartMs` also bounds untrusted top-level code** (unlike
-  the sandbox's trusted compile), so a tool that forces a cold start on every call costs up to
-  `coldStartMs + timeoutMs` per call; size it accordingly ([ADR 0019](docs/adr/0019-k7-data-plane-isolation-and-egress-control.md)
-  addendum). An abort during warm-up kills the child and rejects with the abort reason.
-  (L24) A host that accepted and never answered held a `maxConcurrentFetches` slot forever.
-  New `fetchTimeoutMs` (default 30 000, finite and > 0) bounds each fetch end to end, DNS
-  lookup included (a stalled `getaddrinfo` is no longer waited on past the deadline): on expiry
-  the request is destroyed, the slot released, and the tool's `ctx.fetch` rejects with
-  `code: "FETCH_TIMEOUT"` (error `name` `IsolatedFetchTimeoutError`; not an exported class).
-  Fetches are also aborted when the run that issued them ends or is killed.
-  **Review fix (security):** an untrusted tool could crash the PARENT: a callback-less `send()`
-  to a closed IPC channel emits an uncaught `'error'` (`ERR_IPC_CHANNEL_CLOSED`), reachable by
-  `process.disconnect()` while a fetch is in flight, and a disconnected-but-alive child was
-  reused by the next call. The parent now holds a permanent `error` listener, treats
-  `disconnect` as death (SIGKILL, entry discarded, in-flight run fails with the new exported
-  `IsolatedToolDisconnectedError`), checks `proc.connected` before reuse, and sends with
-  callbacks.
-  **Review fix round 2:** (1) the runner child no longer outlives its parent: it exits on
-  `disconnect` (exit code 70) registered before any tool code loads, and the parent SIGKILLs live
-  children from ONE module-level `process.exit` hook (a `kill -9` of the parent relies on the
-  runner handler alone). Hardening only: a hostile tool can remove the runner's handler, and
-  OS-level confinement remains out of scope. (2) A DNS abort still answers the tool with
-  `FETCH_TIMEOUT` immediately, but the `maxConcurrentFetches` slot is now held until the
-  uncancellable `getaddrinfo` actually settles, so pending lookups stay bounded by the cap
-  (`brokeredFetch` takes a new optional `hooks` argument, `BrokeredFetchHooks.lookupStarted`,
-  through which the effect learns when the lookup settles).
-  (3) Every `EGRESS_DENIED` emit in the fetch handler is guarded (a throwing `ctx.emit` fails the
-  run instead of an unhandled rejection in the parent). (4) A child crash or `close()` mid-run
-  keeps its `crashed mid-run` error (the disconnect waits up to 100 ms for `exit`); a child that
-  stays alive after severing its channel, or that exits through the runner's own disconnect
-  handler, is `IsolatedToolDisconnectedError`. (5) A non-JSON-serializable input (circular,
-  BigInt) now rejects with the new exported `IsolatedToolInputError` before any timer or
-  listener is registered, leaving the healthy child alone. `StartupPhase` is now exported.
-
-- **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
-  (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of
-  [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `maxAttempts > 1`,
-  `LocalDispatcher` counted a lost start race (`ExecutionAlreadyExistsError`) or a fenced-out
-  attempt (`StorageWriteError` caused by `StaleFenceError`) as a failed attempt and
-  redispatched; the redispatch's fence superseded the healthy holder, which did the same. A
-  one-step flow's effect ran 5–6 times on a duplicate dispatch (18 under
-  `SupervisingDispatcher({ maxRestarts: 2 })`), past ADR 0004's "the interrupted step may run
-  twice". New `isSupersededRefusal(err, executionId)` and `ExecutionSupersededError` in
-  `@loom/worker-runtime`; `LocalDispatcher` and `SupervisingDispatcher` rethrow such a refusal
-  without retrying (and without tripping the circuit). It must name THIS execution, so a
-  coalesced batch's stale fence for another execution, and every other storage error, are
-  still retried. The HTTP worker answers it `409 { code: "superseded" }` instead of an opaque
-  500, and `RemoteWorkerRuntime` / `CloudRunWorkerRuntime` rethrow it as
-  `ExecutionSupersededError`. Now 1 effect (race) / 2 (after bootstrap). Defaults
-  (`maxAttempts: 1`, `maxRestarts: 0`) were already safe. **Dispatcher SPI 1.0.0 → 1.1.0**
-  (MINOR: a new MUST that non-retrying dispatchers already meet; the kit case runs only with
-  `runExecutionDispatcherConformance(…, { overWorker })`). `SupervisingDispatcher` still counts
-  an earlier genuine failure in the same dispatch; the worker server reports 409s to a new
-  `onSuperseded` hook; `RemoteWorkerRuntime` also requires the 409 body to name its execution.
-  Two things this required elsewhere: `TenantScopedEventStore` now re-raises
-  `StaleFenceError` / `DuplicateSequenceError` / `DuplicateEnvelopeIdError` with the caller's
-  (unscoped) ids — it forwarded the scoped `acme:x`, which brought the ping-pong back in full
-  under tenancy — and a start refused on the fence twice with sequence 0 still absent is now
-  `StorageWriteError` caused by the new, retryable `StartFencedOutError` (from
-  `@loom/workflow-runtime`), because settling it as superseded lost the start outright when the
-  newer token's holder had died before writing. **What settling means:** a superseded refusal
-  transfers ownership to the newer fence holder without checking it is alive — its liveness is
-  covered only by its own dispatcher policy and by `recoverAbandoned`, which deployments MUST
-  run to cover dead holders — and it can be the caller's own timed-out earlier attempt, so a
-  caller that needs the outcome awaits the execution by id rather than treating it as failed.
-- **An A2A peer that answered `/tasks/send` with the finished task was polled for it anyway**
-  (backlog L18). `createA2AClientEffect` — and so every `A2APeerClient` call — read only `id`
-  from the send answer, slept `pollIntervalMs` (default 500 ms) and asked `/tasks/:id` for a
-  result it already held: a synchronous peer (for instance a thin shim whose send handler runs
-  a graph and returns its artifact) cost every call a fixed half-second and a second request,
-  and one that does not keep finished tasks failed with `A2A status error 404`. A `completed`
-  or `failed` task in the send answer is now returned as-is; an `{ id }` answer (loom's own
-  `createA2AServer`, which submits asynchronously) and a non-terminal one are polled exactly as
-  before. Found as a full-suite load flake: `peerTaint.test.ts` spent ~500 ms of each test in
-  that sleep. Review follow-ups: a non-object or otherwise malformed send answer (a bare string,
-  `null`, or a terminal task with no `id`) now throws a clear `A2A send error: malformed answer`
-  instead of a bare `TypeError`; and a peer-supplied task id has its `/`, `?`, `#` and `%`
-  characters escaped before it is used to build the poll URL (and `A2AServer`'s `GET /tasks/:id`
-  route decodes them again), so an id containing `/` can no longer be collapsed by URL
-  normalization into a request for a different route. Deliberately NOT a full
-  `encodeURIComponent`: every loom task id contains `:` (`A2APeerClient` sets
-  `task.id = `${executionId}:${stepId}``), and escaping it would send `exec%3Astep` on the wire —
-  a 404 against an older, non-decoding `A2AServer` (or third-party peer) during a rolling
-  upgrade. Minimal escaping keeps that byte-identical while still closing the path-traversal gap.
-
-- **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
-  [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI
-  **1.5.0 → 2.0.0, MAJOR**: `checkCompatibility` refuses a `1.x` store). `listExecutionsPage` promised "lexicographic" order, which names no
-  one order: `PostgresEventStore` paged in the database collation (`en_US.UTF-8` puts `a_b`
-  before `A1`), while `ShardedEventStore` merged shard pages with JavaScript's sort and resumed
-  EVERY shard from the merged page's last id — so each shard skipped the ids that sort after
-  that cursor in one order and before it in the other, and re-served others (reproduced on a
-  PG 17 `en_US.UTF-8` cluster: 17 ids came back as 12 entries — 9 missing, 3 duplicated). Retention, the
-  read-model catch-up and every `iterateExecutionIds` pass over a sharded Postgres log were
-  silently partial. The SPI now pins the order to Unicode **code point** order (= UTF-8 byte
-  order, SQL `COLLATE "C"`, SQLite BINARY — the SQLite store already conformed), and the cursor,
-  which was opaque, is an executionId (any string) with `nextCursor` the page's last id. That is
-  MAJOR because a store conforming to 1.x can fail the new kit case (the ADR 0091 rule); no
-  method was added or removed. It also exports the reference
-  comparator `compareExecutionIds` from `@loom/event-runtime` (JavaScript's default sort
-  compares UTF-16 code units, which disagree with code points on astral characters; the
-  in-memory store and the sharded merge now use it). `@loom/plugin-postgres` declares
-  `events.execution_id` `COLLATE "C"` and converts an existing table in place on the next
-  migration (binary-coercible: no table rewrite, but the two `execution_id` indexes are rebuilt
-  under an ACCESS EXCLUSIVE lock once — ~4.5 s per 2M events measured; plan a window for a
-  large log), then re-`ANALYZE`s the column (the ALTER drops its statistics, and the planner
-  then pages with a seq scan + sort), so paging stays index-only and appends get cheaper
-  (memcmp instead of `strcoll`). The conversion waits at most `lockTimeoutMs` for its lock
-  (default 2000; set it reliably with `migratePostgresStores(pool, { lockTimeoutMs })` before
-  constructing stores, or via `PostgresEventStoreOptions.migrationLockTimeoutMs` /
-  `postgresStorage({ migrationLockTimeoutMs })`, which apply when that store migrates the pool
-  first), so it cannot queue every append behind itself, then restores the caller's
-  `lock_timeout`. The rebuild itself is exempt from `statement_timeout` (restored afterwards),
-  so a pool-level timeout cannot abort it on every boot, and so is waiting on the migration's
-  advisory lock, so a peer booting mid-rebuild queues behind it instead of failing its
-  migration (which left its store refusing every call until restart). If the lock wait times out, the
-  statement is cancelled, or a user view or rule depends on the column, boot continues with a
-  WARNING naming the two statements to run by hand — paging stays correct (the query says
-  `COLLATE "C"` itself), only slower. ADR 0108 D3 makes this the policy for future boot
-  migrations that take an exclusive lock.
-  Also fixed on the same path: `Sharded(TenantScoped(…))`, the composition
-  `TenantScopedEventStore` documents, re-served its first page forever, because the tenant view
-  handed out its INNER (prefixed) cursor while the sharded merge handed back an outer id; it now
-  speaks outer ids and, with the order pinned, seeks to its tenant's contiguous range (past
-  tenants whose names extend its own, such as `acme-eu`) and stops at its end instead of walking
-  the whole shared store. The in-memory store keeps its sorted id index across pages instead of
-  re-sorting every key per page. The conformance kit gains a code point
-  order + arbitrary-cursor case, and `@loom/plugin-postgres` runs the EventStore kit through
-  `ShardedEventStore` over three real Postgres shards (raw and tenant-scoped).
-- **`BranchRegistry.listRefs` ordered refs three different ways across backends** (backlog
-  L21, addendum to [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md);
-  BranchRegistry SPI **1.2.0 → 2.0.0, MAJOR**: a store conforming to 1.x can fail the new kit
-  case). Postgres paged in the database collation, SQLite in BINARY (already correct), and
-  the in-memory store with `String.prototype.localeCompare` — which is normalization-aware,
-  so it can return `0` for two DISTINCT names (an NFC "é" and its NFD decomposition are
-  canonically equivalent under most locales). `pruneBranchRefs` pages `listRefs` with an
-  `after` cursor, so a comparator that disagrees with the store's own order, or ties two
-  distinct names, skips or repeats refs at a page boundary — the same failure mode L10 fixed
-  for execution ids, on a second SPI. `listRefs` now orders names in the same Unicode code
-  point order D1 pinned (`compareExecutionIds`), and `after` may be any string, not only a
-  name the store returned. The in-memory store sorts with `compareExecutionIds` and caches
-  the sorted name list across calls (invalidated only when a name is added or removed), same
-  shape as the in-memory EventStore's `sortedIds`. `@loom/plugin-postgres` declares
-  `refs.name` `COLLATE "C"`, states it explicitly in `listRefs`'s query, and converts an
-  existing table in place on the next migration (one index rebuilt — `refs`'s own primary
-  key — under an ACCESS EXCLUSIVE lock, following D3's bounded-wait / fail-soft-WARNING
-  policy exactly; the two migrations now share one `loom.migration_lock_timeout` setting,
-  renamed from `loom.l10_lock_timeout`). The conformance kit gains a code point order +
-  arbitrary-cursor case for `listRefs` (mixed case, `-`/`_`, digits, NFC vs. NFD "é", an
-  astral name), and `@loom/plugin-postgres` runs the L21 migration against a real pre-L21
-  `refs` table the same way it does for L10's `events` table. `pruneBranchRefs` needed no
-  code change: it was already contract-driven.
-- **`@loom/workflow-runtime`: a fenced `TimerService` could pay for a schedule occurrence's
-  first effect twice** (backlog L12, closing the "loser's fence" residual of
-  [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `fenced: true`
-  the service acquired a fence before every occurrence START. When the losing node acquired
-  it after the winner's bootstrap was durable, the loser was correctly refused as a duplicate,
-  but its new token had already superseded the winner's: the winner's next write was refused
-  as stale after its first effect had run, the execution was left `running`, and a recovery
-  pass re-drove the step. Occurrence starts are now never fenced. The durable bootstrap
-  already refuses the duplicate at sequence 0, and the first later fence (a fenced wake or a
-  recovery pass) still fences the unfenced starter out, because a fencing store refuses a
-  missing token once one exists (a new single-`append` conformance case pins that branch).
-  So under `fenced: true` a scheduled execution accepts unfenced writes until its first fence
-  (a fenced fire, a fenced recovery pass, a cancel). A deterministic test pins exactly one
-  effect across the race and a recovery pass. As a consequence, the other ordering no longer
-  reaches `onError` either: the loser is always refused as "already started". Fires
-  (resumes) are still fenced, which keeps a duplicate fire's writes safe but NOT its effects
-  exactly-once: without `leases` (#380) a later node's fire token fences out an earlier
-  node's resume mid-body, recorded as an open residual in ADR 0103. The dispatcher path
-  (`LocalWorkerRuntime`) fences before it checks existence, so a racing first dispatch never
-  supersedes a live winner; a test pins it.
-
-  `start()` with a caller-chosen id now confirms a `StaleFenceError` at sequence 0 the same way
-  it confirms a conflict. If sequence 0 reads back, the id belongs to an existing execution
-  that has since been fenced, and the start throws `ExecutionAlreadyExistsError` (it used to
-  throw `StorageWriteError`). If sequence 0 is absent, the start retries once alone, so a
-  fresh start that shared a `CoalescingEventStore` batch with a zombie's stale write still
-  runs. Then it throws `StorageWriteError`. The retry is now truly alone: it goes out as a
-  one-envelope `appendBatch`, which a `CoalescingEventStore` flushes as its own batch. Before,
-  it re-entered the coalescing queue, so two same-id starts that shared a batch shared the
-  retry batch too, BOTH failed with `StorageWriteError`, nothing started, and a
-  `TimerService` occurrence was dropped. The `acquireFence` JSDoc no longer recommends
-  fencing a start, and warns that a fence supersedes a live holder. No SPI, KERNEL_ABI or
-  EVENT_SCHEMA change.
-
-- **`@loom/plugin-sandbox`: the worker pool's hard kill charged runtime creation and input
-  seeding to the script** (backlog L13). The worker stamped the run's start before
-  `evalInFreshRuntime` created the QuickJS runtime and seeded `input`, while the in-VM wall
-  clock is armed only after both. So the parent's hard-kill budget (`wallClockMs` +
-  `hardKillGraceMs`) was spent before the script ran: a large input — or a loaded host, where
-  even an empty runtime is slow to create — made worker mode return `limitExceeded
-  { wallClock }` for a script in-process mode completed, routing a resource kill to
-  drift-repair for a script that never ran long (reproduced deterministically: a trivial
-  script over a 16 MiB input). `evalInFreshRuntime` now takes an `onScriptStart` hook fired
-  at the instant it arms its own wall clock, and the worker publishes that instant, so both
-  clocks share one origin. The end of the charged window is unchanged: output marshalling
-  still counts, because `dump` can run script code (`toJSON`) that only the hard kill can
-  stop. One of the two causes of the full-suite "survives a hard kill" flake; the other was
-  the test asserting a 100 ms wall budget for its follow-up run, and is fixed in the test.
-
-- **`@loom/plugin-sandbox`: a worker that never starts a run now fails with a named
-  `SandboxWorkerStartupError`** (L13 review). The phases excluded from the script's budget
-  (worker scheduling, input parse, runtime creation, seeding) were already bounded by the
-  pool's startup-liveness window, but the failure was a plain `Error`, indistinguishable
-  from any other. It is now `SandboxWorkerStartupError` (`waitedMs`, `limitMs`), exported,
-  and deliberately not a `TypedFailure`: it is the environment failing, not the script, so
-  it must not reach `limitExceeded`/drift-repair, and `retryMiddleware`'s default retries it.
-  Two allowances, both reported through that error (its `phase` says which): a READY worker
-  that has not started the script within `wallClockMs + hardKillGraceMs + startupLivenessMs`
-  of the eval being posted (`phase: "start"`), and a cold worker's spawn + WASM compile,
-  which has its OWN allowance `coldStartMs` measured from the start of the warm-up and
-  independent of any run's limits (`phase: "compile"`) — a compile that never acknowledged
-  used to strand its run forever, and judging it against a run's tight wall clock would
-  bring back the cold-worker failure loop ADR 0089 D4 prevents. Both are configurable on
-  `SandboxWorkerPoolOptions` and `SandboxSpec.workers` (default 10 000 ms each).
-  `hardKillGraceMs`/`startupLivenessMs` must be finite and `>= 0`; `coldStartMs` must be
-  finite and strictly `> 0`, since it is the only clock a cold compile is ever judged
-  against — 0 there does not mean "always warmed before use" (a run's own window never
-  judges the compile), it means every cold start fails, forever, and (chained through a hard
-  kill) loops. All three refuse anything else at construction, since `NaN` silently disabled
-  the bound. `warm()` now settles when its worker exits (it hung on a worker terminated
-  mid-warm-up, including by `close()`), and does so with `SandboxWorkerStartupError` rather
-  than a plain `Error` for an unexpected exit, matching the wedged-compile case; `close()`
-  settles a run still waiting on a cold compile; and an abort during warm-up rejects the run
-  and frees the slot at once rather than after the compile. A worker the cold-start allowance
-  terminates is now replaced synchronously rather than waiting for its `exit` event to reach
-  the pool's death handler — that handler ignored a `terminate()`d worker's exit when its code
-  was 0 (which it can be, this soon after spawn, on Node 24), so the dead slot could sit
-  un-replaced until some later run's own rejection happened to reclaim it, or a `warm()`-only
-  waiter's allowance fired and nothing ever did. The death handler now treats ANY exit as
-  death unless the pool itself requested the shutdown. Also: a worker whose run threw before
-  starting now stamps the run id with `RUN_FINISHED`, so the parent recognises the finish as
-  its own.
-
-- **`@loom/plugin-sandbox`: the script's INPUT was unbounded** (backlog L19, closing
-  [ADR 0089](docs/adr/0089-sandbox-worker-pool.md) D4's "a separate question" residual).
-  `maxOutputBytes` capped what a script may EMIT; `input` stayed `z.unknown()`, JSON-stringified
-  by the caller, posted to a worker and parsed back (or seeded straight into the VM in-process)
-  — none of that work runs inside the guarded window, since every limit is charged to the
-  script's own execution, which had not started. So an oversized input was bounded only by the
-  worker pool's startup-liveness window (L13): a 200 MB input could hold a worker busy for
-  ~10 s and then fail with the untyped `SandboxWorkerStartupError`, which default retry
-  middleware then retries — repeatedly, on a call that could never succeed. `SandboxLimits`
-  gains `maxInputBytes`, checked once in `SandboxEvalEffect` — the shared caller of both
-  engines — BEFORE either is touched (and before the script is fetched): an oversized input
-  fails typed and non-retryable on a **new**, dedicated channel, `inputTooLarge { bytes,
-  limit }` — deliberately NOT `limitExceeded`, which is recorded as the SCRIPT's own outcome
-  and routes to drift-repair (re-author the script), a fix that cannot shrink a caller's
-  input. **Default is 32 MiB, matching `memoryBytes`'s own default (derived from the same
-  constant), not `maxOutputBytes`'s** — round-1 review measured real reshaping inputs at
-  1.47–30.9 MB, all succeeding today under the default heap, so the initially-shipped 1 MiB
-  default (mirroring `maxOutputBytes`) would have refused every one of them; there is no
-  general "headroom under the heap" relationship to size a tighter default against, since how
-  far a JSON text expands once parsed depends on its shape. This default therefore refuses
-  nothing that succeeds today, and is validated the same way `SandboxWorkerPoolOptions`'
-  durations are (refuses `NaN`/negative/non-numeric at construction — now also applied
-  retroactively to `maxOutputBytes`, closing the same pre-existing gap there; `0` is accepted
-  for either — "refuse every input/output" is a caller's deliberate choice, and a call that
-  omits `input` entirely, or whose script returns `undefined`, still costs 0 bytes).
-
-  Two more caller-input failure modes, found in the same review, get the same typed,
-  non-retryable treatment, reported before either engine runs: `input` that cannot become
-  JSON at all — a BigInt or a circular reference (`JSON.stringify` throws) or a bare
-  function/Symbol/`toJSON` returning `undefined` (`JSON.stringify` returns the JS value
-  `undefined`, not a string, which used to reach `Buffer.byteLength` and throw an unrelated,
-  confusing `TypeError`) — now fails typed as `inputNotSerializable { reason }`, a second new
-  channel; and an input UNDER `maxInputBytes` that still overflows the VM heap while being
-  PARSED (parsing can expand a JSON text well past its own byte length) now fails typed as
-  `inputTooLarge { bytes, limit: memoryBytes }` in BOTH engines, rather than the untyped
-  "input marshalling failed: out of memory" it used to throw — `evalInFreshRuntime` reports
-  this as an ordinary outcome (`duringSeed: true`) instead of throwing, so `SandboxEvalEffect`
-  keeps deciding channel semantics in one place (ADR 0089 D3) regardless of which engine ran.
-
-  Measured once, not twice: `evalInFreshRuntime` and `SandboxWorkerPool.runJson` (see
-  **Changed**, below) now take the already-`JSON.stringify`d input text directly rather than
-  the raw value, so the effect's one measurement is reused to seed the VM or post to a
-  worker — and worker mode no longer parses that JSON back out only to re-stringify it for
-  the VM, one JSON round trip removed rather than added. No SPI, KERNEL_ABI or EVENT_SCHEMA
-  change.
-
-- **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
-  insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
-  NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`
-  (payload `null`, [ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)) on every
-  `appendBatch` caller — the `CoalescingEventStore` flush, and `LogLifecycle` retention's archive
-  copy (so an execution that had ever resumed could not be archived to a Postgres store, and was
-  never reclaimed) — while `append` stored it fine. `payload` is now read as
-  `e->'payload'` over `jsonb_array_elements`, which keeps JSON `null` as jsonb `null` and
-  still yields SQL NULL only for an absent (`undefined`) payload, failing exactly as
-  `append` does. The conformance kit gains a direct `appendBatch` null-payload case, so an
-  undecorated store catches this without the coalescer. Every other Postgres write path
-  (`append`, `copyPrefix`, snapshot / read-model / durable-state / memory stores) binds
-  `JSON.stringify(...)::jsonb` or copies jsonb server-side and was already correct; the
-  SQLite batch path stringifies per row and was unaffected.
-
-- **`@loom/workflow-runtime`: fork points in compacted history, and the blank-stream repair**
-  ([ADR 0107](docs/adr/0107-compacted-fork-points-and-the-blank-stream.md), closing ADR 0106's
-  residuals).
-
-  - **`fork()` of a compacted parent returned a wrong state.** A fork point inside the
-    compacted prefix folded the nearest snapshot across the hole and copied a prefix missing the
-    history it claimed. `fork()` now serves a fork point exactly (every event between the
-    nearest snapshot and it survives, or a snapshot sits exactly at it) or throws
-    `CompactedForkPointError` (`reason`, `forkableFrom`, `forkableThrough`) with nothing
-    written. For a branch of a compacted parent, `forkableFrom` is its fork seed. A snapshot-seeded
-    child whose copied prefix would carry pinned events below its seed is refused
-    (`checkpoint-above-prefix`): that shape reads as never compacted. The range is now the
-    folded tip, so the checkpoint of a log compacted through its tip (`[0]`) is forkable. Before,
-    it was refused as outside `0..0`.
-  - **Events the pre-0106 bug wrote to execution `""` can be repaired.** `LogLifecycle.
-    blankStreamCensus()` / `rehomeBlankStream({ apply, assign })` and
-    `loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]` (dry run by
-    default). A segment is proven when the snapshot its run saved under the real id, at a drain
-    barrier, is exactly the fold of the stray events onto that execution's previous snapshot.
-    Proven segments are re-homed at their own sequences (`metadata.rehomedFrom`) and journaled
-    as **`EVENTS_REHOMED`** on the lifecycle stream (**EVENT_SCHEMA 1.22.0**, pure audit into
-    `_lifecycle`). Unprovable runs (a completion with no checkpoint) are listed with their
-    candidate executions, never attributed. An operator who knows the owner asserts it with
-    `--assign`. The assignment is still checked: the execution must hold a pre-0106 snapshot at
-    `from − 1`, parked at the gate the range opens by answering (the awaited event, or
-    `TIMER_FIRED` at its wake time, after any approval/`resumeAs` fact), with nothing above it.
-    An assigned range once re-homed is reported `rehomed`, not unattributed again. Shredded
-    placeholders (key of `""` gone) are refused. A
-    healthy execution can never be assigned a stray run. `occupied`, `superseded` and
-    `conflict` segments are refused. Each execution's slots land in one batch. A fenced
-    execution is written under a new fence, and a never-fenced one stays unfenced. An execution
-    that changed since the census is reported in `failed` without stopping the others. A
-    missing `EVENTS_REHOMED` fact is written on the next run, and lifecycle facts retry a write
-    conflict. A raw store that reads the stray events as ciphertext refuses to apply (use
-    `--config`). Re-runs are idempotent, and the `""` stream is left as evidence. After a repair,
-    rebuild read models, and in an encrypted deployment destroy subject `""`'s key
-    (`shredSubject(keys, raw, "", { executionIds: [] })`), which `shredSubject` now allows while
-    refusing reserved ids among the `executionIds` it tombstones.
-  - **`""` is reserved.** `isReservedStream("")` is `true`, so enumerators skip it. `start`,
-    `resume`, `resumeAs`, `cancel`, `fork` and `restoreFromState` refuse it, `loadState("")`
-    returns `null` and `compact("")` throws. `cancel("")` used to append `EXECUTION_CANCELLED`
-    into the stray stream.
-
-- **`@loom/workflow-runtime`: compaction integrity**
-  ([ADR 0106](docs/adr/0106-compaction-integrity.md), backlog L11). Defects in
-  `LogLifecycle.compact` and the code that reads what it leaves:
-
-  - **A resume after compaction lost its events.** The checkpoint was folded with no identity,
-    so its `executionId`/`workflowId`/`workflowVersion` were `""`, and the journal stamped
-    every envelope from the folded state: the resume's events were appended to execution `""`.
-    The checkpoint now takes its identity from the log. Its version comes from the base
-    snapshot, or from the latest snapshot when the base is a blank pre-0106 checkpoint. The
-    journal writes under the id it was started for and refuses a blank one, so a legacy
-    `restoreFromState` state appends nothing. Every snapshot-seeded fold (`resume`, `resumeAs`,
-    `loadState`, `cancel`, `fork`) fills a blank identity. A NON-blank one naming another
-    execution is refused (`SnapshotIdentityMismatchError`) rather than overwritten.
-  - **A second compaction dropped the first one's prefix.** It folded the surviving events
-    from scratch. It now folds on the latest snapshot at or below its checkpoint, and throws
-    `CompactionCheckpointMissingError` (nothing saved or truncated) when a compacted log has
-    none at or above its gap.
-  - **A denied resume wrote into the checkpoint's slot.** `EXECUTION_DENIED` was recorded
-    after the log's last event. On a log compacted through its tip (`[0]`), that slot sits at
-    or below the checkpoint, so the log looked never-compacted and the next compaction lost the
-    suspension. It is now recorded after the folded tip.
-  - **Compaction deleted pinned events (ADR 0055 D1).** `LogLifecycle` takes
-    `pinnedEventTypes` (`defineConfig({ durability: { retention: { pinnedEventTypes } } })`,
-    validated at boot) and keeps those events in place. Non-strings and every kernel-written
-    kind are refused, including `EXECUTION_RECOVERED` and `EffectInDoubtResolved`. `compact`
-    consults the `pinned` predicate only when no kinds are declared. With kinds declared, a
-    pinned execution (the documented sentinel setup pins by the same kinds) compacts around
-    them. A new `compactionExempt` predicate (also `retention.compactionExempt`) is consulted
-    always, and keeps a whole log uncompacted (a legal hold by tag). Reserved control streams
-    are refused.
-  - **The shred tombstone landed in the checkpoint's slot.** `shredSubject` placed
-    `PAYLOAD_SHREDDED` at `read().length`, at or below a compacted log's checkpoint. The next
-    compaction then deleted the A3 evidence, or the log read as never compacted. It now follows
-    the folded tip. **Breaking:** on a store that can `truncatePrefix`, pass the raw
-    `snapshotStore` (or `tombstoneSequenceOf`). Otherwise it refuses, before the key is
-    destroyed. Sequences for every execution are resolved BEFORE the key is destroyed, so the
-    app's encrypting snapshot store works. A partial append failure throws
-    `ShredIncompleteError` after attempting every execution. A re-run with the key already gone
-    writes only the missing tombstones. An execution already counts as done when compaction
-    folded its tombstone into the checkpoint. The documented shredder no longer guards on key
-    existence, which would never have retried. **SnapshotStore SPI 1.1.0:** optional
-    `loadLatestSealed`, the latest snapshot at rest, never decrypted. `EncryptingSnapshotStore`
-    implements it and `TenantScopedSnapshotStore` forwards it, so a retry works through a
-    tenant-scoped encrypting store. `EraseCoordinator` also refuses a snapshot whose
-    non-blank identity names another execution (`SnapshotIdentityMismatchError` and
-    `assertSnapshotIdentity`, exported from `@loom/snapshot-runtime`).
-  - **Erasure waited forever on a compacted terminal execution.** `EraseCoordinator` folded
-    the log alone. It now takes `snapshotStore` (`defineConfig` wires it).
-  - **The tip rule.** When compaction keeps events, it never removes the log's tip. A
-    checkpoint is therefore always the log's highest missing sequence, a gap-free log was never
-    compacted, and no reader needs a "checkpoint above the tip" special case (except the
-    bootstrap-only `[0]` a keep-nothing compaction leaves).
-
-  **EventStore SPI 1.5.0:** optional `truncatePrefixKeeping(executionId, through,
-  keepEventTypes)`, one atomic delete. In-memory, SQLite and Postgres implement it, and every
-  decorator forwards it; the hash-chained store refuses it, as it refuses `truncatePrefix`.
-  **A store without it can never compact past a log's first pinned event**, so a long-lived
-  execution that records a finding early keeps an unbounded replay tail there. `compact` warns
-  (`onWarn`) once per execution. The conformance kit now checks `truncatePrefix` and
-  `truncatePrefixKeeping`.
-
-  Readers updated:
-  - The content sweep finds a gapped log's checkpoint as the lowest snapshot in `[gap, tip]`.
-    A kept finding at sequence 1 used to hide a compaction and let the orphan pass erase
-    checkpoint-only refs, and a child forked from a compacted parent was refused.
-  - `liveQuery` checks a delta's whole span.
-  - The replay inspector refuses a position inside compacted history (`CompactedHistoryError`)
-    instead of folding across the gap. It probes past the segment with one `head` read.
-  - The content sweep reads a forked child's seed directly (`metadata.forkSequence`,
-    `loadAt`).
-
-### Changed
-
-- **`@loom/replay-vm`: a step failure the flow catches no longer fails the execution**
-  ([ADR 0105](docs/adr/0105-a-caught-step-failure-is-not-the-executions.md)). `STEP_FAILED`
-  folded the EXECUTION status to `failed` as well as the step's frame, so a flow that caught the
-  failure (try/catch around `ctx.run`, a saga compensation, a typed-failure fallback) ran on
-  under a terminal status. A crash after the catch left an execution `recoverAbandoned` and the
-  dispatcher would never re-drive, `cancel` refused, retention could prune as finished, and A2A
-  peers polling it were told `failed` (`"unknown error"`). A parallel sibling failing AFTER the
-  flow parked did the same to a suspended execution: its gate could not be resumed, and
-  `TimerService` retired a timed park's row as obsolete. `STEP_FAILED` now folds the frame only, like `STEP_CANCELLED`;
-  `EXECUTION_FAILED`, which the kernel commits when a failure escapes the runner, stays the
-  execution's terminal failure.
-
-  - **EVENT_SCHEMA 1.21.0** (no new kind or payload field; KERNEL_ABI unchanged): the status
-    fold changed, and a new reserved fold key `_failedWhileParked` (`FAILED_WHILE_PARKED`) marks a
-    parked execution a `STEP_FAILED` landed on. A `null` `EXECUTION_RESUMED` in that position stays
-    status-only, as 1.20.0 folded it (a 1.20.0 `resumeAs` wrote exactly that entry), so every gate
-    passthrough folds as under 1.20.0 and the result no longer depends on which snapshot seeds the
-    fold. The key is removed by whatever ends the park (a park, a resume, or a terminal event).
-    **Cost (fail-closed), refused at ingress:** a caller's `null` answer to such a gate cannot be
-    its answer, so `resume` / `resumeAs` refuse it with `ResumeRefusedError`
-    (`null-answer-after-parked-failure`, new reason) and append nothing; resume with a non-null
-    answer.
-  - Snapshots saved by an older fold are repaired on read: `normalizeSnapshotState`
-    (`@loom/replay-vm`, new export) reads `failed` with no `_error` and a failed frame as
-    `running` (`suspended` when parked) — on every stored-fold read, including `restoreFromState`.
-    Two shapes it cannot tell from a genuine failure, so an old snapshot keeps `failed`: an
-    `EXECUTION_FAILED` without `error` (never kernel-written), and an execution that genuinely
-    failed, was re-opened by `resumeAs` (stale `_error`) and then caught a step failure. Delete
-    that execution's snapshots (`snapshotStore.deleteExecution`) to make the log authoritative.
-  - New `reconcileTimers(runtime, { source, timers })` (`@loom/workflow-runtime`) re-arms the
-    timer row of every execution suspended on a `wakeAt` (idempotent). Needed once after
-    upgrading: a timed park whose sibling failed under the old fold had its row retired by
-    `TimerService`, and now reads `suspended` with nothing to wake it.
-  - **Behaviour change:** when the `EXECUTION_FAILED` write itself fails, the run now rejects with
-    `StorageWriteError` (`cause` = the store's error) instead of the step's error — the log folds
-    `running`, so the caller must not be told "failed". `handle.getState()` and `onEvent` remain
-    the in-memory view (they saw the commit) and read `failed`.
-  - `recoverAbandoned` takes an optional `maxRecoveries` (≥ 1; default unbounded): the number of
-    CONSECUTIVE re-drives without progress (`EXECUTION_RECOVERED` at the log's tail since the
-    last `STEP_COMPLETED` / `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED`), checked only for claimed
-    candidates. Executions at the bound are skipped, counted in `summary.exhausted` (new field)
-    and reported through `onExhausted`. `loom recover --max-recoveries N` lists them.
-  - `loom eval` goldens that pinned `status: "failed"` for a log ending after a caught failure
-    now fail and must be re-recorded.
-  - **Upgrade note.** On the first deploy every stored execution whose log ends after a caught
-    step failure changes from `failed` to `running`. A staleness-predicate `recoverAbandoned`
-    pass then selects all of them, however old, and re-drives each (re-executing an untyped
-    failing effect; a changed flow hash throws on every pass), and `LogLifecycle` stops pruning
-    them; timed parks whose row the old `TimerService` retired never wake. Before enabling
-    recovery: run `orphanCensus` or `recoverAbandoned({ dryRun: true })`, bound `isAbandoned` by
-    age, cancel what should not resume, set `maxRecoveries`, and run `reconcileTimers` once.
-
-- **`@loom/workflow-runtime`: a gate is answered only by a resume addressed to it**
-  ([ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)). **Security fix.**
-  `ctx.suspend` serves the recorded resume payloads to gates in order (ADR 0057), so every
-  `EXECUTION_RESUMED` payload is some gate's answer. Four writers recorded one that answered no
-  gate, and the flow's NEXT gate consumed it: no resume named the gate, no authenticator saw an
-  approval, and the gate's declared `resumeSchemas` entry (ADR 0077) was never consulted.
-
-  - Crash recovery (`recoverAbandoned`, `LocalWorkerRuntime`) wrote `EXECUTION_RESUMED {}`. A
-    flow that crashed before `ctx.suspend({ on: "go1" })` passed go1 with `{}`. Recovery now
-    records `EXECUTION_RECOVERED` alone.
-  - An in-doubt verdict (K9.3) became the next gate's approval. It is now a kernel
-    `DECISION_RECORDED` keyed by step and attempt, so a verdict also goes stale correctly: a
-    "retry-fresh" attempt that itself crashes re-parks in doubt rather than calling the
-    non-idempotent tool again. A resume at an in-doubt park that is not a verdict for the parked
-    step is now refused (`ResumePayloadValidationError`, nothing appended); it used to be
-    appended and re-park.
-  - A HumanEffect step's answer went to the next gate while the step re-parked forever. A
-    `kind: "human"` step now consumes its answer in order with `ctx.suspend` and completes with
-    it.
-  - `resumeAs` onto a crashed execution answered its next gate. Onto a terminal one it now
-    records `EXECUTION_RESUMED(null)`, which re-opens the execution (a crash during the migrated
-    run is recoverable) without answering a gate.
-  - `resumeAs` onto an execution parked at a gate answered it under ANY event name, with no
-    schema, authenticator or authorizer check. It now enforces all of `resume`'s gate rules
-    there.
-  - Flow and effect code could forge kernel state: `ctx.emit("EXECUTION_RESUMED", …)` answered
-    the flow's own gate, and `STEP_STARTED` + `EFFECT_INDOUBT` + `EXECUTION_RESUMED(verdict)` got
-    a non-idempotent step adopted with no tool call. **Behaviour tightening:** `ctx.emit` /
-    `stream` / `ui` and `EffectContext.emit` now refuse every kernel event type except
-    `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED`, `EGRESS_DENIED`, `EFFECT_DENIED`,
-    `OUTCOME_RECORDED` and `DECISION_RECORDED`, and validate those.
-    - Meter values must be finite, non-negative and plausible.
-    - An EFFECT's `DECISION_RECORDED` is recorded as `effect:<stepId>#<attempt>:<id>`, so it can
-      never pre-empt the flow's `ctx.decide`. `AgentRunner`'s routing facts move to that id.
-    - No userspace emit may change a recorded choice.
-    - An isolated tool's relay forwards application events only; a kernel type fails the run.
-    - Decision ids beginning `__loom_` are reserved (`ctx.decide` and emits refuse them; a getter
-      cannot dodge the check).
-    - A verdict counts only beside the kernel's own `EFFECT_INDOUBT` fact for that step and
-      attempt.
-  - A human step's park now records `condition.stepId` (kernel-only). A pre-0104 log whose open
-    human step's answer cannot be told apart from another entry is refused
-    (`ResumeRefusedError`, new reason `ambiguous-legacy-answers`) unless the operator resumes
-    with an event carrying `discardLegacyAnswers: { stepId, count }` that the configured
-    `ResumeAuthenticator` VERIFIES (never on recovery or a timer). It is recorded durably with
-    the verified actor. The old kernel never completed a human step, so nothing that ran is lost.
-
-  **EVENT_SCHEMA 1.20.0:** the fold treats a `null` `EXECUTION_RESUMED` into an unparked or
-  in-doubt execution as status-only. The EventStore conformance kit now asserts that a `null`
-  payload round-trips. Logs written by the old kernel replay as written, because withdrawing an
-  entry that already passed a gate would re-park the flow behind recorded steps or shift later
-  payloads one gate early. `resume()` classifies them via `onWarn`, once per execution: "passed"
-  (audit which gate) or "at-risk" (the next gate WILL pass with it — act now). **Rolling deploys:**
-  hold in-doubt verdicts and `resumeAs` onto terminal executions until every node runs this
-  version; an old node folds the new `null` resume as a gate answer. Downgrade is unsafe for the
-  same reason. A recovery no longer counts as a
-  resume in `@loom/analytics` or fires telemetry's `onFlowResume`. KERNEL_ABI unchanged (1.1.0).
-
-- **`@loom/agent`: `agentLoop$` compaction also triggers on bytes** ([ADR 0087](docs/adr/0087-durable-agent-loop.md)
-  D5, amended). D5 named claim-check as the "bytes per turn" answer to the log-growth trade-off;
-  it isn't — claim-check offloads a tool RESULT's bytes, not the transcript an agent journals as
-  every turn's `STEP_STARTED` input, so one oversized tool result rode along uncompacted until it
-  aged past `keepRecent` on message count alone. `compaction` gains `afterBytes` (a running UTF-8
-  byte count maintained per message push, O(1) amortized, never a re-serialization — so it stays
-  replay-deterministic) alongside the original `afterMessages`; at least one is now required,
-  enforced by a constructor guard. The byte trigger keeps the longest run of the newest messages
-  whose bytes total at most `afterBytes / 2` (floored at 1, capped at `keepRecent`), and skips
-  compacting a turn where the newest message alone is already over budget rather than paying a
-  summary call that folds nothing. Also documents, rather than adds a hook for, the claim-check
-  contract toward the model: a claim-checked tool's result reaches the model as the recorded
-  envelope (ref + digest), never resolved back to its bytes — resolving it would put those bytes
-  into the NEXT turn's journaled input, undoing the offload — so declare a `digests[toolId]`
-  projection for model-facing claim-checked tools. A `resolveToolResult` hook was considered and
-  rejected for the same reason. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged; existing
-  `afterMessages`-only configurations are unaffected.
-
-- **`@loom/plugin-a2ui`, `@loom/plugin-mcp-app`: A2UI structural validation — dangling ids,
-  cycles, unreachable components, malformed catalogues** ([ADR 0088](docs/adr/0088-blueprint-conformance.md)
-  D5, amended). `validateComponents` gains four finding codes checkable without JSON Schema —
-  `dangling-child`/`dangling-template` (error; a `children` reference no component in scope
-  defines), `child-cycle` (error; a component reachable from itself via `children`), and
-  `unreachable-component` (warn; no path from `root` reaches it, reported only when
-  `requireRoot` and a root exists) — via one iterative white/grey/black DFS, O(V+E), no
-  recursion. `column("root", ["ghost"])` and `column("root", ["root"])` previously passed with
-  `ok: true`; both now fail. New `validateCatalog(catalog)` checks that every `components`/
-  `functions` entry's key agrees with its own `component.const`/`name`
-  (`catalog-entry-key-mismatch`/`catalog-function-key-mismatch`), run in the
-  `A2UISurfaceBridge` constructor. `ValidateComponentsOptions` gains
-  `knownComponents?: ReadonlyMap<string, ComponentInstance>` so a batch's `children` may resolve
-  against ids outside itself. `@loom/plugin-mcp-app`'s `surfacePayload` never validated at all
-  (an unknown component silently rendered as nothing); `SurfacePayloadOptions` gains
-  `catalog?: A2UICatalog` (default `defaultCatalog`) and `surfacePayload` now validates with
-  `requireRoot: true` and throws like the A2UI bridge — **one breaking change, loud:** a
-  previously-unexamined bad tree now throws.
-
-  **The correction that made recompose checkable:** `A2UISurfaceBridge.recompose` replaces its
-  stored tree with each batch, while an A2UI client MERGES `updateComponents` by id — so
-  validating a batch against only itself (or the bridge's previous batch) would reject a
-  batch's correct reference to an already-delivered sibling. The bridge now keeps
-  `clientView: Map<id, ComponentInstance>`, seeded in full when the session opens and merged
-  incrementally per batch (O(batch)), and `recompose` validates and walks cycle detection
-  against the batch overlaid on that view — so a batch may reference any earlier batch's
-  component, and a batch that closes a cycle back through an already-sent component is still
-  caught. Deferred: prop-VALUE JSON-Schema checking and `callFunction` argument validation
-  (need a JSON-Schema engine plus A2UI `common_types.json` `$ref` resolution — a consumer with
-  a typed catalogue, likely loom-ui, is the trigger). No kernel change; EVENT_SCHEMA and
-  KERNEL_ABI unchanged.
-
-- **`@loom/conformance`: `runLlmProviderConformance` no longer passes a stream that
-  silently drops a tool call.** The kit's own request carries no `tools`, so the general
-  parity test could never observe a dropped `toolCalls` — a vacuous input twice over
-  (the 2026-09-27 backlog audit, item 4). `runLlmProviderConformance` gains a third,
-  optional argument, `opts?: { toolRequest?: LlmRequest | null }`:
-  - given a `toolRequest` (a request the provider is known to answer WITH a tool call),
-    and when the provider has `stream`, `complete(toolRequest)` MUST itself return ≥1
-    tool call (a fixture that makes none is a refusal, not a pass), the stream's
-    assembled `toolCalls` MUST `toEqual` it, and when `completed.stopReason` is
-    `"tool_use"` the streamed `stopReason` MUST equal it;
-  - omitting `toolRequest` on a provider that has `stream` is now a FAILING case —
-    "stream parity for tool calls is unproven — pass `toolRequest`" — an absent input is
-    a refusal, per the vacuous-check pattern;
-  - a text-only provider that genuinely cannot call tools opts out explicitly with
-    `{ toolRequest: null }`, visible in its own test file rather than inherited from an
-    unset default.
-
-  This is a behavioural tightening of the conformance contract, not an SPI shape change:
-  there is no `LLM_SPI_VERSION` constant to bump (`@loom/llm` has none, and the LLM SPI
-  is absent from `docs/spec/compatibility-matrix.md`), so the tightening is recorded here
-  and on `LlmStreamChunk`'s docstring (`packages/llm/src/types.ts`) instead. The rule
-  itself lives in a new internal module, `packages/conformance/src/toolCallParity.ts`
-  (not re-exported from the package's single public entry point — no second consumer has
-  named a standalone need for it, ADR 0083), so its negative cases (a stream that drops a
-  tool call, a vacuous fixture, a missing `toolRequest`) can be unit-tested directly —
-  vitest has no supported way to prove a nested `describe`/`it` fails from inside a
-  running test. `loom-plugins` and `loom-examples` call the kit zero times today
-  (re-grepped at execution time), so the blast radius is the scaffold template only
-  (`tools/scaffold/src/plugin.ts`), which now shows `toolRequest` in its generated example
-  call. `docs/requirements/2026-08-18-agent-runtime-placement-evaluation.md` gets three
-  status notes: K8.4 shipped via ADR 0020 A8's `streamTokenBudget`, not the dropped
-  `EffectContext` usage-reporter field the doc still described as pending; and
-  `@loom/live-query` is not the "transient delta sink" a since-corrected paragraph named
-  it as (it has no delta-push API — see the 2026-09-27 backlog audit's item 2 and
-  [ADR 0040](docs/adr/0040-live-query-and-orchestration.md)).
-
-- **`@loom/live-query`: `subscribe` folds incrementally — O(N), not O(N²)**
-  ([ADR 0040](docs/adr/0040-live-query-and-orchestration.md) Amendment). The 2026-09-27 audit
-  confirmed `subscribe` re-folded from genesis (`reader.loadState`) on every wake-up — exactly
-  the O(N) rows/event, O(N²)/lifetime cost `WorkflowRuntime.foldState`'s own docstring names
-  (measured: N²/2 rows folded, 10.6s at N=4,000 on SQLite). `subscribe` now calls
-  `reader.loadState` exactly once per subscription and folds every later delta
-  (`eventStore.readFrom(id, tip + 1)`) onto the kept state with `@loom/replay-vm`'s
-  `foldEvents` — no new fold, no new version (`fold(snapshot, suffix) === fold(events)`, already
-  load-bearing for snapshots/compaction). Also fixes a doc bug the same audit found:
-  `createLlmEffect.ts` and `chunkDeltas.ts` named live-query a "natural"/"purely transient" sink
-  for streamed deltas, but live-query has no delta-push API (`snapshot` + `subscribe` over
-  DURABLE events) — both now name `progressHub` (or the app's own `onDelta` handler). New
-  dependency: `@loom/replay-vm`. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged.
-
-- **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
-  ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
-  `scriptError { name?: string; message: string }` — whatever the script threw on this input,
-  including a non-Error value (`throw 42` → `{ message: "42" }`), a SyntaxError in its source,
-  and a ReferenceError for `fetch`/`require`/`process` (previously deliberately untyped: the VM
-  cannot tell a missing capability from a typo). `name` is kept only when it is a string
-  (≤ 128 chars), `message` is bounded at 2048, and no stack is ever carried. Callers can now tell
-  "the script threw" from an infrastructure failure without parsing error text: a closed or
-  failed worker pool, a script whose bytes do not match their content address, input
-  marshalling and cancellation all stay untyped, and a guard kill stays `limitExceeded` even
-  when the script catches it and rethrows. Being declared, it is recorded as
-  `STEP_FAILED { channel, payload }`, substituted on replay and not retried (ADR 0060). The error
-  message keeps the old `sandbox script failed: Name: message` text. Additive for replay: an old
-  log's untyped STEP_FAILED has no channel, is never substituted as `scriptError`, and keeps
-  legacy re-execution. `docs/api-reference.org` had the channel map wrong
-  (`limitExceeded`/`badShape`) and stale `sandboxEval$`/`registerSandboxEval` signatures; both
-  are fixed. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged.
-
-  Also: memory/CPU kills are read from the text of the engine's own `InternalError` only — a
-  script's `throw new Error("connection interrupted")` (or "…out of memory…") was previously
-  reported as `limitExceeded` and is now `scriptError`. Script-authored text is bounded without
-  splitting a surrogate pair, and lone surrogates and NUL become U+FFFD, so the failure event is
-  storable in Postgres `jsonb`. The text is untrusted and not taint-wrapped: never put it in a
-  prompt's instruction position.
-
-  **Upgrade note:** a run that is paused or suspended past an untyped failed sandbox step (a
-  flow that caught the old `Error("sandbox script failed: …")`) re-runs that step when resumed
-  on this version — untyped failures were never substituted — and the re-run now throws a
-  `TypedFailure` on `scriptError`. A catch that tests `instanceof TypedFailure` or the channel
-  takes that branch on the re-run; the recorded events are untouched.
-
-- **Blueprint IR 2.4.0 (ADR 0101).** A minor bump so a container keeps its identity when a
-  recompose inserts or reorders containers around it:
-
-  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `id` — the same rule as
-    `Widget.id` (a non-empty string, no charset, no length cap; `isLayoutId` is the one spelling
-    of it). `grid`/`flex`/`stack` accept it
-    and omit the key when absent, so an unid'd layout's bytes and content address are 2.3.0's; a
-    present id enters the address.
-  - Widget ids and layout ids are one namespace: `duplicate-node-id` now also fires for
-    widget↔layout and layout↔layout collisions. `validateBlueprint` gains `layout-id-invalid` — a
-    `warn` for a present id that is not a non-empty string, which every reader then treats as
-    absent. Layout-level findings name the layout by its id when it has a valid one.
-  - New `blueprintLayoutIds`; `preservesBlueprintNodes` compares widget ids AND layout ids, so a
-    re-identified container is a `dropped-node-id` finding. `blueprintNodeIds` stays widget-only.
-  - `@loom/plugin-renderer-react` keys a container by its id, fixing the index keys nested
-    containers got: inserting a container mid-list no longer re-creates the widgets of the
-    containers after it (typed input and focus survive). Grid cell keys are prefixed (`k:` keyed,
-    `i:` by index) so an id like `"1"` cannot collide with an index key. The DOM is unchanged.
-    `@loom/plugin-renderer-terminal` ignores the id; its output is byte-identical.
-  - `BLUEPRINT_IR_VERSION` moves `2.3.0` → `2.4.0` with a sixth pinned digest; 2.3.0 (like 2.0.0
-    to 2.2.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`.
-
-- **Blueprint IR 2.3.0 (ADR 0100).** A minor bump so a bound widget whose upstream answered with
-  nothing can say "no data" instead of failing:
-
-  - `BindingState` gains `"empty"` — delivery succeeded and there is no subject to show. It
-    travels the existing status channel (`binding.status.path`); `isBindingStatus` admits it
-    under the same rules as the other four states. Not an error; it triggers nothing.
-  - The canonical matrix gains an `empty` row right after `error` and before the `check` slot
-    (there is no value to check). A producer must clear the bound value when it publishes `empty`;
-    a reader ignores one if it is there.
-    `@loom/plugin-renderer-react` renders `data-binding-state="empty"` with a `role="status"`
-    marker `○ <title>: no data` (or the finding's message); `@loom/plugin-renderer-terminal`
-    prints the same row. A pre-2.3.0 reader sees `empty` as a malformed status and falls back to
-    its loading/ready row, never its error row.
-  - `BLUEPRINT_IR_VERSION` moves `2.2.0` → `2.3.0` with a fifth pinned digest; 2.2.0 (like 2.0.0
-    and 2.1.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`. No new finding: a
-    status is runtime projection data, never part of the artifact.
-
-- **Blueprint IR 2.2.0 (ADR 0099).** A minor bump so a container can ask for a renderer of its
-  own, the way a widget does through `kind`:
-
-  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `role` — the open,
-    app-defined container axis (`"stepped"`, `"tabbed"`, …); `type` stays the geometry.
-    `grid`/`flex`/`stack` accept it and omit the key when absent. Never an ARIA role, never
-    display text.
-  - `isLayoutRole` is the one spelling of a well-formed role (`/^[a-z][a-z0-9-]{0,63}$/`);
-    absent, malformed or unknown ⇒ the plain container. A renderer that keys containers keys
-    them by ordinal + `type` + `role`, so a role change is a remount.
-  - `BLUEPRINT_IR_VERSION` moves `2.1.0` → `2.2.0` with a fourth pinned digest; 2.1.0 (like
-    2.0.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`.
-  - `validateBlueprint` gains `role-invalid` — a `warn`, once per layout whose `role` is present
-    but not `isLayoutRole`. A well-formed role no renderer knows is not a finding.
-  - `@loom/plugin-renderer-react` and `@loom/plugin-renderer-terminal` ignore the role: a roled
-    artifact renders exactly as the unroled one.
-
-- **Blueprint IR 2.1.0 (ADR 0098).** A minor bump for genUI's migration onto loom-ui, which
-  needs free placement and titled views:
-
-  - `GridCell` gains optional `row`, `rowSpan` and `column` (1-based grid lines; `span` is still
-    the width). All absent = flow placement, as before. `cell(span, node, { row, column,
-    rowSpan })` states a placement.
-  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `title` (a section heading);
-    `grid`/`flex`/`stack` accept it.
-  - `BLUEPRINT_IR_VERSION` moves `2.0.0` → `2.1.0` with a third pinned digest. 2.0.0 artifacts
-    are read as they are: `validateBlueprint` knows `2.0.0`, and `upgradeBlueprint` is identity
-    on it, so no stored artifact is re-addressed.
-  - `validateBlueprint` gains `placement-out-of-range` (one finding per cell; never a cascade
-    from a bad `span` or `columns`).
-  - `@loom/plugin-renderer-react` wraps a placed cell with explicit `grid-column`/`grid-row`
-    and renders a titled layout as `<section><h2/>…</section>`; `@loom/plugin-renderer-terminal`
-    prints placed cells in reading order and a titled layout under an underlined heading. An
-    unplaced, untitled artifact renders exactly as it did under 2.0.0 on both.
-
-- **Blueprint IR 2.0.0 (ADR 0097).** Three leaks loom-ui's adapters had been working around —
-  never reaching loom's own renderers, or a third consumer — are now channels the IR itself
-  carries:
-
-  - `GridLayout.children` is now `GridCell[]` (`{ span?: number; node: Widget | Layout }`)
-    instead of a bare `Array<Widget | Layout>`, so a grid child's column span is a fact of the
-    IR rather than a `props.span` side channel one renderer honoured and the other silently
-    dropped.
-  - `DataBinding.status?: { path }` names where, in the *same* projection state as the bound
-    value, that binding's delivery state (`BindingStatus`: `state: BindingState` —
-    `"pending" | "ready" | "stale" | "error"` — plus optional `seq` and `finding`) lives. Both
-    first-party renderers now show pending/stale/error from a declared channel.
-  - `Widget.source?: WidgetSource` (`{ type, version, degradedFrom? }`) names what a widget
-    actually stands for and the semantic types it was degraded through to reach its rendered
-    `kind` — never smuggled through `props`.
-  - `DataBinding.sensitivity?: DataClass` (from `@loom/classify`, type-only) declares a
-    binding's confidentiality class on the artifact; this ships the field only, audience
-    enforcement is a loom-ui concern.
-
-  This is a **MAJOR** bump: `BLUEPRINT_IR_VERSION` moves `1.0.0` → `2.0.0`, with the `1.0.0`
-  digest kept pinned beside the new `2.0.0` one ([ADR 0096](docs/adr/0096-blueprint-stable-rendering-ir.md)'s
-  guard). Readers accept 1.0.0 transparently — `asCell` normalises a legacy bare grid child on
-  every read path, and `upgradeBlueprint(bp)` re-addresses a whole 1.0.0 artifact to 2.0.0
-  explicitly (identity on already-2.0.0 input) for a caller that wants to. Writers always emit
-  2.0.0: `blueprint$` stamps `irVersion`, and `grid({ columns, children })` now accepts
-  `Array<GridCell | Widget | Layout>` and normalises every element, so every existing
-  `grid({ children: [...] })` call in this repo and its examples keeps compiling unchanged; a
-  new `cell(span, node)` builder is how a caller states an explicit span.
-
-  `validateBlueprint` gains seven new finding codes: `span-out-of-range`, `columns-invalid`,
-  `malformed-node`, `status-path-invalid`, `sensitivity-unknown`, `source-invalid`,
-  `ir-version-unknown` — all findings, never throws. `columns-invalid` (a grid's `columns` is
-  not a positive integer) suppresses that grid's span check, so one bad `columns` yields one
-  finding rather than one per child; `malformed-node` (a layout child that is neither a
-  `Widget` nor a `Layout` — a stray `null`, a string, a `GridCell` outside a grid) makes the
-  walk total, so a model-composed artifact can never make `validateBlueprint` throw.
-
-  `@loom/plugin-renderer-react` gains `WidgetFrame` (applies the canonical binding-status
-  matrix and `source` data attributes around a widget's rendered body — adds **no** wrapper
-  element for a widget with neither a declared status channel nor a `source`, so a 1.0.0
-  artifact's DOM is unchanged) and `useWidgetSlice` (a fiber selector over `{ value, status }`
-  together). A grid child gains a wrapper element **only** when its span exceeds 1; span-1
-  children, and therefore every 1.0.0 grid, are DOM-identical to 1.0.0 and still reconcile by
-  widget id. `@loom/plugin-renderer-terminal`'s `TerminalWidgetRenderer` gains an optional
-  third `status?: BindingStatus` parameter, and the terminal output gains status glyphs
-  (`⋯` pending **and the loading row** — a declared channel with no value yet renders
-  `⋯ <title>` rather than `<title>: —` — `~` stale, `✗` error) and a degraded-from suffix when
-  a channel or `source` is declared — output for a widget with neither is byte-identical to
-  before.
-
-  Both renderers take an optional `check(widget, value)` (`TerminalRenderOptions.check`; the
-  `check` prop on `BlueprintRenderer` and `WidgetFrame`): the value-contract slot the matrix
-  leaves between `error` and `stale`. loom validates nothing about a bound value itself — a
-  framework's own kind contract plugs in there, and a returned `{ code, message }` renders as
-  the error row. It runs only for a widget that declares a status channel and only when
-  delivery has not already failed.
-
-  A widget with no declared status channel — the overwhelming majority of existing artifacts —
-  renders exactly as it did under IR 1.0.0, on both renderers.
-
-### Fixed
-
-- **`docs/scaling.md` and ADR 0074 D4 corrected: bucketed NOTIFY fixes client-side delivery,
-  not the writer-side cost; `tools/bench-throughput` section C is un-vacuated**
-  ([ADR 0074](docs/adr/0074-storage-scale-out-decorators.md) Amendment). D4 claimed bucketed
-  `LISTEN loom_events_<bucket>` "fixes an O(events × nodes) broadcast whose cost lands on the
-  writer." It fixes client-side filtering and the follow-up per-notification `SELECT`; it does
-  not fix the writer cost, which is per LISTENing backend and channel-independent — a listener
-  that receives **zero** notifications (LISTENing on a channel nobody publishes to) costs the
-  writer almost as much as one receiving every notification (measured 1.18×–1.73× vs.
-  1.22×–1.90×, 4 runs, own local PG 17). The bug this corrects was caught because the bench
-  that produced D4's original numbers had gone vacuous: `attachListeners` still LISTENed on the
-  pre-bucketing legacy channel after `PostgresEventStore` moved to bucketed channels, so section
-  C's listeners received nothing every run and printed "0 delivered … = 0 per event" beside a
-  writer-throughput number that still dropped 2.28× in the same run — and `scaling.md` §3.1 read
-  "**[open]** … nothing implements it yet" under a heading of SHIPPED. `attachListeners` now
-  takes the real channel list off the writer's own store instance
-  (`PostgresEventStore#notifyChannels()`, an instance method, not a free function taking
-  `notifyBuckets` by hand — review round 1: a bench-side literal has no way to notice the
-  instance's configured value change) and the bench fails outright (`VacuousDeliveryError` via
-  `assertDelivered`) if any expected channel delivers nothing — a PER-CHANNEL check, not
-  merely a nonzero total, so a partial coverage gap (half the expected buckets silently idle)
-  cannot hide behind an aggregate that still reads nonzero. A negative case proves the guard
-  does NOT fire on a legitimately-empty unrelated-channel row, and another proves it fires on
-  partial coverage even when the aggregate total is nonzero.
-  Scenario H gains a disjoint-interest variant (`partitionDisjoint`, confirming delivered
-  notifications per node drop to exactly `1/nodeCount` while writer throughput does not track a
-  clean prediction — plausibly single-host contention, not a fan-out win) and a
-  `CoalescingEventStore` variant (measured 1.21×–1.54× recovery). **Recommend
-  `CoalescingEventStore` for multi-node deployments with live subscribers**, and record a
-  transport change (separate notifier connection, watermark polling, or a Redis/NATS bus as a
-  3P plugin) as considered and rejected for now — `CoalescingEventStore`'s measured headroom is
-  enough without it. No SPI change, no kernel change; `EVENT_STORE_SPI_VERSION` stays 1.4.0.
-
-- **Kernel: a duplicate `start()` with a caller-chosen execution id is refused before any effect
-  runs** ([ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md); KERNEL_ABI and
-  EVENT_SCHEMA unchanged). `start()` checked nothing: the bootstrap `EXECUTION_STARTED` was folded,
-  delivered to `onEvent` and only enqueued, and the body ran at once, so a second start of the same
-  deterministic id invoked its effects (a paid model call in the probe) before the store refused
-  sequence 0. Now, when the caller supplies `executionId`, `start()` awaits the durable write of
-  sequence 0 first — the same envelope, byte for byte, through a builder shared with the journal —
-  and a sequence/id conflict — confirmed by reading this execution's sequence 0 back, because a
-  coalesced batch hands every caller the same conflict error (an unconfirmed one is retried once)
-  — throws the new `ExecutionAlreadyExistsError` with nothing folded, nothing delivered and
-  nothing run. Any other failure of that write rejects `start()` with
-  `StorageWriteError`. `TimerService` treats the typed error as "already started", which closes
-  the cross-node race its `loadState` pre-check left open. There is no `startOnce` helper: catch
-  the error. A minted ULID cannot collide, so `start()` without an `executionId` pays no extra
-  write and behaves byte-identically. `onEvent` remains pre-durability for every later event, now
-  documented; a consumer that must act only on durable facts uses a catch-up read.
-
-  **Upgrade note:** code that started the same caller-chosen id twice and awaited the second
-  handle now gets `ExecutionAlreadyExistsError` from `start()` itself. A test that relied on the
-  duplicate "succeeding" was testing the defect.
-
-- **The content sweep is race-safe, reclaims orphans, and takes external root sets; ContentStore
-  SPI 1.3.0** ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D5–D7, amended).
-  - **D5, the re-cite race.** A `put` of bytes the store already held was a no-op (`INSERT OR
-    IGNORE`). A sweep that ran between a re-citing `put` and that execution's event append
-    therefore erased the blob by its *old* citation time, and the new event cited a blob that
-    was gone. SPI 1.3.0 adds an optional atomic `deleteIfUntouchedSince(ref, cutoffMs)` and
-    `touchClock()`. A store implementing them MUST bump a blob's touch time, monotonically, on
-    every `put`/`putStream`. The guard cutoff is on the STORE's clock: `touchedBefore`, which
-    defaults to `touchClock() − olderThanMs` read at the sweep's start. The caller's `now` is
-    log time and only measures the TTL, so a simulated or skewed log clock cannot disarm the
-    guard. The sweep erases only through the conditional delete when the store has one.
-    Otherwise it falls back to `delete` and reports `raceSafe: false`; `loom sweep content`
-    prints `race-safe:`.
-  - **D6, orphans.** Blobs nothing cited any more were never reclaimed: a run deleted with no
-    archive, a crash between `put` and the append, a truncated prefix. SPI 1.3.0 adds an
-    optional `listPage({ cursor, limit, touchedBefore })`, keyset on address, and a bad `limit`
-    is a `RangeError`. With `reclaimOrphans: true` (CLI `--orphans`), the sweep erases
-    conditionally every stored address untouched since the cutoff that no scanned event, no
-    compaction snapshot and no root cites. A touch time of 0 (a pre-1.3.0 writer) is unknown
-    and never erased. It refuses a store without the optionals. The report gains
-    `orphansReclaimed`. `snapshotStores` lets the sweep read compaction checkpoints: refs in a
-    compacted execution's compaction checkpoint (`loadLatestBefore(events[1].sequence − 1)`) and
-    latest snapshot are pinned, so `fork()` from between them still resolves. The orphan pass
-    refuses to run without them over a store that can `truncatePrefix`, and whenever an
-    execution looks compacted (a gap, or only sequence 0 left) but no checkpoint is found. **The sweep cannot see a citing store you did not pass it**, so scan live first,
-    then every archive. The CLI scans the config's `durability.retention.archive`, and refuses
-    `--orphans --apply` with no archive unless `--no-archive` (warning before it erases).
-    `--orphans` needs `--snap` on the `--db` path, and `--archive-snap` with `--archive-db`.
-    Every `loom sweep content` refusal exits non-zero.
-  - **D7, roots.** `sweepUnpinnedContent({ roots: () => AsyncIterable<string> })` pins
-    addresses held in an app's own tables through both passes.
-  - `SqliteContentStore` implements all three optionals. On open it migrates an older file: it adds
-    `touched_at` and backfills existing blobs to the migration time once, so nothing ages out
-    until a full TTL after the upgrade. The re-put bump is monotonic
-    (`max(touched_at, excluded.touched_at)`). `InMemoryContentStore` implements all three with an
-    injectable clock (`new InMemoryContentStore({ now })`), and so does `SqliteContentStore`
-    (`new SqliteContentStore(path, { now })`). `CachingContentStore` forwards all three. The
-    conformance kit checks the optionals when present. The three must come as a set, and the
-    re-put bump is checked through the conditional delete alone (an internal kit check that
-    fails an `INSERT OR IGNORE` store). Monotonicity is checked with a clocked factory.
-    `LogLifecycle` exposes its configured `archive` (read-only). The kernel manifest and the
-    compatibility matrix now list ContentStore SPI 1.3.0, and `checkCompatibility` accepts
-    `contentStoreSpi`. The `loom plugin new content` template names the new methods.
-  - `docs/data-protection-patterns.md` says the archive is REQUIRED once retention archives,
-    and scopes "erasable without history rewrite" to the log. Content-store blobs have no
-    subject mapping; erase them with an explicit `contentStore.delete(ref)`.
-    `docs/api-reference.org` had the wrong signatures for `collectContentRefs` and
-    `pinByEventKinds`; both are fixed.
-
-  **Behaviour change:** a test fixture that puts a blob at today's wall clock and then cites it
-  at a fabricated past time now sees the blob kept, because it was touched after the cutoff.
-  Give such a store a clock that matches the fabricated history. Likewise, a harness that runs
-  the log on a simulated clock must give the content store that clock or pass `touchedBefore`.
-  Otherwise nothing it "aged" is erased, because the guard is on the store's clock.
-
-- **The content sweep no longer erases a load-bearing externalized ref**
-  ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D4, amended). `sweepUnpinnedContent`
-  treated every `__loomContent` ref as TTL-reclaimable unless a pinned event kind cited it. An
-  ADR 0046 externalized field is a bare ref that `ContentResolvingEventStore.read` resolves, so
-  `loom sweep content --ttl 30d --apply` over a 60-day-old externalized `STEP_COMPLETED.output`
-  erased the blob, and the next read of that still-running execution threw
-  `ContentMissingError`. Resume, replay, fork and compliance export all failed. Now only a ref
-  that is an envelope's own `ref` ages out. A ref cited anywhere else, including inside an
-  envelope's `digest`, is kept while any scanned event cites it, and so is a ref cited both
-  ways. An envelope is recognised by the same structural test as `isClaimCheck`, so an app
-  object that only carries `__loomClaimCheck: true` does not make its refs reclaimable.
-  `ContentSweepReport` gains `refsLoadBearing`, and `loom sweep content` prints it.
-
-  **Behaviour change:** an app that emits a bare ref itself (`ctx.emit(KIND, { ref })`) and
-  relied on the sweep to reclaim it will find the blob kept. The sweep cannot tell such a ref
-  from an externalized one. To make it reclaimable, cite it as a claim-check envelope's `ref`.
-  Nothing is erased that was kept before. This also works under a `ContentResolvingEventStore`,
-  which now leaves claim-check envelopes alone (the ADR 0055 D4 gap, closed by the decorator
-  entry below).
-
-- **Every store decorator now carries the whole optional SPI through, so the ADR 0074
-  composition actually batches**
-  ([ADR 0074](docs/adr/0074-storage-scale-out-decorators.md) Amendment,
-  [ADR 0022](docs/adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) Amendment).
-  Seven decorators silently dropped optional methods of the store they wrapped:
-  - `TenantScopedEventStore` dropped `appendBatch` and `listExecutionsPage`.
-  - `EncryptingEventStore` dropped `appendBatch`, `deleteExecution`, `truncatePrefix` and
-    `listExecutionsPage`.
-  - `ContentResolvingEventStore` dropped `appendBatch` and `listExecutionsPage`.
-  - `hashChainedEventStore` dropped `appendBatch`, `listExecutions` and `listExecutionsPage`.
-  - The DST `faultInjectingStore` and the `@loom/testing` `crashingEventStore` dropped up to
-    seven methods between them.
-  - `EncryptingSnapshotStore` dropped `deleteExecution`.
-
-  The consequences:
-  - `Coalescing(TenantScoped(backend))`, the order ADR 0074 documents, issued zero batches (50
-    appends reached the backend as 50 appends).
-  - Over that fallback's non-atomic loop, a batch holding a stale-fence zombie left earlier
-    writers' events durable while telling them the write failed.
-  - Encrypted logs could be neither retained nor compacted.
-  - The audit chain could not be enumerated by `loom retention` or `loom census`.
-
-  Each decorator now declares a `DecoratorPlan` over the whole optional-method union and
-  installs it with the new `installOptional` (`@loom/event-runtime`). Every plan key is
-  required, so a plan that omits a method, including a future optional SPI method, fails to
-  compile (pinned by a `@ts-expect-error` that `pnpm typecheck` checks). The conformance kit
-  catches a decorator that uses no plan at all.
-  `OPTIONAL_EVENT_STORE_METHODS` / `OPTIONAL_SNAPSHOT_STORE_METHODS` are compile-time
-  exhaustive, `refusalsOf` reads a recorded refusal, and `CoalescingEventStore`,
-  `ProfilingEventStore` and `TenantScopedSnapshotStore` moved onto plans too.
-  `runEventStoreDecoratorConformance` / `runSnapshotStoreDecoratorConformance`
-  (`@loom/conformance`) wrap a full-capability store. They assert that every optional method
-  survives (or is refused with a reason) and then run the whole SPI suite THROUGH the
-  decorator, over the in-memory store by default or a real backend via `inner`. Every in-repo
-  decorator is registered, the two tenant compositions also run over Postgres, and
-  `packages/spec/src/decoratorConformance.test.ts` discovers decorators and fails on one that
-  is not registered. `EVENT_STORE_SPI_VERSION` stays 1.4.0; the SPI history comment now
-  records 1.4.0 (`head`).
-
-  Behaviour changes to know about:
-  - **`hashChainedEventStore` no longer offers `truncatePrefix`.** It used to forward it, and a
-    compacted chain fails `verifyChain` at the first surviving event (measured). Compaction
-    over an audit-chained store now returns `null` instead of silently breaking every later
-    audit.
-  - **`LogLifecycle` enforces a key rule for encrypted logs.** `compact` throws the new
-    `UnsafeCompactionError` when the event store encrypts at rest and the snapshot store does
-    not share its `KeyStore`. `applyRetention` / `evaluate` return the new `RetentionOutcome`
-    `"unsafe-archive"` when an archive does not share it. Without the rule, compaction and
-    archiving would write the decrypted fold or events outside the erasure boundary, where a
-    key shred no longer reaches. A test shreds the subject after compacting and archiving an
-    encrypting store over SQLite and asserts that both copies are unreadable.
-  - **The encryption marker (`keys`) now survives decoration**: `installOptional` carries it up,
-    and `ShardedEventStore` exposes one shared KeyStore (or a fail-closed marker if its shards
-    disagree). So `loom doctor` and the key rule see `Coalescing(Encrypting(pg))` as encrypting.
-  - **A compacted execution is reclaimable.** `LogLifecycle.evaluate` folded only the surviving
-    log, so an execution compacted through its tip read as `not-terminal` forever. It now folds
-    from the latest snapshot when the log has a gap or only its bootstrap left.
-  - **Tightening: `TenantScopedEventStore` and `TenantScopedSnapshotStore` reject a tenant
-    name that is empty or contains the `:` separator** (a `TypeError` at construction).
-    Tenant `"a"` scoped `"b:x"` to `"a:b:x"`, which is tenant `"a:b"`'s `"x"`, so one tenant
-    could address another's executions. No in-repo or sibling-repo caller passes such a name.
-  - **`ShardedEventStore` declares a plan too**, and is registered with the kit as
-    `new ShardedEventStore([inner])`. The fitness test now also discovers decorators whose
-    constructor takes an array of stores. The `listExecutionsPage` contract now says, and the
-    kit checks, that a page with a `nextCursor` carries at least one id.
-  - **`TenantScopedEventStore.listExecutionsPage` never relies on the store's sort order.** It
-    pages the inner store and filters, bounded to one page of memory. Postgres pages in the
-    database collation (measured: `"a~"` before `"ab"` on an `en_US.UTF-8` PG 17), so a
-    "stop at the first id past the tenant's range" shortcut would miss ids.
-  - **`ContentResolvingEventStore` leaves ADR 0054 claim-check envelopes alone.** The
-    `collectContentRefs` / `substituteContentRefs` / `hasContentRef` walkers treat an envelope
-    as a leaf, so an envelope whose blob the sweep reclaimed reads back as the envelope rather
-    than throwing `ContentMissingError`, and a `codec: "bytes"` envelope reads at all. A bare
-    ref beside it still resolves. This closes the known gap ADR 0055 D4 records. The stale
-    "refcounted blob GC … deferred" docstring (it shipped in ADR 0055) is corrected.
-  - `CoalescingEventStore`'s docstring no longer claims a failed flush leaves the log untouched
-    over any inner store: that holds only when the inner store implements `appendBatch`. It
-    also records the coalesced-zombie blast radius.
-
-- **Kernel: flow-level `ctx.emit` / `ctx.stream` / `ctx.ui` append once per execution**
-  ([ADR 0102](docs/adr/0102-flow-emits-append-once.md), EVENT_SCHEMA **1.19.0**, KERNEL_ABI
-  unchanged at 1.1.0). A flow re-runs from the top on resume and on recovery. `execute`,
-  `decide` and `suspend` were served from the log on that re-run; a flow-level emit was not. It was
-  appended again every time, so an `emit` before a gate appeared N times after N resumes, and a
-  surface built with `ctx.ui.append` before a gate folded to `["x","x"]`.
-
-  Now an emit is served from the log only when the log PROVES it was already made. That means
-  a stamped emit of the same `(type, payload)` in the same gate segment that this run has not
-  yet matched, with every step and decision so far in the segment itself served from the log.
-  Everything else is appended.
-  - Stamps: `metadata.flowEmit = <digest of segment, type, payload>`; the fold counts them per
-    digest in `variables._flowEmits`.
-  - An emit is stamped only if nothing earlier in the run ended unsettled (an untyped failure, a
-    timeout, a cancellation, an in-doubt park, a throwing decider) and none of the run's own
-    steps or deciders was still executing.
-  - Timing can cost a duplicate, never an emit: a different interleaving can turn a served emit
-    into an unstamped append, never into a lost one.
-  - Kernel facts (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`) and `EffectContext.emit` are
-    unchanged and never stamped.
-
-  **Upgrade note:** an execution written before 1.19.0 re-emits its pre-resume emits **once
-  more** on its next resume or recovery. No migration is needed. A test or projection that
-  counted the duplicates was counting the bug.
-
-  Duplicates remain possible in these cases; none of them loses an emit:
-  - Emits after a step that fails untyped: it re-executes on every re-run, so they are appended
-    again each time. Declare its failure channel (ADR 0060) and they converge.
-  - An emit made while one of the run's own steps is still un-awaited: one extra copy.
-  - A payload with no JSON form: appended on every re-run.
-  - A deploy that edits an emit: the new content is appended and the old stays.
-
-  An emit can be served in place of a new one only if a deploy moves identical content within a
-  segment whose steps are all served, if flow code breaks ADR 0061 determinism, or on a 64-bit
-  hash collision (ADR 0102 D2).
-
-  Also: `fnv1a64` (`@loom/core`) now uses 16-bit limb arithmetic instead of BigInt. The output
-  is identical, pinned by a differential test, and the cost per byte is roughly a tenth.
-
-- **`loom plugin new keystore` scaffolded a package that could not compile.** The template
-  writes `Buffer` in four signatures and the generated `package.json` declared no
-  `@types/node`, so the first thing a plugin author did after scaffolding was watch `tsc`
-  fail. The template typecheck added yesterday hid it by handing the compiler node's types —
-  which the real package never declares. A scaffolded package's dependencies are now derived
-  from the code it emits, and a guard asserts that any template using a node global ships the
-  types for it.
-
-  The detector strips comments first, and that is the point of its own unit test: two seams
-  describe "the process" in prose, and matching those would have added a dependency their code
-  never touches. A sweep that reads comments is measuring prose.
-
-- **An encrypting store with in-memory keys now FAILS `loom doctor`.** K10 crypto-shredding
-  makes the key the erasure boundary, so losing a key is indistinguishable from shredding the
-  subject: the writes succeed, the log survives, and every encrypted field is unreadable from
-  the next boot — with nothing failing at the moment it happens. `KeyStore` had exactly one
-  implementation, `InMemoryKeyStore`, and the only protection was a README sentence saying
-  "back it with a KMS in production".
-
-  `KeyStore` now declares `durable`, `InMemoryKeyStore` declares `false`, and the new
-  `encryption keys` check reads it through whichever store exposes a `keys` property — so a
-  third party's own encrypting wrapper is covered for free, and the CLI still depends on no
-  crypto package. Three states, kept apart: declared non-durable **fails**, undeclared is an
-  **advisory** (*this store does not say*), declared durable passes, and nothing encrypting at
-  all is a skip. Snapshots are checked alongside the event log, since they carry the same
-  fields.
-
-- **A globally installed `loom` did nothing and exited 0.** The entry guard was
-  `process.argv[1]?.endsWith("cli.js")`, but a global install puts a SYMLINK named `loom` on
-  PATH — so `argv[1]` is `…/bin/loom`, the guard was false, and the binary returned success
-  having run no command. `pnpm link --global` hid it by writing a shim that execs `cli.js` by
-  name; `npm i -g` creates a plain symlink, which is what a published package gets. Now
-  `require.main === module`. `create-loom-app` had the same guard and the same silence.
-
-- **`create-loom-app --help` scaffolded eleven files into a directory named `--help`**, and
-  reported success — the only check on the argument was that it existed. `loom-compile --help`
-  crashed with an ENOENT naming a path the user never typed. Both now validate their
-  arguments and print usage. These were newly *reachable*: before the guard fix, neither ran
-  at all through a global install.
-
-- **`pnpm run unlink:global` failed with `ERR_PNPM_UNEXPECTED_STORE`.** The repo pins
-  `pnpm@9.14.4` via `packageManager`, so a machine running pnpm 10 self-downgrades inside the
-  repo — and 9.x refuses to touch a global directory 10.x created. The global store's format
-  is tied to pnpm's major version, so any script touching it is coupled to whichever pnpm
-  created it. Both scripts now use `npm link`, whose global has no such versioning.
-
-### Added
 
 - **The Blueprint is a declared rendering IR (ADR 0096).** `@loom/blueprint-runtime` exports
   `BLUEPRINT_IR_VERSION` (`1.0.0`) beside a shape manifest that `tsc` checks exhaustively against
@@ -2617,7 +1055,1645 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
   writes — then throws `QuotaExceededError`. The estimate is named as an estimate in the type, in
   the reason, and in the default; final metering still uses the provider's own numbers.
 
+- **The verify tier stops needing hand-plumbed source, and gains a front door.** The compiler
+  transform now emits all three per-flow source analyses into `loom-manifest.json` —
+  `loopIdentity` ([ADR 0061](docs/adr/0061-step-identity-interpreter-guardrails.md)),
+  `nonDeterministic`, and `runnerReach` ([ADR 0086](docs/adr/0086-runner-body-reach-analysis.md)) —
+  and `loom verify` auto-injects them from a discovered manifest, so `determinism`,
+  `capability-compat`, `effect-class` and `suspension-safety` are on whenever you build with the
+  Loom compiler rather than requiring a developer to feed their own runner source to a linter.
+  New **`loom doctor`** runs every pre-flight check whose input it can discover and **names the
+  ones it skipped and why** — "all checks passed" and "passed, but N check(s) could not run —
+  coverage is partial" are deliberately different strings. Whole-module analysis skips memoized
+  `handler$` bodies (`{ skipMemoized: true }`): a handler's result is served from the log on
+  replay, so non-determinism inside one is safe by construction.
+- **Runner-body reach analysis, and two `suspension-safety` checks it proved wrong**
+  ([ADR 0086](docs/adr/0086-runner-body-reach-analysis.md)). `capability-compat`, `effect-class`
+  and `suspension-safety` previously defined "what a flow reaches" as its *declared* steps, so a
+  step invoked through `ctx.run` was invisible and `FlowSpec.suspends` had no producer at all.
+  `analyzeRunnerReach` resolves `ctx.run` targets by shape and **reports what it could not
+  resolve** as a `warn` on each rule. Populating the input showed the blanket `correlationKey`
+  error was wrong (`resume` routes by `executionId`) — removed — and that the `wakeAt` check must
+  be conditional on a wired `TimerStore`. `KERNEL_ABI`/`EVENT_SCHEMA` unchanged.
+- **The integrity axis: untrusted content as a value, refused at the prompt boundary**
+  ([ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md)). `tainted()`/`unwrapTainted()`
+  in `@loom/classify` wrap third-party bytes in plain JSON that survives the log verbatim, so a
+  replay hands back a value that is *still* tainted. `@loom/llm`'s `guardRequest` runs inside
+  every `createLlmEffect` and throws `UntrustedContentError` if tainted content reaches a system
+  message, an assistant turn, or a tool name/description; in a `user` message it is fenced as
+  `<untrusted-input origin="…">`. Two opt-in producers ship: `registerMcpInvoke(…, {
+  taintResults: true })` and `new A2APeerClient({ …, taintResults: true })`.
+- **Effect classes — a static ceiling beside K2's runtime floor**
+  ([ADR 0084](docs/adr/0084-effect-classes-static-ceiling-k2-floor.md)). An eighth `@loom/verify`
+  rule: a flow may not reach an effect whose declared class exceeds its own, composed
+  conservatively as the max over everything reachable. The class *vocabulary* is app-supplied
+  (`checks: { verify: { effectClasses } }`) — loom checks the ordering it is given rather than
+  defining one. A **granted** capability can still bust the class, and K2 will not stop it; the
+  finding says so.
+- **`@loom/learning` — the substrate for continuous learning, not the learner**
+  (ADRs [0078](docs/adr/0078-exploration-in-the-routing-seam.md)–[0080](docs/adr/0080-learning-substrate.md)).
+  `context` and `policy` (including `propensity`) now ride `DECISION_RECORDED`
+  (**EVENT_SCHEMA 1.18.0**; `KERNEL_ABI` untouched), which is what makes off-policy evaluation
+  possible at all — propensity cannot be reconstructed after the fact. Ships trajectory
+  extraction, SNIPS evaluation with unit-level ESS and a cluster-robust estimate for pooling
+  across units, a promotion gate, the third-party `Policy` SPI (the one seam consumed from flow
+  code rather than `defineConfig`), and `loom learn report` / `loom learn eval`. The router's
+  greedy collapse onto one lucky arm is fixed with `ucb1`/`epsilonGreedy`. Pooled reports never
+  name a unit — asserted by an invariant test that injects a leak.
+- **Storage scale-out as composable decorators** (ADRs
+  [0074](docs/adr/0074-storage-scale-out-decorators.md)–[0075](docs/adr/0075-shard-rebalancing.md))
+  — sharding, batching and rebalancing (virtual buckets, lazy drain, no coordinator) layered over
+  any `EventStore` rather than built into one backend. `EVENT_STORE_SPI_VERSION` → 1.3.0.
+  Measured ceilings and the method are written up in [`docs/scaling.md`](docs/scaling.md).
+- **Two boundaries that looked enforced and were not.** Array crossings in classification paths
+  now expand late and walk once ([ADR 0076](docs/adr/0076-wildcard-classification-paths.md)),
+  and resume payloads get per-gate contracts enforced **before** the append —
+  `flow$({ resumeSchemas })` plus a generic `ctx.suspend<T>`
+  ([ADR 0077](docs/adr/0077-typed-resume-payloads.md), `ResumePayloadValidationError`).
+- **`@loom/replay-inspector` — read-only replay** ([ADR 0071](docs/adr/0071-read-only-replay-inspector.md),
+  IX series): inspect an execution's replay without a live runtime, bounded by an explicit budget
+  (`InspectorBudgetError`).
+- **MCP Apps (SEP-1865) placement** ([ADR 0072](docs/adr/0072-mcp-apps-ui-extension-placement.md)):
+  ingress fidelity plus `createMcpServer`, and `ui://` egress as one static, content-pinned
+  surface-host template in `@loom/plugin-mcp-app` (`TemplateDriftError`). The **host** role is
+  where a third party belongs, not a reason for loom to build one.
+- **Effect mode — `journaled` vs `ambient`** ([ADR 0073](docs/adr/0073-effect-mode-journaled-vs-ambient.md)):
+  a declaration plus a boundary check (`EffectModeViolationError`) that keeps user-driven
+  enrichment reads out of the durable log.
+- **The second-consumer rule** ([ADR 0083](docs/adr/0083-second-consumer-rule.md)) — before a
+  workload-derived requirement becomes a first-party package, verify rule, seam, or exported
+  vocabulary, name a second unrelated consumer. Recorded because this repo had a strong antibody
+  against kernel growth and none against first-party surface growth.
+- **Two kernel promotions refused, with evidence gates recorded rather than scheduled**:
+  long-lived suspensions need a benchmark, not a promotion
+  ([ADR 0081](docs/adr/0081-long-lived-suspensions-no-promotion.md)), and substitutive replay is
+  deferred until branch-from-prefix is eliminated
+  ([ADR 0082](docs/adr/0082-substitutive-replay-deferred.md)).
+
+- **A2UI `callFunction` (bidirectional RPC) in `@loom/plugin-a2ui`.** The A2UI adapter now covers the
+  agent→client `callFunction` leg (the agent invokes a named catalog function; the client answers with a
+  `functionResponse`), promoting the surface deferred in ADR 0069. Two composition grains on
+  transport-agnostic primitives: **grain A** — a read via a `ctx.suspend` gate
+  (`bridge.callFunction` → `ingestFunctionResponse` → `runtime.resume`); **grain B** — a side-effecting
+  call via a delegated effect (`registerA2UICallFunction`, `idempotent: false` so a crash mid-call parks at
+  `EFFECT_INDOUBT`). Determinism rests on **result-as-recorded-fact + a deterministic, call-site-unique
+  `callId`** — no client-side effect runtime, no new event types (`EVENT_SCHEMA`/`KERNEL_ABI` unchanged).
+  Inbound replies are correlation-checked (`ingestFunctionResponse(msg, expectedCallId)` and an effect-side
+  `callId`/`surfaceId` match), and `registerA2UICallFunction` accepts a `requestTimeoutMs`. New
+  `examples/a2ui-callfunction` demonstrates both grains + a crash→in-doubt recovery. See
+  [ADR 0070](docs/adr/0070-a2ui-callfunction-bidirectional-rpc.md).
+- **`loom appgen` — natural-language → Loom app.** New `@loom/cli` subcommand that turns a
+  natural-language intent into a Loom app following the **folder convention** (the same shape
+  `create-loom-app` / `loom new` / `loom gen` produce), wiring the pure `@loom/appgen` library
+  (`parseIntent` → `generateProject` / `generateFlows`) into the CLI. Output is plain, static,
+  inspectable TypeScript with `TODO` handlers; parsing and code generation are deterministic and
+  offline (no model call at generate time, none in the output).
+  - **Adapts to the target `dir` (the project root, default `.`):** a new/empty dir gets a full
+    runnable project (`package.json`, `tsconfig.json`, `app/config.ts` with `defineConfig({
+    flowModules })`, `app/main.ts`, `app/loom.gen.ts`, and one `app/flows/<id>/flow.ts` per
+    capability) so `pnpm install && pnpm start` works out of the box; an existing Loom app gets
+    just the `app/flows/<id>/flow.ts` files, then `app/loom.gen.ts` is regenerated from the
+    filesystem (the `loom gen` step) so pre-existing flows stay wired.
+  - Reuses `@loom/scaffold` (`appFiles` / `generateRegistration`) rather than hand-rolling, so
+    appgen output now matches every other generator. Flows export a `RegisteredFlow` (the older
+    `capability$` / `CapabilityCatalog` composition root is gone). The one value-add over
+    `loom new` is the NL-derived flow body (reasoning ladder, approval suspend gate, UI surface).
+  - Intent is supplied as a quoted positional string or via `--from <file>`.
+  - Writes each file directly when the target path is free; on a collision it prompts
+    interactively per file — `[r]ename / [s]kip / [o]verwrite` — backed by a stdin line-queue
+    reader that works for both TTYs and piped input.
+  - `cmdAppgen` is exported from `@loom/cli` for programmatic use, with an injectable IO seam.
+  - Docs: new section in [`docs/usage-cli.md`](docs/usage-cli.md) and the CLI overview in
+    [`docs/user-guide.md`](docs/user-guide.md).
+
+- **`loom appgen` — brownfield-aware, four-stage pipeline (foundation for AI-driven appgen).**
+  `appgen` now *scans the existing app* and applies a **delta** rather than only scaffolding from
+  scratch. Four stages, all deterministic and offline: **scan** (`scanApp(dir) → AppModel`,
+  a compact TS-AST summary of flows/steps/gates — never raw file dumps), **plan**
+  (`planChangesDeterministic(intent, appModel) → ChangeSpec`, tagging each capability/step
+  `create` / `extend` / `modify`), **apply** (`applyChanges` → creates via the existing templates,
+  surgical formatting-preserving edits to existing flows), and **validate** (in-process `tsc`).
+  The plan stage is the single seam where NL understanding lives and it emits a structured
+  `ChangeSpec` — a local model can be swapped in here later without touching codegen.
+  - **Plan → diff → confirm DX.** `--dry-run` renders a terraform-style plan (creates / edits /
+    skips) and writes nothing; omit it to apply. `--check` typechecks the app after applying.
+  - **Safety gate.** appgen only overwrites a handler body that still hashes to the generated
+    `TODO` stub; any human-edited handler is **insert-only**, never clobbered (`FlowEditor`,
+    content-hash gate). Brownfield edits add step consts, register them in the flow's `steps: []`
+    array, and insert approval / UI gates into the runner while preserving surrounding code.
+  - **Replayable spec lockfile.** Each apply records the accepted `ChangeSpec` to
+    `.loom/appgen/<timestamp>.spec.json`; `loom appgen --from-spec <file>` reproduces it
+    byte-for-byte with no model — the appgen equivalent of a golden log.
+  - `@loom/appgen` stays zero-dependency and offline (only `typescript` promoted to a runtime
+    dep for the AST scan/edit); the framework kernel is untouched. New exports: `scanApp`,
+    `planChangesDeterministic`, `applyChanges`, `FlowEditor`, `typecheck`, lockfile helpers.
+
+- **`@loom/appgen-model` — optional local-Gemma planner (truly AI-driven appgen).** A new,
+  **optional** package that swaps a small on-device Gemma model into appgen's single NL stage.
+  `loom appgen --model <gguf>` plans the `ChangeSpec` with the model instead of the grammar
+  parser — real language understanding, no token cost, minimal footprint. Everything downstream
+  is unchanged, because the model still emits only a `ChangeSpec`.
+  - **Grammar-constrained JSON.** Output is constrained to the `ChangeSpec` JSON schema via
+    node-llama-cpp, so a compact model reliably produces valid, on-schema plans.
+  - **Reasoning-ladder-on-itself.** Planning runs through `@loom/reasoning`'s cheap-first
+    elevation ladder with a *validator* confidence signal ("does it parse into a usable
+    ChangeSpec?"); a weak tier that emits junk elevates to a stronger one, and each elevation is
+    logged (P9) and recorded in the spec lockfile. Recommended tiers: Gemma **E4B** 4-bit QAT
+    default (~5 GB), E2B floor (~4 GB), 12B ceiling (~8 GB), selectable via `--model-tier` /
+    `--model-big`.
+  - **Deterministic fallback / footprint discipline.** Falls back to the deterministic parser
+    when the model or `node-llama-cpp` is unavailable or every tier fails (same as `--offline`);
+    loads/disposes the model per invocation (transient, not resident); prompts carry only the
+    compact scanned `AppModel` summary, never raw file contents.
+  - `node-llama-cpp` is an `optionalDependency`, lazily imported; `@loom/cli` loads
+    `@loom/appgen-model` only when `--model` is passed, so neither the framework nor default CLI
+    users carry the native runtime. Kernel and existing packages untouched.
+  - **Verified end-to-end against a real Gemma GGUF (node-llama-cpp 3.19, Metal), which fixed four
+    bugs that previously made `--model` silently fall back every time:** (1) `tsc` under
+    `module: CommonJS` down-levelled dynamic `import()` to `require()`, which cannot load the
+    ESM-only, top-level-await node-llama-cpp (`ERR_REQUIRE_ASYNC_MODULE`) — now a genuine dynamic
+    import is preserved via `new Function` in both `GemmaProvider` and the CLI; (2) the v3 grammar is
+    built with `llama.createGrammarForJsonSchema(schema)`, not the `LlamaJsonSchemaGrammar`
+    constructor; (3) the CLI now resolves the optional `@loom/appgen-model` peer **from the target
+    project dir** (`pnpm add @loom/appgen-model node-llama-cpp` in your app), not from the CLI itself;
+    (4) the JSON-schema `minItems` constraint crashed node-llama-cpp's native sampler and was removed
+    (an empty plan is rejected by the ladder validator instead). Generation is now bounded
+    (`maxTokens` 512, `contextSize` 2048) for footprint and native stability. The package README
+    documents environment requirements: a Node 20/22 LTS (bleeding-edge Node majors show intermittent
+    native segfaults) and enough RAM for the tier (the E4B default is ~5 GB; a 2B model that fits 8 GB
+    is often too weak and degrades to the deterministic parser).
+
+- **`loom appgen` completeness — delete/grant ops, runner wiring, self-repair, real diffs, confirm.**
+  Closes the remaining gaps against the requirement (captured in
+  [`docs/requirements/2026-07-12-ai-native-brownfield-appgen.md`](docs/requirements/2026-07-12-ai-native-brownfield-appgen.md)
+  + evaluation, and [ADR 0042](docs/adr/0042-ai-native-brownfield-appgen.md)):
+  - **`delete` op.** New grammar `delete <name>` / `delete step <s> from <flow>`; deletes generated
+    flow files and removes steps (const + `steps: []` entry + runner call). Refuses to delete a flow or
+    step that carries hand-written code. Tracked in `FilePlan.deletes`, honored by `--dry-run`.
+  - **New steps are wired into the runner.** `FlowEditor.addStep` now inserts a `ctx.run(<step>, …)`
+    call before the runner's `return`, not just a "wire it yourself" note.
+  - **`wireGrants` → `app/config.ts`.** New grammar `grant <tool>[, <tool>] to <cap>` (and a model
+    schema field) insert a `GrantTable` authorizer (and its import) into `defineConfig` via a
+    formatting-preserving `ConfigEditor`; it declines to guess a merge if an authorizer already exists.
+  - **Model self-repair loop.** `@loom/appgen-model` now runs `validateChangeSpec` (does the plan
+    reference real flows/steps with the right ops?) after the ladder and re-prompts the model with the
+    exact issues (bounded retries) before falling back to the deterministic parser.
+  - **Real `--dry-run` diffs.** Edits render as a dependency-free unified line diff instead of a summary.
+  - **Interactive confirm.** On a TTY (and without `--yes`), appgen shows the plan and asks before
+    writing; the CLI surfaces the planner (deterministic vs model) and any ladder elevations.
+  - Docs: `docs/usage-cli.md` rewritten for the full surface; a brownfield walkthrough at
+    `examples/appgen-brownfield/README.md`. `@loom/appgen` stays offline; kernel untouched.
+  - **Planner provenance surfaced + loud model fallback.** The plan header and `--dry-run` output are
+    tagged `[deterministic]` / `[model]` (with any `[model, elevated e4b→12b]` ladder steps), matching
+    the spec lockfile's `changeSpec.planner`. When `--model` is passed but the model can't produce a
+    usable plan, `appgen` now prints a **loud warning** and falls back — so a silent, wrong-looking
+    generation no longer masquerades as a model result. Also fixed `--model` failing in-repo with
+    "Cannot find package '@loom/appgen-model'": the CLI now resolves the optional peer as a sibling of
+    `@loom/appgen` (works in `packages/*` and `node_modules/@loom/*` alike).
+
+### Changed
+
+- **BREAKING (`@loom/middleware`, ADR 0140 D10): the classic `claimCheckMiddleware` now records an offloaded result that carried an ADR 0085 taint marker (top level or nested) as `tainted(envelope, origin)`.** A consumer that read `result.digest` / `result.ref` / `result.size` straight off a recorded tainted result must UNWRAP first (`isTainted(x) ? x.value : x`). Untainted results are unchanged. Also additive: `EffectContext.taskKind` (`@loom/effect-runtime`), and (D11) under `envelopesAreData` a result that NESTS an envelope lookalike is force-offloaded as data; the content sweep honours `retain: true` only on an envelope at the top level of a recorded `STEP_COMPLETED` output (a nested lookalike pins nothing and is not a citation for `eraseSubject`); `eraseSubject` refuses (`ContentCopiesRemainError`) before the shred over a content store without `deleteIfUntouchedSince`/`touchClock` instead of ever deleting unconditionally.
+
+- **BREAKING: trimming or deleting a reserved stream (the inbox, its topic streams, the quarantine copies) now MOVES the envelopes into the archive and refuses without one ([ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md), issue #728; `@loom/workflow-runtime`, `@loom/plugin-crypto`, `@loom/plugin-content`, `@loom/compliance`, `@loom/app`; `EVENT_STORE_SPI` 2.5.0 -> 2.6.0 (additive, optional `deleteThrough`); `ARCHIVE_STORE_SPI` 1.0.0 -> 1.1.0 in the second review round below; no kernel ABI, EVENT_SCHEMA or WIRE_ABI change).** `trimInbox`, `trimTopicStream`, `trimQuarantine` and the terminal `deleteInbox` (owner terminal, `reclaimInbox`, a send that raced the terminal) deleted envelopes whose ids, timestamps and sender metadata survive nowhere else (the payload lives on in `MESSAGE_CONSUMED`). They now take a `ReservedStreamArchive`, append the exact envelopes to the SAME `ArchiveStore` compaction uses (keyed by the stream id) and only then remove; crash order is archive first (a duplicate, never a gap). **Without an archive they refuse** (`ReservedStreamArchiveRequiredError`, `op: "trim" | "delete"`): `WorkflowRuntime` deps take `inboxArchive` / `inboxArchiveTenant`; `defineConfig` hands over the compaction archive, so `storage: { kind: "memory" }`, `sqliteStorage()` and `postgresStorage()` need nothing, while a custom durable storage must pass `storage.archiveStore` or `durability.retention.compactionArchive` (the boot warning now says so). A hand-built runtime with `inboxEnabled` and no `inboxArchive` is REFUSED at construction (`InboxArchiveRequiredError`) unless its event store is in-memory (it then defaults an in-memory archive, sealed under the log's KeyStore when the log seals) or it says `inboxArchive: "none"` (`kernel.inbox.archive: "none"` in `defineConfig`): then it trims and deletes NOTHING, says so at boot through `onWarn`, and reports every skipped maintenance through `onStorageError` (or `onWarn` when none is wired); sends continue until `inboxMaxRetained` refuses them (`InboxFullError` names the missing archive). The erasure and tenant guards of compaction apply; `EncryptingArchiveStore` seals a reserved stream's segments under the chain OWNER's subject (new `ownerWorkflowId` option for a custom `subjectOf`); a re-created stream starts above the archive's last sequence (`appendInboxMessage`, `seedInboxFloors`, `appendQuarantineCopy` take an `ArchiveFloor`); a straggler goes to a late run keyed `__loom_late__:<stream>@<n>` (a reserved-prefix archive key no live id can have; `inboxChainOf` is unchanged, `archiveChainOf` resolves the chain of an archive key). The terminal delete is BOUNDED by what was archived: new optional `EventStore.deleteThrough(id, through)` (one atomic `DELETE ... WHERE sequence <= through`, sequence 0 included; memory, SQLite, Postgres, every decorator and the conformance kit), so a message appended after the archive's read survives as a live remainder that the sender's re-check or `reclaimInbox` archives and deletes the same way; a store without it REFUSES the delete (`ReservedStreamDeleteUnsupportedError`, the stream is kept) and never falls back to a whole-stream delete. A segment's range covers exactly the envelopes it holds (a stream trimmed before the archive existed reports its lost range, never reads as covered), a re-created stream's sequence 0 is compared byte-exact like any other, the archive incarnation is the chain OWNER's bootstrap digest (a reused chain id refuses the previous run's segments), and the audit reads see late runs and a DELETED stream's own extent. New reads: `LogLifecycle.readReservedWithArchive` (now `{ events, lateRuns }`) / `reservedArchiveCoverage` / `readReservedArchive`, and `exportSubject` returns `reservedStreams`. Erasure (owner ruling 2026-10-31): over a PLAINTEXT archive `EraseCoordinator` (new `archives` option, wired by `defineConfig`) DELETES the subject's archived copies and records it (`ERASURE_ARCHIVE_DELETED`, `archivedCopiesDeleted`), refuses BEFORE the shred when a plaintext archive cannot delete (`ArchivedCopiesRemainError`), and redacts the erased subject's identity from OTHER chains' archived reserved segments (`ERASURE_SENDER_REDACTED`); an inbox envelope's sender (actor, tenant, onBehalfOf) is sealed under the SENDER's own subject by `EncryptingEventStore` / `EncryptingArchiveStore` (opt-in via `senderSubjectOf` in this first cut; the second review round below makes it the DEFAULT for a sealing deployment, `senderSubjectOf: false` opts out) (an erased sender reads `{ erased: true }`, the owner's message stays); a reserved segment's digest masks the sender (the one erasable field). `applyRetention`'s plain delete removes the chain's archived reserved segments; a KEPT execution moves its streams to the compaction archive. The content sweep no longer mistakes a topic stream (it starts at `INBOX_TOPIC_SEQ_BASE`) for a compacted log; a trimmed reserved stream needs its archive in an erasing pass (`acknowledgeUnarchivedLogs` for streams trimmed before this change). Hot-path cost: per trim one ranged read and one archive append (+8.7% store calls in the worst case, 40 messages consumed one at a time); zero per message in a burst; nothing reads the archive on resume.
+- **BREAKING (the `KeyStore` contract, hash-chained inbox deployments, the on-disk sender shape): third review round of the reserved-stream archive ([ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md) D22-D25, #729; `@loom/plugin-crypto`, `@loom/conformance`, `@loom/compliance`, `@loom/app`; no EVENT_SCHEMA, KERNEL_ABI, WIRE_ABI or SPI version change, but a NEW REQUIREMENT on `KeyStore`).** (D22, blocker) The sender seed mint raced: `KeyStore.getOrCreate` is now documented as REQUIRING an atomic create-if-absent (a store whose write is an upsert lets two nodes mint two seeds, so erasure destroys one and the other copy of the identity stays readable), `SenderHandles` shares one in-flight mint per key, `runKeyStoreConformance` gains a concurrent-`getOrCreate` case that a non-atomic third-party store FAILS, and `eraseSender` re-reads and fails loud (`SenderEraseIncompleteError`) if any seed or handle of the sender is still live. (D23) A lost or destroyed sender master is `SenderMasterLostError` on erase, reinstate and send (`eraseSender` no longer answers `false` for it; a send does not mint a new master over live sealed senders); the crash window between erase's two destroys surfaces as `SenderErasedError`; the sealed sender's AAD binds the message id. (D24, owner ruling) `app.reinstateSender(actor, tenant?, { by })` is the explicit, journaled operator verb (`SENDER_REINSTATE_INTENDED` then `SENDER_REINSTATED`; never the identity) that lets an erased sender send again under a NEW handle. (D25) `loadParked` loads the parked erasures before the archive recovery, which now warns through `onWarn` instead of aborting boot. **BREAKING / BEHAVIOUR CHANGES:** (a) a hash-chained inbox deployment needs `allowCompaction` on `hashChainedEventStore` for the terminal inbox delete to run (without it the delete REFUSES, the streams are kept and the refusal reaches `onStorageError` / `onWarn`); (b) a sealed sender is stored as `{ $loomSender: 1, subject, ct }` (not `__loomEnc`), and a keyless node (one without the KeyStore) keys its dedupe by the sealed handle, which differs from the identity-based key an opening node computes; (c) a sender sealed by the first review round's AAD does not open under the new context - round 1 never shipped, so nothing in the field is affected; (d) a sender erased by `eraseSubject` is BLOCKED (`SenderErasedError` on send) until `reinstateSender` runs. A `KeyStore` in another repo (the KMS plugin's `KmsKeyStore` and its backing stores) must implement `getOrCreate` atomically to pass the conformance kit.
+- **Second review round of the reserved-stream archive ([ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md) D14-D21, #729; `ARCHIVE_STORE_SPI` 1.0.0 -> 1.1.0, additive; no EVENT_SCHEMA, KERNEL_ABI, WIRE_ABI or EventStore SPI change).** (N1) Erasure's redaction of a sender in a PLAINTEXT archive is one atomic compare-and-swap, the new optional `ArchiveStore.replaceSegments(key, expected, next)` (memory, SQLite, Postgres, tenant, encrypting, conformance kit): a trim on another node that appended a segment after the read made the old read/delete/re-add LOSE it; now the swap rejects with `ArchiveConflictError` and the key is re-read and retried; a stage an earlier build left is restored at boot (`loadParked`) and by `app.recoverArchiveRedactions()`; the runtime forgets its remembered archive sequence for a key erasure changed (`WorkflowRuntime.invalidateInboxArchive`). The Postgres `archive_segments` table gains a nullable `sender_digest` column (guarded add) and SQLite adds it on open. (N2/N8) A KEPT retention derives the chain's incarnation before the owner is deleted and the archive falls back to its own segments' incarnation once the owner is gone, so the archived inbox still reads and live streams are moved; a kept execution with a retention archive but no compaction archive REFUSES (`ReservedStreamArchiveRequiredError`) while its inbox holds envelopes instead of dropping them. (N3) An erased sender carries a stable non-identifying `ref`, so two different erased senders no longer dedupe against each other. (N4) `eraseSubject` journals its intent (`ERASURE_ARCHIVE_DELETE_INTENDED`, `ERASURE_SENDER_REDACTION_INTENDED`) before deleting or redacting and the completion after; a crash between is finished by the retry. (N5) A plaintext archive that holds the subject as a sender and cannot swap a segment refuses BEFORE the shred (`SenderRedactionUnsupportedError`). (N6, **BEHAVIOUR CHANGE**) A sealing deployment seals message senders BY DEFAULT under an opaque handle derived with a keyed function from KeyStore material (`SenderHandles`; `senderSubjectOf: false` opts out and `defineConfig` warns); `eraseSubject` also erases the subject as a sender (`EncryptingEventStore.eraseSender`), which destroys the sealing key and the seed so the handle is unlinkable. (N7) A plaintext reserved segment carries a `senderDigest` (the segment digest masks the sender) that a redaction recomputes in the same swap, and a sealed sender is bound by AEAD to its message (`chain|topic|inbox-sequence`) so a swap is detected. `hashChainedEventStore` offers `deleteThrough` only with `allowCompaction` (a delete that leaves a remainder breaks the chain), and the ADR's D9 wording is corrected: sequence 0 joins the first consecutive run.
+
+- **BREAKING: the MCP App surface-cursor tool `loom.surface.since` is renamed `loom_surface_since` (`@loom/plugin-mcp-app`; no kernel, SPI or ABI change).** `SURFACE_CURSOR_TOOL` now holds the new name and the View template derives its poll from it. The dotted name failed `^[A-Za-z0-9_-]{1,64}$`, so loom's own `McpClient.listTools()` hid the tool loom's MCP App published unless the caller passed `{ anyToolName: true }`. Clean rename, NO alias (publishing both would keep the hidden name alive). Anything that called `loom.surface.since` directly must switch; `surfaceHostPin()` changes with the template, so a pin recorded against the old template reports `TemplateDriftError` and must be re-pinned deliberately. ADR 0072 carries a dated amendment.
+
+- **`@loom/plugin-postgres`: opt-in lz4 compression for `snapshots.state` ([ADR 0136](docs/adr/0136-snapshot-lz4-compression.md), issue #707; no kernel, SPI or ABI change).** `migratePostgresStores(pool, { snapshotCompression: "lz4" })` (also on `PostgresEventStore` and `postgresStorage`; the first migrator of a pool decides) runs `ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4` behind a catalog probe (a no-op that takes no lock on later boots), in its own short transaction after the main commit (its lock wait is min(`lockTimeoutMs`, 200 ms), so a held table stalls snapshot I/O for at most that per boot), and FAILS SOFT: a server older than 14, one built without lz4, a non-owner role or a lock wait past that keeps the default compression and reports one message through `onWarn`. Default OFF, because it was measured (`snapshotCompression.perf.test.ts`, `pnpm test:perf`) to store about 1.5x MORE bytes than pglz (1 MB state: 262 kB pglz vs 392 kB lz4) while reading about 20% faster (`loadLatest` 5.6 ms vs 4.5 ms) and writing about 1.5-2.4x faster; it is a speed trade, not a size one. Applies to new values only: existing rows keep pglz until rewritten and nothing rewrites them. The `events` payload column was measured only (1.20x more bytes, ~1.4-1.8x faster inserts in a scratch table) and is unchanged; SQLite is unchanged; compress-before-encrypt for `EncryptingSnapshotStore` was out of scope here (it leaks size); the zstd codec entry above ships it behind an explicit `lengthLeak: "accept"`.
+
+- **Superseded snapshots can be pruned, opt in ([ADR 0134](docs/adr/0134-snapshot-pruning.md), issue #706 fix 1; `@loom/snapshot-runtime`, `@loom/workflow-runtime`, the SQLite, Postgres, crypto and content plugins; no kernel ABI or EVENT_SCHEMA change).** A long-lived execution kept every snapshot it ever took (suspend, fork, each `snapshotEvery` cadence) until the whole execution was deleted, so storage grew as snapshots x state size. SnapshotStore SPI 1.1.0 -> **1.2.0** adds the OPTIONAL `pruneSnapshots(executionId, { after, before }, keep?)`: delete `after < sequence < before` minus the keep-set in ONE statement (a single DELETE on SQLite and Postgres, using `idx_snapshots_exec`; a slice in memory), resolving with the count. `LogLifecycle.pruneSnapshots(executionId, { keepLatest?, keepSequences? })` decides what is safe from the log and **never prunes** the latest `keepLatest` (default 1), a compacted log's checkpoint (the lowest snapshot at or above its gap) nor anything at or below it (the exact fork points of ADR 0107 D2), a log compacted through its tip (`[0]`), a `compactionExempt` execution, or a `keepSequences` entry. So every `fork(parent, at)` returns the same state as before (an old fork may fold more events), a resume re-runs no step, and `fold` is unchanged. DEFAULT OFF: the runtime never prunes on its own, and a store without the method returns `0`. `TenantScopedSnapshotStore` scopes the id; `EncryptingSnapshotStore`, `ContentTouchingSnapshotStore` and the kernel's `SealGuardedSnapshotStore` forward (a range delete reads no state). The content sweep (ADR 0055 D6) pins only the latest snapshot and the checkpoint, both of which are kept, so no sweep decision changes. Delta snapshots and Merkle state (fixes 2 and 3) are deferred in the ADR. Review fixes: `compact` and `pruneSnapshots` are serialized per execution within one `LogLifecycle` instance (two instances over the same stores do not exclude each other; a `pinned`/`compactionExempt` callback that calls `compact`/`pruneSnapshots` on the same execution re-entrantly hangs), and a prune aborts (resolves `0`) when the log's gap moved while it decided (cross-process runs of the two on one execution must still be excluded by the operator), because a racing compaction's new checkpoint could otherwise be deleted; `keepSequences` and bounds must be safe integers (`RangeError`); pruning REFUSES with `BlankStreamUnrepairedError` while `loom repair blank-stream` still has events to re-home (its blank snapshots are the attribution proof; the census enumerates every execution, so a verdict with no re-homable segment is memoized per instance on the head of `""`, never a refusal; `pruneSnapshots(id, { acceptUnattributedBlankStream: true })` proceeds when only unattributed runs block, a re-homable segment always refuses; a store that cannot enumerate executions refuses with the typed `BlankStreamCensusUnavailableError`); known exception: after a flow is re-registered at a new version, a fork formerly served by a pruned snapshot reports the current `workflowVersion`.
+- **BREAKING (behaviour): `ExecutionHandle.waitForSuspend()` rejects with `ExecutionTerminatedError` when the run ends without parking (`@loom/workflow-runtime`, behaviour change, ADR 0135; no kernel, SPI or ABI change).** It used to stay pending forever when the run completed, failed, was cancelled or continued as new, so a caller awaiting it alone hung (issue #710: the "second resume of a compacted execution" was simply the last gate, completing; compaction was not involved). It now rejects with the new `ExecutionTerminatedError` (`state`: the terminal folded state, `status`, and `cause`: the failure or cancellation), in every terminal path including continue-as-new, AFTER `waitForCompletion()` has settled (the returned promise settles at least a microtask later, so a late-attached race still resolves with the completion or the original failure), in either array order; a storage, lease or seal failure still rejects both with that error. No unhandled rejection for a caller that never calls it; a bare `.then` on it needs a `.catch`. Callers that awaited `waitForSuspend()` alone on a run that may finish must race the two or catch the error. The `continueAsNew` doc no longer says it "never resolves".
+- **`LlmHttpError` carries a closed `kind: "auth"` for a refused credential (`@loom/llm`, `@loom/agent`, minor; no kernel, SPI or ABI change).** `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` set `kind: "auth"` on a 401 or 403. Google's Generative Language API reports an invalid or expired API key as HTTP 400 `INVALID_ARGUMENT`, which a status-only caller took for a malformed request (permanent, blamed on the input); `GeminiProvider` now reads a 400 body (at most 16 KiB, parsed defensively, never stored or put in the message) for at most 2 s (a stalled body gives up and still throws promptly) only to look for a `google.rpc.ErrorInfo` detail (matched by its `@type`) with `reason: "API_KEY_INVALID"` (the only documented key-rejection reason in `google/api/error_reason.proto`) and sets `kind: "auth"` on a match. Any other reason, invalid JSON or an over-bound body leaves `kind` unset; the message is still `Gemini API error 400` and the error still keeps no body. `isTerminalToolError` (`@loom/agent`) treats `kind: "auth"` as terminal configuration, like 401/403, so the Gemini bad-key 400 no longer comes back to the model as feedback; `classifyModelCallError` is unchanged (it already classifies every `LlmHttpError` as `provider`).
+- **Provider error messages no longer carry the response body (`@loom/llm`, behaviour change; no kernel, SPI or ABI change).** `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` now fail a non-2xx response with `<Provider> API error <status>` (it used to be `<Provider> API error <status>: <body>`); the body can echo the prompt, so it is cancelled and never read or kept. Code that matched on the body text must branch on `LlmHttpError.status` instead.
+
+- **`loom appgen` deletes need explicit consent everywhere (`loom appgen`, `cmdAppgen`; no kernel, SPI or ABI change).** Behaviour change: a non-TTY `loom appgen` run WITHOUT `--yes` (including `--from-spec` replays in CI) now refuses any plan that deletes a flow or a step (exit 1, nothing written); add `--yes` to scripted replays that delete. Library callers of `cmdAppgen` that pass neither a `confirm` callback nor the new `allowDeletes: true` option get the same refusal (`aborted: true`, the deletions in the new `refusedDeletes`); plans without deletions are unaffected. `applyChanges` only plans (it writes nothing), so the gate lives in `cmdAppgen`. Also: `validateChangeSpec(spec, appModel, request?)` rejects a model-planned delete unless the user's request contains a delete-like verb (delete, remove, drop, get rid of, discard, retire, deprecate, unregister), with a one-line repair message.
+- **BEHAVIOUR CHANGE for apps relying on `IntentRuntime`'s keyword fallback after a model reply: a configured model's answer is now FINAL (`@loom/intent`; no kernel, SPI or ABI change).** With a `reasoning` or `provider` configured, `route()` no longer falls back to the offline keyword matcher when the model answers `NONE` or an unusable reply; it returns `null` (and `run()` throws `No capability matched intent`). The keyword matcher runs only when NO model is configured (unchanged). Reply parsing: the first whitespace token is a capability id (exactly, or after stripping surrounding quotes, backticks and punctuation) -> that capability; else that token is `none` in any case (`NONE.`, ` none `, `"None"`, `None of these fit`) -> NONE; else exactly one distinct catalogue id appearing in the reply as a whole token (not inside a longer id, e.g. "The best fit is `diagnose-cpu`.") -> that capability, two or more different ids -> ambiguous, no route; none -> no route. A model/provider error still propagates (fail closed, unchanged). New `IntentRuntime.routeExplained()` returns `{ route, reason }` (`model-routed | model-none | model-unparseable | model-ambiguous | keyword-match | keyword-no-match | empty-catalog`); `route()` keeps its type. Apps that want the old "model first, keywords if it fails" behaviour can call `route()` on a second `IntentRuntime` built without a model.
+- **BEHAVIOUR CHANGE for third-party and decorator stores: a shredded payload is recognised by a realm-safe brand, no longer by the error NAME alone ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md), amendment 2026-10-17 (c)).** An `Error` that merely named itself `PayloadShreddedError` was treated as a PROVEN erasure by the kernel (unknown owner, which `unknownOwner: "allow"` admits; also the cancel redacted fold and the ownership pin). It now needs the brand `Symbol.for("loom.payloadShredded")`, which `@loom/plugin-crypto`'s `PayloadShreddedError` sets in its constructor (so the 1P stores are unchanged). A store, decorator or wrapper that throws its OWN erasure error must adopt `brandPayloadShredded(err)` (or re-throw the real class) from `@loom/event-runtime`; until it does, its error is a fault (`ExecutionStoreUnavailableError` via `onStorageError`, retryable) and nobody is admitted. `Symbol.for` survives duplicated package copies. A serialized error that crossed a process boundary has lost the brand by design. Consumers moved to the one predicate `isPayloadShredded`: `WorkflowRuntime`, `@loom/orchestration`, `@loom/compliance` (`EraseCoordinator`), `@loom/plugin-content` (GC), the CLI. Error `name` and shape are unchanged. No event shape, `EVENT_SCHEMA`, `KERNEL_ABI` or SPI version change.
+- **Caller-visible error type: under an owner-resolution fault the OWNER (and a stranger) now gets the retryable `ExecutionStoreUnavailableError`, not `ExecutionDeniedError` ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md) amendment 2026-10-17, second).** Code that treated a denial from an authorizer-gated op as final should retry on `retryable === true`; an app that matched `ExecutionDeniedError` to detect a resolver outage must match the new error instead. A legitimately unresolvable owner (resolver returns `undefined`, shredded or malformed record) is unchanged: unknown owner, the policy decides.
+- **PRODUCT-VISIBLE: the OWNER of an execution whose recorded principal was erased now gets `ExecutionDeniedError`, not `PayloadShreddedError`, from `loadState`/`resume` under an execution authorizer (ADR 0039 amendment 2026-10-17).** With a crypto-shredded (sealed) principal the owner is unknown, so a strict policy (`unknownOwner` unset) refuses every caller, the former owner included; the kernel itself (system grant) and a policy with `unknownOwner: "allow"` keep the erasure outcome (and an authorized `cancel` still works through the redacted fold). `app/sealedPrincipal.test.ts` pins both. Apps that branch on `PayloadShreddedError` from an authorizer-gated call with a sealed principal must also handle `ExecutionDeniedError`.
+- **`@loom/saga` behaviour change: a failed rollback out of `withSaga` throws `SagaCompensationError` (original error as `cause`), not the original error.** Callers matching the original's type (e.g. a `TypedFailure`) must read `err.cause`; when every compensator succeeds the original is re-thrown unchanged. Runtime signals thrown by a compensator (`SuspendError`, `ExecutionCancelledError` / abort, `LeaseLostError` / `LeaseHeldError` / `StaleFenceError`, `FlowDivergenceError`, `SealedPayloadUnreadableError`, `StorageWriteError`) are no longer folded into `compensationErrors`: they propagate unwrapped at once and no further compensator runs. A failed (untyped) compensator is retried on resume (at-least-once); only completed ones are not re-run.
+- **BREAKING for apps combining `AgentRunner` / `agentStep$` / `asEffect()` with an `idempotent: false` tool: the runner now REFUSES it (K9.3; [ADR 0121](docs/adr/0121-one-canonical-agent-loop.md) amendment 2026-10-15).** The single-frame runner runs nested tool calls inside one outer step with no `STEP_*` frames of their own, so the in-doubt protection of [ADR 0021](docs/adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) A3 never covered them: a crash re-ran the whole agent including every tool that already fired. The constructor (over the agent's and its skills' tools) and the call site (a tool reached at run time) now throw the terminal `IdempotentToolRefusedError` before the effect runs; it is never fed back to the model. **Migration:** use `agentLoop$` (one frame per tool call), or pass the new `acceptAtLeastOnce: true` (on `AgentConfig` and `agentStep$`) to knowingly keep at-least-once re-run. Undeclared and `idempotent: true` tools are unchanged.
+- **BREAKING-BY-DESIGN: the kernel refuses a plaintext checkpoint when the event store seals ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D8, slice S3).** When the event store reports a non-empty `sealingCapability().covers`, `new WorkflowRuntime` / `defineConfig` now throws the new `PlaintextCheckpointError` (`reason: "not-sealed" | "keys-not-shared"`) unless the snapshot store reports `sealsWholeState` (`EncryptingSnapshotStore({ sealState: true })`) AND shares the event store's `KeyStore`; the same rule is re-checked at every checkpoint `save` (a breach reaches `onStorageError`, writes nothing and never fails the run) and applies to `LogLifecycle`'s archive snapshot store (`unsafe-archive`). **Migration:** build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` over the SAME KeyStore (run `loom doctor` first: `snapshot-plaintext-under-encrypting-events`, `archive-snapshot-plaintext-under-encrypting-events`), or keep a plaintext checkpoint explicitly with the escape hatch `security.crypto.allowPlaintextCheckpoints: true` (new on `PrincipalCryptoOptions`, exposed as `app.security.crypto.allowPlaintextCheckpoints`; `allowPlaintextCheckpoints` on `WorkflowRuntimeDeps` / `LogLifecycle` options). Event stores without the 2.5.0 capability and apps with no sealing are unaffected. Snapshots already written in plaintext are not rewritten. User ruling (2026-10-14): with encrypting events, `defineConfig` builds the DEFAULT in-memory snapshot store (`storage: { kind: "custom", eventStore }` with `snapshotStore` now optional) with `sealState` on the same KeyStore instead of refusing to boot; an explicit plaintext store is still refused. `@loom/plugin-crypto` moves from `devDependencies` to `dependencies` of `@loom/app` for this.
+
+- **`@loom/workflow-runtime` no longer constructs `AsyncLocalStorage` at import.** Verified: bundling it for a browser with `node:async_hooks` externalized to an empty module threw `AsyncLocalStorage is not a constructor` at load. The step/decide scope stores are now created on first use; where no `AsyncLocalStorage` exists, entering a step/decide scope throws `AsyncContextUnavailableError` (a scope lost at the first `await` would record steps under the wrong identity; documented in the user guide). Node behaviour is unchanged.
+- **`runAgentOnce` prints the permissive-defaults notice at most once per process** (it built a fresh `defineConfig` per call). A caller's own `security.strict` or `observability.onWarn` is honoured each call; `defineConfig` itself is unchanged.
+- **`anyToolName` now validates the name (`@loom/plugin-mcp`; behaviour change).** It still relaxes only the CHARSET, but a name must now be non-empty, at most 256 characters, and free of `\p{Cc}\p{Cf}\p{Zl}\p{Zp}` characters (control, zero-width/format, line and paragraph separators). Before, any string passed. A name that fails is skipped through the same visible path as above (`onSkippedTool`, `strictToolNames`, the warning). Dotted names are unaffected (`mcpInvoke$` is fine). Names become effect ids, map keys, log text and prompts, so this closes an injection and log-forging vector.
+- **`PrincipalUnrestorableError` message and `PrincipalResolver` JSDoc now say what a resolver receives and must return (`@loom/workflow-runtime`).** A resolver gets the recorded record (identity plus a delegation DIGEST, not the token) and must re-mint an equivalent delegation token, e.g. from the app's grant table; a codec instead stores an opaque ref. Wording only.
+- **`@loom/memory` no longer imports `node:crypto`** (`embedding.ts` hashes with `@loom/core`'s pure `sha256Hex`; entry keys are byte-identical, the in-process text tag is now hex). Browser bundles of `@loom/memory` stop warning.
+
+- **Test infra: each `plugins/postgres` test FILE now gets its own Postgres database (`loomTest({ pgDatabasePerFile: true })`, `vitest.pgFileSetup.ts`).** `migrate()` holds a database-wide advisory lock with no timeout, so one file's slow migration blocked `migrate()` in every sibling file (a 61 s flake). Databases are named `<package db>_<file slug>_<hash>`, created on first use and REUSED (never dropped; bounded by the file count). Connections are unchanged (`max_connections` is server-wide: concurrent files x pool size, plus one short admin connection). `LOOM_TEST_PG_SHARED=1` still opts out. Guard: `pgFileIsolation.test.ts`. CI needs no change (the `postgres` superuser already creates the per-package DB).
+- **`@loom/agent` skill activation no longer imports `node:crypto` (ADR 0125 D14, R22d; kernel untouched).** The instruction digest used `createHash` from `node:crypto`, so a Vite browser bundle that included `@loom/agent` warned about externalising it. It now uses the dependency-free `sha256Hex` from `@loom/core`. The recorded digest is byte-identical (lowercase hex sha256 of the UTF-8 instructions; pinned by the NIST "abc" vector and a multi-byte comparison against `node:crypto` in the test), so old logs replay unchanged. `@loom/agent` itself has no other `node:` import; its dependencies still do (`@loom/effect-runtime` authz, `@loom/memory` embedding, `@loom/workflow-runtime` inbox/approvalBinding/signedResumeAuthenticator/WorkflowContext), so a browser bundle may still warn from those.
+- **`ContentTouchingSnapshotStore` is branded, and `sweepUnpinnedContent` reports and warns on unbranded snapshot stores (ADR 0055 D6 amendment 2; `@loom/plugin-content`; kernel untouched).** `snapshotsTouchContent: true` stays a required assertion about the WRITER (a sweep, and `loom sweep content`, read a raw store over the tables a wrapped one wrote, so an unbranded store proves nothing and nothing is refused; a branded store vouches only for itself and does not waive the flag). New exports `isContentTouchingSnapshotStore(store)` and `CONTENT_TOUCHING_SNAPSHOT_STORE`. `ContentSweepReport` gains `snapshotStoresTouching` / `snapshotStoresUnbranded`, and an erasing pass handed a MIX (some branded, some not, so a host probably wrapped some writers and forgot others) emits one `LOOM_CONTENT_SNAPSHOT_UNWRAPPED` process warning. No behaviour change otherwise.
+
+- **BREAKING: `sweepUnpinnedContent({ reclaimOrphans })` now requires `{ completeScan: true }` ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment; `@loom/plugin-content`; kernel untouched).** Orphan reclamation erases every blob no scanned log, snapshot or root cites, so a host that left out an event store or snapshot store lost, silently, every blob only that store cited, while still cited; only `dryRun` guarded it. A bare `reclaimOrphans: true` (or `{}`, `{ completeScan: false }`, any other value) now throws the new `ReclaimOrphansAckError` (a `TypeError`) before anything is read or erased. A `dryRun` is exempt (it erases nothing and is how you check completeness): `dryRun: true` still accepts `reclaimOrphans: true`. The acknowledgement also covers scan ORDER: each live store before its archive. **Migration:** `reclaimOrphans: true` becomes `reclaimOrphans: { completeScan: true }` once `eventStores` (live AND every archive), `snapshotStores` and `roots` cover everything that cites content; dry-run first. Absent/`false` is unchanged, and so is the TTL floor. The conditional delete (D5) closes the re-cite race only for a re-cite through `put`; **KNOWN GAP:** a citation copied without a `put` (a fork's `copyPrefix`, a ref kept in an `append` payload) is not protected, so do not run an orphan sweep concurrently with forks or deletes of the executions it scans (ADR 0055 D6 amendment). `loom sweep content --orphans` is unchanged for users (it passes the acknowledgement after its own archive and snapshot checks). The `loom-examples` `media-gallery` sweep needs the same one-line change.
+- **`agentLoop$({ needsApproval })` replaces `requireApproval`, which is deprecated ([ADR 0121](docs/adr/0121-one-canonical-agent-loop.md) amendment; 1P `@loom/agent`, kernel untouched).** `requireApproval` was an auto-approve policy (`true` proceeds, `false` parks) and read backwards. `needsApproval: (call, turn, onMenu?) => boolean` parks on `true` and runs on `false` (anything but an explicit `false` parks). `requireApproval` keeps its old polarity as a deprecated alias and emits one `LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED` process warning; supplying both throws `AgentLoopConfigError`. The recorded log for the same effective decision is identical, so old logs replay unchanged. Migrate `requireApproval: (c) => c.name !== "x"` to `needsApproval: (c) => c.name === "x"`. `conversation$` refuses both spellings. Also fixed: two tests built `QuotaExceededError` with three arguments (its constructor takes one, `reason`).
+
+- **`decideWithPolicy` / `decideWithRollout` no longer consult the policy on replay ([ADR 0124](docs/adr/0124-learning-lifecycle.md) R18 follow-up; 1P `@loom/learning`, kernel untouched).** The registry read, the resolver and every `select` (the shadow/other arm included) moved INSIDE the decider passed to `ctx.decide`, so a served decision runs none of them: a model-backed or side-effecting policy is no longer run for an answer that was thrown away. The recorded `DECISION_RECORDED` payload (choice, propensity, `policy.rollout`, shadow, refs) is byte-identical to before (pinned by a golden captured from the old code) and old logs replay unchanged. The options object handed to `ctx.decide` is completed by the decider (the kernel reads `opts` when it commits, after the decider settled).
+
+- **ADR 0125 D14 (R22d) closes three tool-search/skill-activation residuals; 1P `@loom/agent`, kernel untouched, `EVENT_SCHEMA` unchanged.** (1) **Behaviour change:** the model-facing tool spec of an un-vouched remote tool (`origin: "remote"`, a `jsonInputSchema`, or `kind: "a2a"`) now carries the fixed text `"Third-party tool; description withheld"` instead of the peer's description unless `trustJsonSchemaText` is set (A2A: `trustDescriptions` on the peer config); this was already true for MCP tools and now covers A2A tools (and any `origin: "remote"` tool) with no `jsonInputSchema`, so existing A2A users no longer show the peer's description to the model. A tainted description on a remote tool is withheld even when vouched (it used to throw a `TypeError`). Replay is unaffected (model responses are journaled; request bytes are never compared). (2) An accepted skill activation now records `digest` (sha256 of the delivered instructions) in its decision; a replay or an already-active re-delivery whose current text differs returns the new typed error `instructions_changed`, keeps the skill's tools on the menu, records nothing and emits a `LOOM_AGENT_SKILL_CHANGED` process warning. Records without a digest behave as before. (3) A `toolSearch.ranker` or `skillActivation.skillRanker` that ignores `limit` is clamped to the count it was asked for before admission (O(limit)). **Review round 1:** the activation record also carries `bytes` (UTF-8 length of the delivered instructions as serialized), and when a replay or re-delivery cannot deliver the same text the byte-triggered compaction counts that recorded size, so a one-character or length-changing skill edit no longer diverges a resume with a recorded `#turn:t:compact` frame (records without `bytes` keep the old behaviour); a remote tool without vouching now also loses its Zod `.describe()` text in the spec; `@loom/plugin-a2a` gains `A2APeerConfig.trustDescriptions` (the equivalent of MCP's) to vouch for a peer's card text; the `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning no longer says "JSON schema". **Review round 2:** the activation record also carries `resultBytes` (UTF-8 length of the whole live activation result: envelope, tool ids and instructions), so the byte-triggered compaction is exact on replay even when the skill's tool list (not only its text) changed since; records written by round 1 (with `bytes`, without `resultBytes`) keep round 1's behaviour.
+- **BREAKING: LLM content parts, tool-call threading and provider capabilities ([ADR 0120](docs/adr/0120-llm-content-parts-and-tool-threading.md), R5; EVENT_SCHEMA and KERNEL_ABI unchanged).** `@loom/llm` MAJOR. `LlmMessage.content` is `string | LlmContentPart[]` (text, image, audio, file, `tool_use`, `tool_result`); there is no `tool` role (results are `tool_result` parts in a `user` message, mapped per provider: Anthropic content blocks, OpenAI `tool_calls` + `role: "tool"`, Gemini `functionCall` / `functionResponse`, which `GeminiProvider` now supports with tools). Media is claim-checked: a `{ kind: "ref", ref: { address } }` source is journaled as the address and resolved by `createLlmEffect({ resolveContent })` / `createAgentModelEffect(provider, { resolveContent })` / `AgentConfig.resolveContent` only on a live call; inline `{ kind: "data" }` is capped at 64 KiB (`MAX_INLINE_BYTES`). `LlmProvider.capabilities` declares accepted modalities/media types (absent = text + tools only) and an undeclared one throws `UnsupportedModalityError` before any network call. `guardRequest` now also enforces part structure (`InvalidLlmRequestError`), the inline cap (`OversizedInlinePartError`) and tool_result pairing, and keeps ADR 0085 for parts (tainted tool results fenced in the `tool_result`; media marked `untrusted: { origin }` is bracketed by the fence tags and refused outside `user`; a tainted `tool_use` input is refused). `LlmStreamChunk.toolDelta` streams tool-call input fragments (transient). `agentLoop$` / `AgentRunner` replace the `"(tool calls)"` placeholder and per-result user JSON with an assistant message of `tool_use` parts and one user message of `tool_result` parts (`isError` for refusals and failing tools); tools return media with the new `mediaResult(parts)`; compaction never starts its kept tail on a `tool_result`. **Migration:** (1) code that READS `message.content` as a string (a custom provider, a VCR/middleware, a test asserting on the transcript) must call `textOf(content)`; code that only WRITES strings is unchanged and old recordings still replay; (2) a custom `LlmProvider` should call `assertRequestSupported(request, this.capabilities)` at the top of `complete` / `stream` and declare `capabilities` if it takes media: `runLlmProviderConformance` now fails a provider that silently accepts an undeclared image (`tools/scaffold` emits the call); (3) a compaction effect (`compaction.toolId`) receives messages whose `content` may be parts; (4) a test asserting that the turn after a tool call holds `"(tool calls)"` plus a `{"tool":..,"result":..}` user message must now expect `tool_use` / `tool_result` parts (the JSON envelope is the `tool_result`\'s text); (5) an in-flight `agentLoop$` execution resumes (completed turns are served from the log; later turns are built in the new shape; the compaction trigger is measured over a virtual pre-R5 transcript so `#turn:<t>:compact` frames land on the same turns); (6) `ContentResolver` is `(ref, context) => bytes | null` where `context` is `{ executionId, stepId, principal, origin, maxBytes, signal }` (was `(ref, signal)`) and **MUST authorize the ref**; (7) `mediaResult(...)` is honoured only for a tool declared `returnsMedia: true` (new optional `ToolDefinition` field) and never for a tainted output; (8) **behaviour change:** shipped providers now declare media only for known media-capable model families (OpenAI gpt-4o/4.1/5, o1/o3 non-mini, o4, dated gpt-4-turbo; Claude 3+; Gemini 1.5+/2.x; OpenAI audio only for `audio` models); any other model id, and any non-default `baseUrl`, refuses media locally with `UnsupportedModalityError` (one-line fix: pass `capabilities: { image: [...] }`); `capabilities: {}` is text-only; (8b) `resolveContent` needs its context (`ReasonOptions.resolveContext`) and a declared `ref.size` must be a non-negative safe integer; an over-cap model `tool_use` is refused at dispatch with a placeholder in the transcript; (9) inline media is capped at 256 KiB per request in total as well as 64 KiB per part; (10) content GC (`sweepUnpinnedContent`) now pins blobs cited as media refs `{ kind: "ref", ref: { address } }`. Companion changes in `loom-examples`, `loom-ui` and `genUI` are listed in the PR.
+- **Behavioural (ADR 0109, R1b): a caller-chosen execution id whose root segment (the text before the first `::`) is `<x>~<digits>` is refused at creation, whether or not `kernel.features.continueAsNew` is on** (`ReservedSuccessorIdError`; `start`, and `fork`'s child id). `a~b`, `a~1x` and `a::b~1` are unaffected, existing logs stay readable and resumable, and a `::`-derived child of an existing successor-shaped parent (`chain~1::g#0`) still starts. An app that used ids like `task~1` renames them. **`cancel` of a `continued` execution is no longer a no-op: it cancels the chain's live generation.** **`recordOutcome` no longer refuses a `continued` execution.** **Fixed:** a run whose cancel landed before its flow returned (a deadline already past when a parked execution is resumed, with a flow that returns without running a step) appended `EXECUTION_COMPLETED` after `EXECUTION_CANCELLED`; the cancel now owns the outcome. **Source-level:** `ExecutionStatus` gained `"continued"` at W2-0, so an exhaustive `switch` over it needs a case; `ExecutionContext` gained `continueAsNew`, so a hand-written implementation of the interface (a test double) needs one too.
+- **BREAKING: `ctx.ui` leaves the kernel ([ADR 0114](docs/adr/0114-ctx-ui-leaves-the-kernel.md), R14, now Accepted; KERNEL_ABI stays at the reserved 1.3.0, EVENT_SCHEMA unchanged).** `@loom/workflow-runtime` no longer depends on `@loom/agent-surface` (package.json, imports and tsconfig refs are gone). `ExecutionContext` extends an empty `ExecutionContextExtensions`; `@loom/agent-surface` merges `readonly ui: SurfaceEmitter` into it, so `ctx.ui` type-checks only where agent-surface is in the program. At runtime the accessor comes from a new injected factory `WorkflowRuntimeDeps.surface`, which `defineConfig` (`@loom/app`) supplies, so every composed app (and `@loom/testing`'s `createTestApp`) is unaffected. `@loom/app` re-exports `type SurfaceEmitter`, so composed apps keep `ctx.ui` typed with only `@loom/app` imported; bare-runtime users import `@loom/agent-surface`. `@loom/agent-surface` declares `@loom/workflow-runtime` as an optional peer. **A bare `new WorkflowRuntime(...)` with no `surface` dep now THROWS on `ctx.ui`**, with a message naming the dep (the user's "break now" decision; removing `ctx.ui` is a later MAJOR). Migrate by spelling it `surface(ctx)` (new export of `@loom/agent-surface`, works on any context with `emit`, emits byte-identical `SURFACE_PATCH` events), or pass `surface: createSurfaceEmitter` in the runtime deps. The `ui` ABI entry is marked `deprecated: true` (`KernelSyscall.deprecated?`), and the missing `negotiateBudget` entry is added to `KERNEL_SYSCALLS` (`since: "1.3.0"`, `kind: "call"`); a test asserts the table and the `ExecutionContext` interface agree. The layering guard gains the inverse rule `findKernelClosureViolations`: a kernel package depends only on kernel packages (red on `main` against the `workflow-runtime` -> `agent-surface` edge; `@loom/classify`, a zero-dependency leaf `effect-runtime` already imported, joins `KERNEL_PACKAGES`). `@loom/appgen` now generates `surface(ctx).set(...)` with its import, and the scaffold's package.json adds `@loom/agent-surface`; about 17 docs and decks show `surface(ctx)`.
+- **`SafetyViolationError` is non-retryable (`retryable = false`).** `retryMiddleware`'s default classifier used to retry a blocked call, so a stream severed by a delta validator (ADR 0119) re-called the provider up to `maxRetries` more times. A violation is a policy decision, not a transient fault; an app that wants "regenerate on violation" passes an explicit `isRetryable`.
+- **BREAKING (ADR 0119 review 2): the CONFIGURED stream sink is guarded on every path.** `createLlmEffect({ onDelta })`, `AgentRunner` `config.onDelta` and `createAgentModelEffect({ onDelta })` used to receive raw deltas before any output validator on a durable `ctx.run`, on a transient call without a per-call sink, and when the per-call sink was refused. The runtime now puts a guarded delta channel on `ctx.onDelta` for durable and transient calls and forwards to the configured sink (`Effect.deltaSink`) only after the middleware delta guards accepted the text; a PII delta validator severs it before the leak. **Apps streaming past an output validator without a delta form (e.g. `schemaValidator`) stop streaming**: the configured sink receives nothing and the call completes non-streamed (warning: "streaming disabled: <middleware> inspects output without a delta form"). Deltas remain live-only. New `createLlmEffect({ onReset })`. `redactionMiddleware` now sets `inspectsOutput` when `redactOutput` is configured. A middleware that rejects or rewrites output after `next()` MUST set `inspectsOutput` (or provide a `deltaGuard`).
+
+- **`@loom/plugin-sandbox`: `SandboxWorkerPool.run` renamed to `runJson`** (backlog L19
+  round-1 review). It is public API (exported from the package), and its second parameter
+  used to be the raw `input` value, `JSON.stringify`d internally. It now takes that JSON
+  TEXT directly instead (see the L19 entry under **Fixed**) — had the method kept its old
+  name, an external caller still passing a raw value under the new semantics would get no
+  compile error and a silently wrong VM input: `run(script, "42", …)`, meant as the STRING
+  `"42"`, is `JSON.parse`d as pre-serialized JSON and seeds the NUMBER `42` instead. The
+  rename makes that a compile error for any caller outside this package. `@loom/sdk/sandbox`
+  does not re-export this class, so nothing else in this repo was affected.
+
+- **`@loom/replay-vm`: a step failure the flow catches no longer fails the execution**
+  ([ADR 0105](docs/adr/0105-a-caught-step-failure-is-not-the-executions.md)). `STEP_FAILED`
+  folded the EXECUTION status to `failed` as well as the step's frame, so a flow that caught the
+  failure (try/catch around `ctx.run`, a saga compensation, a typed-failure fallback) ran on
+  under a terminal status. A crash after the catch left an execution `recoverAbandoned` and the
+  dispatcher would never re-drive, `cancel` refused, retention could prune as finished, and A2A
+  peers polling it were told `failed` (`"unknown error"`). A parallel sibling failing AFTER the
+  flow parked did the same to a suspended execution: its gate could not be resumed, and
+  `TimerService` retired a timed park's row as obsolete. `STEP_FAILED` now folds the frame only, like `STEP_CANCELLED`;
+  `EXECUTION_FAILED`, which the kernel commits when a failure escapes the runner, stays the
+  execution's terminal failure.
+
+  - **EVENT_SCHEMA 1.21.0** (no new kind or payload field; KERNEL_ABI unchanged): the status
+    fold changed, and a new reserved fold key `_failedWhileParked` (`FAILED_WHILE_PARKED`) marks a
+    parked execution a `STEP_FAILED` landed on. A `null` `EXECUTION_RESUMED` in that position stays
+    status-only, as 1.20.0 folded it (a 1.20.0 `resumeAs` wrote exactly that entry), so every gate
+    passthrough folds as under 1.20.0 and the result no longer depends on which snapshot seeds the
+    fold. The key is removed by whatever ends the park (a park, a resume, or a terminal event).
+    **Cost (fail-closed), refused at ingress:** a caller's `null` answer to such a gate cannot be
+    its answer, so `resume` / `resumeAs` refuse it with `ResumeRefusedError`
+    (`null-answer-after-parked-failure`, new reason) and append nothing; resume with a non-null
+    answer.
+  - Snapshots saved by an older fold are repaired on read: `normalizeSnapshotState`
+    (`@loom/replay-vm`, new export) reads `failed` with no `_error` and a failed frame as
+    `running` (`suspended` when parked) — on every stored-fold read, including `restoreFromState`.
+    Two shapes it cannot tell from a genuine failure, so an old snapshot keeps `failed`: an
+    `EXECUTION_FAILED` without `error` (never kernel-written), and an execution that genuinely
+    failed, was re-opened by `resumeAs` (stale `_error`) and then caught a step failure. Delete
+    that execution's snapshots (`snapshotStore.deleteExecution`) to make the log authoritative.
+  - New `reconcileTimers(runtime, { source, timers })` (`@loom/workflow-runtime`) re-arms the
+    timer row of every execution suspended on a `wakeAt` (idempotent). Needed once after
+    upgrading: a timed park whose sibling failed under the old fold had its row retired by
+    `TimerService`, and now reads `suspended` with nothing to wake it.
+  - **Behaviour change:** when the `EXECUTION_FAILED` write itself fails, the run now rejects with
+    `StorageWriteError` (`cause` = the store's error) instead of the step's error — the log folds
+    `running`, so the caller must not be told "failed". `handle.getState()` and `onEvent` remain
+    the in-memory view (they saw the commit) and read `failed`.
+  - `recoverAbandoned` takes an optional `maxRecoveries` (≥ 1; default unbounded): the number of
+    CONSECUTIVE re-drives without progress (`EXECUTION_RECOVERED` at the log's tail since the
+    last `STEP_COMPLETED` / `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED`), checked only for claimed
+    candidates. Executions at the bound are skipped, counted in `summary.exhausted` (new field)
+    and reported through `onExhausted`. `loom recover --max-recoveries N` lists them.
+  - `loom eval` goldens that pinned `status: "failed"` for a log ending after a caught failure
+    now fail and must be re-recorded.
+  - **Upgrade note.** On the first deploy every stored execution whose log ends after a caught
+    step failure changes from `failed` to `running`. A staleness-predicate `recoverAbandoned`
+    pass then selects all of them, however old, and re-drives each (re-executing an untyped
+    failing effect; a changed flow hash throws on every pass), and `LogLifecycle` stops pruning
+    them; timed parks whose row the old `TimerService` retired never wake. Before enabling
+    recovery: run `orphanCensus` or `recoverAbandoned({ dryRun: true })`, bound `isAbandoned` by
+    age, cancel what should not resume, set `maxRecoveries`, and run `reconcileTimers` once.
+
+- **`@loom/workflow-runtime`: a gate is answered only by a resume addressed to it**
+  ([ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)). **Security fix.**
+  `ctx.suspend` serves the recorded resume payloads to gates in order (ADR 0057), so every
+  `EXECUTION_RESUMED` payload is some gate's answer. Four writers recorded one that answered no
+  gate, and the flow's NEXT gate consumed it: no resume named the gate, no authenticator saw an
+  approval, and the gate's declared `resumeSchemas` entry (ADR 0077) was never consulted.
+
+  - Crash recovery (`recoverAbandoned`, `LocalWorkerRuntime`) wrote `EXECUTION_RESUMED {}`. A
+    flow that crashed before `ctx.suspend({ on: "go1" })` passed go1 with `{}`. Recovery now
+    records `EXECUTION_RECOVERED` alone.
+  - An in-doubt verdict (K9.3) became the next gate's approval. It is now a kernel
+    `DECISION_RECORDED` keyed by step and attempt, so a verdict also goes stale correctly: a
+    "retry-fresh" attempt that itself crashes re-parks in doubt rather than calling the
+    non-idempotent tool again. A resume at an in-doubt park that is not a verdict for the parked
+    step is now refused (`ResumePayloadValidationError`, nothing appended); it used to be
+    appended and re-park.
+  - A HumanEffect step's answer went to the next gate while the step re-parked forever. A
+    `kind: "human"` step now consumes its answer in order with `ctx.suspend` and completes with
+    it.
+  - `resumeAs` onto a crashed execution answered its next gate. Onto a terminal one it now
+    records `EXECUTION_RESUMED(null)`, which re-opens the execution (a crash during the migrated
+    run is recoverable) without answering a gate.
+  - `resumeAs` onto an execution parked at a gate answered it under ANY event name, with no
+    schema, authenticator or authorizer check. It now enforces all of `resume`'s gate rules
+    there.
+  - Flow and effect code could forge kernel state: `ctx.emit("EXECUTION_RESUMED", …)` answered
+    the flow's own gate, and `STEP_STARTED` + `EFFECT_INDOUBT` + `EXECUTION_RESUMED(verdict)` got
+    a non-idempotent step adopted with no tool call. **Behaviour tightening:** `ctx.emit` /
+    `stream` / `ui` and `EffectContext.emit` now refuse every kernel event type except
+    `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED`, `EGRESS_DENIED`, `EFFECT_DENIED`,
+    `OUTCOME_RECORDED` and `DECISION_RECORDED`, and validate those.
+    - Meter values must be finite, non-negative and plausible.
+    - An EFFECT's `DECISION_RECORDED` is recorded as `effect:<stepId>#<attempt>:<id>`, so it can
+      never pre-empt the flow's `ctx.decide`. `AgentRunner`'s routing facts move to that id.
+    - No userspace emit may change a recorded choice.
+    - An isolated tool's relay forwards application events only; a kernel type fails the run.
+    - Decision ids beginning `__loom_` are reserved (`ctx.decide` and emits refuse them; a getter
+      cannot dodge the check).
+    - A verdict counts only beside the kernel's own `EFFECT_INDOUBT` fact for that step and
+      attempt.
+  - A human step's park now records `condition.stepId` (kernel-only). A pre-0104 log whose open
+    human step's answer cannot be told apart from another entry is refused
+    (`ResumeRefusedError`, new reason `ambiguous-legacy-answers`) unless the operator resumes
+    with an event carrying `discardLegacyAnswers: { stepId, count }` that the configured
+    `ResumeAuthenticator` VERIFIES (never on recovery or a timer). It is recorded durably with
+    the verified actor. The old kernel never completed a human step, so nothing that ran is lost.
+
+  **EVENT_SCHEMA 1.20.0:** the fold treats a `null` `EXECUTION_RESUMED` into an unparked or
+  in-doubt execution as status-only. The EventStore conformance kit now asserts that a `null`
+  payload round-trips. Logs written by the old kernel replay as written, because withdrawing an
+  entry that already passed a gate would re-park the flow behind recorded steps or shift later
+  payloads one gate early. `resume()` classifies them via `onWarn`, once per execution: "passed"
+  (audit which gate) or "at-risk" (the next gate WILL pass with it — act now). **Rolling deploys:**
+  hold in-doubt verdicts and `resumeAs` onto terminal executions until every node runs this
+  version; an old node folds the new `null` resume as a gate answer. Downgrade is unsafe for the
+  same reason. A recovery no longer counts as a
+  resume in `@loom/analytics` or fires telemetry's `onFlowResume`. KERNEL_ABI unchanged (1.1.0).
+
+- **`@loom/agent`: `agentLoop$` compaction also triggers on bytes** ([ADR 0087](docs/adr/0087-durable-agent-loop.md)
+  D5, amended). D5 named claim-check as the "bytes per turn" answer to the log-growth trade-off;
+  it isn't — claim-check offloads a tool RESULT's bytes, not the transcript an agent journals as
+  every turn's `STEP_STARTED` input, so one oversized tool result rode along uncompacted until it
+  aged past `keepRecent` on message count alone. `compaction` gains `afterBytes` (a running UTF-8
+  byte count maintained per message push, O(1) amortized, never a re-serialization — so it stays
+  replay-deterministic) alongside the original `afterMessages`; at least one is now required,
+  enforced by a constructor guard. The byte trigger keeps the longest run of the newest messages
+  whose bytes total at most `afterBytes / 2` (floored at 1, capped at `keepRecent`), and skips
+  compacting a turn where the newest message alone is already over budget rather than paying a
+  summary call that folds nothing. Also documents, rather than adds a hook for, the claim-check
+  contract toward the model: a claim-checked tool's result reaches the model as the recorded
+  envelope (ref + digest), never resolved back to its bytes — resolving it would put those bytes
+  into the NEXT turn's journaled input, undoing the offload — so declare a `digests[toolId]`
+  projection for model-facing claim-checked tools. A `resolveToolResult` hook was considered and
+  rejected for the same reason. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged; existing
+  `afterMessages`-only configurations are unaffected.
+
+- **`@loom/plugin-a2ui`, `@loom/plugin-mcp-app`: A2UI structural validation — dangling ids,
+  cycles, unreachable components, malformed catalogues** ([ADR 0088](docs/adr/0088-blueprint-conformance.md)
+  D5, amended). `validateComponents` gains four finding codes checkable without JSON Schema —
+  `dangling-child`/`dangling-template` (error; a `children` reference no component in scope
+  defines), `child-cycle` (error; a component reachable from itself via `children`), and
+  `unreachable-component` (warn; no path from `root` reaches it, reported only when
+  `requireRoot` and a root exists) — via one iterative white/grey/black DFS, O(V+E), no
+  recursion. `column("root", ["ghost"])` and `column("root", ["root"])` previously passed with
+  `ok: true`; both now fail. New `validateCatalog(catalog)` checks that every `components`/
+  `functions` entry's key agrees with its own `component.const`/`name`
+  (`catalog-entry-key-mismatch`/`catalog-function-key-mismatch`), run in the
+  `A2UISurfaceBridge` constructor. `ValidateComponentsOptions` gains
+  `knownComponents?: ReadonlyMap<string, ComponentInstance>` so a batch's `children` may resolve
+  against ids outside itself. `@loom/plugin-mcp-app`'s `surfacePayload` never validated at all
+  (an unknown component silently rendered as nothing); `SurfacePayloadOptions` gains
+  `catalog?: A2UICatalog` (default `defaultCatalog`) and `surfacePayload` now validates with
+  `requireRoot: true` and throws like the A2UI bridge — **one breaking change, loud:** a
+  previously-unexamined bad tree now throws.
+
+  **The correction that made recompose checkable:** `A2UISurfaceBridge.recompose` replaces its
+  stored tree with each batch, while an A2UI client MERGES `updateComponents` by id — so
+  validating a batch against only itself (or the bridge's previous batch) would reject a
+  batch's correct reference to an already-delivered sibling. The bridge now keeps
+  `clientView: Map<id, ComponentInstance>`, seeded in full when the session opens and merged
+  incrementally per batch (O(batch)), and `recompose` validates and walks cycle detection
+  against the batch overlaid on that view — so a batch may reference any earlier batch's
+  component, and a batch that closes a cycle back through an already-sent component is still
+  caught. Deferred: prop-VALUE JSON-Schema checking and `callFunction` argument validation
+  (need a JSON-Schema engine plus A2UI `common_types.json` `$ref` resolution — a consumer with
+  a typed catalogue, likely loom-ui, is the trigger). No kernel change; EVENT_SCHEMA and
+  KERNEL_ABI unchanged.
+
+- **`@loom/conformance`: `runLlmProviderConformance` no longer passes a stream that
+  silently drops a tool call.** The kit's own request carries no `tools`, so the general
+  parity test could never observe a dropped `toolCalls` — a vacuous input twice over
+  (the 2026-09-27 backlog audit, item 4). `runLlmProviderConformance` gains a third,
+  optional argument, `opts?: { toolRequest?: LlmRequest | null }`:
+  - given a `toolRequest` (a request the provider is known to answer WITH a tool call),
+    and when the provider has `stream`, `complete(toolRequest)` MUST itself return ≥1
+    tool call (a fixture that makes none is a refusal, not a pass), the stream's
+    assembled `toolCalls` MUST `toEqual` it, and when `completed.stopReason` is
+    `"tool_use"` the streamed `stopReason` MUST equal it;
+  - omitting `toolRequest` on a provider that has `stream` is now a FAILING case —
+    "stream parity for tool calls is unproven — pass `toolRequest`" — an absent input is
+    a refusal, per the vacuous-check pattern;
+  - a text-only provider that genuinely cannot call tools opts out explicitly with
+    `{ toolRequest: null }`, visible in its own test file rather than inherited from an
+    unset default.
+
+  This is a behavioural tightening of the conformance contract, not an SPI shape change:
+  there is no `LLM_SPI_VERSION` constant to bump (`@loom/llm` has none, and the LLM SPI
+  is absent from `docs/spec/compatibility-matrix.md`), so the tightening is recorded here
+  and on `LlmStreamChunk`'s docstring (`packages/llm/src/types.ts`) instead. The rule
+  itself lives in a new internal module, `packages/conformance/src/toolCallParity.ts`
+  (not re-exported from the package's single public entry point — no second consumer has
+  named a standalone need for it, ADR 0083), so its negative cases (a stream that drops a
+  tool call, a vacuous fixture, a missing `toolRequest`) can be unit-tested directly —
+  vitest has no supported way to prove a nested `describe`/`it` fails from inside a
+  running test. `loom-plugins` and `loom-examples` call the kit zero times today
+  (re-grepped at execution time), so the blast radius is the scaffold template only
+  (`tools/scaffold/src/plugin.ts`), which now shows `toolRequest` in its generated example
+  call. `docs/requirements/2026-08-18-agent-runtime-placement-evaluation.md` gets three
+  status notes: K8.4 shipped via ADR 0020 A8's `streamTokenBudget`, not the dropped
+  `EffectContext` usage-reporter field the doc still described as pending; and
+  `@loom/live-query` is not the "transient delta sink" a since-corrected paragraph named
+  it as (it has no delta-push API — see the 2026-09-27 backlog audit's item 2 and
+  [ADR 0040](docs/adr/0040-live-query-and-orchestration.md)).
+
+- **`@loom/live-query`: `subscribe` folds incrementally — O(N), not O(N²)**
+  ([ADR 0040](docs/adr/0040-live-query-and-orchestration.md) Amendment). The 2026-09-27 audit
+  confirmed `subscribe` re-folded from genesis (`reader.loadState`) on every wake-up — exactly
+  the O(N) rows/event, O(N²)/lifetime cost `WorkflowRuntime.foldState`'s own docstring names
+  (measured: N²/2 rows folded, 10.6s at N=4,000 on SQLite). `subscribe` now calls
+  `reader.loadState` exactly once per subscription and folds every later delta
+  (`eventStore.readFrom(id, tip + 1)`) onto the kept state with `@loom/replay-vm`'s
+  `foldEvents` — no new fold, no new version (`fold(snapshot, suffix) === fold(events)`, already
+  load-bearing for snapshots/compaction). Also fixes a doc bug the same audit found:
+  `createLlmEffect.ts` and `chunkDeltas.ts` named live-query a "natural"/"purely transient" sink
+  for streamed deltas, but live-query has no delta-push API (`snapshot` + `subscribe` over
+  DURABLE events) — both now name `progressHub` (or the app's own `onDelta` handler). New
+  dependency: `@loom/replay-vm`. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged.
+
+- **`@loom/plugin-sandbox`: a script's own exception is a typed `scriptError` channel**
+  ([ADR 0064](docs/adr/0064-sandbox-eval-plugin.md) D3, amended). `SANDBOX_ERRORS` gains
+  `scriptError { name?: string; message: string }` — whatever the script threw on this input,
+  including a non-Error value (`throw 42` → `{ message: "42" }`), a SyntaxError in its source,
+  and a ReferenceError for `fetch`/`require`/`process` (previously deliberately untyped: the VM
+  cannot tell a missing capability from a typo). `name` is kept only when it is a string
+  (≤ 128 chars), `message` is bounded at 2048, and no stack is ever carried. Callers can now tell
+  "the script threw" from an infrastructure failure without parsing error text: a closed or
+  failed worker pool, a script whose bytes do not match their content address, input
+  marshalling and cancellation all stay untyped, and a guard kill stays `limitExceeded` even
+  when the script catches it and rethrows. Being declared, it is recorded as
+  `STEP_FAILED { channel, payload }`, substituted on replay and not retried (ADR 0060). The error
+  message keeps the old `sandbox script failed: Name: message` text. Additive for replay: an old
+  log's untyped STEP_FAILED has no channel, is never substituted as `scriptError`, and keeps
+  legacy re-execution. `docs/api-reference.org` had the channel map wrong
+  (`limitExceeded`/`badShape`) and stale `sandboxEval$`/`registerSandboxEval` signatures; both
+  are fixed. No kernel change; EVENT_SCHEMA and KERNEL_ABI unchanged.
+
+  Also: memory/CPU kills are read from the text of the engine's own `InternalError` only — a
+  script's `throw new Error("connection interrupted")` (or "…out of memory…") was previously
+  reported as `limitExceeded` and is now `scriptError`. Script-authored text is bounded without
+  splitting a surrogate pair, and lone surrogates and NUL become U+FFFD, so the failure event is
+  storable in Postgres `jsonb`. The text is untrusted and not taint-wrapped: never put it in a
+  prompt's instruction position.
+
+  **Upgrade note:** a run that is paused or suspended past an untyped failed sandbox step (a
+  flow that caught the old `Error("sandbox script failed: …")`) re-runs that step when resumed
+  on this version — untyped failures were never substituted — and the re-run now throws a
+  `TypedFailure` on `scriptError`. A catch that tests `instanceof TypedFailure` or the channel
+  takes that branch on the re-run; the recorded events are untouched.
+
+- **Blueprint IR 2.4.0 (ADR 0101).** A minor bump so a container keeps its identity when a
+  recompose inserts or reorders containers around it:
+
+  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `id` — the same rule as
+    `Widget.id` (a non-empty string, no charset, no length cap; `isLayoutId` is the one spelling
+    of it). `grid`/`flex`/`stack` accept it
+    and omit the key when absent, so an unid'd layout's bytes and content address are 2.3.0's; a
+    present id enters the address.
+  - Widget ids and layout ids are one namespace: `duplicate-node-id` now also fires for
+    widget↔layout and layout↔layout collisions. `validateBlueprint` gains `layout-id-invalid` — a
+    `warn` for a present id that is not a non-empty string, which every reader then treats as
+    absent. Layout-level findings name the layout by its id when it has a valid one.
+  - New `blueprintLayoutIds`; `preservesBlueprintNodes` compares widget ids AND layout ids, so a
+    re-identified container is a `dropped-node-id` finding. `blueprintNodeIds` stays widget-only.
+  - `@loom/plugin-renderer-react` keys a container by its id, fixing the index keys nested
+    containers got: inserting a container mid-list no longer re-creates the widgets of the
+    containers after it (typed input and focus survive). Grid cell keys are prefixed (`k:` keyed,
+    `i:` by index) so an id like `"1"` cannot collide with an index key. The DOM is unchanged.
+    `@loom/plugin-renderer-terminal` ignores the id; its output is byte-identical.
+  - `BLUEPRINT_IR_VERSION` moves `2.3.0` → `2.4.0` with a sixth pinned digest; 2.3.0 (like 2.0.0
+    to 2.2.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`.
+
+- **Blueprint IR 2.3.0 (ADR 0100).** A minor bump so a bound widget whose upstream answered with
+  nothing can say "no data" instead of failing:
+
+  - `BindingState` gains `"empty"` — delivery succeeded and there is no subject to show. It
+    travels the existing status channel (`binding.status.path`); `isBindingStatus` admits it
+    under the same rules as the other four states. Not an error; it triggers nothing.
+  - The canonical matrix gains an `empty` row right after `error` and before the `check` slot
+    (there is no value to check). A producer must clear the bound value when it publishes `empty`;
+    a reader ignores one if it is there.
+    `@loom/plugin-renderer-react` renders `data-binding-state="empty"` with a `role="status"`
+    marker `○ <title>: no data` (or the finding's message); `@loom/plugin-renderer-terminal`
+    prints the same row. A pre-2.3.0 reader sees `empty` as a malformed status and falls back to
+    its loading/ready row, never its error row.
+  - `BLUEPRINT_IR_VERSION` moves `2.2.0` → `2.3.0` with a fifth pinned digest; 2.2.0 (like 2.0.0
+    and 2.1.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`. No new finding: a
+    status is runtime projection data, never part of the artifact.
+
+- **Blueprint IR 2.2.0 (ADR 0099).** A minor bump so a container can ask for a renderer of its
+  own, the way a widget does through `kind`:
+
+  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `role` — the open,
+    app-defined container axis (`"stepped"`, `"tabbed"`, …); `type` stays the geometry.
+    `grid`/`flex`/`stack` accept it and omit the key when absent. Never an ARIA role, never
+    display text.
+  - `isLayoutRole` is the one spelling of a well-formed role (`/^[a-z][a-z0-9-]{0,63}$/`);
+    absent, malformed or unknown ⇒ the plain container. A renderer that keys containers keys
+    them by ordinal + `type` + `role`, so a role change is a remount.
+  - `BLUEPRINT_IR_VERSION` moves `2.1.0` → `2.2.0` with a fourth pinned digest; 2.1.0 (like
+    2.0.0) is read as it is by `validateBlueprint` and `upgradeBlueprint`.
+  - `validateBlueprint` gains `role-invalid` — a `warn`, once per layout whose `role` is present
+    but not `isLayoutRole`. A well-formed role no renderer knows is not a finding.
+  - `@loom/plugin-renderer-react` and `@loom/plugin-renderer-terminal` ignore the role: a roled
+    artifact renders exactly as the unroled one.
+
+- **Blueprint IR 2.1.0 (ADR 0098).** A minor bump for genUI's migration onto loom-ui, which
+  needs free placement and titled views:
+
+  - `GridCell` gains optional `row`, `rowSpan` and `column` (1-based grid lines; `span` is still
+    the width). All absent = flow placement, as before. `cell(span, node, { row, column,
+    rowSpan })` states a placement.
+  - `GridLayout`, `FlexLayout` and `StackLayout` gain an optional `title` (a section heading);
+    `grid`/`flex`/`stack` accept it.
+  - `BLUEPRINT_IR_VERSION` moves `2.0.0` → `2.1.0` with a third pinned digest. 2.0.0 artifacts
+    are read as they are: `validateBlueprint` knows `2.0.0`, and `upgradeBlueprint` is identity
+    on it, so no stored artifact is re-addressed.
+  - `validateBlueprint` gains `placement-out-of-range` (one finding per cell; never a cascade
+    from a bad `span` or `columns`).
+  - `@loom/plugin-renderer-react` wraps a placed cell with explicit `grid-column`/`grid-row`
+    and renders a titled layout as `<section><h2/>…</section>`; `@loom/plugin-renderer-terminal`
+    prints placed cells in reading order and a titled layout under an underlined heading. An
+    unplaced, untitled artifact renders exactly as it did under 2.0.0 on both.
+
+- **Blueprint IR 2.0.0 (ADR 0097).** Three leaks loom-ui's adapters had been working around —
+  never reaching loom's own renderers, or a third consumer — are now channels the IR itself
+  carries:
+
+  - `GridLayout.children` is now `GridCell[]` (`{ span?: number; node: Widget | Layout }`)
+    instead of a bare `Array<Widget | Layout>`, so a grid child's column span is a fact of the
+    IR rather than a `props.span` side channel one renderer honoured and the other silently
+    dropped.
+  - `DataBinding.status?: { path }` names where, in the *same* projection state as the bound
+    value, that binding's delivery state (`BindingStatus`: `state: BindingState` —
+    `"pending" | "ready" | "stale" | "error"` — plus optional `seq` and `finding`) lives. Both
+    first-party renderers now show pending/stale/error from a declared channel.
+  - `Widget.source?: WidgetSource` (`{ type, version, degradedFrom? }`) names what a widget
+    actually stands for and the semantic types it was degraded through to reach its rendered
+    `kind` — never smuggled through `props`.
+  - `DataBinding.sensitivity?: DataClass` (from `@loom/classify`, type-only) declares a
+    binding's confidentiality class on the artifact; this ships the field only, audience
+    enforcement is a loom-ui concern.
+
+  This is a **MAJOR** bump: `BLUEPRINT_IR_VERSION` moves `1.0.0` → `2.0.0`, with the `1.0.0`
+  digest kept pinned beside the new `2.0.0` one ([ADR 0096](docs/adr/0096-blueprint-stable-rendering-ir.md)'s
+  guard). Readers accept 1.0.0 transparently — `asCell` normalises a legacy bare grid child on
+  every read path, and `upgradeBlueprint(bp)` re-addresses a whole 1.0.0 artifact to 2.0.0
+  explicitly (identity on already-2.0.0 input) for a caller that wants to. Writers always emit
+  2.0.0: `blueprint$` stamps `irVersion`, and `grid({ columns, children })` now accepts
+  `Array<GridCell | Widget | Layout>` and normalises every element, so every existing
+  `grid({ children: [...] })` call in this repo and its examples keeps compiling unchanged; a
+  new `cell(span, node)` builder is how a caller states an explicit span.
+
+  `validateBlueprint` gains seven new finding codes: `span-out-of-range`, `columns-invalid`,
+  `malformed-node`, `status-path-invalid`, `sensitivity-unknown`, `source-invalid`,
+  `ir-version-unknown` — all findings, never throws. `columns-invalid` (a grid's `columns` is
+  not a positive integer) suppresses that grid's span check, so one bad `columns` yields one
+  finding rather than one per child; `malformed-node` (a layout child that is neither a
+  `Widget` nor a `Layout` — a stray `null`, a string, a `GridCell` outside a grid) makes the
+  walk total, so a model-composed artifact can never make `validateBlueprint` throw.
+
+  `@loom/plugin-renderer-react` gains `WidgetFrame` (applies the canonical binding-status
+  matrix and `source` data attributes around a widget's rendered body — adds **no** wrapper
+  element for a widget with neither a declared status channel nor a `source`, so a 1.0.0
+  artifact's DOM is unchanged) and `useWidgetSlice` (a fiber selector over `{ value, status }`
+  together). A grid child gains a wrapper element **only** when its span exceeds 1; span-1
+  children, and therefore every 1.0.0 grid, are DOM-identical to 1.0.0 and still reconcile by
+  widget id. `@loom/plugin-renderer-terminal`'s `TerminalWidgetRenderer` gains an optional
+  third `status?: BindingStatus` parameter, and the terminal output gains status glyphs
+  (`⋯` pending **and the loading row** — a declared channel with no value yet renders
+  `⋯ <title>` rather than `<title>: —` — `~` stale, `✗` error) and a degraded-from suffix when
+  a channel or `source` is declared — output for a widget with neither is byte-identical to
+  before.
+
+  Both renderers take an optional `check(widget, value)` (`TerminalRenderOptions.check`; the
+  `check` prop on `BlueprintRenderer` and `WidgetFrame`): the value-contract slot the matrix
+  leaves between `error` and `stale`. loom validates nothing about a bound value itself — a
+  framework's own kind contract plugs in there, and a returned `{ code, message }` renders as
+  the error row. It runs only for a widget that declares a status channel and only when
+  delivery has not already failed.
+
+  A widget with no declared status channel — the overwhelming majority of existing artifacts —
+  renders exactly as it did under IR 1.0.0, on both renderers.
+
+### Removed
+
+- **BREAKING: `A2AEffect` is no longer exported from `@loom/effect-runtime`.** The deprecated copy ([ADR 0115](docs/adr/0115-open-vocabularies.md)) is deleted; import `A2AEffect` from `@loom/plugin-a2a`. No in-repo or sibling-repo source imported it from effect-runtime.
+
 ### Fixed
+
+- **BREAKING BEHAVIOUR CHANGE: a tool result with a taint wrapper NESTED anywhere inside it is now fenced as untrusted (`@loom/agent`, `@loom/classify`, `@loom/middleware`, [ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md) amendment, issue #735)**. `toolResultContent` checked taint at the top level only, so an A2A reply (`{ raw, content: tainted(...) }`) was flattened into plain tool_result text and `sawTaintFrom` was never set: `writeBack` memory and compaction summaries were stored untainted (a durable memory-poisoning path). Now `scanTaint` / `nestedTaintOrigin` (`@loom/classify`; iterative, cycle-safe, depth 64 / 100,000 nodes, FAILS CLOSED past the bound with origin `unknown:taint-scan-bound-exceeded`) finds the wrapper; the WHOLE tool_result is fenced (structure stays readable inside), `agentLoop$` records the origin so write-back is tainted and the compaction summary fenced, and the claim-check envelope uses the same helper. The stored value is untouched (A2A's untainted `raw` still feeds control flow); clean results are byte-identical; a top-level wrapper is unchanged. Review round: the scan covers the SERIALIZED text (what the model sees and the log holds) - `toJSON` classes, Date subclasses, changing getters and stringified wrappers are fenced and recorded, live and on replay alike; a result without a `__loomTainted` marker in its text is never walked (a clean result nested past the bound is no longer fenced). The joined origin label is capped (8 origins then `+N more`), and a marker-carrying result past the scan bound warns once per tool (`LOOM_AGENT_TAINT_SCAN_BOUND`). **BREAKING BEHAVIOUR CHANGE: `agentLoop$` JSON-normalises each tool output ONCE (stringify, parse) as soon as it settles, and the log entry, lean digest, `tool_result` text and fence, run taint, write-back and compaction all consume that single value, so the live run sees what replay sees (a `Date` is its ISO string in `toolCallLog` too; plain-JSON outputs are byte-identical). An output whose JSON form differs between two reads (a stateful getter or `toJSON`) now FAILS THE RUN with an error naming the tool, instead of showing the model text a replay cannot reproduce.** **BEHAVIOUR CHANGES: (a) a RECALLED tainted memory entry now marks the run, so the next answer is written back tainted (taint used to be lost after one hop); (b) a media part marked `untrusted` now marks the run (write-back tainted) and makes a compaction summary over it tainted.**
+- **FIX: erasure now deletes the ADR 0138 compaction archive's plaintext copies ([ADR 0138](docs/adr/0138-compaction-archives-what-it-removes.md) follow-up, with [ADR 0139](docs/adr/0139-reserved-streams-archive-before-removal.md); `@loom/compliance`, `@loom/app`).** `eraseSubject` over a plaintext (non-sealing) compaction archive used to destroy the key and report `erased` while the subject's moved events stayed readable in the archive. `EraseCoordinator` now takes the archive(s) (`archives`; `defineConfig` wires the compaction archive), deletes the subject's execution segments after the shred, records what it deleted, and refuses before shredding when the archive cannot delete. Over a sealing archive the shred is enough (unchanged).
+
+- **`agentLoop$` journals a copy of the transcript per turn (`@loom/agent`, issue #722; no kernel, SPI or ABI change).** The loop handed the kernel its LIVE `messages` array (and `tools`) as each turn step's input and kept pushing to it, and the journal is write-behind, so a store that serializes a payload after `append` is called (or the in-memory store, which never clones, plus the in-process fold) recorded every turn's `STEP_STARTED` input as the transcript the run had grown into: per-turn lengths `[11,11,11,11,11,11]` instead of `[1,3,5,7,9,11]`. The model was always sent the right messages and replay serves recorded outputs, so nothing diverged, but the audit record (analytics, eval `diffRuns`, the inspector timeline) and the in-process snapshot size were wrong (the ~2x-high first #721 figures). Each turn now passes a shallow per-turn copy (message objects are never mutated after push). Cost: under 1 microsecond per turn for a 5000-message transcript.
+- **`cancel()` during the completion drain no longer commits `EXECUTION_CANCELLED` after `EXECUTION_COMPLETED` (`@loom/workflow-runtime`, issue #712; no kernel, SPI, ABI or EVENT_SCHEMA change).** `handle.cancel()` was guarded only by `cancelled || rotated`, so a `runtime.cancel(id)` landing while the live handle still sat in `liveHandles` after its terminal was committed appended a second terminal event and rejected `waitForCompletion()` for a run that had finished. A cancel that arrives once `EXECUTION_COMPLETED` or `EXECUTION_FAILED` is committed now writes nothing and `runtime.cancel(id)` returns `false`, exactly what it already returned for an execution that is terminal on disk (the continue-as-new terminal was already guarded by `rotated`); the completion promise resolves with the completed state. A cancel between a committed park and a leased handle's deferred `resolveSuspend` is a real cancel of a suspended run (the log holds `SUSPENDED` then `CANCELLED`) and the handle reports it, so handle and log agree; pinned by a test. A log that ALREADY holds `CANCELLED` after `COMPLETED` (written by the old bug) still folds without throwing, last-terminal-wins by order, keeping the completed `_output`. Deterministic regression tests inject the cancel from inside the event store's append.
+- **An inbox discard or duplicate advance no longer lands in a resumed owner's log (`@loom/workflow-runtime`; no kernel, SPI or ABI change).** On an unfenced park, `advanceInbox` (behind `discardInbox`, the notify path's duplicate advance and the quarantine verbs) folded whatever was appended since its read of the park and appended at that tip without checking that the park was still open. A delivery that resumed the owner in that window let the fact land in a RUNNING owner's log, at the sequence the owner's own next append needed, so the owner never parked again (and a discard retry loop spun forever). It now refuses (`not-parked`, retryable for a discard) when the tail answered the park or holds a newer one. Deterministic regression test on all three backends. Also de-flaked the interest-filtered NOTIFY "hung lookup" test, whose 50 ms budget could drop a REAL lookup on a loaded runner.
+- **A non-retryable error on the conversation's own agent loop ends that turn failed, not the whole conversation (`@loom/agent`, `@loom/conversation`; behaviour change, no kernel, SPI or ABI change).** `classifyModelCallError` treated any error that set `retryable === false` as terminal, so an app's model adapter mapping a 400/401 to a non-retryable error failed the conversation execution (the same regression class as the provider-error fix below). New `classifyModelCallFailure` decides: control flow (a park, a cancel, a kill switch, a replay divergence, a lost fence or lease, a nested authority error) stays terminal and reaches the runtime; everything else ends the TURN failed with a fixed reason and the conversation survives, in solo and shared mode: `denied` (the error itself is a top-level authority refusal; solo now matches shared instead of failing the conversation), `rate-limited` (`RateLimitExceededError`), `quota` (`QuotaExceededError`), `tool-error` and `model-error`. **Disclosure:** the catch wraps the whole agent loop, so a TOOL that throws a non-retryable (or otherwise tool-terminal) error now also ends the turn failed, with `tool-error`, instead of failing the conversation; `isTerminalToolError` and the tool loop are unchanged (rate limit and quota stay terminal there). Remaining solo/shared difference: control flow (kill switch, cancel, park) fails or parks the conversation execution in solo, but only the turn's own execution in shared (the asker sees `turn-failed` and the conversation lives on).
+- **One system-prompt rule for `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` (`@loom/llm`; no kernel, SPI or ABI change).** `OpenAiProvider` ignored `LlmRequest.system`, and the three disagreed otherwise (Anthropic used only the first system-role message, Gemini merged both). Now, for `complete` and `stream` alike (Gemini has no stream): a non-empty `request.system` wins and the system-role messages in `messages` are dropped; an empty string counts as unset; with no `request.system`, the system-role messages are joined in order (blank-line separated). Documented on `LlmRequest.system`. Behaviour change: Gemini no longer appends system-role messages to `request.system`, and Anthropic no longer drops all but the first system-role message.
+- **A provider failure on the conversation's own model call fails that turn again, not the conversation (`@loom/conversation`; no kernel, SPI or ABI change).** Since the status-based `LlmHttpError` and `LlmStreamError` classification in `isTerminalToolError` (`@loom/agent`), the conversation reused it for its own model call and rethrew a 401/403/429/5xx or a mid-stream provider error, failing the whole conversation execution (the conversation became unusable and waiting callers hung). `conversation.ts` and `turn.ts` now check for a provider error (`LlmHttpError` of any status, `LlmStreamError`) before consulting `isTerminalToolError`: the turn ends `failed` with the fixed `model-error` reason and no error text, the host's `onError` gets the real error, and later turns run. Provider errors are matched the way `isTerminalToolError` matches (new `classifyModelCallError` in `@loom/agent`): `LlmHttpError` by name with a numeric `status`, `LlmStreamError` by name or a constructor name on the prototype chain (so another copy of the package or an adapter's class counts), along the same bounded `cause` chain (5 levels); a terminal non-provider error anywhere in that chain (a denial, a park) still wins and propagates. A park, cancel, authority stop or any other terminal non-provider error still propagates; the agent tool-loop classification is unchanged.
+- **`EraseCoordinator` finishes an erasure after a crash in the destroy window when the app seals snapshots (`@loom/compliance`, `@loom/event-runtime`; no kernel, SPI or ABI change).** Between `keys.destroy` and the `PAYLOAD_SHREDDED` tombstones (a crash, a write conflict: `ShredIncompleteError`) the coordinator's fold read the sealing snapshot store's `loadLatest`, which raises `KeyUnavailableError` for a sealed checkpoint whose key is gone, so with `EncryptingSnapshotStore` (`sealState` especially) the retry threw and the erasure could never complete. The event read already tolerated the window and so did `shredSubject` (`loadLatestSealed`); the snapshot read now does too, through the optional `loadLatestSealed`, under ONE shared gate (`isErasureWindow`, new in `@loom/event-runtime`, which `erasureWindowView` now uses): this subject's `ERASURE_PENDING` in the log AND the destruction proof (or a recorded shred). A whole-state sealed checkpoint has no readable status and none is guessed from the intent: an uncompacted log is folded whole by its plaintext event types (so a `continued`, `suspended` or re-opened execution reads as it is, and a parked owner stays parked exactly as with path sealing); a compacted log is judged by `shredSubject`'s own rule, now the shared `isQuiescent` (`@loom/event-runtime`), and its inbox streams are purged only when the tail shows a non-`continued` terminal. A checkpoint of another execution is refused even when sealed. An unavailable key with no intent, or not proved destroyed, still throws. Nothing re-drives a crashed erasure automatically; call `eraseSubject` again (also after a restart) and the retry runs every step. Known residual: a log compacted through its tip whose checkpoint is sealed, with no tail evidence, is read as terminal on the erase intent alone (`shredSubject`'s own rule), so a parked owner in exactly that shape would be shredded and left suspended (this does not apply to an uncompacted log); its inbox streams are kept. `EraseCoordinatorOptions.snapshotStore` gains the optional `loadLatestSealed`. New tests run on the in-memory and Postgres stores (`packages/workflow-runtime/src/eraseDestroyWindow.test.ts`).
+- **`shredSubject` (`@loom/plugin-crypto`) can erase an execution that holds a fence (no kernel, SPI or ABI change).** The shredder appended `ERASURE_PENDING` and `PAYLOAD_SHREDDED` with no fencing token, so any execution that had ever acquired a fence (a fenced resume or inbox wake, a remote cancel, a worker or recovery, and every parked owner that `eraseSubject({ parked: "shred" })` cancels, because `runtime.cancel` fences the cancel) refused the append with `StaleFenceError` and the erasure could never complete (under the default `defer` mode it was retried forever). It now follows the repair `LogLifecycle.rehomeExecution` makes: try the plain append, and only on `StaleFenceError` take a fence and retry under it (reused for the execution's next lifecycle append), so an execution that was never fenced is not given one. The escalation is guarded: the fence is taken only when the log shows no runner (the last answering event is a terminal kind or a park, so a terminal followed by a re-open reads as live; with none above the snapshot, the snapshot status, opened with the subject key when `sealState` seals it), by compare-and-set (`acquireFenceIf`) on the head it classified, so a resume in between makes the shred refuse; a direct `shredSubject` on a live fenced execution still refuses with `StaleFenceError` before the key is destroyed. `EraseCoordinator` shreds only terminal executions, so the guard always passes there. New tests run the real shredder behind the real `EraseCoordinator` on the in-memory and Postgres stores (`packages/workflow-runtime/src/erasureFenced.test.ts`); `@loom/workflow-runtime` gains a dev dependency on `@loom/compliance`.
+
+- **`WorkflowRuntime.cancel` no longer loses a race with a wake that answers the park it is cancelling (`@loom/workflow-runtime`; no kernel, SPI or ABI change).** `cancel` folded the log (parked at N), then took an UNCONDITIONAL fence. If a wake (an inbox delivery such as a just-sent close message, a resume, a timer) answered the park in between, the fence evicted the freshly woken runner and `EXECUTION_CANCELLED` then lost slot N+1 with `DuplicateSequenceError`: `cancel` rejected, nothing was written, and the execution was left `running` with no driver and no terminal event (only boot recovery could revive it, and `eraseSubject({ parked: "shred" })` deferred on it forever). Both routes now share one protocol: a cancel addressed to the execution itself and a cancel addressed to a rotated-out (`continued`) conversation id, which walks the chain to its head. Each round re-folds, answers a parked owner with `acquireFenceIf` ([ADR 0118](docs/adr/0118-acquire-if-parked-fence.md)) so a concurrent wake wins cleanly (its runner is then aborted if it is live on this node, or fenced out and the cancel lands at the true tip if it is on another node), re-reads the tail under the token it holds, appends at the tip, and retries a lost slot after a small jittered backoff, up to 8 rounds. A local runner that this very call has already fenced out is never trusted to write the terminal event: its abort signal is fired and the cancel stays on the durable path. Public signature unchanged. Outcome changes: `cancel` resolves `true` once the execution is cancelled (durably, or by aborting a healthy local runner whose own journal then writes it); it resolves `false`, where it used to throw, when the execution finished meanwhile (completed, failed or already cancelled). After 8 contended rounds it rethrows the last lost-slot error, which is one of `DuplicateSequenceError`, `StaleFenceError`, `ResumeRefusedError` (`not-suspended`) or `ResumeContendedError`: all mean "still contended, retry". What this guarantees: with a store that fences appends, a `cancel` that resolves `true` has either written `EXECUTION_CANCELLED` or aborted a healthy live runner, and a cancel that cannot settle throws rather than returning with the execution left resumed and driverless. What it does not: on a fenced-out remote runner the effect it already started keeps running until its next append (the documented kill semantics), a store without fencing keeps the old last-writer behaviour, and `eraseSubject({ parked: "shred" })` still does not itself cancel a RUNNING owner. A `cancel` retried on an execution that an older runtime already stranded in that state still repairs it (this worked before; it still does). `retireAbandonedBranches` no longer counts a branch that finished on its own during the pass as `retired`.
+- **`loom appgen` deterministic planner: delete resolves ids like extend.** With an existing minted flow `item-2fa`, "create 2fa" extended it but "delete 2fa" and "delete step 3d from 2fa" silently did nothing, because delete looked up only the legacy slug. Delete now uses the same rule (the legacy slug if the app has it, else the minted `item-` id if THAT exists) and never mints: if neither exists nothing is planned, as before.
+- **appgen backlog hardening (no kernel, SPI or ABI change).** (1) A lockfile's top-level `intent` is held to the same text rule as every other plan field (no control / line-break / bidi / tag characters, at most 500 characters). (2) `readLockfile` now applies the model validator's structural checks (duplicate step ids per flow, step ids that generate the same const name, a flow created twice, `modify`/`delete` inside a flow being created) through ONE shared `specStructureIssues` in `@loom/appgen`, which `validateChangeSpec` also calls (its messages are unchanged). (3) The `loom new` templates escape the name at every sink (`tsStringLiteral` in string positions, `templateLiteralText` in template literals, `commentText` in comments) and assert the derived export name is an identifier (`pascalIdent`); output for valid names is byte-identical (golden test). (4) The deterministic planner's slug always yields a valid NEW id: a digit-led phrase gets an `item-` prefix (`2fa login` -> `item-2fa-login`), symbol/unicode-only input becomes `capability-<8 hex of the text>`, and double/leading/trailing dashes collapse; lookups of EXISTING ids (delete) keep the loose legacy slug.
+- **`IntentRuntime` overrode a model's explicit `NONE` with a keyword guess (`@loom/intent`).** The S3 planner eval saw "Find me a good Italian restaurant for dinner tonight." routed to `diagnose-cpu` on shared words after the model had answered `NONE` (route accuracy was 11/12). A model's `NONE` is now honoured and a prose reply that names exactly one capability id is accepted instead of discarded; the planner eval's route accuracy is 12/12 (floor raised to 11/12; the pinned "known gap" test now asserts the NONE is honoured; PROVENANCE updated).
+- **`@loom/appgen-model`: `validateChangeSpec` rejects duplicate step ids.** A flow that declared the same step id twice (within one operation, or across two operations on the same flow) passed validation and failed only at `tsc` (`const <id>Step` declared twice). The validator now reports `flow "<flow>" declares step id "<id>" more than once`, which also feeds the self-repair prompt. Uniqueness is per flow; the same id in two flows stays valid.
+- **`@loom/appgen-model`: `validateChangeSpec` also rejects step ids whose generated names collide, and tightens the id rule (no kernel, SPI or ABI change).** Two distinct step ids that generate the same const (`a-b` and `a--b` both give `aBStep`, including against the existing flow's scanned steps) are rejected with a one-line repair message naming both ids and the name. A NEW step id (and a newly `create`d flow id) must match `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`: no leading digit (`1-run` gave the invalid identifier `1RunStep`), no trailing or double dash. An EXISTING flow or step keeps the loose rule, so `extend`/`modify`/`delete` of a legacy id still works. Also rejected: two `create` operations for one flow id, and a `modify`/`delete` step op inside a newly created flow.
+- **A shredded payload is no longer classified by error NAME alone ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md), amendment 2026-10-17 (c); see the Changed entry for the third-party-store impact).** The kernel's own synthetic erasure errors (built from a `PAYLOAD_SHREDDED` tombstone) are branded too.
+- **CLI: `<store>` in `loom --help` / `loom <cmd> --help` / the docs read as a positional path; it is flags (no behaviour change; no kernel, SPI or ABI change).** `loom logs .data/events.db <id>` takes the path for the execution id (and `loom ls .data/events.db` is refused: "pass --config or --db") because the store is given by `--db <events.db>` (+ `--snap`/`--branches`/`--leases`) or `--config <module>`, never positionally. Every usage line now says `<store-flags>`, with a legend in `loom help` and in the per-command help; `docs/usage-cli.md` (incl. its verbatim USAGE block), the cheatsheet, operations doc and two ADR notes follow. A test pins that no usage line or help text contains a bare `<store>` and that `<store-flags>` only appears on commands that parse `--db`/`--config`.
+
+- **A fault while RESOLVING an execution's owner is retryable, no longer a false denial of the real owner or an admission of a stranger ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md) amendment 2026-10-17, second; kernel; KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged).** After sequence 0 had been read fine, `ownerForAuthz` turned ANY failure (the `principalResolver` / `principalCodec` throwing, the sequence-0 read it does itself when the caller holds no anchor, a store fault on a parent link of the lineage walk) into an "unknown owner". Under the default `unknownOwner: "deny"` that denied the real owner with a non-retryable `ExecutionDeniedError` and a false `onExecutionDenied`; under `unknownOwner: "allow"` it admitted a stranger on a transient fault. Only a proven erasure on `ownerForAuthz`'s own sequence-0 read is an unknown owner now (never a throw of the app's resolver or codec, even one that names itself `PayloadShreddedError`); every other failure is the sanitized, retryable `ExecutionStoreUnavailableError` (as `readAnchor` already raised for the anchor read), identical for the owner and a stranger, the real cause on `onStorageError`, nothing appended. Tests pin each gated op (owner, stranger, `unknownOwner: "allow"`, retry after the fault clears, erasure unchanged, system grant unchanged) and cover the previously unguarded re-read of an erased anchor for `send`, `discardInbox`, `quarantineInbox`, `releaseInbox` and `recordOutcome` (an authorized caller still gets `PayloadShreddedError`, not "No execution found").
+- **Review follow-ups (FU-A; no kernel, SPI or ABI change).** `@loom/saga`: an abort is recognised only as a `DOMException` named `AbortError`, so a compensator throwing a plain `Error` that merely names itself `AbortError` is collected as a compensator failure instead of aborting the rollback. `loadLoomApp` (CLI) serializes overlapping loads so concurrent calls cannot capture each other's `LOOM_NO_AUTOSTART` / `LOOM_QUIET` as the value to restore. `@loom/testing` `fireDueTimers` no-progress and re-arming errors now have regression tests. ADR 0039 records the key-outage existence oracle (`ExecutionStoreUnavailableError` for an existing encrypted id) as an accepted residual.
+
+- **The execution authorizer decides BEFORE the log is folded: a denied caller can no longer tell, from the error a fold or decrypt raises, a shredded, sealed or corrupt execution from an ordinary one ([ADR 0039](docs/adr/0039-execution-lifecycle-authz.md) amendment 2026-10-17; kernel; KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged).** `loadState` (and so `parkedAtSequence` and `followToHead`), `resume` and `resumeAs` folded or read the log first and asked the authorizer after, so a principal the authorizer would refuse (another tenant) got `PayloadShreddedError`, `SnapshotIdentityMismatchError` or a checkpoint failure instead of `ExecutionDeniedError`: an existence-and-status oracle (no payload content). `resumeAs` also ran the caller's `transformState` over the recorded input before authorizing. `send`, `discardInbox`, `quarantineInbox`, `releaseInbox`, `recordOutcome`, `fork` and `acquireFence` asked first but read sequence 0 unguarded (the same error when the recorded principal is sealed and shredded). Now every gated op reaches its verdict from sequence 0 alone. Reads: one indexed point read of sequence 0 per call, handed on to the fold and the owner lookup (`loadState` now makes ONE sequence-0 read where it made two; the carried-scanner `resume` path makes the one it always made; the first, uncarried `resume` and `resumeAs`, which read the whole log, pay ONE added point read, the inherent cost of a verdict that precedes that read). A sequence 0 unreadable BECAUSE OF AN ERASURE (`PayloadShreddedError`, or a `KeyUnavailableError` whose view records the erase intent) is an existing execution with an unknown owner, so the policy decides as for any unknown-owner execution. Any other failure to read sequence 0 (a storage fault, a transient key-service error) is NOT evidence about the execution: it throws the new sanitized, retryable `ExecutionStoreUnavailableError` (exported from `@loom/workflow-runtime`; `op`, `executionId`, `retryable: true`, no cause or execution-derived detail, identical for the owner and a stranger; the real cause goes to `onStorageError`), never a denial of the legitimate owner and never a "this id exists" answer for a missing one. Also: a "missing" id whose orphan checkpoint fails to load reads as not found to a caller the authorizer is consulted for (the system grant keeps the real error); `onExecutionDenied` for a sealed refusal now carries the plaintext workflow id instead of `""`; an authorized caller of `acquireFence` or `fork` with an unreadable sequence 0 still gets the original error. What is now indistinguishable is the error thrown by the fold or decrypt path. The denial REASON can still reveal an unknown owner (an erased principal, a sealed or legacy stream is refused with "the execution's owner is unknown to this policy", an owned execution of another tenant with "belongs to another tenant"): a documented residual of the unchanged policy, pinned by a test. A read denial writes nothing; a denied `resume`/`resumeAs`/`cancel` keeps its best-effort `EXECUTION_DENIED`, placed at the folded tip found after the verdict (skipped when that fold is unreadable, which includes `resume`/`resumeAs` of a shredded execution). `fork` now checks a caller-chosen child id (`assertCreatable`) after the authorizer, not before. Missing-vs-denied for an identified caller is unchanged (documented residual).
+- **`@loom/saga`: a `handler$`-only compensator now runs, and a failing compensator no longer aborts the rollback (no kernel, SPI or ABI change).** `rollback()` rewrote a compensator's step id to `<id>#compensate:<i>` and the runtime resolves a step's effect on `step.toolId ?? step.id`, so the derived id was never registered: a compensator declared with `handler$` and no `toolId` threw `No effect registered for toolId: "<id>#compensate:<i>"`, the remaining compensators never ran and the original error was replaced (forward side effects left uncompensated). The compensation step now keeps `toolId: step.toolId ?? step.id` (the derived id remains the journal/fold identity, so each compensation is still journaled and replayed under its own id; grants and middleware keyed on the original tool id apply, and no authority is widened). Rollback now continues past a failing compensator and throws the new `SagaCompensationError` (`compensationErrors`; out of `withSaga`, `cause` is the ORIGINAL error); a `SuspendError` still propagates at once.
+
+- **`AgentRunner` gives each nested tool call its own `idempotencyKey`.** Every call inherited the outer step's key, so a provider deduping on it could collapse two distinct calls into one. With an outer key the nested call now gets `<outer>:t<turn>:c<position>`, identical on a re-run for the same position (the model's tool-call id is not stable across a re-run, so it is not used); no outer key, no key. Adds a crash test that `agentLoop$` with an `idempotent: false` tool parks `EFFECT_INDOUBT` and does not re-fire the tool.
+- **K9.3: `STEP_STARTED` is durable before an `idempotent: false` effect is dispatched ([ADR 0021](docs/adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) A3 amendment; kernel; KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged).** The journal is write-behind, so a non-idempotent effect could run before its `STEP_STARTED` was appended; a crash in that gap left no "running" frame and recovery silently re-ran the effect instead of parking `EFFECT_INDOUBT`. `executeLive` now awaits the journal's durable tail after committing `STEP_STARTED` and before the dispatch gate, for tools declared `idempotent: false` ONLY (one awaited store round trip on those steps; undeclared and `idempotent: true` tools are unchanged). A refused write throws before dispatch (the effect never runs; the run fails as any storage failure). Covers `ctx.run` and `ctx.parallel`/fan-out (both pass through `executeLive`); middleware retries are covered because they run inside the single `execute` that follows the one drained `STEP_STARTED`, not because they re-enter `executeLive`. If the context is SEALED during the drain (terminal), the effect is not dispatched; a park decided during the drain does not block it: the draining step is in flight like any other, runs to completion and journals its result before `EXECUTION_SUSPENDED` (no `parkDrainMs` stall, no stranded `STEP_STARTED`, so resume never parks `EFFECT_INDOUBT`). When a non-terminal seal (a sealed-inbox refusal, a park-barrier give-up, a divergence) lands during the drain, the effect never starts but `STEP_STARTED` is already durable, so the frame stays running and a later recovery parks it `EFFECT_INDOUBT` (conservative; the operator's `retry-fresh` resolves it). A CANCEL seal instead settles the call (the abort throws), so the live handle and lease are released promptly rather than held for `parkDrainMs`.
+- **`@loom/plugin-postgres` `migrate` no longer hangs behind a long-held table lock.** `CREATE INDEX IF NOT EXISTS` takes a SHARE lock before it notices the index exists, so under `lock_timeout=0` it waited indefinitely behind a SHARE UPDATE EXCLUSIVE holder (an anti-wraparound autovacuum). Every index in the DDL is now created behind a `to_regclass` catalog probe (`idx_events_exec`, `idx_snapshots_exec`, `idx_lineage_parent`, `idx_timers_wake`, `idx_timers_refused`, `idx_leases_expiry`, `idx_rm_rows_order`, `idx_rm_rows_fields`, `idx_memory_entries_key`, `idx_memory_entries_fts`, `idx_memory_entries_id`).
+- **`quarantineInbox` / `releaseInbox` work on a node that cannot open the owner's sealed checkpoint ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D9, slice S5b).** With sealed checkpoints a key-less node sharing the snapshot table was refused as an unknown owner on the very verbs built for it. The verbs (and only they; replay, resume, `loadState` and `send` still refuse per D7) now fold the owner from sequence 0 of the log when the log is complete (contiguous from 0 and reaching the checkpoint's sequence); a compacted log is the typed `InboxQuarantineRefusedError` reason `checkpoint-unreadable-log-compacted` (not retryable: run the verb on a capable node), nothing appended. Authorization is unchanged and runs first. Additive union member on `InboxQuarantineRefusedError.reason`.
+- **The quarantine log fold reads past sealed payload values (user ruling 2026-10-14, [ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D7/D9, S5b round 2).** A log holding a sealed `MESSAGE_CONSUMED` (a capable node delivered a sealed message earlier) used to hit the D7 stream guard, so the S5b fallback rarely helped. For the two verbs' reads ONLY (the owner fold, the tip classification, the park walk and the release-fact search), an envelope whose `metadata.seal.covers` lists only `MESSAGE_CONSUMED.payload` (or `.payload.*`) is left in place as an opaque ciphertext value: never decrypted, no key asked. Any other covered field (another event type or path, empty covers, a sealed `waitId`/`topic`/`messageId`/`inboxSeq`) is still the ordinary denial; the sealed-principal case, `loadState`, replay, resume, `send`, `notifyInbox` and `fork` are unchanged. The folded state is branded transient and frozen: `SealGuardedSnapshotStore.save` and `restoreFromState` refuse it, and the verbs return only ids. Pinned by `sealGuardFitness.test.ts`. The raw read is an SPI method, not a hidden protocol: EventStore SPI 2.5.0 (unreleased) gains the OPTIONAL `readAtRest()` (a read-only view of the envelopes as stored, never decrypted), implemented by `EncryptingEventStore`, forwarded by every decorator (routed per shard by `ShardedEventStore`) and covered by the store and decorator conformance kits. The transient-fold save refusal now recognises only the kernel cipher id (`loom/aes-256-gcm`): user data merely shaped like an envelope saves.
+
+- **A replay refusal leaves a head-stamped REFUSAL row, and the timer poll re-drives a `running` execution that carries one ON EVIDENCE of abandonment ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D10, residual R-d; additive optional `TimerRecord.refused`; `TimerStore` is unversioned, so no SPI constant moves; EVENT_SCHEMA and KERNEL_ABI unchanged).** A node that cannot open a recorded sealed answer refuses the run attempt at replay (nothing failed, nothing journaled). `run()` now leaves a REFUSAL row for both refusals (`SealedPayloadUnreadableError` at replay, `SealedStreamUnreadableError` inside the attempt): a timer-store row (never an event-log append) carrying `refused: { head, holds? }`, the log head at refusal, at an ordinary `wakeAt` of now. New optional `TimerRecord.refused?: { head: number; holds?: number }` (mirrors `redrive`): a nullable JSONB/TEXT `refused` column added by the guarded migration in `@loom/plugin-postgres` / `@loom/plugin-sqlite`, upserted (never cleared by a plain schedule; a same-key upsert keeps the MAX head and MAX holds in every store; a partial index covers refusal rows), passed through `due`, plus `due({ refused: false })` to exclude refusal rows BEFORE the limit; `InMemoryTimerStore` and the `runTimerStoreConformance` kit cover it. This PR is unreleased: the interim `REFUSAL_WAKE_BASE`/`refusalWakeAt`/`refusalHeadOf` exports (a stamp smuggled in the timestamp, which also reserved the negative range) are removed outright. ONLY such a row is a re-drive candidate; every other inbox row on a `running` execution (a contended notify pass, an ambiguous-tail send) is retired as before. The poll re-drives only when ALL hold: this node is not driving or starting the execution; the log head still equals the stamped head (else the row is stale and retired); there is EVIDENCE of abandonment, the sweep's own (the new `TimerServiceOptions.isAbandoned` predicate, or with `leases` an EXISTING lease that has expired; an absent lease is never evidence, since no normal driver holds one; with both, both must hold); the fence is taken CONDITIONALLY on that head (`appendIfUnchanged` observation + `acquireFenceIf`), so exactly one contender wins and a driver that appended makes the poll back off; and the attempt cap (`maxRedriveAttempts`, then retire + ONE `RedriveExhaustedError`) and the new `maxRecoveries` have room. **Default configuration: with neither `isAbandoned` nor a lease store the node cannot prove abandonment and does not fetch refusal rows (`due({ refused: false })`), so recovery comes from a configured `recoverAbandoned` sweep.** A row the poll may not act on yet is rescheduled in the store to `wakeAt + back-off(holds + 1)` (not held in memory; deterministic, no jitter, so concurrent pollers upsert ONE successor row instead of multiplying it; a stamp that merged onto a real timer's own key is judged as the timer BEFORE any hold), so it is not due again until then and cannot starve `due()`. `isAbandoned` on the poll carries the sweep's contract (a sweep-grade predicate; a time heuristic during a long silent step can double-enter it, a residual closed by the S7 heartbeat leases). Mixed fleet: a node that predates `refused` sees a plain-looking row it cannot match to a park and retires it as obsolete, never re-driving it. The re-drive is the shared `redriveAbandoned` routine; the sealed back-off is ONE per-runtime map judged on the runtime clock (`runtime.clock`) by both the sweep and the poll, so a refusal seen by either suppresses the other. On an unmarked legacy stream the incapable node's backed-off re-drive appends its own `EXECUTION_RECOVERED` marker (bounded by the attempt cap and `maxRecoveries`); a marked stream is refused before any fence acquire and writes nothing. Residual: on a store without `appendIfUnchanged`/`acquireFenceIf` the head check and the fence acquire are not atomic.
+
+- **`defineConfig` wires the erase/export destruction proof; the operator assertion is per call ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D7, round 6).** `compliance.erase.destroyed` now defaults to `(s) => keys.wasDestroyed(s)` when the key store behind `security.crypto` implements `wasDestroyed`, so the genuine ShredIncomplete retry window completes through `app.eraseSubject` and `app.exportSubject` with nothing configured (an explicit value overrides; a store without the method still fails closed). `eraseSubject` and `exportSubject` (`EraseCoordinator`, `app.*`) gain the per-call `force?: "key-destroyed-elsewhere"` mirroring `ShredOptions.force`; `Shredder` receives it as an optional third argument. `destroyed` is documented as a proof function only (`() => true` is no longer suggested). The scaffold's key-store template emits `wasDestroyed` as a commented-out optional method instead of one that throws.
+- **A dangling erase intent on a wrong-key node is no longer taken for a destroyed key ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md) D7, round 5).** The log proves erase INTENT, never destruction: a crash between `ERASURE_PENDING` and `keys.destroy` left the key alive, and a retry of `shredSubject` on a node whose key store lacked it wrote a false `PAYLOAD_SHREDDED` (and `eraseSubject`/`exportSubject` accepted the redacted view). `KeyStore` gains the OPTIONAL `wasDestroyed(subjectId)` (true only if this store destroyed the key; `InMemoryKeyStore` implements it; `runKeyStoreConformance` covers it and skips stores without it; the scaffold template includes it; additive, no version constant exists for the KeyStore SPI). `shredSubject` completes a window retry only on that proof, else throws `KeyUnavailableError` and writes nothing; the operator override is `force: "key-destroyed-elsewhere"`. `EraseCoordinator`, `exportSubject` and `defineConfig` `compliance.erase` take a `destroyed` proof; `erasureWindowView(err, destroyed)` is now async and fails closed without one. Third-party key stores should implement `wasDestroyed`.
+- **Content GC survives a crypto-shredded subject under a `sealState` snapshot store ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md)).** Every sealed snapshot is an envelope, so a shredded subject's snapshot threw `PayloadShreddedError` from the `sweepUnpinnedContent` scan and aborted every later pass. A load that throws it (matched by name; `@loom/plugin-content` does not import plugin-crypto) now skips that execution's erased snapshot and lists it in the new `shreddedSnapshots` report field (also under `dryRun`); blobs another live owner cites stay pinned. Every other load error still aborts the pass. The sealed-scan check is top-level `__loomEnc` only.
+
+- **A sealed inbox payload is never delivered to a node that cannot open it ([ADR 0130](docs/adr/0130-sealed-payload-delivery-guard.md); kernel; EVENT_SCHEMA stays 1.24.0, no SPI or ABI change).** A node whose store was not configured to open a sealed inbox path (or that has no crypto plugin) used to hand the flow the `{ __loomEnc }` envelope as the user's payload AND journal it as `MESSAGE_CONSUMED`, making the corruption durable and replayable. One shared check, `assertDeliverable`, now runs before any consumption at both inbox delivery sites (`ctx.receive`/`select` live, and the notify path behind `afterInboxPark`, `TimerService` and `recoverAbandoned`): a payload holding an own `__loomEnc` key with a STRING value at any depth (bounded iterative walk, 100 000 nodes, fail closed on exhaustion) is not delivered and appends nothing. The message stays in the inbox; the live run parks (it does not fail) and the notify path throws the new `SealedPayloadUnreadableError` (executionId, messageId, topic; never the ciphertext; TERMINAL in `@loom/agent`'s tool-failure classification) to `onStorageError`; a correctly configured node then consumes it. `send` refuses a payload containing `__loomEnc` (`InboxMessageRefusedError`): sealing happens below `send`, so a raw payload carrying it is always forged (the walk covers the persisted JSON, so a `toJSON` cannot bypass it). Fix round: a REPLAYED recorded answer that is still sealed on the node refuses that run attempt (nothing appended, no `EXECUTION_FAILED`, a capable node completes it); a refusal leaves a durable `INBOX_WAKE_AT` row; `TimerService` backs off an incapable node without ever retiring the row. Head-of-line blocking is per execution; residuals (other sealed kinds, the snapshot store) are named in the ADR.
+
+- **A pure flow runner no longer reads as "no runner-body analysis".** `@loom/compiler` dropped a flow's `runnerReach` from the manifest when it was empty, so a runner the analysis read and found reaching nothing (`async (_ctx, input) => reduce(input)`) looked exactly like a runner it never read, and `loom verify` / `loom doctor` reported the flow as unanalysed (genUI's `apply-authoring-operation` and `presubmit`). The compiler now keeps an empty `runnerReach` when a followed runner is BOUND to the flow: the analysis now also reports how many followed runners are bound (internal `analyzeReachRegion`; the public `analyzeReachNode` is unchanged), where bound means in the same object literal or class as the `flow$` call, or passed to `registerFlow(def, …)` with `def` naming that `flow$`; an unrelated runner elsewhere in the module (object property, class field, nested function, another registration) does not count. An empty reach counts as analysed only when a runner is bound AND the module declares exactly one flow (the reach is module-wide, so with several flows a runner found here may be a sibling's). A runner the analysis cannot follow was already reported `unresolved`, never silently empty; a module with no runner (one registered from elsewhere) still reads as unanalysed. Manifest shape unchanged.
+
+- **A cross-node Postgres subscriber now sees an execution's events in commit order.** `PostgresEventStore` turned each NOTIFY into an event with its own pooled `SELECT` and emitted when that lookup completed, so under load two lookups could finish out of order and a subscriber on another node received `[0, 2, 1]`. Lookups still run concurrently, but each execution's emits now queue behind its previous delivery. Events committed by other nodes now arrive in commit order relative to each other; a local append is still emitted synchronously and may overtake a cross-node event in flight (the `EventStore.subscribe` doc says so: order by `sequence` for total order). A cross-node lookup that never returns is bounded (`deliveryLookupTimeoutMs`, default 30 s): that one delivery is dropped with an `onWarn` and later events proceed.
+
+- **A malformed `source.degradedFrom` no longer throws in the React and terminal renderers.** It was already the error placeholder in the DOM renderer; all three now draw `[Renderer for <kind> failed]` (React: `data-placeholder="error"` inside the frame) and never the cause or the value. The rule is wider than before: a `degradedFrom` that is not an array of objects (e.g. a string entry, which the DOM renderer used to draw as `undefined@undefined`) is now the same placeholder everywhere.
+
+- **`textOf` refuses a `tainted()` wrapper used as an element of a `tool_result`'s parts (`@loom/llm`).** It was skipped silently there (no leak, but inconsistent with every other placement, which throws `TaintedContentError`). `summarizerText` already unwrapped it.
+- **Test infra: `plugins/mcp` test servers bind `127.0.0.1` (the `uiDispatch.test.ts` flake).** Five suites (`uiDispatch`, `ingress`, `McpClient`, `mcpInvoke`, `taintedIngress`) called `server.listen(0)` (wildcard `::`) and then dialled `http://127.0.0.1:<port>`. On macOS the ephemeral counter is system-wide and a wildcard bind does not conflict with another process's 127.0.0.1-specific bind, so under `turbo test` (or with Ollama / a throwaway Postgres on a high port) the fake server could be handed a port someone else held on 127.0.0.1 and the client reached that server instead. Occupying the next ports on 127.0.0.1 reproduced it 17/20; after the fix 0/100. Test-only, no product change (the 1P servers already default to `127.0.0.1`). Guard: `packages/spec/src/testServerBinding.test.ts` refuses a hostless `listen(0…)` in any `*.test.ts`.
+- **`PostgresEventStore` refuses an `executionId` over 1024 UTF-8 bytes with `ExecutionIdTooLongError` (`@loom/plugin-postgres`; kernel untouched).** Each append folds a `pg_notify` into its insert, and Postgres caps a NOTIFY payload at 8000 bytes, so an id near 7.9 KB made the APPEND itself fail ("payload string too long"), not just cross-node delivery. `append`, `appendBatch` (any envelope; none of the batch lands) and `appendIfUnchanged` (with an event), `copyPrefix` (the fork target id), `acquireFence` and `acquireFenceIf` now throw the typed `ExecutionIdTooLongError` (a `RangeError`, exported with `MAX_EXECUTION_ID_BYTES`) before any write (no events and no `fences` row). **Catching it:** the runtime wraps it, so `start()` rejects with `StorageWriteError` whose `cause` is the `ExecutionIdTooLongError`; check `err.cause`. Under `TenantScopedEventStore` the cap counts the scoped id (`tenant:` prefix included) and the error carries the scoped id. **Keep ids well below the cap (at most 900 bytes):** derived streams are longer than their execution (inbox `__loom_inbox__:${chainId}` +15 bytes, continueAsNew `~N` +2 to 4), so an id at 1010-1024 bytes starts but its inbox `send` / continueAsNew is refused. **Behaviour change:** ids between 1025 bytes and ~7.9 KB were accepted before and are now refused; an id at or under 1024 bytes is unchanged. The limit leaves headroom for the worst-case JSON-escaped tag (1024 x 6 + schema + sender). The kernel has no executionId length rule and the other stores (SQLite, in-memory) are unchanged. Test: `plugins/postgres/src/executionIdLimit.test.ts`.
+- **SECURITY: a signed shared-mode `close` envelope is now authorized by the conversation body, not only the client (`@loom/conversation`; kernel untouched).** The client's `close` demanded the "manage" rule (owner or a `manageParticipants` manager), but the body acted on a validly signed `{ kind: "close", asker }` BEFORE any participant check (that check covered user turns only), so a holder of the envelope key could name a non-participant as `asker` and close the conversation for everyone. The body now requires the closer to be the owner, the service principal, or a host manager (`manageParticipants`), recorded as a decision (replay-stable); anything else is recorded as a rejected `unauthenticated` entry and the conversation stays open. A plain participant who is not a manager may not close, matching the client. Owner mode is unchanged. **Upgrade note:** a shared-mode close whose `conv#closed` was recorded before the upgrade but whose completion was not (a crash in that window) is re-judged on recovery; if the closer is no longer authorized, the conversation stays open, and `history().closed` can then disagree with `status()`.
+- **`PostgresEventStore.subscribe` delivered an event TWICE when another schema in the same database appended the same execution id and sequence (`@loom/plugin-postgres`; kernel untouched).** NOTIFY channels are database-wide, but a log lives in one schema (the pool's `search_path`: schema-per-tenant, or isolated test schemas). A listener that got a notification for an execution it was subscribed to re-read `(executionId, sequence)` from its OWN schema and delivered that row. So another schema's append re-delivered an event the subscriber already had, or announced one of its own events early. Every notification (`append`, `appendBatch`, `appendIfUnchanged`) now carries the schema of the store's `events` table as a 4th tag element (`[sender, executionId, sequence, schema]`, resolved once after migration), and a listener drops a notification from a different schema. A 3-element tag from an older node is still delivered, so rolling upgrades keep working. Duplicates from not-yet-upgraded nodes continue until every node runs this version. The schema is identified by NAME (not OID, which changes on dump/restore): after `ALTER SCHEMA ... RENAME` while nodes run, restarted nodes compute the new name and the two groups drop each other's cross-node deliveries until every node restarts, so restart every node after a schema rename. This caused the intermittent conformance failure "subscribe delivers appended events; unsubscribe stops them" (`[0, 0, 1]`) when two runs shared a database. Regression test: `plugins/postgres/src/notifySchemaIsolation.test.ts`.
+- **Cross-replica `subscribe` was silently lost when replicas shared a pid (`@loom/plugin-postgres`; kernel untouched).** The NOTIFY sender tag was `${process.pid}-${counter}`, and a store skips any notification carrying its own tag. Container replicas commonly all run as pid 1 and build stores in the same order, so every replica's first store was `"1-1"`: replica B treated every append from replica A as its own and ignored it, so live wake-ups (`subscribe`, and the consumers built on it: live-query, the conversation feed and barge-in, conversation-sse, the broadcasting projection runtime, `useAgentSurface`) never crossed nodes. The log itself stayed correct; only live delivery was lost. The tag is now a per-process random prefix (`randomBytes(8)`, generated once) plus the per-store counter, unique across hosts and processes (it also covers `worker_threads`, which share a pid, and a package loaded twice in one process). The sender element keeps its position and type, and an old id (decimal pid) can never equal a new one (16 hex characters), so mixed-version nodes interoperate.
+- **Content-GC data-loss race: a fork or an append that carries an existing ref no longer lets an orphan sweep erase the blob ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment 2; `@loom/plugin-content`, `@loom/plugin-sqlite`, `@loom/conformance`; kernel untouched).** Touch times were bumped only by `put`, so a citation copied by `ContentResolvingEventStore.copyPrefix`, or kept in an `append` payload (recalled memory, `scriptRef`), was invisible to `deleteIfUntouchedSince`, and `reclaimOrphans` could erase a blob a live fork still cites (replay then threw `ContentMissingError`).
+  - ContentStore SPI **1.3.0 -> 1.4.0** (additive MINOR) adds optional `touch(addresses): Promise<string[]>` (bump without a put, max semantics, unknown addresses a no-op returned as the missing list). `SqliteContentStore`, `InMemoryContentStore` and `CachingContentStore` implement/forward it, the conformance kit checks it, and the compatibility matrix lists SPI 1.4.0. A 3P store with the 1.3.0 set adds one method to keep `--orphans --apply` working.
+  - `ContentResolvingEventStore` calls `touch` for the refs in a forked range and in the input payload of `append`/`appendBatch`/`appendIfUnchanged`, before and after the write (nothing when the store has no `touch`). The new `ContentTouchingSnapshotStore` does the same for a saved snapshot's citations, closing the fork-of-a-compacted-parent seed path (refs only in the truncated prefix). Fork read I/O roughly doubles on a store with `touch`.
+  - **Behaviour change:** an append, `appendBatch`, `appendIfUnchanged` or fork that carries a ref now FAILS if the content store's `touch` throws (the touch before the write aborts it), which it did not before.
+  - **Behaviour change:** an ERASING `reclaimOrphans` pass (not `dryRun`) now throws `ReclaimOrphansTouchError` for a content store without `touch`; `ReclaimOrphansMarginError` for `olderThanMs <= 0` or a cutoff within `MIN_ORPHAN_ERASE_MARGIN_MS` (60 s) of the store's clock (the CLI's `--ttl 0 --orphans --apply` refuses); and the new `ReclaimOrphansClockError` for a store with `deleteIfUntouchedSince` but no `touchClock` (its margin cannot be measured, so `touchedBefore: Date.now()` used to pass).
+  - **Behaviour change (new acknowledgement):** an ERASING pass given `snapshotStores` must also pass `reclaimOrphans: { completeScan: true, snapshotsTouchContent: true }`, the host's assertion that every snapshot store the runtime saves to is wrapped in `ContentTouchingSnapshotStore`; otherwise `ReclaimOrphansSnapshotAckError`. loom never builds `ContentResolvingEventStore` or the snapshot store for the host, so the wrapping is the host's. Not needed without `snapshotStores`. `loom sweep content --orphans --apply` needs the new `--snapshots-touch-content` flag. A `dryRun` is exempt from all of these.
+  - The guarantee is D5's: the touch before a write protects while its touch-to-commit window is shorter than the sweep's margin (`touchClock() - olderThanMs`); the touch after it is a best-effort extension. Failures of it, and a cited bare ref found missing, reach the new `onTouchError` option; with no hook, one `LOOM_CONTENT_TOUCH` process warning is emitted. A hook that returns a rejecting promise is swallowed.
+- **A2A peer tools keep loom-authored schema text ([ADR 0125](docs/adr/0125-tool-search.md) D14 residual, R22f; `@loom/core`, `@loom/agent`, `@loom/plugin-a2a`; kernel untouched).** The model-facing spec of an un-vouched remote tool stripped ALL Zod `.describe()` text, including text loom itself authored on `A2APeerClient`'s static `peerInputSchema`. Additive, opt-in `ToolDefinition.schemaOrigin?: "local"` marks a loom/host-authored Zod schema; `toolSpecFor` then treats the schema as first-party (no sanitizing at all: `.describe()` text, property keys, enum/const values and patterns pass as authored) while the remote DESCRIPTION stays withheld. It is an authorship claim: set it only when every string in the schema is a literal in your own source. `A2APeerClient` sets it. Fail-closed: an unmarked remote tool still strips, and the flag never applies beside a `jsonInputSchema` (MCP unchanged). No behaviour change today (the peer schema carries no `.describe()`).
+- **`PromotionRefusedError.reasons` listed each reason twice** when the registry floor and the per-call thresholds failed the same check; the reasons are now de-duplicated, in first-seen order (`@loom/learning`).
+
+- **`superviseChildren` is restart-safe (R8; no ABI change).** Spawn specs, group aggregation and the started set lived only in process memory, filled by live `onEvent`, so after a restart a recovered child's completion hit `if (!started.has(id)) return` and the parent was never resumed, and a group with 2 of 3 members settled lost its results. The supervisor now rebuilds a parent's state from the log: a child terminal event it did not see spawned triggers a per-parent rehydration (the parent's park, its spawn `DECISION_RECORDED`, each child's terminal event), and the new `supervisor.recover({ source?, pageSize? })` does a boot catch-up (resume parents whose children all settled while down, start children recorded but never started, adopt the rest; returns `{ scanned, parked, resumed, started }`). Double resume is harmless: a lost race is swallowed, a start whose id exists is not an error, and a resume is dropped unless the parent is parked on that exact child/group key (the resume gate checks only the gate NAME, so a late duplicate used to be able to answer the parent's next `awaitChild`). `ChildSupervisor` gains the `recover` method (additive for callers; a hand-written `ChildSupervisor` must add it). `recover()` costs one store scan + one fold per execution; there is no parked-parent index. Restart policies remain out of scope. `KERNEL_ABI` and `EVENT_SCHEMA` unchanged.
+- **`superviseChildren` R8 review round 1 (multi-supervisor safety; no ABI change).** (P1-a) The duplicate-resume window is closed with no kernel change: `awaitChild`/`awaitChildren` park with `viewDigest: <key>` (R13) and the supervisor's resume echoes it, so a slow supervisor's stale resume is refused pre-append (`view-digest-mismatch`) instead of answering the parent's next `awaitChild` with the previous child's output; old parks without a digest are unaffected. (P1-b) Group members that settle on different nodes no longer hang the parent: a settling member re-reads its unsettled siblings from the log (after its own terminal is durable) and `recover()` re-derives even an already-known park. (P1-c) A losing resume's in-memory re-run starts no phantom child: children start only once the parent is durably parked on that exact key, and from the durable spawn decision. (P2-a) `resume()` failures are observed: `resumed` counts only a durable resume, a failed append reaches `onError`, `StaleFenceError` is no longer treated as a lost race (the supervisor takes its own fence; see round 2 for the bound and the residual). (P2-b) A member whose execution retention deleted (`EXECUTION_DELETED` in the lifecycle stream) settles as a typed failure instead of being started again. (P3) per-park supervisor state is dropped when the park is answered; `recover()` crosses tenants unless the store is tenant-scoped; a compacted terminal event loses the error text / cancel reason. `ChildSupervisor` gains `size()` (`@internal`, a leak check). Follow-up outside this package: `LogLifecycle` should refuse to delete a child whose parent is still parked on it. `KERNEL_ABI` and `EVENT_SCHEMA` unchanged.
+
+- **`superviseChildren` R8 review round 2 (no ABI change).** (P2-1) The live path no longer gives up silently on a slow store: its ~1s wait for the parent's park distinguishes "parent terminal" (stop) from "bound exhausted" (back off exponentially and `adopt` from the log while the parent is non-terminal; a give-up after 10 minutes is reported through `onError`); a park that stays on a different key is a losing resume's phantom and stops quietly. `recover()` is opt-in and not needed for this. (P2-2) Fence acquisition is bounded to two per resume with the park re-read before each; the supervisor does NOT fence up front (the earlier "as `TimerService` does" was inaccurate: `TimerService` does). Residual that needs a kernel SPI, named for the Wave 2 kernel design: an **acquire-if-parked fence SPI** — `acquireFence` is unconditional, so a rival fencing between the acquire and the append fails the resume, and one landing between the durable resume and the read-back supersedes the holder of the already-running parent body; a resume still stale is reported. A live resume refused `not-suspended` is quiet when the durable log shows the park answered (it used to retry 10x and then `onError`). (P3-1) State held for a park answered elsewhere (adopt-then-answered-on-another-node) is dropped by a periodic sweep, by every adoption and by `recover()`. (P3-2) The retention-deletion facts are a bounded map keyed by id and compared with the spawn decision's time (a reused parent id no longer fails its fresh member), counted in `size()` as `reclaimed`. (minor) An observed resume with no durable evidence within a bound is "unknown": not counted, retried through `adopt`. `SupervisorDeps` gains an `@internal` `tuning`. `KERNEL_ABI` and `EVENT_SCHEMA` unchanged.
+
+- **Fold, live-commit and resume cost were super-linear (R1a; no ABI change).** Folded state is
+  byte-identical, `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
+  - `DECISION_RECORDED` spread the whole `_decisions` map per event: folding 5k / 10k / 20k
+    decisions took 2.3 s / 10 s / 42 s (20k steps: 5 ms). The map is now a fold-owned container
+    written in place, like `frames` and the audit lists.
+  - A live commit was its own fold pass, so fold ownership was reset on every event and every
+    commit re-copied the whole frames map (5k commits 2.6 s, 20k 45 s, 40k 192 s). `ReplayVM`
+    now keeps its own ownership set across `applyEvent`s and retires it when a state escapes
+    through `getState()`, so a state a caller holds is still never written to. New
+    `ReplayVM.peekState()` is the borrowed read for the runtime's hot path (`WorkflowContext`,
+    `ExecutionJournal`); `getState()` keeps its meaning.
+  - `WorkflowRuntime.resume` read the whole log on every call. With a snapshot it now takes the
+    execution's identity from sequence 0 and folds snapshot + tail. The one consumer of the full
+    log, the ADR 0104 legacy stray-passthrough scan, still runs over the whole log on the first
+    resume of an execution in a process and on every resume of a log it flags; `discardLegacyAnswers`
+    always forces it. After a CLEAN scan the runtime keeps the scanner itself (not a "clean" flag)
+    and feeds it only the events appended since, so a PRE-0104 kernel appending to the same log
+    afterwards (a mixed-version fleet during a rolling upgrade, an old node running
+    `recoverAbandoned`) is detected by the warm runtime as a fresh one detects it; a flagged
+    result, a gap in the tail, a log that no longer reaches the scanned sequence, or a different
+    flow definition falls back to the full read, and `feed` is idempotent across concurrent
+    resumes. A refused scan never leaves a remembered entry. Residuals (ADR 0104 amendment): a
+    `truncatePrefix` after a clean scan (can only drop the advisory "unverifiable" warning), a
+    log erased and re-created under the same id to at least the scanned length, and step kinds
+    resolved per fed event.
+  - The snapshot written at every suspend is kept: with `snapshotEvery` unset it is the only
+    thing that bounds a resume's tail. It hands the state to the store by reference (no copy).
+
+- **MCP-mapped tools showed the model `{}` for their arguments (R4b).** R4 sent each tool's Zod
+  schema as JSON Schema, but an MCP tool's schema is already JSON Schema and its Zod form is a
+  `z.unknown()` placeholder. New optional `ToolDefinition.jsonInputSchema` (and
+  `trustJsonSchemaText`); `@loom/plugin-mcp` `mapTool` sets it from the server's `inputSchema`,
+  and `toolInputJsonSchema(zod, json?, { trustText })` prefers it. The schema is THIRD-PARTY
+  bytes bound for a prompt, so it is sanitised first (`sanitizeJsonSchema`): a keyword
+  allowlist (unknown / `x-*` / `default` / `examples` dropped), depth 16, 1000 nodes, 64KB,
+  remote `$ref` dropped (nothing is fetched), cyclic or oversized refused
+  as a whole and sent as `{ type: "object" }` with a `LOOM_AGENT_TOOL_SCHEMA`
+  warning per tool id (the run never fails). **The text that must stay is constrained, not
+  merely capped** (a per-item cap still admitted ~64KB of prose per tool): property and
+  `$defs`/`definitions` keys must match `^[A-Za-z0-9_.-]{1,64}$` (else the entry is dropped,
+  and its `required` mention; `required` only names kept properties); `enum`/`const` strings are
+  at most 64 chars with no control / zero-width / bidi characters (else the keyword is dropped);
+  `format` only from JSON Schema's standard list; `pattern` at most 128 chars and must compile
+  under `new RegExp(p, "u")` (compiled, never run); a `$ref` survives only if it names a kept
+  `$defs`/`definitions` entry or `#`; and ALL of that attacker-controlled text together is
+  budgeted at 4096 characters per tool, past which the whole schema is refused. A hostile
+  server can still say a few words inside the budget; the description is the default-deny
+  surface. **Taint:** `description`/`title` inside the schema, and the
+  MCP tool's own description, were read as instructions yet never passed `guardRequest`
+  (a plain string carries no taint). They are now stripped (the description becomes the fixed
+  string "Third-party tool; description withheld") unless the operator opts in with
+  `listTools/registerInto({ trustDescriptions: true })` (a trusted description is still capped
+  at 1000 chars, with a one-time `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning per tool).
+  Strip-by-default rather than taint-and-refuse: `guardRequest` refuses the WHOLE request on a
+  tainted description, so every MCP agent would fail to run; ADR 0085's MCP producer is
+  likewise opt-in (`taintResults`) and its `unwrapTainted` is the operator's visible
+  decision, which `trustDescriptions` mirrors. **Tool names:** the name is the effect id and
+  what the model sees, so `listTools` skips (with a `LOOM_MCP_TOOL_NAME` warning) any tool whose
+  name is not `^[A-Za-z0-9_-]{1,64}$` (providers 400 on one, and a long name is prompt text);
+  `listTools({ anyToolName: true })` opts out for tools never shown to a model (`mcpInvoke$` and an
+  app view use it: `loom.surface.since` is a legitimate dotted name).
+  **Validation:** an MCP tool now checks its own call's shape INSIDE its effect
+  (object input, `required` keys present, declared top-level property types) and returns a
+  recorded `{ error: { code: "invalid_tool_input", ... } }` RESULT; nested rules, enums and
+  bounds stay the server's job. The check reads the RAW schema, so its refusal echoes only
+  identifier names (`^[A-Za-z0-9_.-]{1,64}$`) and JSON Schema type names — any other name is
+  reported without it (the refusal is a model-visible tool result). It is in the effect, not in the agent loop before
+  `ctx.execute`, so replay is deterministic: the schema comes from a LIVE `tools/list` at
+  boot, and a gate outside the journaled step would refuse, after server schema drift, a call
+  the log records as executed. Note a direct flow caller of an MCP tool now also receives that
+  result, instead of the server's error, for a malformed call. **Hazard (R4b vs R4):** R4's
+  zod gate reads a STATIC definition the deployer controls (hence "drain before upgrading");
+  R4b's schema is remote and drifts on its own, so it is kept out of the gate. What the model
+  is SHOWN still comes from the live listing, so a drifted schema changes the menu on the next
+  model call of a resumed run (the recorded model responses still replay). Pre-R4b executions
+  are unaffected (MCP tools were `z.unknown()`, nothing was gated). No new dependency.
+
+- **Agent loops executed any effect id the model named, with unvalidated input, and showed the model no argument schemas (R4).**
+  `agentLoop$` ran `ctx.execute({ toolId: toolCall.name })` and `AgentRunner` (hence `agentStep$`)
+  ran `effectRuntime.execute(toolCall.name, ...)` for WHATEVER name the model returned, so under
+  the default permissive config a hallucination or a prompt injection could reach any registered
+  effect; and every `LlmToolSpec.inputSchema` was `{}`. Now a call runs only if its name is on
+  the loop's tool menu (agent tools + selected skills' tools) and its input passes the tool's Zod
+  `inputSchema`; otherwise nothing is executed and the model gets a structured
+  `{ error: { code: "tool_not_on_menu" | "invalid_tool_input", ... } }` result (issues bounded)
+  so it can recover. The refusal is deterministic from the recorded model output and appends
+  nothing. Schema faults (async or throwing refinements, pathologically deep input) are
+  refusals too (`invalid_tool_input`, fixed message), never throws; input deeper than 64
+  levels or 100k nodes is refused before Zod runs; echoed names/paths are capped at 200
+  chars. `requireApproval` now receives `onMenu` as a third argument.
+  **Replay caveat:** an in-flight `agentLoop$` execution whose log recorded an off-menu or
+  invalid-input call (written before this change) replays a refusal in its place, so its
+  `toolCallLog` / later transcript diverge from the recorded run; drain in-flight `agentLoop$`
+  executions before upgrading. `agentStep$` / `AgentRunner` (one step) are unaffected. Each tool's Zod schema is sent as JSON Schema
+  (`toolInputJsonSchema`, a minimal in-package converter; no new dependency). **Behavioural
+  tightening:** code that relied on calling an off-menu effect, or on sending input its tool's
+  schema rejects, now gets the refusal result instead of an execution. Tools whose schema is
+  `z.unknown()` (MCP-mapped tools) are unaffected for validation but are still described as `{}`.
+- **A flow whose only reach is a ctx hand-off lost its runner-body analysis (backlog L36).**
+  `@loom/compiler` kept a flow's `runnerReach` in the manifest only when it had steps,
+  unresolved targets or suspends, ignoring L32 `escapes`. A flow that only hands `ctx` to a
+  library (`planner.compose(input, ctx)`) therefore read as "no runner-body analysis" instead
+  of the undeclared-hand-off warn, so declaring the library's reach had no effect on it. Found
+  by a genUI review: its `generate-dashboard` flow was silently unanalysed.
+
+- **`PostgresLeaseStore` stamps and judges leases on DATABASE time (backlog L29, closes the
+  L28 known limitation).** It used each caller NODE's `Date.now()`, so the `acquire` takeover
+  clause compared node A's stamp against node B's clock: skew beyond the ~40s slack (60s TTL,
+  renewal every ttl/3) let a fast node steal a live lease or made a slow node's healthy lease
+  look expired every cycle (fencing rejected the loser's writes, but effects ran twice). When
+  `now` is omitted, `acquire`/`renew` now stamp `expires_at` and the takeover condition and
+  `expired()` compare against `(extract(epoch from clock_timestamp()) * 1000)::bigint` in the
+  same statement, one clock for every node. The reading is a scalar subquery
+  (`(SELECT ...)`, one reading per statement, and `acquire` takes it once via a CTE): a bare
+  volatile `clock_timestamp()` in `expired()`'s WHERE is re-evaluated per row and turned
+  `idx_leases_expiry` into a full-index Filter (143 ms at 200k live leases vs 0.026 ms as an
+  InitPlan with a real Index Cond); a test EXPLAINs the real query (`LEASE_EXPIRED_SQL`).
+  `clock_timestamp()` rather than `now()`: `now()` is frozen at transaction start, so a lease
+  written through a caller-supplied client inside a long transaction would be stamped and
+  judged on a stale reading. An explicit `now` is honoured verbatim (tests, simulated clocks);
+  mixing explicit and DB time on one lease table is unsupported. A fractional `ttlMs` is now
+  rounded up (Postgres rejected it as `bigint`). `SqliteLeaseStore` is unchanged: single host,
+  the process clock is its one clock. **LeaseStore SPI 2.1.0 (MINOR, additive):** optional
+  `LeaseStore.storeNow?(): Promise<number>` returns the store's own clock; `PostgresLeaseStore`
+  implements it (DB time) and `orphanCensus` (hence `loom census`) judges lease expiry on it
+  when present instead of the CLI host's `Date.now()` (executions are still aged by wall
+  clock; an explicit `now` overrides both). `Lease.expiresAt` is documented as on the store's
+  clock. Stores without `now()` behave exactly as before. `runLeaseStoreConformance` gains a
+  `storeNow()` case (skipped when absent; `leaseStoreNowProblem` is exported and negative-proved:
+  a store whose `storeNow()` is an hour off its stamping clock fails).
+
+- **`recoverAbandoned` judged lease expiry on the wall clock, not the store's** (backlog L28,
+  double-execution hazard under an injected clock). It called `leases.store.expired(Date.now())`
+  while `acquire`/`renew` stamped `expiresAt` with the store's own `now`. With
+  `InMemoryLeaseStore({ now: sim })` at sim ~ 1000, every live lease (expiry ~ 61000) read as
+  expired, so recovery re-drove executions healthy holders were still running. Now
+  `LeaseStore.expired`'s `now` is OPTIONAL and defaults to the store's own clock, and
+  `recoverAbandoned` passes none. **LeaseStore SPI 2.0.0 (MAJOR, BREAKING for implementers,
+  following the MemoryStore 2.0.0 precedent):** an implementation MUST default `now` to the
+  clock that stamps its leases. A 1.x store declared `expired(now: number)` still type-checks
+  against `expired(now?: number)`, but given `undefined` it returns `[]` (`expiresAt <=
+  undefined` is false, SQL `<= NULL` is false), so an UNCHANGED third-party store silently
+  recovers nothing. Callers passing an explicit `now` are unaffected. `LEASE_STORE_SPI_VERSION`
+  is now in `kernelManifest().spis` and the compatibility matrix, and the cheatsheet banner is
+  checked against it (the banner test used to exempt LeaseStore). The in-repo SQLite and
+  Postgres stores already default to `Date.now()`, which is what they stamp with (Postgres
+  now stamps and judges on database time instead: see L29 below). The conformance case for `expired()` with no argument now takes an optional
+  `clocked` factory (`LeaseStoreConformanceOptions`) and drives the store's injected clock
+  instead of sleeping, so it discriminates the L28 bug (the check is exported as
+  `leaseExpiredDefaultProblem` for third-party kits); `checkCompatibility` accepts a
+  `leaseStoreSpi` deployment version; backends with no injectable clock keep
+  the wall-clock form. `orphanCensus` keeps its own explicit `now` option (it also ages
+  executions by it; documented to be given the lease store's clock when that is not the wall).
+
+- **L27: timer wake times use the runtime's clock** (kernel; behavioural for hand-wired setups,
+  and for `defineConfig` with a non-default `execution.now` plus `timers`).
+  `ctx.sleep` and `suspend({ timeout })` computed `wakeAt` with raw `Date.now()` while
+  `TimerService` judged it with its own `now`, so one simulated clock given to both made
+  sleeps never fire (clock behind the wall) or fire at once (clock ahead). `wakeAt` is now
+  `runtime.now() + ms`, and `TimerService`'s `now` defaults to the runtime's clock (new
+  read-only `WorkflowRuntime.clock`, the same way it already reads `runtime.events`), so a
+  simulated or offset `WorkflowRuntimeDeps.now` (`defineConfig` `execution.now`) alone drives
+  sleeps, suspend timeouts and cron cursors. An explicit `TimerService` `now` still wins; if it
+  disagrees with the runtime's clock, timers fire early (it runs ahead) or never (it runs
+  behind). Default wall-clock setups are unchanged. **Fixed clock:** under a FIXED clock
+  (including `defineConfig` `execution.now` plus `timers`) sleeps, `suspend({ timeout })` and cron
+  schedules now never fire, where they used to fire on wall time; advance the clock or drive
+  `tick(now)` yourself. **Offset clock:** an offset is safe only if every runtime touching the log
+  uses the same one; this covers wake times and cron, and applies across an upgrade (timers parked
+  before it carry wall-clock `wakeAt`, so an offset runtime fires them |offset| early or late,
+  never under a fixed clock; old and new nodes disagree during a rolling upgrade).
+  `sleepUntil(absolute)` targets and cron occurrences are measured on the runtime clock. `tools/dst` is unaffected (its runtimes
+  keep the wall clock; drivers still jump to `wakeAt` themselves); to virtualise sleeps pass
+  `now: world.clock.now` to the runtime.
+
+- **L26 round 2: invalid `timeoutMs`/`deadlineMs` are rejected** (behavioural tightening).
+  `step$`/`flow$` now throw on NaN, 0, negative and Infinity (NaN armed a 1ms timer, 0 and
+  negatives breached at once, Infinity never fired; omit the field for no deadline). The same
+  check runs again in the runtime (`registerFlow`, `start` of an inline definition, `ctx.run`
+  before `STEP_STARTED`) for specs that bypass the builders, so an invalid budget can no longer
+  fire at 1ms. A per-call `options.deadlineMs` is validated at the top of `start`, `resume` and
+  `resumeAs`, before any read or append, so a rejected call leaves the log untouched (a
+  caller-chosen `executionId` is not burned and can be retried). No in-repo or loom-examples caller passed such a value. Also documented: under a
+  FIXED `now`, a budget above 2^31-1 ms (~24.8 days) never fires within a single run (each
+  chunk re-arms; test added), and the deadline timers are deliberately not `unref`'d.
+
+- **Step `timeoutMs` and execution `deadlineMs` mixed two clocks** (backlog L26, latent, P3 in
+  production). The deadline anchor is a journal timestamp written with the runtime's injectable
+  `now` (`WorkflowRuntimeDeps.now`), but the remaining budget was computed from raw
+  `Date.now()`. With any `now` that is not the wall clock the remaining time was either hugely
+  negative (every `timeoutMs` step failed with `StepTimeoutError`, every `deadlineMs` execution
+  was cancelled at start) or above 2^31 ms (Node clamps the timer to 1ms). Both are now measured
+  with `now`; `EXECUTION_DENIED` and cancel-of-a-suspended-execution envelopes are stamped with
+  it too. The `setTimeout` still waits real milliseconds, so `now` must advance in real time for
+  a deadline to fire on time; the option's TSDoc said "never fold-relevant" and now says
+  deadline-relevant. The default clock is unchanged. Also fixed on the same lines: a
+  `timeoutMs`/`deadlineMs` above 2^31-1 ms (~24.8 days) made Node clamp the timer to 1ms, so
+  `deadlineMs: 30 days` durably cancelled the execution ~1ms after start. The remaining budget
+  is now capped at the declared budget (a clock stepping backwards cannot grant more) and a
+  longer wait is armed in chunks of at most 2^31-1 ms, recomputing from `now` at each chunk.
+  Caveats: a FIXED `now` silently disables the crash-surviving deadline (elapsed is always 0,
+  so every resume re-grants the full budget), and an offset `now` is safe only if every
+  runtime touching the log uses the same offset. (`ctx.sleep`/`suspend({timeout})` wake times
+  were fixed in L27 and lease expiry in L28, both above.)
+- **Six packages value-imported a package they declared only in `devDependencies`** (backlog L22).
+  The workspace links every package everywhere, so nothing in the suite noticed; a consumer
+  installing the PUBLISHED package would get "Cannot find module" at load. Moved to
+  `dependencies` (the repo's convention, no peers): `@loom/plugin-worker-server` -> `@loom/core`;
+  `@loom/app` -> `@loom/classify`; `@loom/orchestration` -> `@loom/effect-runtime`; `@loom/cli`
+  -> `@loom/effect-runtime`, `@loom/snapshot-runtime`; `@loom/agent` and `@loom/plugin-a2a` ->
+  `zod`. New fitness test `packages/spec/src/runtimeDeps.test.ts` scans every workspace
+  package's non-test `src/` (AST, so multi-line, `export ... from`, `require` and literal
+  `import()` count; `import type` / all-`type` specifiers do not) and fails naming the package
+  and import when it is not in dependencies, peerDependencies or optionalDependencies.
+  The same test also requires TYPE-only imports in shipped `src/` to be declared (the emitted
+  `.d.ts` names the package): `@loom/capability` type-imported `zod` from its public types while
+  declaring it only in `devDependencies`, so it moved to `dependencies`; the one other hit,
+  `@loom/worker-runtime-local`'s `spiShapeProof.ts` (type-imports the dev-only `@loom/conformance`),
+  is an exact, justified exemption because the file is emitted but unreachable (not exported, and
+  the `exports` map exposes only the entry). It additionally scans the hand-written subpath shims
+  a package ships outside `dist/` (`event-runtime` `memory.js`/`sequence.js`, `snapshot-runtime`
+  `memory.js`) and requires the JSX import source (`react`) to be declared for any package
+  whose tsconfig uses the automatic JSX runtime. Known limit, documented in the test: non-literal
+  `import(spec)`/`require(x)` (tools/cli, packages/isolate runner) are invisible to a static scan.
+- **`@loom/isolate`: `timeoutMs` charged child-process startup, and a brokered fetch never timed
+  out** (backlog L23 + L24; same class as the L13 sandbox clock). (L23) The run clock started
+  at spawn, so under load a 150 ms tool was killed before its module finished loading, and
+  since a kill discards the child the next call cold-started and died again, forever. The
+  parent now warms the child first (`booted` -> `warm` -> `ready`); `timeoutMs` opens only when
+  the child is ready. Startup has its own allowance, new `coldStartMs` (default 10 000, finite
+  and > 0, else `RangeError`); a child that exceeds it, or exits or disconnects while warming
+  (any exit code), fails with the typed `IsolatedToolStartupError` (exported) instead of
+  hanging, and is replaced on the next call. Its `phase` is `"spawn"` (the runner never booted:
+  the environment) or `"load"` (the tool module's top-level code hung or exited: a TOOL fault);
+  a module that throws at load fails the load phase with a plain tool `Error`, once, instead of
+  being re-executed by the run. **`coldStartMs` also bounds untrusted top-level code** (unlike
+  the sandbox's trusted compile), so a tool that forces a cold start on every call costs up to
+  `coldStartMs + timeoutMs` per call; size it accordingly ([ADR 0019](docs/adr/0019-k7-data-plane-isolation-and-egress-control.md)
+  addendum). An abort during warm-up kills the child and rejects with the abort reason.
+  (L24) A host that accepted and never answered held a `maxConcurrentFetches` slot forever.
+  New `fetchTimeoutMs` (default 30 000, finite and > 0) bounds each fetch end to end, DNS
+  lookup included (a stalled `getaddrinfo` is no longer waited on past the deadline): on expiry
+  the request is destroyed, the slot released, and the tool's `ctx.fetch` rejects with
+  `code: "FETCH_TIMEOUT"` (error `name` `IsolatedFetchTimeoutError`; not an exported class).
+  Fetches are also aborted when the run that issued them ends or is killed.
+  **Review fix (security):** an untrusted tool could crash the PARENT: a callback-less `send()`
+  to a closed IPC channel emits an uncaught `'error'` (`ERR_IPC_CHANNEL_CLOSED`), reachable by
+  `process.disconnect()` while a fetch is in flight, and a disconnected-but-alive child was
+  reused by the next call. The parent now holds a permanent `error` listener, treats
+  `disconnect` as death (SIGKILL, entry discarded, in-flight run fails with the new exported
+  `IsolatedToolDisconnectedError`), checks `proc.connected` before reuse, and sends with
+  callbacks.
+  **Review fix round 2:** (1) the runner child no longer outlives its parent: it exits on
+  `disconnect` (exit code 70) registered before any tool code loads, and the parent SIGKILLs live
+  children from ONE module-level `process.exit` hook (a `kill -9` of the parent relies on the
+  runner handler alone). Hardening only: a hostile tool can remove the runner's handler, and
+  OS-level confinement remains out of scope. (2) A DNS abort still answers the tool with
+  `FETCH_TIMEOUT` immediately, but the `maxConcurrentFetches` slot is now held until the
+  uncancellable `getaddrinfo` actually settles, so pending lookups stay bounded by the cap
+  (`brokeredFetch` takes a new optional `hooks` argument, `BrokeredFetchHooks.lookupStarted`,
+  through which the effect learns when the lookup settles).
+  (3) Every `EGRESS_DENIED` emit in the fetch handler is guarded (a throwing `ctx.emit` fails the
+  run instead of an unhandled rejection in the parent). (4) A child crash or `close()` mid-run
+  keeps its `crashed mid-run` error (the disconnect waits up to 100 ms for `exit`); a child that
+  stays alive after severing its channel, or that exits through the runner's own disconnect
+  handler, is `IsolatedToolDisconnectedError`. (5) A non-JSON-serializable input (circular,
+  BigInt) now rejects with the new exported `IsolatedToolInputError` before any timer or
+  listener is registered, leaving the healthy child alone. `StartupPhase` is now exported.
+
+- **Two retrying dispatchers ping-ponged one execution, re-running its step on every bounce**
+  (backlog L20, [ADR 0004 amendment](docs/adr/0004-failure-recovery.md); from the L12 review of
+  [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `maxAttempts > 1`,
+  `LocalDispatcher` counted a lost start race (`ExecutionAlreadyExistsError`) or a fenced-out
+  attempt (`StorageWriteError` caused by `StaleFenceError`) as a failed attempt and
+  redispatched; the redispatch's fence superseded the healthy holder, which did the same. A
+  one-step flow's effect ran 5–6 times on a duplicate dispatch (18 under
+  `SupervisingDispatcher({ maxRestarts: 2 })`), past ADR 0004's "the interrupted step may run
+  twice". New `isSupersededRefusal(err, executionId)` and `ExecutionSupersededError` in
+  `@loom/worker-runtime`; `LocalDispatcher` and `SupervisingDispatcher` rethrow such a refusal
+  without retrying (and without tripping the circuit). It must name THIS execution, so a
+  coalesced batch's stale fence for another execution, and every other storage error, are
+  still retried. The HTTP worker answers it `409 { code: "superseded" }` instead of an opaque
+  500, and `RemoteWorkerRuntime` / `CloudRunWorkerRuntime` rethrow it as
+  `ExecutionSupersededError`. Now 1 effect (race) / 2 (after bootstrap). Defaults
+  (`maxAttempts: 1`, `maxRestarts: 0`) were already safe. **Dispatcher SPI 1.0.0 → 1.1.0**
+  (MINOR: a new MUST that non-retrying dispatchers already meet; the kit case runs only with
+  `runExecutionDispatcherConformance(…, { overWorker })`). `SupervisingDispatcher` still counts
+  an earlier genuine failure in the same dispatch; the worker server reports 409s to a new
+  `onSuperseded` hook; `RemoteWorkerRuntime` also requires the 409 body to name its execution.
+  Two things this required elsewhere: `TenantScopedEventStore` now re-raises
+  `StaleFenceError` / `DuplicateSequenceError` / `DuplicateEnvelopeIdError` with the caller's
+  (unscoped) ids — it forwarded the scoped `acme:x`, which brought the ping-pong back in full
+  under tenancy — and a start refused on the fence twice with sequence 0 still absent is now
+  `StorageWriteError` caused by the new, retryable `StartFencedOutError` (from
+  `@loom/workflow-runtime`), because settling it as superseded lost the start outright when the
+  newer token's holder had died before writing. **What settling means:** a superseded refusal
+  transfers ownership to the newer fence holder without checking it is alive — its liveness is
+  covered only by its own dispatcher policy and by `recoverAbandoned`, which deployments MUST
+  run to cover dead holders — and it can be the caller's own timed-out earlier attempt, so a
+  caller that needs the outcome awaits the execution by id rather than treating it as failed.
+- **An A2A peer that answered `/tasks/send` with the finished task was polled for it anyway**
+  (backlog L18). `createA2AClientEffect` — and so every `A2APeerClient` call — read only `id`
+  from the send answer, slept `pollIntervalMs` (default 500 ms) and asked `/tasks/:id` for a
+  result it already held: a synchronous peer (for instance a thin shim whose send handler runs
+  a graph and returns its artifact) cost every call a fixed half-second and a second request,
+  and one that does not keep finished tasks failed with `A2A status error 404`. A `completed`
+  or `failed` task in the send answer is now returned as-is; an `{ id }` answer (loom's own
+  `createA2AServer`, which submits asynchronously) and a non-terminal one are polled exactly as
+  before. Found as a full-suite load flake: `peerTaint.test.ts` spent ~500 ms of each test in
+  that sleep. Review follow-ups: a non-object or otherwise malformed send answer (a bare string,
+  `null`, or a terminal task with no `id`) now throws a clear `A2A send error: malformed answer`
+  instead of a bare `TypeError`; and a peer-supplied task id has its `/`, `?`, `#` and `%`
+  characters escaped before it is used to build the poll URL (and `A2AServer`'s `GET /tasks/:id`
+  route decodes them again), so an id containing `/` can no longer be collapsed by URL
+  normalization into a request for a different route. Deliberately NOT a full
+  `encodeURIComponent`: every loom task id contains `:` (`A2APeerClient` sets
+  `task.id = `${executionId}:${stepId}``), and escaping it would send `exec%3Astep` on the wire —
+  a 404 against an older, non-decoding `A2AServer` (or third-party peer) during a rolling
+  upgrade. Minimal escaping keeps that byte-identical while still closing the path-traversal gap.
+
+- **`ShardedEventStore` over Postgres skipped execution ids when paging** (backlog L10,
+  [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md); EventStore SPI
+  **1.5.0 → 2.0.0, MAJOR**: `checkCompatibility` refuses a `1.x` store). `listExecutionsPage` promised "lexicographic" order, which names no
+  one order: `PostgresEventStore` paged in the database collation (`en_US.UTF-8` puts `a_b`
+  before `A1`), while `ShardedEventStore` merged shard pages with JavaScript's sort and resumed
+  EVERY shard from the merged page's last id — so each shard skipped the ids that sort after
+  that cursor in one order and before it in the other, and re-served others (reproduced on a
+  PG 17 `en_US.UTF-8` cluster: 17 ids came back as 12 entries — 9 missing, 3 duplicated). Retention, the
+  read-model catch-up and every `iterateExecutionIds` pass over a sharded Postgres log were
+  silently partial. The SPI now pins the order to Unicode **code point** order (= UTF-8 byte
+  order, SQL `COLLATE "C"`, SQLite BINARY — the SQLite store already conformed), and the cursor,
+  which was opaque, is an executionId (any string) with `nextCursor` the page's last id. That is
+  MAJOR because a store conforming to 1.x can fail the new kit case (the ADR 0091 rule); no
+  method was added or removed. It also exports the reference
+  comparator `compareExecutionIds` from `@loom/event-runtime` (JavaScript's default sort
+  compares UTF-16 code units, which disagree with code points on astral characters; the
+  in-memory store and the sharded merge now use it). `@loom/plugin-postgres` declares
+  `events.execution_id` `COLLATE "C"` and converts an existing table in place on the next
+  migration (binary-coercible: no table rewrite, but the two `execution_id` indexes are rebuilt
+  under an ACCESS EXCLUSIVE lock once — ~4.5 s per 2M events measured; plan a window for a
+  large log), then re-`ANALYZE`s the column (the ALTER drops its statistics, and the planner
+  then pages with a seq scan + sort), so paging stays index-only and appends get cheaper
+  (memcmp instead of `strcoll`). The conversion waits at most `lockTimeoutMs` for its lock
+  (default 2000; set it reliably with `migratePostgresStores(pool, { lockTimeoutMs })` before
+  constructing stores, or via `PostgresEventStoreOptions.migrationLockTimeoutMs` /
+  `postgresStorage({ migrationLockTimeoutMs })`, which apply when that store migrates the pool
+  first), so it cannot queue every append behind itself, then restores the caller's
+  `lock_timeout`. The rebuild itself is exempt from `statement_timeout` (restored afterwards),
+  so a pool-level timeout cannot abort it on every boot, and so is waiting on the migration's
+  advisory lock, so a peer booting mid-rebuild queues behind it instead of failing its
+  migration (which left its store refusing every call until restart). If the lock wait times out, the
+  statement is cancelled, or a user view or rule depends on the column, boot continues with a
+  WARNING naming the two statements to run by hand — paging stays correct (the query says
+  `COLLATE "C"` itself), only slower. ADR 0108 D3 makes this the policy for future boot
+  migrations that take an exclusive lock.
+  Also fixed on the same path: `Sharded(TenantScoped(…))`, the composition
+  `TenantScopedEventStore` documents, re-served its first page forever, because the tenant view
+  handed out its INNER (prefixed) cursor while the sharded merge handed back an outer id; it now
+  speaks outer ids and, with the order pinned, seeks to its tenant's contiguous range (past
+  tenants whose names extend its own, such as `acme-eu`) and stops at its end instead of walking
+  the whole shared store. The in-memory store keeps its sorted id index across pages instead of
+  re-sorting every key per page. The conformance kit gains a code point
+  order + arbitrary-cursor case, and `@loom/plugin-postgres` runs the EventStore kit through
+  `ShardedEventStore` over three real Postgres shards (raw and tenant-scoped).
+- **`BranchRegistry.listRefs` ordered refs three different ways across backends** (backlog
+  L21, addendum to [ADR 0108](docs/adr/0108-execution-id-order-and-fail-soft-migrations.md);
+  BranchRegistry SPI **1.2.0 → 2.0.0, MAJOR**: a store conforming to 1.x can fail the new kit
+  case). Postgres paged in the database collation, SQLite in BINARY (already correct), and
+  the in-memory store with `String.prototype.localeCompare` — which is normalization-aware,
+  so it can return `0` for two DISTINCT names (an NFC "é" and its NFD decomposition are
+  canonically equivalent under most locales). `pruneBranchRefs` pages `listRefs` with an
+  `after` cursor, so a comparator that disagrees with the store's own order, or ties two
+  distinct names, skips or repeats refs at a page boundary — the same failure mode L10 fixed
+  for execution ids, on a second SPI. `listRefs` now orders names in the same Unicode code
+  point order D1 pinned (`compareExecutionIds`), and `after` may be any string, not only a
+  name the store returned. The in-memory store sorts with `compareExecutionIds` and caches
+  the sorted name list across calls (invalidated only when a name is added or removed), same
+  shape as the in-memory EventStore's `sortedIds`. `@loom/plugin-postgres` declares
+  `refs.name` `COLLATE "C"`, states it explicitly in `listRefs`'s query, and converts an
+  existing table in place on the next migration (one index rebuilt — `refs`'s own primary
+  key — under an ACCESS EXCLUSIVE lock, following D3's bounded-wait / fail-soft-WARNING
+  policy exactly; the two migrations now share one `loom.migration_lock_timeout` setting,
+  renamed from `loom.l10_lock_timeout`). The conformance kit gains a code point order +
+  arbitrary-cursor case for `listRefs` (mixed case, `-`/`_`, digits, NFC vs. NFD "é", an
+  astral name), and `@loom/plugin-postgres` runs the L21 migration against a real pre-L21
+  `refs` table the same way it does for L10's `events` table. `pruneBranchRefs` needed no
+  code change: it was already contract-driven.
+- **`@loom/workflow-runtime`: a fenced `TimerService` could pay for a schedule occurrence's
+  first effect twice** (backlog L12, closing the "loser's fence" residual of
+  [ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md)). With `fenced: true`
+  the service acquired a fence before every occurrence START. When the losing node acquired
+  it after the winner's bootstrap was durable, the loser was correctly refused as a duplicate,
+  but its new token had already superseded the winner's: the winner's next write was refused
+  as stale after its first effect had run, the execution was left `running`, and a recovery
+  pass re-drove the step. Occurrence starts are now never fenced. The durable bootstrap
+  already refuses the duplicate at sequence 0, and the first later fence (a fenced wake or a
+  recovery pass) still fences the unfenced starter out, because a fencing store refuses a
+  missing token once one exists (a new single-`append` conformance case pins that branch).
+  So under `fenced: true` a scheduled execution accepts unfenced writes until its first fence
+  (a fenced fire, a fenced recovery pass, a cancel). A deterministic test pins exactly one
+  effect across the race and a recovery pass. As a consequence, the other ordering no longer
+  reaches `onError` either: the loser is always refused as "already started". Fires
+  (resumes) are still fenced, which keeps a duplicate fire's writes safe but NOT its effects
+  exactly-once: without `leases` (#380) a later node's fire token fences out an earlier
+  node's resume mid-body, recorded as an open residual in ADR 0103. The dispatcher path
+  (`LocalWorkerRuntime`) fences before it checks existence, so a racing first dispatch never
+  supersedes a live winner; a test pins it.
+
+  `start()` with a caller-chosen id now confirms a `StaleFenceError` at sequence 0 the same way
+  it confirms a conflict. If sequence 0 reads back, the id belongs to an existing execution
+  that has since been fenced, and the start throws `ExecutionAlreadyExistsError` (it used to
+  throw `StorageWriteError`). If sequence 0 is absent, the start retries once alone, so a
+  fresh start that shared a `CoalescingEventStore` batch with a zombie's stale write still
+  runs. Then it throws `StorageWriteError`. The retry is now truly alone: it goes out as a
+  one-envelope `appendBatch`, which a `CoalescingEventStore` flushes as its own batch. Before,
+  it re-entered the coalescing queue, so two same-id starts that shared a batch shared the
+  retry batch too, BOTH failed with `StorageWriteError`, nothing started, and a
+  `TimerService` occurrence was dropped. The `acquireFence` JSDoc no longer recommends
+  fencing a start, and warns that a fence supersedes a live holder. No SPI, KERNEL_ABI or
+  EVENT_SCHEMA change.
+
+- **`@loom/plugin-sandbox`: the worker pool's hard kill charged runtime creation and input
+  seeding to the script** (backlog L13). The worker stamped the run's start before
+  `evalInFreshRuntime` created the QuickJS runtime and seeded `input`, while the in-VM wall
+  clock is armed only after both. So the parent's hard-kill budget (`wallClockMs` +
+  `hardKillGraceMs`) was spent before the script ran: a large input — or a loaded host, where
+  even an empty runtime is slow to create — made worker mode return `limitExceeded
+  { wallClock }` for a script in-process mode completed, routing a resource kill to
+  drift-repair for a script that never ran long (reproduced deterministically: a trivial
+  script over a 16 MiB input). `evalInFreshRuntime` now takes an `onScriptStart` hook fired
+  at the instant it arms its own wall clock, and the worker publishes that instant, so both
+  clocks share one origin. The end of the charged window is unchanged: output marshalling
+  still counts, because `dump` can run script code (`toJSON`) that only the hard kill can
+  stop. One of the two causes of the full-suite "survives a hard kill" flake; the other was
+  the test asserting a 100 ms wall budget for its follow-up run, and is fixed in the test.
+
+- **`@loom/plugin-sandbox`: a worker that never starts a run now fails with a named
+  `SandboxWorkerStartupError`** (L13 review). The phases excluded from the script's budget
+  (worker scheduling, input parse, runtime creation, seeding) were already bounded by the
+  pool's startup-liveness window, but the failure was a plain `Error`, indistinguishable
+  from any other. It is now `SandboxWorkerStartupError` (`waitedMs`, `limitMs`), exported,
+  and deliberately not a `TypedFailure`: it is the environment failing, not the script, so
+  it must not reach `limitExceeded`/drift-repair, and `retryMiddleware`'s default retries it.
+  Two allowances, both reported through that error (its `phase` says which): a READY worker
+  that has not started the script within `wallClockMs + hardKillGraceMs + startupLivenessMs`
+  of the eval being posted (`phase: "start"`), and a cold worker's spawn + WASM compile,
+  which has its OWN allowance `coldStartMs` measured from the start of the warm-up and
+  independent of any run's limits (`phase: "compile"`) — a compile that never acknowledged
+  used to strand its run forever, and judging it against a run's tight wall clock would
+  bring back the cold-worker failure loop ADR 0089 D4 prevents. Both are configurable on
+  `SandboxWorkerPoolOptions` and `SandboxSpec.workers` (default 10 000 ms each).
+  `hardKillGraceMs`/`startupLivenessMs` must be finite and `>= 0`; `coldStartMs` must be
+  finite and strictly `> 0`, since it is the only clock a cold compile is ever judged
+  against — 0 there does not mean "always warmed before use" (a run's own window never
+  judges the compile), it means every cold start fails, forever, and (chained through a hard
+  kill) loops. All three refuse anything else at construction, since `NaN` silently disabled
+  the bound. `warm()` now settles when its worker exits (it hung on a worker terminated
+  mid-warm-up, including by `close()`), and does so with `SandboxWorkerStartupError` rather
+  than a plain `Error` for an unexpected exit, matching the wedged-compile case; `close()`
+  settles a run still waiting on a cold compile; and an abort during warm-up rejects the run
+  and frees the slot at once rather than after the compile. A worker the cold-start allowance
+  terminates is now replaced synchronously rather than waiting for its `exit` event to reach
+  the pool's death handler — that handler ignored a `terminate()`d worker's exit when its code
+  was 0 (which it can be, this soon after spawn, on Node 24), so the dead slot could sit
+  un-replaced until some later run's own rejection happened to reclaim it, or a `warm()`-only
+  waiter's allowance fired and nothing ever did. The death handler now treats ANY exit as
+  death unless the pool itself requested the shutdown. Also: a worker whose run threw before
+  starting now stamps the run id with `RUN_FINISHED`, so the parent recognises the finish as
+  its own.
+
+- **`@loom/plugin-sandbox`: the script's INPUT was unbounded** (backlog L19, closing
+  [ADR 0089](docs/adr/0089-sandbox-worker-pool.md) D4's "a separate question" residual).
+  `maxOutputBytes` capped what a script may EMIT; `input` stayed `z.unknown()`, JSON-stringified
+  by the caller, posted to a worker and parsed back (or seeded straight into the VM in-process)
+  — none of that work runs inside the guarded window, since every limit is charged to the
+  script's own execution, which had not started. So an oversized input was bounded only by the
+  worker pool's startup-liveness window (L13): a 200 MB input could hold a worker busy for
+  ~10 s and then fail with the untyped `SandboxWorkerStartupError`, which default retry
+  middleware then retries — repeatedly, on a call that could never succeed. `SandboxLimits`
+  gains `maxInputBytes`, checked once in `SandboxEvalEffect` — the shared caller of both
+  engines — BEFORE either is touched (and before the script is fetched): an oversized input
+  fails typed and non-retryable on a **new**, dedicated channel, `inputTooLarge { bytes,
+  limit }` — deliberately NOT `limitExceeded`, which is recorded as the SCRIPT's own outcome
+  and routes to drift-repair (re-author the script), a fix that cannot shrink a caller's
+  input. **Default is 32 MiB, matching `memoryBytes`'s own default (derived from the same
+  constant), not `maxOutputBytes`'s** — round-1 review measured real reshaping inputs at
+  1.47–30.9 MB, all succeeding today under the default heap, so the initially-shipped 1 MiB
+  default (mirroring `maxOutputBytes`) would have refused every one of them; there is no
+  general "headroom under the heap" relationship to size a tighter default against, since how
+  far a JSON text expands once parsed depends on its shape. This default therefore refuses
+  nothing that succeeds today, and is validated the same way `SandboxWorkerPoolOptions`'
+  durations are (refuses `NaN`/negative/non-numeric at construction — now also applied
+  retroactively to `maxOutputBytes`, closing the same pre-existing gap there; `0` is accepted
+  for either — "refuse every input/output" is a caller's deliberate choice, and a call that
+  omits `input` entirely, or whose script returns `undefined`, still costs 0 bytes).
+
+  Two more caller-input failure modes, found in the same review, get the same typed,
+  non-retryable treatment, reported before either engine runs: `input` that cannot become
+  JSON at all — a BigInt or a circular reference (`JSON.stringify` throws) or a bare
+  function/Symbol/`toJSON` returning `undefined` (`JSON.stringify` returns the JS value
+  `undefined`, not a string, which used to reach `Buffer.byteLength` and throw an unrelated,
+  confusing `TypeError`) — now fails typed as `inputNotSerializable { reason }`, a second new
+  channel; and an input UNDER `maxInputBytes` that still overflows the VM heap while being
+  PARSED (parsing can expand a JSON text well past its own byte length) now fails typed as
+  `inputTooLarge { bytes, limit: memoryBytes }` in BOTH engines, rather than the untyped
+  "input marshalling failed: out of memory" it used to throw — `evalInFreshRuntime` reports
+  this as an ordinary outcome (`duringSeed: true`) instead of throwing, so `SandboxEvalEffect`
+  keeps deciding channel semantics in one place (ADR 0089 D3) regardless of which engine ran.
+
+  Measured once, not twice: `evalInFreshRuntime` and `SandboxWorkerPool.runJson` (see
+  **Changed**, below) now take the already-`JSON.stringify`d input text directly rather than
+  the raw value, so the effect's one measurement is reused to seed the VM or post to a
+  worker — and worker mode no longer parses that JSON back out only to re-stringify it for
+  the VM, one JSON round trip removed rather than added. No SPI, KERNEL_ABI or EVENT_SCHEMA
+  change.
+
+- **`@loom/plugin-postgres`: `appendBatch` refused a `null` payload** (backlog L16). The bulk
+  insert decoded its batch with `jsonb_to_recordset`, which maps a JSON `null` field to SQL
+  NULL, so `payload JSONB NOT NULL` rejected the kernel's status-only `EXECUTION_RESUMED`
+  (payload `null`, [ADR 0104](docs/adr/0104-recovery-never-answers-a-gate.md)) on every
+  `appendBatch` caller — the `CoalescingEventStore` flush, and `LogLifecycle` retention's archive
+  copy (so an execution that had ever resumed could not be archived to a Postgres store, and was
+  never reclaimed) — while `append` stored it fine. `payload` is now read as
+  `e->'payload'` over `jsonb_array_elements`, which keeps JSON `null` as jsonb `null` and
+  still yields SQL NULL only for an absent (`undefined`) payload, failing exactly as
+  `append` does. The conformance kit gains a direct `appendBatch` null-payload case, so an
+  undecorated store catches this without the coalescer. Every other Postgres write path
+  (`append`, `copyPrefix`, snapshot / read-model / durable-state / memory stores) binds
+  `JSON.stringify(...)::jsonb` or copies jsonb server-side and was already correct; the
+  SQLite batch path stringifies per row and was unaffected.
+
+- **`@loom/workflow-runtime`: fork points in compacted history, and the blank-stream repair**
+  ([ADR 0107](docs/adr/0107-compacted-fork-points-and-the-blank-stream.md), closing ADR 0106's
+  residuals).
+
+  - **`fork()` of a compacted parent returned a wrong state.** A fork point inside the
+    compacted prefix folded the nearest snapshot across the hole and copied a prefix missing the
+    history it claimed. `fork()` now serves a fork point exactly (every event between the
+    nearest snapshot and it survives, or a snapshot sits exactly at it) or throws
+    `CompactedForkPointError` (`reason`, `forkableFrom`, `forkableThrough`) with nothing
+    written. For a branch of a compacted parent, `forkableFrom` is its fork seed. A snapshot-seeded
+    child whose copied prefix would carry pinned events below its seed is refused
+    (`checkpoint-above-prefix`): that shape reads as never compacted. The range is now the
+    folded tip, so the checkpoint of a log compacted through its tip (`[0]`) is forkable. Before,
+    it was refused as outside `0..0`.
+  - **Events the pre-0106 bug wrote to execution `""` can be repaired.** `LogLifecycle.
+    blankStreamCensus()` / `rehomeBlankStream({ apply, assign })` and
+    `loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]` (dry run by
+    default). A segment is proven when the snapshot its run saved under the real id, at a drain
+    barrier, is exactly the fold of the stray events onto that execution's previous snapshot.
+    Proven segments are re-homed at their own sequences (`metadata.rehomedFrom`) and journaled
+    as **`EVENTS_REHOMED`** on the lifecycle stream (**EVENT_SCHEMA 1.22.0**, pure audit into
+    `_lifecycle`). Unprovable runs (a completion with no checkpoint) are listed with their
+    candidate executions, never attributed. An operator who knows the owner asserts it with
+    `--assign`. The assignment is still checked: the execution must hold a pre-0106 snapshot at
+    `from − 1`, parked at the gate the range opens by answering (the awaited event, or
+    `TIMER_FIRED` at its wake time, after any approval/`resumeAs` fact), with nothing above it.
+    An assigned range once re-homed is reported `rehomed`, not unattributed again. Shredded
+    placeholders (key of `""` gone) are refused. A
+    healthy execution can never be assigned a stray run. `occupied`, `superseded` and
+    `conflict` segments are refused. Each execution's slots land in one batch. A fenced
+    execution is written under a new fence, and a never-fenced one stays unfenced. An execution
+    that changed since the census is reported in `failed` without stopping the others. A
+    missing `EVENTS_REHOMED` fact is written on the next run, and lifecycle facts retry a write
+    conflict. A raw store that reads the stray events as ciphertext refuses to apply (use
+    `--config`). Re-runs are idempotent, and the `""` stream is left as evidence. After a repair,
+    rebuild read models, and in an encrypted deployment destroy subject `""`'s key
+    (`shredSubject(keys, raw, "", { executionIds: [] })`), which `shredSubject` now allows while
+    refusing reserved ids among the `executionIds` it tombstones.
+  - **`""` is reserved.** `isReservedStream("")` is `true`, so enumerators skip it. `start`,
+    `resume`, `resumeAs`, `cancel`, `fork` and `restoreFromState` refuse it, `loadState("")`
+    returns `null` and `compact("")` throws. `cancel("")` used to append `EXECUTION_CANCELLED`
+    into the stray stream.
+
+- **`@loom/workflow-runtime`: compaction integrity**
+  ([ADR 0106](docs/adr/0106-compaction-integrity.md), backlog L11). Defects in
+  `LogLifecycle.compact` and the code that reads what it leaves:
+
+  - **A resume after compaction lost its events.** The checkpoint was folded with no identity,
+    so its `executionId`/`workflowId`/`workflowVersion` were `""`, and the journal stamped
+    every envelope from the folded state: the resume's events were appended to execution `""`.
+    The checkpoint now takes its identity from the log. Its version comes from the base
+    snapshot, or from the latest snapshot when the base is a blank pre-0106 checkpoint. The
+    journal writes under the id it was started for and refuses a blank one, so a legacy
+    `restoreFromState` state appends nothing. Every snapshot-seeded fold (`resume`, `resumeAs`,
+    `loadState`, `cancel`, `fork`) fills a blank identity. A NON-blank one naming another
+    execution is refused (`SnapshotIdentityMismatchError`) rather than overwritten.
+  - **A second compaction dropped the first one's prefix.** It folded the surviving events
+    from scratch. It now folds on the latest snapshot at or below its checkpoint, and throws
+    `CompactionCheckpointMissingError` (nothing saved or truncated) when a compacted log has
+    none at or above its gap.
+  - **A denied resume wrote into the checkpoint's slot.** `EXECUTION_DENIED` was recorded
+    after the log's last event. On a log compacted through its tip (`[0]`), that slot sits at
+    or below the checkpoint, so the log looked never-compacted and the next compaction lost the
+    suspension. It is now recorded after the folded tip.
+  - **Compaction deleted pinned events (ADR 0055 D1).** `LogLifecycle` takes
+    `pinnedEventTypes` (`defineConfig({ durability: { retention: { pinnedEventTypes } } })`,
+    validated at boot) and keeps those events in place. Non-strings and every kernel-written
+    kind are refused, including `EXECUTION_RECOVERED` and `EffectInDoubtResolved`. `compact`
+    consults the `pinned` predicate only when no kinds are declared. With kinds declared, a
+    pinned execution (the documented sentinel setup pins by the same kinds) compacts around
+    them. A new `compactionExempt` predicate (also `retention.compactionExempt`) is consulted
+    always, and keeps a whole log uncompacted (a legal hold by tag). Reserved control streams
+    are refused.
+  - **The shred tombstone landed in the checkpoint's slot.** `shredSubject` placed
+    `PAYLOAD_SHREDDED` at `read().length`, at or below a compacted log's checkpoint. The next
+    compaction then deleted the A3 evidence, or the log read as never compacted. It now follows
+    the folded tip. **Breaking:** on a store that can `truncatePrefix`, pass the raw
+    `snapshotStore` (or `tombstoneSequenceOf`). Otherwise it refuses, before the key is
+    destroyed. Sequences for every execution are resolved BEFORE the key is destroyed, so the
+    app's encrypting snapshot store works. A partial append failure throws
+    `ShredIncompleteError` after attempting every execution. A re-run with the key already gone
+    writes only the missing tombstones. An execution already counts as done when compaction
+    folded its tombstone into the checkpoint. The documented shredder no longer guards on key
+    existence, which would never have retried. **SnapshotStore SPI 1.1.0:** optional
+    `loadLatestSealed`, the latest snapshot at rest, never decrypted. `EncryptingSnapshotStore`
+    implements it and `TenantScopedSnapshotStore` forwards it, so a retry works through a
+    tenant-scoped encrypting store. `EraseCoordinator` also refuses a snapshot whose
+    non-blank identity names another execution (`SnapshotIdentityMismatchError` and
+    `assertSnapshotIdentity`, exported from `@loom/snapshot-runtime`).
+  - **Erasure waited forever on a compacted terminal execution.** `EraseCoordinator` folded
+    the log alone. It now takes `snapshotStore` (`defineConfig` wires it).
+  - **The tip rule.** When compaction keeps events, it never removes the log's tip. A
+    checkpoint is therefore always the log's highest missing sequence, a gap-free log was never
+    compacted, and no reader needs a "checkpoint above the tip" special case (except the
+    bootstrap-only `[0]` a keep-nothing compaction leaves).
+
+  **EventStore SPI 1.5.0:** optional `truncatePrefixKeeping(executionId, through,
+  keepEventTypes)`, one atomic delete. In-memory, SQLite and Postgres implement it, and every
+  decorator forwards it; the hash-chained store refuses it, as it refuses `truncatePrefix`.
+  **A store without it can never compact past a log's first pinned event**, so a long-lived
+  execution that records a finding early keeps an unbounded replay tail there. `compact` warns
+  (`onWarn`) once per execution. The conformance kit now checks `truncatePrefix` and
+  `truncatePrefixKeeping`.
+
+  Readers updated:
+  - The content sweep finds a gapped log's checkpoint as the lowest snapshot in `[gap, tip]`.
+    A kept finding at sequence 1 used to hide a compaction and let the orphan pass erase
+    checkpoint-only refs, and a child forked from a compacted parent was refused.
+  - `liveQuery` checks a delta's whole span.
+  - The replay inspector refuses a position inside compacted history (`CompactedHistoryError`)
+    instead of folding across the gap. It probes past the segment with one `head` read.
+  - The content sweep reads a forked child's seed directly (`metadata.forkSequence`,
+    `loadAt`).
+
+- **`docs/scaling.md` and ADR 0074 D4 corrected: bucketed NOTIFY fixes client-side delivery,
+  not the writer-side cost; `tools/bench-throughput` section C is un-vacuated**
+  ([ADR 0074](docs/adr/0074-storage-scale-out-decorators.md) Amendment). D4 claimed bucketed
+  `LISTEN loom_events_<bucket>` "fixes an O(events × nodes) broadcast whose cost lands on the
+  writer." It fixes client-side filtering and the follow-up per-notification `SELECT`; it does
+  not fix the writer cost, which is per LISTENing backend and channel-independent — a listener
+  that receives **zero** notifications (LISTENing on a channel nobody publishes to) costs the
+  writer almost as much as one receiving every notification (measured 1.18×–1.73× vs.
+  1.22×–1.90×, 4 runs, own local PG 17). The bug this corrects was caught because the bench
+  that produced D4's original numbers had gone vacuous: `attachListeners` still LISTENed on the
+  pre-bucketing legacy channel after `PostgresEventStore` moved to bucketed channels, so section
+  C's listeners received nothing every run and printed "0 delivered … = 0 per event" beside a
+  writer-throughput number that still dropped 2.28× in the same run — and `scaling.md` §3.1 read
+  "**[open]** … nothing implements it yet" under a heading of SHIPPED. `attachListeners` now
+  takes the real channel list off the writer's own store instance
+  (`PostgresEventStore#notifyChannels()`, an instance method, not a free function taking
+  `notifyBuckets` by hand — review round 1: a bench-side literal has no way to notice the
+  instance's configured value change) and the bench fails outright (`VacuousDeliveryError` via
+  `assertDelivered`) if any expected channel delivers nothing — a PER-CHANNEL check, not
+  merely a nonzero total, so a partial coverage gap (half the expected buckets silently idle)
+  cannot hide behind an aggregate that still reads nonzero. A negative case proves the guard
+  does NOT fire on a legitimately-empty unrelated-channel row, and another proves it fires on
+  partial coverage even when the aggregate total is nonzero.
+  Scenario H gains a disjoint-interest variant (`partitionDisjoint`, confirming delivered
+  notifications per node drop to exactly `1/nodeCount` while writer throughput does not track a
+  clean prediction — plausibly single-host contention, not a fan-out win) and a
+  `CoalescingEventStore` variant (measured 1.21×–1.54× recovery). **Recommend
+  `CoalescingEventStore` for multi-node deployments with live subscribers**, and record a
+  transport change (separate notifier connection, watermark polling, or a Redis/NATS bus as a
+  3P plugin) as considered and rejected for now — `CoalescingEventStore`'s measured headroom is
+  enough without it. No SPI change, no kernel change; `EVENT_STORE_SPI_VERSION` stays 1.4.0.
+
+- **Kernel: a duplicate `start()` with a caller-chosen execution id is refused before any effect
+  runs** ([ADR 0103](docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md); KERNEL_ABI and
+  EVENT_SCHEMA unchanged). `start()` checked nothing: the bootstrap `EXECUTION_STARTED` was folded,
+  delivered to `onEvent` and only enqueued, and the body ran at once, so a second start of the same
+  deterministic id invoked its effects (a paid model call in the probe) before the store refused
+  sequence 0. Now, when the caller supplies `executionId`, `start()` awaits the durable write of
+  sequence 0 first — the same envelope, byte for byte, through a builder shared with the journal —
+  and a sequence/id conflict — confirmed by reading this execution's sequence 0 back, because a
+  coalesced batch hands every caller the same conflict error (an unconfirmed one is retried once)
+  — throws the new `ExecutionAlreadyExistsError` with nothing folded, nothing delivered and
+  nothing run. Any other failure of that write rejects `start()` with
+  `StorageWriteError`. `TimerService` treats the typed error as "already started", which closes
+  the cross-node race its `loadState` pre-check left open. There is no `startOnce` helper: catch
+  the error. A minted ULID cannot collide, so `start()` without an `executionId` pays no extra
+  write and behaves byte-identically. `onEvent` remains pre-durability for every later event, now
+  documented; a consumer that must act only on durable facts uses a catch-up read.
+
+  **Upgrade note:** code that started the same caller-chosen id twice and awaited the second
+  handle now gets `ExecutionAlreadyExistsError` from `start()` itself. A test that relied on the
+  duplicate "succeeding" was testing the defect.
+
+- **The content sweep is race-safe, reclaims orphans, and takes external root sets; ContentStore
+  SPI 1.3.0** ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D5–D7, amended).
+  - **D5, the re-cite race.** A `put` of bytes the store already held was a no-op (`INSERT OR
+    IGNORE`). A sweep that ran between a re-citing `put` and that execution's event append
+    therefore erased the blob by its *old* citation time, and the new event cited a blob that
+    was gone. SPI 1.3.0 adds an optional atomic `deleteIfUntouchedSince(ref, cutoffMs)` and
+    `touchClock()`. A store implementing them MUST bump a blob's touch time, monotonically, on
+    every `put`/`putStream`. The guard cutoff is on the STORE's clock: `touchedBefore`, which
+    defaults to `touchClock() − olderThanMs` read at the sweep's start. The caller's `now` is
+    log time and only measures the TTL, so a simulated or skewed log clock cannot disarm the
+    guard. The sweep erases only through the conditional delete when the store has one.
+    Otherwise it falls back to `delete` and reports `raceSafe: false`; `loom sweep content`
+    prints `race-safe:`.
+  - **D6, orphans.** Blobs nothing cited any more were never reclaimed: a run deleted with no
+    archive, a crash between `put` and the append, a truncated prefix. SPI 1.3.0 adds an
+    optional `listPage({ cursor, limit, touchedBefore })`, keyset on address, and a bad `limit`
+    is a `RangeError`. With `reclaimOrphans: true` (CLI `--orphans`), the sweep erases
+    conditionally every stored address untouched since the cutoff that no scanned event, no
+    compaction snapshot and no root cites. A touch time of 0 (a pre-1.3.0 writer) is unknown
+    and never erased. It refuses a store without the optionals. The report gains
+    `orphansReclaimed`. `snapshotStores` lets the sweep read compaction checkpoints: refs in a
+    compacted execution's compaction checkpoint (`loadLatestBefore(events[1].sequence − 1)`) and
+    latest snapshot are pinned, so `fork()` from between them still resolves. The orphan pass
+    refuses to run without them over a store that can `truncatePrefix`, and whenever an
+    execution looks compacted (a gap, or only sequence 0 left) but no checkpoint is found. **The sweep cannot see a citing store you did not pass it**, so scan live first,
+    then every archive. The CLI scans the config's `durability.retention.archive`, and refuses
+    `--orphans --apply` with no archive unless `--no-archive` (warning before it erases).
+    `--orphans` needs `--snap` on the `--db` path, and `--archive-snap` with `--archive-db`.
+    Every `loom sweep content` refusal exits non-zero.
+  - **D7, roots.** `sweepUnpinnedContent({ roots: () => AsyncIterable<string> })` pins
+    addresses held in an app's own tables through both passes.
+  - `SqliteContentStore` implements all three optionals. On open it migrates an older file: it adds
+    `touched_at` and backfills existing blobs to the migration time once, so nothing ages out
+    until a full TTL after the upgrade. The re-put bump is monotonic
+    (`max(touched_at, excluded.touched_at)`). `InMemoryContentStore` implements all three with an
+    injectable clock (`new InMemoryContentStore({ now })`), and so does `SqliteContentStore`
+    (`new SqliteContentStore(path, { now })`). `CachingContentStore` forwards all three. The
+    conformance kit checks the optionals when present. The three must come as a set, and the
+    re-put bump is checked through the conditional delete alone (an internal kit check that
+    fails an `INSERT OR IGNORE` store). Monotonicity is checked with a clocked factory.
+    `LogLifecycle` exposes its configured `archive` (read-only). The kernel manifest and the
+    compatibility matrix now list ContentStore SPI 1.3.0, and `checkCompatibility` accepts
+    `contentStoreSpi`. The `loom plugin new content` template names the new methods.
+  - `docs/data-protection-patterns.md` says the archive is REQUIRED once retention archives,
+    and scopes "erasable without history rewrite" to the log. Content-store blobs have no
+    subject mapping; erase them with an explicit `contentStore.delete(ref)`.
+    `docs/api-reference.org` had the wrong signatures for `collectContentRefs` and
+    `pinByEventKinds`; both are fixed.
+
+  **Behaviour change:** a test fixture that puts a blob at today's wall clock and then cites it
+  at a fabricated past time now sees the blob kept, because it was touched after the cutoff.
+  Give such a store a clock that matches the fabricated history. Likewise, a harness that runs
+  the log on a simulated clock must give the content store that clock or pass `touchedBefore`.
+  Otherwise nothing it "aged" is erased, because the guard is on the store's clock.
+
+- **The content sweep no longer erases a load-bearing externalized ref**
+  ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D4, amended). `sweepUnpinnedContent`
+  treated every `__loomContent` ref as TTL-reclaimable unless a pinned event kind cited it. An
+  ADR 0046 externalized field is a bare ref that `ContentResolvingEventStore.read` resolves, so
+  `loom sweep content --ttl 30d --apply` over a 60-day-old externalized `STEP_COMPLETED.output`
+  erased the blob, and the next read of that still-running execution threw
+  `ContentMissingError`. Resume, replay, fork and compliance export all failed. Now only a ref
+  that is an envelope's own `ref` ages out. A ref cited anywhere else, including inside an
+  envelope's `digest`, is kept while any scanned event cites it, and so is a ref cited both
+  ways. An envelope is recognised by the same structural test as `isClaimCheck`, so an app
+  object that only carries `__loomClaimCheck: true` does not make its refs reclaimable.
+  `ContentSweepReport` gains `refsLoadBearing`, and `loom sweep content` prints it.
+
+  **Behaviour change:** an app that emits a bare ref itself (`ctx.emit(KIND, { ref })`) and
+  relied on the sweep to reclaim it will find the blob kept. The sweep cannot tell such a ref
+  from an externalized one. To make it reclaimable, cite it as a claim-check envelope's `ref`.
+  Nothing is erased that was kept before. This also works under a `ContentResolvingEventStore`,
+  which now leaves claim-check envelopes alone (the ADR 0055 D4 gap, closed by the decorator
+  entry below).
+
+- **Every store decorator now carries the whole optional SPI through, so the ADR 0074
+  composition actually batches**
+  ([ADR 0074](docs/adr/0074-storage-scale-out-decorators.md) Amendment,
+  [ADR 0022](docs/adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) Amendment).
+  Seven decorators silently dropped optional methods of the store they wrapped:
+  - `TenantScopedEventStore` dropped `appendBatch` and `listExecutionsPage`.
+  - `EncryptingEventStore` dropped `appendBatch`, `deleteExecution`, `truncatePrefix` and
+    `listExecutionsPage`.
+  - `ContentResolvingEventStore` dropped `appendBatch` and `listExecutionsPage`.
+  - `hashChainedEventStore` dropped `appendBatch`, `listExecutions` and `listExecutionsPage`.
+  - The DST `faultInjectingStore` and the `@loom/testing` `crashingEventStore` dropped up to
+    seven methods between them.
+  - `EncryptingSnapshotStore` dropped `deleteExecution`.
+
+  The consequences:
+  - `Coalescing(TenantScoped(backend))`, the order ADR 0074 documents, issued zero batches (50
+    appends reached the backend as 50 appends).
+  - Over that fallback's non-atomic loop, a batch holding a stale-fence zombie left earlier
+    writers' events durable while telling them the write failed.
+  - Encrypted logs could be neither retained nor compacted.
+  - The audit chain could not be enumerated by `loom retention` or `loom census`.
+
+  Each decorator now declares a `DecoratorPlan` over the whole optional-method union and
+  installs it with the new `installOptional` (`@loom/event-runtime`). Every plan key is
+  required, so a plan that omits a method, including a future optional SPI method, fails to
+  compile (pinned by a `@ts-expect-error` that `pnpm typecheck` checks). The conformance kit
+  catches a decorator that uses no plan at all.
+  `OPTIONAL_EVENT_STORE_METHODS` / `OPTIONAL_SNAPSHOT_STORE_METHODS` are compile-time
+  exhaustive, `refusalsOf` reads a recorded refusal, and `CoalescingEventStore`,
+  `ProfilingEventStore` and `TenantScopedSnapshotStore` moved onto plans too.
+  `runEventStoreDecoratorConformance` / `runSnapshotStoreDecoratorConformance`
+  (`@loom/conformance`) wrap a full-capability store. They assert that every optional method
+  survives (or is refused with a reason) and then run the whole SPI suite THROUGH the
+  decorator, over the in-memory store by default or a real backend via `inner`. Every in-repo
+  decorator is registered, the two tenant compositions also run over Postgres, and
+  `packages/spec/src/decoratorConformance.test.ts` discovers decorators and fails on one that
+  is not registered. `EVENT_STORE_SPI_VERSION` stays 1.4.0; the SPI history comment now
+  records 1.4.0 (`head`).
+
+  Behaviour changes to know about:
+  - **`hashChainedEventStore` no longer offers `truncatePrefix`.** It used to forward it, and a
+    compacted chain fails `verifyChain` at the first surviving event (measured). Compaction
+    over an audit-chained store now returns `null` instead of silently breaking every later
+    audit.
+  - **`LogLifecycle` enforces a key rule for encrypted logs.** `compact` throws the new
+    `UnsafeCompactionError` when the event store encrypts at rest and the snapshot store does
+    not share its `KeyStore`. `applyRetention` / `evaluate` return the new `RetentionOutcome`
+    `"unsafe-archive"` when an archive does not share it. Without the rule, compaction and
+    archiving would write the decrypted fold or events outside the erasure boundary, where a
+    key shred no longer reaches. A test shreds the subject after compacting and archiving an
+    encrypting store over SQLite and asserts that both copies are unreadable.
+  - **The encryption marker (`keys`) now survives decoration**: `installOptional` carries it up,
+    and `ShardedEventStore` exposes one shared KeyStore (or a fail-closed marker if its shards
+    disagree). So `loom doctor` and the key rule see `Coalescing(Encrypting(pg))` as encrypting.
+  - **A compacted execution is reclaimable.** `LogLifecycle.evaluate` folded only the surviving
+    log, so an execution compacted through its tip read as `not-terminal` forever. It now folds
+    from the latest snapshot when the log has a gap or only its bootstrap left.
+  - **Tightening: `TenantScopedEventStore` and `TenantScopedSnapshotStore` reject a tenant
+    name that is empty or contains the `:` separator** (a `TypeError` at construction).
+    Tenant `"a"` scoped `"b:x"` to `"a:b:x"`, which is tenant `"a:b"`'s `"x"`, so one tenant
+    could address another's executions. No in-repo or sibling-repo caller passes such a name.
+  - **`ShardedEventStore` declares a plan too**, and is registered with the kit as
+    `new ShardedEventStore([inner])`. The fitness test now also discovers decorators whose
+    constructor takes an array of stores. The `listExecutionsPage` contract now says, and the
+    kit checks, that a page with a `nextCursor` carries at least one id.
+  - **`TenantScopedEventStore.listExecutionsPage` never relies on the store's sort order.** It
+    pages the inner store and filters, bounded to one page of memory. Postgres pages in the
+    database collation (measured: `"a~"` before `"ab"` on an `en_US.UTF-8` PG 17), so a
+    "stop at the first id past the tenant's range" shortcut would miss ids.
+  - **`ContentResolvingEventStore` leaves ADR 0054 claim-check envelopes alone.** The
+    `collectContentRefs` / `substituteContentRefs` / `hasContentRef` walkers treat an envelope
+    as a leaf, so an envelope whose blob the sweep reclaimed reads back as the envelope rather
+    than throwing `ContentMissingError`, and a `codec: "bytes"` envelope reads at all. A bare
+    ref beside it still resolves. This closes the known gap ADR 0055 D4 records. The stale
+    "refcounted blob GC … deferred" docstring (it shipped in ADR 0055) is corrected.
+  - `CoalescingEventStore`'s docstring no longer claims a failed flush leaves the log untouched
+    over any inner store: that holds only when the inner store implements `appendBatch`. It
+    also records the coalesced-zombie blast radius.
+
+- **Kernel: flow-level `ctx.emit` / `ctx.stream` / `ctx.ui` append once per execution**
+  ([ADR 0102](docs/adr/0102-flow-emits-append-once.md), EVENT_SCHEMA **1.19.0**, KERNEL_ABI
+  unchanged at 1.1.0). A flow re-runs from the top on resume and on recovery. `execute`,
+  `decide` and `suspend` were served from the log on that re-run; a flow-level emit was not. It was
+  appended again every time, so an `emit` before a gate appeared N times after N resumes, and a
+  surface built with `ctx.ui.append` before a gate folded to `["x","x"]`.
+
+  Now an emit is served from the log only when the log PROVES it was already made. That means
+  a stamped emit of the same `(type, payload)` in the same gate segment that this run has not
+  yet matched, with every step and decision so far in the segment itself served from the log.
+  Everything else is appended.
+  - Stamps: `metadata.flowEmit = <digest of segment, type, payload>`; the fold counts them per
+    digest in `variables._flowEmits`.
+  - An emit is stamped only if nothing earlier in the run ended unsettled (an untyped failure, a
+    timeout, a cancellation, an in-doubt park, a throwing decider) and none of the run's own
+    steps or deciders was still executing.
+  - Timing can cost a duplicate, never an emit: a different interleaving can turn a served emit
+    into an unstamped append, never into a lost one.
+  - Kernel facts (`STEP_*`, `DECISION_RECORDED`, `EFFECT_INDOUBT`) and `EffectContext.emit` are
+    unchanged and never stamped.
+
+  **Upgrade note:** an execution written before 1.19.0 re-emits its pre-resume emits **once
+  more** on its next resume or recovery. No migration is needed. A test or projection that
+  counted the duplicates was counting the bug.
+
+  Duplicates remain possible in these cases; none of them loses an emit:
+  - Emits after a step that fails untyped: it re-executes on every re-run, so they are appended
+    again each time. Declare its failure channel (ADR 0060) and they converge.
+  - An emit made while one of the run's own steps is still un-awaited: one extra copy.
+  - A payload with no JSON form: appended on every re-run.
+  - A deploy that edits an emit: the new content is appended and the old stays.
+
+  An emit can be served in place of a new one only if a deploy moves identical content within a
+  segment whose steps are all served, if flow code breaks ADR 0061 determinism, or on a 64-bit
+  hash collision (ADR 0102 D2).
+
+  Also: `fnv1a64` (`@loom/core`) now uses 16-bit limb arithmetic instead of BigInt. The output
+  is identical, pinned by a differential test, and the cost per byte is roughly a tenth.
+
+- **`loom plugin new keystore` scaffolded a package that could not compile.** The template
+  writes `Buffer` in four signatures and the generated `package.json` declared no
+  `@types/node`, so the first thing a plugin author did after scaffolding was watch `tsc`
+  fail. The template typecheck added yesterday hid it by handing the compiler node's types —
+  which the real package never declares. A scaffolded package's dependencies are now derived
+  from the code it emits, and a guard asserts that any template using a node global ships the
+  types for it.
+
+  The detector strips comments first, and that is the point of its own unit test: two seams
+  describe "the process" in prose, and matching those would have added a dependency their code
+  never touches. A sweep that reads comments is measuring prose.
+
+- **An encrypting store with in-memory keys now FAILS `loom doctor`.** K10 crypto-shredding
+  makes the key the erasure boundary, so losing a key is indistinguishable from shredding the
+  subject: the writes succeed, the log survives, and every encrypted field is unreadable from
+  the next boot — with nothing failing at the moment it happens. `KeyStore` had exactly one
+  implementation, `InMemoryKeyStore`, and the only protection was a README sentence saying
+  "back it with a KMS in production".
+
+  `KeyStore` now declares `durable`, `InMemoryKeyStore` declares `false`, and the new
+  `encryption keys` check reads it through whichever store exposes a `keys` property — so a
+  third party's own encrypting wrapper is covered for free, and the CLI still depends on no
+  crypto package. Three states, kept apart: declared non-durable **fails**, undeclared is an
+  **advisory** (*this store does not say*), declared durable passes, and nothing encrypting at
+  all is a skip. Snapshots are checked alongside the event log, since they carry the same
+  fields.
+
+- **A globally installed `loom` did nothing and exited 0.** The entry guard was
+  `process.argv[1]?.endsWith("cli.js")`, but a global install puts a SYMLINK named `loom` on
+  PATH — so `argv[1]` is `…/bin/loom`, the guard was false, and the binary returned success
+  having run no command. `pnpm link --global` hid it by writing a shim that execs `cli.js` by
+  name; `npm i -g` creates a plain symlink, which is what a published package gets. Now
+  `require.main === module`. `create-loom-app` had the same guard and the same silence.
+
+- **`create-loom-app --help` scaffolded eleven files into a directory named `--help`**, and
+  reported success — the only check on the argument was that it existed. `loom-compile --help`
+  crashed with an ENOENT naming a path the user never typed. Both now validate their
+  arguments and print usage. These were newly *reachable*: before the guard fix, neither ran
+  at all through a global install.
+
+- **`pnpm run unlink:global` failed with `ERR_PNPM_UNEXPECTED_STORE`.** The repo pins
+  `pnpm@9.14.4` via `packageManager`, so a machine running pnpm 10 self-downgrades inside the
+  repo — and 9.x refuses to touch a global directory 10.x created. The global store's format
+  is tied to pnpm's major version, so any script touching it is coupled to whichever pnpm
+  created it. Both scripts now use `npm link`, whose global has no such versioning.
 
 - **`loom retention run` could delete a parent its branches still depended on.** The command
   built `LogLifecycle` with **no branch registry**, and R5.3's live-descendant guard is a no-op
@@ -2880,200 +2956,84 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
   **Behavioural tightening, not a pure fix:** an app resuming with a name that does not match its
   `suspend({ on })` was succeeding by accident and will now be refused.
 
-### Added
+### Security
 
-- **The verify tier stops needing hand-plumbed source, and gains a front door.** The compiler
-  transform now emits all three per-flow source analyses into `loom-manifest.json` —
-  `loopIdentity` ([ADR 0061](docs/adr/0061-step-identity-interpreter-guardrails.md)),
-  `nonDeterministic`, and `runnerReach` ([ADR 0086](docs/adr/0086-runner-body-reach-analysis.md)) —
-  and `loom verify` auto-injects them from a discovered manifest, so `determinism`,
-  `capability-compat`, `effect-class` and `suspension-safety` are on whenever you build with the
-  Loom compiler rather than requiring a developer to feed their own runner source to a linter.
-  New **`loom doctor`** runs every pre-flight check whose input it can discover and **names the
-  ones it skipped and why** — "all checks passed" and "passed, but N check(s) could not run —
-  coverage is partial" are deliberately different strings. Whole-module analysis skips memoized
-  `handler$` bodies (`{ skipMemoized: true }`): a handler's result is served from the log on
-  replay, so non-determinism inside one is safe by construction.
-- **Runner-body reach analysis, and two `suspension-safety` checks it proved wrong**
-  ([ADR 0086](docs/adr/0086-runner-body-reach-analysis.md)). `capability-compat`, `effect-class`
-  and `suspension-safety` previously defined "what a flow reaches" as its *declared* steps, so a
-  step invoked through `ctx.run` was invisible and `FlowSpec.suspends` had no producer at all.
-  `analyzeRunnerReach` resolves `ctx.run` targets by shape and **reports what it could not
-  resolve** as a `warn` on each rule. Populating the input showed the blanket `correlationKey`
-  error was wrong (`resume` routes by `executionId`) — removed — and that the `wakeAt` check must
-  be conditional on a wired `TimerStore`. `KERNEL_ABI`/`EVENT_SCHEMA` unchanged.
-- **The integrity axis: untrusted content as a value, refused at the prompt boundary**
-  ([ADR 0085](docs/adr/0085-untrusted-content-integrity-axis.md)). `tainted()`/`unwrapTainted()`
-  in `@loom/classify` wrap third-party bytes in plain JSON that survives the log verbatim, so a
-  replay hands back a value that is *still* tainted. `@loom/llm`'s `guardRequest` runs inside
-  every `createLlmEffect` and throws `UntrustedContentError` if tainted content reaches a system
-  message, an assistant turn, or a tool name/description; in a `user` message it is fenced as
-  `<untrusted-input origin="…">`. Two opt-in producers ship: `registerMcpInvoke(…, {
-  taintResults: true })` and `new A2APeerClient({ …, taintResults: true })`.
-- **Effect classes — a static ceiling beside K2's runtime floor**
-  ([ADR 0084](docs/adr/0084-effect-classes-static-ceiling-k2-floor.md)). An eighth `@loom/verify`
-  rule: a flow may not reach an effect whose declared class exceeds its own, composed
-  conservatively as the max over everything reachable. The class *vocabulary* is app-supplied
-  (`checks: { verify: { effectClasses } }`) — loom checks the ordering it is given rather than
-  defining one. A **granted** capability can still bust the class, and K2 will not stop it; the
-  finding says so.
-- **`@loom/learning` — the substrate for continuous learning, not the learner**
-  (ADRs [0078](docs/adr/0078-exploration-in-the-routing-seam.md)–[0080](docs/adr/0080-learning-substrate.md)).
-  `context` and `policy` (including `propensity`) now ride `DECISION_RECORDED`
-  (**EVENT_SCHEMA 1.18.0**; `KERNEL_ABI` untouched), which is what makes off-policy evaluation
-  possible at all — propensity cannot be reconstructed after the fact. Ships trajectory
-  extraction, SNIPS evaluation with unit-level ESS and a cluster-robust estimate for pooling
-  across units, a promotion gate, the third-party `Policy` SPI (the one seam consumed from flow
-  code rather than `defineConfig`), and `loom learn report` / `loom learn eval`. The router's
-  greedy collapse onto one lucky arm is fixed with `ucb1`/`epsilonGreedy`. Pooled reports never
-  name a unit — asserted by an invariant test that injects a leak.
-- **Storage scale-out as composable decorators** (ADRs
-  [0074](docs/adr/0074-storage-scale-out-decorators.md)–[0075](docs/adr/0075-shard-rebalancing.md))
-  — sharding, batching and rebalancing (virtual buckets, lazy drain, no coordinator) layered over
-  any `EventStore` rather than built into one backend. `EVENT_STORE_SPI_VERSION` → 1.3.0.
-  Measured ceilings and the method are written up in [`docs/scaling.md`](docs/scaling.md).
-- **Two boundaries that looked enforced and were not.** Array crossings in classification paths
-  now expand late and walk once ([ADR 0076](docs/adr/0076-wildcard-classification-paths.md)),
-  and resume payloads get per-gate contracts enforced **before** the append —
-  `flow$({ resumeSchemas })` plus a generic `ctx.suspend<T>`
-  ([ADR 0077](docs/adr/0077-typed-resume-payloads.md), `ResumePayloadValidationError`).
-- **`@loom/replay-inspector` — read-only replay** ([ADR 0071](docs/adr/0071-read-only-replay-inspector.md),
-  IX series): inspect an execution's replay without a live runtime, bounded by an explicit budget
-  (`InspectorBudgetError`).
-- **MCP Apps (SEP-1865) placement** ([ADR 0072](docs/adr/0072-mcp-apps-ui-extension-placement.md)):
-  ingress fidelity plus `createMcpServer`, and `ui://` egress as one static, content-pinned
-  surface-host template in `@loom/plugin-mcp-app` (`TemplateDriftError`). The **host** role is
-  where a third party belongs, not a reason for loom to build one.
-- **Effect mode — `journaled` vs `ambient`** ([ADR 0073](docs/adr/0073-effect-mode-journaled-vs-ambient.md)):
-  a declaration plus a boundary check (`EffectModeViolationError`) that keeps user-driven
-  enrichment reads out of the durable log.
-- **The second-consumer rule** ([ADR 0083](docs/adr/0083-second-consumer-rule.md)) — before a
-  workload-derived requirement becomes a first-party package, verify rule, seam, or exported
-  vocabulary, name a second unrelated consumer. Recorded because this repo had a strong antibody
-  against kernel growth and none against first-party surface growth.
-- **Two kernel promotions refused, with evidence gates recorded rather than scheduled**:
-  long-lived suspensions need a benchmark, not a promotion
-  ([ADR 0081](docs/adr/0081-long-lived-suspensions-no-promotion.md)), and substitutive replay is
-  deferred until branch-from-prefix is eliminated
-  ([ADR 0082](docs/adr/0082-substitutive-replay-deferred.md)).
+- **LLM providers never follow a redirect and bound the response size (`@loom/llm`, `@loom/agent`; no kernel, SPI or ABI change).** `AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` called `fetch` with no `redirect` option, so a 307/308 from the configured base URL (or a man-in-the-middle on plain http) re-sent the POST, with the full request body (prompts, document text) and EVERY credential header, to another origin: undici strips only `authorization`, `cookie` and `proxy-authorization` on a cross-origin redirect, so Anthropic's `x-api-key`, Gemini's `x-goog-api-key` and any `headers` option value (for example `anthropic-workspace-id`) all went along. Every fetch (complete and stream) now sets `redirect: "manual"` and a 3xx is thrown as `LlmHttpError(provider, status)` (body cancelled, no `Location` kept, `retryable = false`), so a host can tell a redirect from a DNS/TLS failure and nothing retries it; `@loom/agent` classifies a 3xx as terminal, and a conversation turn that meets one ends `failed` with the fixed `model-error` reason while the conversation survives. Responses are bounded: a complete body is read through a byte cap after decompression (`maxResponseBytes`, default 8 MiB; an oversized `Content-Length` is refused before reading), a stream is capped on total bytes (`maxStreamBytes`, default 128 MiB: SSE costs ~250-300 B per token on the wire, and memory is bounded by the line cap) and on one line (`maxLineBytes`, UTF-8 bytes, default 1 MiB). Over a cap the body is cancelled and a typed `LlmResponseLimitError` (`provider`, `reason`: `"body" | "stream" | "line"`, no body text) is thrown; a 2xx body that is not JSON throws `LlmResponseInvalidError` (fixed message, no cause; the parser's own error quotes the body). Both are terminal in the agent loop and fail a conversation turn with `model-error`. Behaviour change: an endpoint that legitimately answers with a redirect must be configured at its final URL.
 
-- **A2UI `callFunction` (bidirectional RPC) in `@loom/plugin-a2ui`.** The A2UI adapter now covers the
-  agent→client `callFunction` leg (the agent invokes a named catalog function; the client answers with a
-  `functionResponse`), promoting the surface deferred in ADR 0069. Two composition grains on
-  transport-agnostic primitives: **grain A** — a read via a `ctx.suspend` gate
-  (`bridge.callFunction` → `ingestFunctionResponse` → `runtime.resume`); **grain B** — a side-effecting
-  call via a delegated effect (`registerA2UICallFunction`, `idempotent: false` so a crash mid-call parks at
-  `EFFECT_INDOUBT`). Determinism rests on **result-as-recorded-fact + a deterministic, call-site-unique
-  `callId`** — no client-side effect runtime, no new event types (`EVENT_SCHEMA`/`KERNEL_ABI` unchanged).
-  Inbound replies are correlation-checked (`ingestFunctionResponse(msg, expectedCallId)` and an effect-side
-  `callId`/`surfaceId` match), and `registerA2UICallFunction` accepts a `requestTimeoutMs`. New
-  `examples/a2ui-callfunction` demonstrates both grains + a crash→in-doubt recovery. See
-  [ADR 0070](docs/adr/0070-a2ui-callfunction-bidirectional-rpc.md).
-- **`loom appgen` — natural-language → Loom app.** New `@loom/cli` subcommand that turns a
-  natural-language intent into a Loom app following the **folder convention** (the same shape
-  `create-loom-app` / `loom new` / `loom gen` produce), wiring the pure `@loom/appgen` library
-  (`parseIntent` → `generateProject` / `generateFlows`) into the CLI. Output is plain, static,
-  inspectable TypeScript with `TODO` handlers; parsing and code generation are deterministic and
-  offline (no model call at generate time, none in the output).
-  - **Adapts to the target `dir` (the project root, default `.`):** a new/empty dir gets a full
-    runnable project (`package.json`, `tsconfig.json`, `app/config.ts` with `defineConfig({
-    flowModules })`, `app/main.ts`, `app/loom.gen.ts`, and one `app/flows/<id>/flow.ts` per
-    capability) so `pnpm install && pnpm start` works out of the box; an existing Loom app gets
-    just the `app/flows/<id>/flow.ts` files, then `app/loom.gen.ts` is regenerated from the
-    filesystem (the `loom gen` step) so pre-existing flows stay wired.
-  - Reuses `@loom/scaffold` (`appFiles` / `generateRegistration`) rather than hand-rolling, so
-    appgen output now matches every other generator. Flows export a `RegisteredFlow` (the older
-    `capability$` / `CapabilityCatalog` composition root is gone). The one value-add over
-    `loom new` is the NL-derived flow body (reasoning ladder, approval suspend gate, UI surface).
-  - Intent is supplied as a quoted positional string or via `--from <file>`.
-  - Writes each file directly when the target path is free; on a collision it prompts
-    interactively per file — `[r]ename / [s]kip / [o]verwrite` — backed by a stdin line-queue
-    reader that works for both TTYs and piped input.
-  - `cmdAppgen` is exported from `@loom/cli` for programmatic use, with an injectable IO seam.
-  - Docs: new section in [`docs/usage-cli.md`](docs/usage-cli.md) and the CLI overview in
-    [`docs/user-guide.md`](docs/user-guide.md).
+- **Every codegen sink escapes untrusted text, and a replayed `--from-spec` lockfile is validated field by field (no kernel, SPI or ABI change).** A capability's `intent` was written into a `//` comment of the generated flow file unescaped, so a newline (or U+2028/2029) in it ended the comment and the rest became code in the user's project: a code-injection channel for model output and user-typed text (and a syntax error in benign cases). The same shape existed in every other place a generator interpolates a string. All of them now go through one set of helpers (`commentText` / `blockCommentText` / `tsStringLiteral` / `templateLiteralText` / `markdownText`, in `@loom/scaffold`, re-exported by `@loom/appgen`), which strip or escape C0/C1 controls, line and paragraph separators and every Unicode format character (`\p{Cf}`: bidi overrides and isolates, zero-width, BOM, soft hyphen, interlinear annotation U+FFF9-FFFB, the Unicode tag block U+E0000-E007F used for ASCII smuggling, musical formatting U+1D173-1D17A) plus U+034F and lone surrogates, with the `u` flag so astral code points are matched (escaped as surrogate pairs in a string literal): Trojan Source and ASCII smuggling cannot reach generated source. **The sinks, all covered:** (1) the `// Generated ... from intent:` header and (2) the reasoning-ladder comments (`baseModel`, `elevateTo`) of the generated `flow.ts`; (3) every id, name and strategy string literal of the flow, `main.ts` and the smoke test; (4) the stub handler's template literal; (5) the generated README (project name heading, compute target; the heading is single-line with markdown/HTML metacharacters escaped); (6) `app/config.ts`, where `wireGrantsIntoConfig` wrote capability and tool ids into the `GrantTable` authorization list with a bare `JSON.stringify` (U+2028/2029 and bidi passed raw) and now uses `tsStringLiteral`; (7) `app/loom.gen.ts`, where `generateRegistration` interpolated raw file and folder names into `import ... from "<path>"` (shared by `loom gen`, `loom dev` and `loom appgen`): specifiers are string literals now, and `loom gen` skips (and reports) a file or folder whose name is not a plain module name (letters, digits, `. _ -`; deliberately looser than the `loom new` kebab rule so existing `getWeather.ts` files keep registering). Capability and step ids are re-checked at the generator with the strict new-id rule (`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, the rule the validator applies to every `create`; the generator only renders NEW flows and steps, existing ones are edited in place by path, so regenerating an existing app with legacy loose ids is unaffected). `validateChangeSpec` also refuses the same characters and over-long text (intent 500, labels 200) in intent, names, compute target, reasoning models and `wireGrants`, with a repair message; ordinary quotes, backticks and `${` are escaped, not refused. **`readLockfile`** (a `--from-spec` replay never reaches the validator) used to check only capability and step ids; it now validates EVERY field with the very predicates the validator uses (`changeSpecDataIssues`: types, ops, id shapes, plan name, compute target, capability name, intent, reasoning models, `wireGrants`, elevations) and refuses with a message listing each problem. Not changed: the `"${name}"` templates of `loom new` (the CLI validates the name with `constructNameProblem` first).
+- **`loom appgen` (and `gen`, `new`, `plugin new`) never write through a symbolic link (no kernel, SPI or ABI change).** `appgen`'s containment check (`resolveInside`) was lexical, so a symlinked `app/flows/<id>/flow.ts` was scanned as a flow, planned as an in-place edit, and the write followed the link and overwrote a file OUTSIDE the project (found by the S3 evals work and reproduced with the real `cmdAppgen`). Now: no path component below `--dir` may be a symlink on any write or delete (the target, a flow folder, `app/`, `.loom/`), whether the link points outside or back inside the project, with an error naming the link and its target; the scanner skips (and warns about) a linked `app`, `app/flows`, flow folder or `flow.ts` instead of planning an edit; the default writer writes a temp file (`O_EXCL|O_NOFOLLOW`) and renames it over the target; `app/loom.gen.ts` and the lockfile directory are checked too. `loom gen`, `loom new`, `loom dev`'s generation and `loom plugin new` use the same writer, and so does the `.loom/appgen` lockfile writer (the writer lives in `@loom/appgen`, which the CLI already depends on). Never trust a symlink below the cwd, classified by REAL path and never by spelling (so `--dir /tmp/proj/app` from `/private/tmp/proj`, or a shell's logical `$PWD/app`, is no bypass): when the real path of the cwd is an ancestor of `--dir` (typed, defaulted or aliased, so a scaffolded project's own `loom gen --dir app` too) the containment root is the cwd and `--dir` itself is checked, so a cloned repo's own `app -> /outside` link is refused; a `--dir` whose real location is OUTSIDE the cwd is its own root, and is classified by NATIVE real path (`realpathSync.native`, canonical case and Unicode form, so `../PROJ` or a decomposed spelling cannot masquerade as outside). The FINAL component of `--dir` is never allowed to be a symbolic link, wherever it points (policy change: an outside `--dir` that is itself a link is now refused; pass its real path); links above it (`/tmp`) and the cwd reached through a link are fine. `appgen` (including its default writer and the lockfile writer, via `writeLockfile`'s new optional `containment` argument) and `plugin new` use the same rule as `gen`/`new`/`dev`. `cmdGen`, `cmdNew`, `genWatch` and `runDev` derive the same root when none is passed (exported `containmentRootFor(dir, cwd?)`). `safeWriteFile` has no test hooks in its public signature (the race seams are internal). Before opening the temp file and again before the rename the parent's `realpath` is compared with `realpath(root)` + the relative parent, and the open, rename and cleanup use the resolved parent. Residual, precisely: it needs a concurrent writer, with an identity able to modify a directory on the path, who swaps a parent directory in the window between the final realpath check and the `rename` syscall (Node has no `openat`/`renameat`); the temp file is removed on every failure path (except that a swap-displaced directory keeps its own stray temp). `create-loom-app --force` refuses to write through a planted symlink (it checks every target first, then writes temp + rename). `loom-compiler` (`outDir`) is unchanged: it writes build output into a directory you name and is not a scaffold into a cloned tree. `loom kernel-manifest --emit-docs <dir>` writes to a directory you name explicitly and is unchanged. **Round 6 - containment by FILESYSTEM IDENTITY, superseding every "real path" sentence above:** comparing path strings (even native real paths) is bypassable (macOS firmlinks: `/System/Volumes/Data/Users/...` and `/Users/...` are one directory, one st_dev/st_ino, two strings). The root is now the nearest ancestor of `--dir`, in the spelling typed, whose `stat` has the same `dev` and `ino` as the cwd (so a planted mid-path link such as `x -> ../victim` in `--dir <any spelling>/x/app` is walked and refused); if no spelled ancestor matches but the target's PHYSICAL parent chain reaches the cwd, the command FAILS CLOSED ("resolves inside the project through a spelling the containment check cannot walk; pass a path relative to the project"); only a target whose physical chain never meets the cwd is genuinely outside, and its final component is never a link. The writer's pre-open and pre-rename parent check also compares identity (and re-lstats the parent chain) instead of strings; a replaced file keeps its mode with group/other write bits (and setuid) masked out. **`create-loom-app` now REFUSES a symlinked target** (policy change: it used to follow `demo -> elsewhere` and name the package after the link; with `--force` that overwrote `elsewhere/package.json`) and any symlink on the path below the cwd, by the same identity rule (a small inlined copy; no new dependency edge). **`loom migrate-config --apply`** refuses a config reached through a linked directory below the cwd (`sub -> /outside`), and a path genuinely outside the cwd is checked from its own parent. The cwd itself is trusted even when reached through a link (a repository cannot make you `cd`); be aware of `cd repo/examples/demo` where `demo -> ../../..`.
 
-- **`loom appgen` — brownfield-aware, four-stage pipeline (foundation for AI-driven appgen).**
-  `appgen` now *scans the existing app* and applies a **delta** rather than only scaffolding from
-  scratch. Four stages, all deterministic and offline: **scan** (`scanApp(dir) → AppModel`,
-  a compact TS-AST summary of flows/steps/gates — never raw file dumps), **plan**
-  (`planChangesDeterministic(intent, appModel) → ChangeSpec`, tagging each capability/step
-  `create` / `extend` / `modify`), **apply** (`applyChanges` → creates via the existing templates,
-  surgical formatting-preserving edits to existing flows), and **validate** (in-process `tsc`).
-  The plan stage is the single seam where NL understanding lives and it emits a structured
-  `ChangeSpec` — a local model can be swapped in here later without touching codegen.
-  - **Plan → diff → confirm DX.** `--dry-run` renders a terraform-style plan (creates / edits /
-    skips) and writes nothing; omit it to apply. `--check` typechecks the app after applying.
-  - **Safety gate.** appgen only overwrites a handler body that still hashes to the generated
-    `TODO` stub; any human-edited handler is **insert-only**, never clobbered (`FlowEditor`,
-    content-hash gate). Brownfield edits add step consts, register them in the flow's `steps: []`
-    array, and insert approval / UI gates into the runner while preserving surrounding code.
-  - **Replayable spec lockfile.** Each apply records the accepted `ChangeSpec` to
-    `.loom/appgen/<timestamp>.spec.json`; `loom appgen --from-spec <file>` reproduces it
-    byte-for-byte with no model — the appgen equivalent of a golden log.
-  - `@loom/appgen` stays zero-dependency and offline (only `typescript` promoted to a runtime
-    dep for the AST scan/edit); the framework kernel is untouched. New exports: `scanApp`,
-    `planChangesDeterministic`, `applyChanges`, `FlowEditor`, `typecheck`, lockfile helpers.
+- **The execution's principal is durable: effects run as the OWNER on every path, not as whoever drove the last `execute()` (R3k, [ADR 0111](docs/adr/0111-durable-principal.md), now Accepted; EVENT_SCHEMA 1.23.0 payload fields, no ABI or DISPATCHER_SPI change). Resolves the "Known issue" this changelog carried.** `EXECUTION_STARTED` now records `principal` (a `PrincipalRecord { v: 1, ref?, identity?, delegation? }`, `{ v: 1 }` at least — an anonymous start included) and `parent`; the fold keeps them at `_principal` / `_parent`. Every `execute()` rehydrates the effect principal ONCE from sequence 0 of the execution's own LOG (never from a caller-supplied state) through the default resolver, a `principalResolver`, or a `principalCodec`'s `fromRef`.
+  - **Acting principal != lifecycle caller.** `options.principal` keeps ONE job: the caller of the lifecycle op (`ExecutionAuthorizer`, `ResumeAuthenticator.verify`). The effects of an execution run as its recorded owner on `start`, `resume`, `resumeAs`, `restoreFromState` (a doctored or stripped `_principal` in the supplied state is ignored), timer wakes, `recoverAbandoned`, the dispatcher / remote worker re-drive and supervisor child starts. After an approval the effects run as the OWNER (the approver is recorded in `APPROVAL_GRANTED`); after a timer wake or recovery they run as the owner (tenant `policy$` DENY rules, `stopTenant` and `perTenant` now fire); a delegated child keeps its attenuation across a crash.
+  - **BREAKING (new executions only).** An execution started on 1.23.0 whose flow relied on the approver's or resumer's principal reaching its effects now runs as its owner: pass the approver explicitly as data. Only `{ tenant, actor, onBehalfOf }` (each <= 256 characters) is recorded and rebuilt, so **extra `PrincipalChain` fields (`roles`, custom claims) no longer reach the effects of a restarted run — nor, for uniformity, of the first run**; carry them with a `principalCodec`/`principalResolver`. A principal that carries a `delegation` and has nothing able to restore it is REFUSED at `start` with `PrincipalUnrestorableError` (log empty); `superviseChildren({ delegation })` composes the restoring codec itself (`orchestrationPrincipalCodec`), a hand-built runtime supplies `principalCodec` or `principalResolver`.
+  - **Legacy logs.** An execution with NO record (started before 1.23.0) keeps today's behaviour exactly — `options.principal` reaches the effects — and replays byte-identically; "absent" means legacy only because every 1.23.0 start writes a record. A record that is present but malformed or of an unknown version denies (never falls back).
+  - **The delegation token is never written** (a bearer credential in a permanent log): only a SHA-256 digest of its signature and its expiry. The kernel denies an unrestorable delegation itself — `EFFECT_DENIED` BEFORE any authorizer, so a `PolicyAuthorizer` or a 3P authorizer that allows everything cannot authorize it (`PrincipalChain.delegationUnresolved`, `principalShredded`, `principalUnresolved`; `DelegationAuthorizer` keeps its own deny). A crypto-shredded record denies every effect and never runs as the resumer.
+  - **Identity is never written verbatim under an erasure obligation.** `defineConfig` resolves how the identity subset is recorded: outside `security.strict` / a composed `security.compliance` the verbatim subset is the zero-config default (its non-redactability is a documented non-goal); with `security.crypto: { events, snapshots }` (your `EncryptingEventStore` / `EncryptingSnapshotStore`, which gain `registerSensitive`) `principal.identity.*` is registered sensitive, encrypted at rest and shredded with the subject; otherwise strict/compliance REQUIRE `security.principalCodec` (the log carries `{ v: 1, ref }` only) and `defineConfig` throws `PrincipalRecordingRefusedError` naming the three ways out. **BREAKING for strict apps:** `security.strict: true` without crypto or a `principalCodec` no longer composes (the scaffold generates a codec).
+  - **A fork acts as the FORKER.** `fork` stamps `forkedBy` (the forker's record) into the metadata of every copied envelope; the resolver prefers it and a fork's owner for authorization is the forker. Acting as the owner needs `fork(…, { actAs: "owner" })`, authorized as the new `ExecutionOp` `"actAsOwner"` on the parent (**default deny** in `executionAccessPolicy`); the log records `forkActAs: "owner"`. Under crypto-without-codec a fork refuses (`PrincipalUnrestorableError`) because envelope metadata is not encrypted.
+  - **`ExecutionAuthzRequest.owner`** is filled by the kernel from sequence 0 for `resume`/`cancel`/`query`/`actAsOwner` on an existing execution, so **`executionAccessPolicy` drops its in-process owner table**: **BREAKING** — `ownerOf`, `adopt`, `tracked` and `maxTracked` are removed and a restart no longer loses ownership. `resolveOwner` is consulted only for a legacy log; `committed` stays on the SPI. A supervisor child started with no principal has no owner of its own and effects stay anonymous; its lifecycle follows its parent's owner (`parentOwner`, round 2).
+  - `PrincipalCodec`, `PrincipalResolver`, `PrincipalRecord`, `PrincipalIdentityMode`, `PrincipalUnrestorableError` (`@loom/workflow-runtime`); `delegationDigest`, `principalBlocked` (`@loom/effect-runtime`); `orchestrationPrincipalCodec` (`@loom/orchestration`); `WorkflowRuntime.composePrincipalCodec`. The authorizer conformance kit gains `"actAsOwner"` and an `owner` case.
+  - **Review round 1.** (P1) A `ref` record is restored by the composed `principalCodec` FIRST, then the resolver; a resolver answering `undefined` for any non-empty record now DENIES instead of dropping the principal (a resolver written for identity records no longer widens a `superviseChildren({ delegation })` child to the base authorizer). (P2) The start's record is held for the life of its live execution, so an immediate `cancel`/`query` by the owner is not denied while sequence 0 is still being journalled; `parent` is recorded only at a trusted start, so a starter cannot pin another execution's retention (round 2: the lineage grant, in every mode). (P3) The orchestration `ref` is MACed (`loom:orch:v2:`, key derived from the supervisor secret; unsigned refs refused), `storedPrincipalOf` refuses any envelope that is not sequence 0 / `EXECUTION_STARTED`, and `fork(…, { actAs: "owner" })` without an `executionAuthorizer` is documented as unrestricted like every op. **Follow-up:** forks of an identified forker are refused under crypto without a codec; either the scaffold always generates a codec or the crypto plugin encrypts the `forkedBy` metadata path.
+  - **Review round 2.** (Decided, user) A principal-less supervised child's LIFECYCLE follows its parent's owner again, durably: `ExecutionAuthzRequest.parentOwner` (additive) is the nearest recorded owner up the child's recorded `parent` chain (max 8 hops, cycle-safe, unknown beyond), (round 3 widens it to delegated children, below); `executionAccessPolicy` uses it for every op except `actAsOwner`. The child's effects stay anonymous. `parent` is now recorded ONLY at a trusted start in every mode (a caller's `parentExecutionId` is omitted, including with no authorizer); trust is a new narrow `LineageGrant` (`WorkflowRuntime.lineageOptions()`, `RunOptions.lineage`) the child supervisor presents in every mode, not the system grant. (Decided, user) Threat model: write access to the event store is INSIDE the principal trust boundary (it can forge any event); integrity comes from the store's access control plus audit-chain/crypto where composed; the orchestration ref stays MACed as defence in depth. See ADR 0111.
+  - **Review round 3.** (Decided, user) Resume stays in the parent's reach: the parent's owner may query, cancel AND resume a supervised child (`inherited` covers every op except `actAsOwner`). CONSEQUENCE: under the default "tenant" rule scope a same-tenant principal can approve a gate inside a supervised child; tighten `rules.resume` to `"owner"` to narrow it. (Decided, user) A DELEGATED child (own owner = its child id) is now ALSO reachable through its trusted recorded parent: the kernel fills `ExecutionAuthzRequest.parentOwner` for any execution whose recorded `parent` is trusted (anonymous or delegated; a shredded/unrestorable record gets none), and `executionAccessPolicy` allows an owner match on the child's own owner OR on `parentOwner` for query/cancel/resume, never `actAsOwner`. The child's EFFECTS still run under its attenuated delegation. The kernel reads sequence 0 once per authorization (`recordedPrincipal` returns `parent` with the principal, so the lineage walk's first hop costs no re-read). `parentExecutionId` is recorded only when trusted (lineage or system grant), in every mode: a non-supervisor caller passing `parentExecutionId` no longer gets a parent recorded, even with no authorizer. A start whose runtime call throws synchronously removes only its own live start record. See ADR 0111.
 
-- **`@loom/appgen-model` — optional local-Gemma planner (truly AI-driven appgen).** A new,
-  **optional** package that swaps a small on-device Gemma model into appgen's single NL stage.
-  `loom appgen --model <gguf>` plans the `ChangeSpec` with the model instead of the grammar
-  parser — real language understanding, no token cost, minimal footprint. Everything downstream
-  is unchanged, because the model still emits only a `ChangeSpec`.
-  - **Grammar-constrained JSON.** Output is constrained to the `ChangeSpec` JSON schema via
-    node-llama-cpp, so a compact model reliably produces valid, on-schema plans.
-  - **Reasoning-ladder-on-itself.** Planning runs through `@loom/reasoning`'s cheap-first
-    elevation ladder with a *validator* confidence signal ("does it parse into a usable
-    ChangeSpec?"); a weak tier that emits junk elevates to a stronger one, and each elevation is
-    logged (P9) and recorded in the spec lockfile. Recommended tiers: Gemma **E4B** 4-bit QAT
-    default (~5 GB), E2B floor (~4 GB), 12B ceiling (~8 GB), selectable via `--model-tier` /
-    `--model-big`.
-  - **Deterministic fallback / footprint discipline.** Falls back to the deterministic parser
-    when the model or `node-llama-cpp` is unavailable or every tier fails (same as `--offline`);
-    loads/disposes the model per invocation (transient, not resident); prompts carry only the
-    compact scanned `AppModel` summary, never raw file contents.
-  - `node-llama-cpp` is an `optionalDependency`, lazily imported; `@loom/cli` loads
-    `@loom/appgen-model` only when `--model` is passed, so neither the framework nor default CLI
-    users carry the native runtime. Kernel and existing packages untouched.
-  - **Verified end-to-end against a real Gemma GGUF (node-llama-cpp 3.19, Metal), which fixed four
-    bugs that previously made `--model` silently fall back every time:** (1) `tsc` under
-    `module: CommonJS` down-levelled dynamic `import()` to `require()`, which cannot load the
-    ESM-only, top-level-await node-llama-cpp (`ERR_REQUIRE_ASYNC_MODULE`) — now a genuine dynamic
-    import is preserved via `new Function` in both `GemmaProvider` and the CLI; (2) the v3 grammar is
-    built with `llama.createGrammarForJsonSchema(schema)`, not the `LlamaJsonSchemaGrammar`
-    constructor; (3) the CLI now resolves the optional `@loom/appgen-model` peer **from the target
-    project dir** (`pnpm add @loom/appgen-model node-llama-cpp` in your app), not from the CLI itself;
-    (4) the JSON-schema `minItems` constraint crashed node-llama-cpp's native sampler and was removed
-    (an empty plan is rejected by the ladder validator instead). Generation is now bounded
-    (`maxTokens` 512, `contextSize` 2048) for footprint and native stability. The package README
-    documents environment requirements: a Node 20/22 LTS (bleeding-edge Node majors show intermittent
-    native segfaults) and enough RAM for the tier (the E4B default is ~5 GB; a 2B model that fits 8 GB
-    is often too weak and degrades to the deterministic parser).
+- **Approvals are bound to what the approver saw, there is a first-party `ResumeAuthenticator`, and the A2A bus no longer auto-approves (R13, [ADR 0117](docs/adr/0117-approvals-bound-to-what-the-approver-saw.md); behavioural tightening, no ABI change).** `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
+  - **View binding.** `ctx.suspend({ on, viewDigest })` records a digest of the proposal in the suspend condition (durable, fold-visible; `viewDigest()` / `approvalViewDigest()`). A resume answering that gate must echo it as `payload.viewDigest`; a stale or missing echo is refused before the append (`ResumeRefusedError`, reason `view-digest-mismatch`, nothing recorded). `answerApproval(state, decision)` builds the resume. A gate that declares no digest is unaffected; a timer wake is exempt.
+  - **BREAKING (`agentLoop$`).** `requireApproval` gates now declare a digest of position + tool + input, so a bare `{ approved: true }` resume is refused. Resume with `answerApproval(state, { approved })`, or pass `bindApproval: false`. A `resumeSchemas` entry for that gate must let `viewDigest` through.
+  - **`signedResumeAuthenticator({ gates, keys, authorize?, requireActor?, now? })` + `signResume`** (`@loom/workflow-runtime`): HMAC-SHA256 over the whole event (payload incl. the echoed digest, `discardLegacyAnswers`, actor, REQUIRED expiry) and the park it answers (`executionId` + the parking `EXECUTION_SUSPENDED` sequence, via the new additive optional `ResumeAuthenticator.verify(event, context?)`), so a signature is single-use: refused at another execution, a fork, or a later park of the same gate. The proof's actor must equal the calling principal's. Secrets under 16 bytes are refused; `keys` may return several secrets (rotation). Records `APPROVAL_GRANTED { actor, verifiedBy: "hmac-sha256" }`. Passes `runResumeAuthenticatorConformance` (which gains a context case). `runtime.parkedAtSequence(id)` gives the approver the value to sign.
+  - **`viewDigest` is SHA-256 (`v2:`)**, not 64-bit FNV; an execution parked with a `v1:` digest still resumes by echoing it. A UI renders the proposal from the tool call in the log and recomputes `approvalViewDigest(correlationKey, tool, input)`; the proposal is not copied into the condition. `agentLoop$` gate keys now include the loop id, and a tool input too deep to digest is refused to the model rather than failing the run.
+  - **`TIMER_FIRED` is the kernel's wake.** A caller-supplied `TIMER_FIRED { approved: true }` used to answer a timed approval gate past the digest and the authenticator. On a fail-closed runtime a `TIMER_FIRED` resume without the system grant is refused (`timer-wake-not-system`); everywhere the recorded payload is exactly `{ wakeAt }`.
+  - **Bus.** `unsafeAutoApprove` warns once; `ApprovalDecision.proof` + `approvalPayload(request, decision)` let a strict app approve through the bus with a signed proof; `resolveApproval` on an unknown/evicted task names `runtime.resume` + `answerApproval`. The scaffold's approver keys fail closed (unset/empty/odd-named actor verifies nothing).
+  - **BREAKING (`signResume`).** It requires `exp`, `executionId` and `parkedAtSequence`; the authenticator rejects an event it is given no park context for.
+  - **BREAKING (strict).** `security.strict` now REQUIRES `security.resumeAuthenticator` (config error otherwise); `strict: { requireResumeAuthenticator: false }` acknowledges an app with no approval gates. The scaffold generates one.
+  - **BREAKING (`InProcessA2ABus`).** With no `onApproval` the gate stays suspended: `dispatch` returns `{ status: "working", suspended }`, answered later with `bus.resolveApproval(taskId, decision)`. Demos opt in with `onApproval: unsafeAutoApprove`. `onApproval` now receives `{ executionId, gate, viewDigest }` and the bus echoes the digest; the resume uses the gate's own name (it hard-coded `"ApprovalGranted"`).
+  - **R13 review round 2.**
+    - **The park is located exactly, for any number of events after it.** `runtime.parkedAtSequence(id)`, `resume`, `resumeAs`, `restoreFromState` and the bus all use one lookup: the newest `EXECUTION_SUSPENDED` in the events in hand, else a walk back in 64-event indexed range reads from the snapshot (no whole-log read; cost = events between the park and the snapshot). Round 1 probed only 16 events back and then bound the TIP, so a signed approval was rejected ("signature does not verify") once 16+ events (denials by varying principals, parallel siblings) trailed the park on a resume's fast path. `restoreFromState` bound the preloaded state's tip and the bus the result's tip; both now bind the park. No fold, `EVENT_SCHEMA` or `KERNEL_ABI` change.
+    - **A park that is no longer in the log is refused, never guessed.** If the `EXECUTION_SUSPENDED` was compacted away (or the log does not hold it) a signed approval is refused with `ApprovalRejectedError` reason `park-not-located: ...`, and `parkedAtSequence` returns `undefined`. The tip is never substituted.
+    - **Remote approvers** must obtain `parkedAtSequence` from `runtime.parkedAtSequence(id)` or the bus `ApprovalRequest` to sign; `state.sequence` is NOT the park once anything trails it.
+    - **`agentLoop$` deep input.** The deep-input refusal can change replay of a main-era execution whose approved tool call had input nested more than 1024 levels deep (negligible: such an input was already unbounded recursion on the digest path).
 
-- **`loom appgen` completeness — delete/grant ops, runner wiring, self-repair, real diffs, confirm.**
-  Closes the remaining gaps against the requirement (captured in
-  [`docs/requirements/2026-07-12-ai-native-brownfield-appgen.md`](docs/requirements/2026-07-12-ai-native-brownfield-appgen.md)
-  + evaluation, and [ADR 0042](docs/adr/0042-ai-native-brownfield-appgen.md)):
-  - **`delete` op.** New grammar `delete <name>` / `delete step <s> from <flow>`; deletes generated
-    flow files and removes steps (const + `steps: []` entry + runner call). Refuses to delete a flow or
-    step that carries hand-written code. Tracked in `FilePlan.deletes`, honored by `--dry-run`.
-  - **New steps are wired into the runner.** `FlowEditor.addStep` now inserts a `ctx.run(<step>, …)`
-    call before the runner's `return`, not just a "wire it yourself" note.
-  - **`wireGrants` → `app/config.ts`.** New grammar `grant <tool>[, <tool>] to <cap>` (and a model
-    schema field) insert a `GrantTable` authorizer (and its import) into `defineConfig` via a
-    formatting-preserving `ConfigEditor`; it declines to guess a merge if an authorizer already exists.
-  - **Model self-repair loop.** `@loom/appgen-model` now runs `validateChangeSpec` (does the plan
-    reference real flows/steps with the right ops?) after the ladder and re-prompts the model with the
-    exact issues (bounded retries) before falling back to the deterministic parser.
-  - **Real `--dry-run` diffs.** Edits render as a dependency-free unified line diff instead of a summary.
-  - **Interactive confirm.** On a TTY (and without `--yes`), appgen shows the plan and asks before
-    writing; the CLI surfaces the planner (deterministic vs model) and any ladder elevations.
-  - Docs: `docs/usage-cli.md` rewritten for the full surface; a brownfield walkthrough at
-    `examples/appgen-brownfield/README.md`. `@loom/appgen` stays offline; kernel untouched.
-  - **Planner provenance surfaced + loud model fallback.** The plan header and `--dry-run` output are
-    tagged `[deterministic]` / `[model]` (with any `[model, elevated e4b→12b]` ladder steps), matching
-    the spec lockfile's `changeSpec.planner`. When `--model` is passed but the model can't produce a
-    usable plan, `appgen` now prints a **loud warning** and falls back — so a silent, wrong-looking
-    generation no longer masquerades as a model result. Also fixed `--model` failing in-repo with
-    "Cannot find package '@loom/appgen-model'": the CLI now resolves the optional peer as a sibling of
-    `@loom/appgen` (works in `packages/*` and `node_modules/@loom/*` alike).
+- **A2A and MCP servers are authenticated by default, loopback-bound, and A2A tasks are owned by their creator (R12; behavioural tightening, no ABI change).** `KERNEL_ABI` and `EVENT_SCHEMA` are unchanged.
+  - **BREAKING (defaults).** `createA2AServer` and `createMcpServer` now THROW at creation unless the caller supplies `authenticate` (new: returns the caller's `PrincipalChain`, or `undefined` for a 401) or `authorize`, or passes `insecure: true` (logs a loud warning). They previously ran unauthenticated when neither was set. They also bind `127.0.0.1` instead of every interface; pass `host: "0.0.0.0"` (or an interface address) to widen. `server.url` now carries the bound host, not `localhost`. Migration for a demo or test: add `insecure: true`. `loom-examples` that need it: `a2a-mesh`, `agent-network`, `mcp-app-release-approval` (all `port: 0`, same-process clients).
+  - **Strict.** The app does not construct these servers, so they cannot be refused from `defineConfig`; pass `strict: app.strict`. Under strict `insecure: true` is a config error, and the A2A server additionally requires `authenticate` or `resolvePrincipal` (every task must carry a principal).
+  - **A2A task ownership.** The HTTP server namespaces every task id by the caller's principal (tenant + actor + onBehalfOf): the execution the runtime sees is `a2a.<namespace>.<client id>`, and the client only ever sees the id it chose. A caller cannot read, resume, or collide with another caller's task by guessing or choosing an id; the lookup lands in its own namespace and finds nothing (404). Previously `task.id` became the `executionId` verbatim, so any caller could read any execution's folded state, and a colliding id re-drove the victim's execution. Callers that pass only a boolean `authorize` (no principal) share ONE namespace; use `authenticate` for per-caller ownership. `LoomAgentExecutor` takes `{ namespaceByPrincipal }` (off for direct in-process use; the server turns it on). The server has no cancel route, so there is nothing to cancel across callers; R3's `executionAccessPolicy` still governs cancel on the runtime.
+  - **MCP per-tool authorization.** `mcp.invoke` is one registered effect, so a `GrantTable` could allow all of a server's tools or none. `Effect.resourceOf` / `ToolEffectOptions.resourceOf` (new, optional) lets an effect name the sub-resource a call targets; the runtime passes it as `CapabilityRequest.resource`, and `GrantTable`, `PolicyAuthorizer` (allow/deny/`match.effect`) and `DelegationAuthorizer` accept the qualified id `<effectId>:<resource>` (`capabilityIds`). `mcp.invoke` presents `<server>/<tool>`: grant ONE tool with `mcpToolCapability(server, tool)` = `mcp.invoke:<server>/<tool>`. A grant on bare `mcp.invoke` still means "every tool on every server", unchanged. A resolver that throws, or an effect without one, fails closed against a qualified grant. `McpInvokeOptions.server` is the server identity (default: see the review-round note below).
+  - **MCP server per-tool exposure.** `createMcpServer({ authorizeTool })` decides per caller whether a tool is listed and callable; a refused tool is reported as unknown (never as forbidden). Tool handlers receive `ctx.principal` from `authenticate`. Default unchanged: every authenticated caller may use every served tool.
+  - **R12 review round 1 (all behavioural tightening, no ABI change).**
+    - **A2A principals must carry an `actor`.** `principalNamespace` now THROWS unless `principal.actor` is a non-empty string, and `createA2AServer` answers 401 (warning once) when `authenticate`/`resolvePrincipal` yields such a principal. A principal identifying callers by another field (`{ sub }`) used to hash to ONE shared namespace, so callers could read each other's tasks. `executionAccessPolicy` likewise refuses (and never records an owner for) a principal whose actor is empty. When both `authenticate` and `resolvePrincipal` are set, `authenticate` wins and `resolvePrincipal` is ignored.
+    - **A2A execution id shape.** The runtime sees `a2a.<ns>.<client id>`, where `<ns>` is a 24-hex-char hash of tenant + actor + onBehalfOf. Anyone reading A2A executions by their raw client id (`loadState("my-task")`) must use the new id.
+    - **`PolicyAuthorizer` matching.** DENY globs (`deny` list, `match.deny`) match both the bare effect id and the qualified `<effect>:<resource>` id. ALLOW entries (`allow` list, allow `match.effect`) match the qualified id only when the pattern itself contains `:` and the text before the first `:` equals the request's effect id exactly; `allow: ["*.search"]` no longer allows `mcp.invoke` on a resource named `srv/wipe.search`. Bare `allow: ["mcp.invoke"]` still allows every resource.
+    - **Denial reasons name the resource** (`PolicyAuthorizer`, `GrantTable`, `DelegationAuthorizer`), so an audit can tell which tool was refused (`EFFECT_DENIED` has no `resource` field and gaining one would change `EVENT_SCHEMA`).
+    - **`McpInvokeOptions.server` now defaults to the client URL's hostname (plus `_<port>` when non-default)** (was the literal `"server"`). Grants written as `mcp.invoke:server/<tool>` must name the host, or set `server` explicitly. A `server` containing `/` or `:` is rejected.
+    - **Strict defaults from the runtime.** `createA2AServer` defaults `strict` from `workflowRuntime.requiresPrincipal` (new read-only accessor); `createMcpServer` takes `runtime: { requiresPrincipal }` for the same. Explicit `strict` still overrides. Under strict an A2A caller that resolves to no principal (authorize-only) is refused 401 instead of joining the shared namespace.
+    - **MCP resources follow `authorizeTool`.** `resources/list`/`resources/read` hide a `ui://` template tied to a tool the caller may not use. `authorizeAppJournaledCall(tool, req, principal)` now receives the principal. `resourceOf` is evaluated on the pre-middleware input: a middleware that rewrites the tool name must not be relied on for authorization.
+  - **R12 review round 2.**
+    - **`startWorkerServer` (the container entrypoint) binds `0.0.0.0`** by default (`options.host` / `$HOST` override); round 1's loopback default made the Cloud Run image unreachable. `createWorkerServer` keeps the loopback default. Set `authorize` on a reachable worker.
+    - **`McpClient.serverHost` keeps a non-default port** (`localhost:3001` -> `localhost_3001`; default ports omitted) so two servers on one host no longer share a grant id. Grants written for a ported server's default id must add the `_<port>` suffix.
+    - **A whitespace-only A2A `actor` is refused** like no actor (401).
+    - **`createMcpServer` without `runtime` or `strict` warns once** that strictness is advisory.
+    - Docs: a bare-id allow pattern (`mcp.invoke`, `mcp.*`) allows every resource of the effect; scope with `mcp.invoke:<server>/<tool>`.
+    - **`createWorkerServer` binds `127.0.0.1` by default** (was all interfaces); pass `host` to widen. `server.url` carries the bound host.
+    - **A2A `publicUrl`** sets the URL the agent card advertises (a `0.0.0.0` bind otherwise advertises `localhost`).
+    - **REQUIRED alongside this merge:** the companion `loom-examples` PR (`a2a-mesh`, `agent-network`, `mcp-app-release-approval` need `insecure: true` or `authenticate`).
+
+### Documentation
+
+- **Two proposed kernel follow-ups, design only ([ADR 0128](docs/adr/0128-decision-order-through-checkpoints.md), [ADR 0129](docs/adr/0129-creation-marker-incarnation.md); Proposed, no runtime change).** 0128: decision order is lost through a checkpoint (key order of `_decisions`, which Postgres `jsonb` reorders), so the discounted terminal credit of a compacted execution can be wrong; proposes a recorded `seq` per folded decision (EVENT_SCHEMA 1.24.0). 0129: `creationMarker` (`timestamp:id`) cannot tell a deleted-and-recreated id apart under a frozen clock; proposes a store-assigned incarnation outside the envelope (EventStore SPI 2.3.0), keeping replay byte-identical. Each lists the decisions needed from the user.
+- **User guide: "Browser bundles".** Which `@loom/*` packages are browser-safe and which carry `node:` imports (and why `workflow-runtime`/`effect-runtime` keep HMAC and `AsyncLocalStorage`).
+
+- **Docs/DX batch.** `execution.registerEffects` (how `agentLoop$` gets its model and tool effects in a `defineConfig` app) is documented in the user guide and ADR 0121's migration steps, and its JSDoc shows the grouped spelling. ADR 0121 D5 / the `cacheScope` JSDoc now say `cacheScope` is a direct-path-only requirement (the ring bypasses the response cache). The SSE `/history` default direction (`forward`) and how to request `backward` are documented. ADR 0120 gains "Authorizing under dedupe" (a `ContentResolver`'s owner is a SET of tenants). The `@loom/conversation` README gains a security section on the raw inbox path (never expose `runtime.send(…, runtime.systemOptions())` into a conversation inbox).
+
+- **Wave 2 coordinated kernel design (agentic-readiness, Part R; design only, no runtime change).** One design document ([`docs/requirements/2026-10-05-wave2-kernel-design.md`](docs/requirements/2026-10-05-wave2-kernel-design.md)) and nine **Proposed** ADRs, planned together so the contract bumps happen once (KERNEL_ABI 1.2.0 → 1.3.0, EVENT_SCHEMA 1.22.0 → 1.23.0, EventStore SPI 2.0.0 → 2.1.0; nothing is bumped by this change). Each ADR is accepted at its own implementation PR.
+  - [ADR 0109](docs/adr/0109-bounded-history-and-continue-as-new.md) bounded history: `ctx.continueAsNew`, a deterministic successor started first and then `EXECUTION_CONTINUED` (new `continued` status; existing recovery repairs a crash; promotes ADR 0052's frozen draft).
+  - [ADR 0110](docs/adr/0110-durable-inbox-and-receive-select.md) a durable inbox (1P stream) with kernel `ctx.receive` / `ctx.select`, `MESSAGE_CONSUMED`, concurrent waits, an authorized `runtime.send`, and a no-lost-wakeup protocol.
+  - [ADR 0111](docs/adr/0111-durable-principal.md) the execution's principal recorded on `EXECUTION_STARTED` and rehydrated on every path (recovery, timers, supervisor, children); the effect principal becomes the owner, not the resumer.
+  - [ADR 0112](docs/adr/0112-structured-concurrency.md) cancellation scopes, a park barrier, and the cancel cascade (1P, in `@loom/orchestration`).
+  - [ADR 0113](docs/adr/0113-body-aware-code-fingerprint-and-dynamic-id-migration.md) SHA-256 structural hash, an opt-in body fingerprint, replay-divergence detection, dynamic-id `replay-check`.
+  - [ADR 0114](docs/adr/0114-ctx-ui-leaves-the-kernel.md) `ctx.ui` leaves the kernel (drops the `workflow-runtime` → `agent-surface` dependency; layering guard extended).
+  - [ADR 0115](docs/adr/0115-open-vocabularies.md) open `EffectKind` / `TaskKind` and custom metering dimensions.
+  - [ADR 0116](docs/adr/0116-late-outcome-attach.md) `runtime.recordOutcome` for a late reward on a finished execution (authorized, terminal-only, sequence-CAS, idempotent; no fence).
+  - [ADR 0118](docs/adr/0118-acquire-if-parked-fence.md) a conditional `acquireFenceIf` on the fence token and an unanswered park (EventStore SPI, optional), a retryable `ResumeContendedError` with a timer-backed re-driver, closing the R8 supervisor's residual TOCTOU, and a retention pin for children a parent is parked on.
+
+### Known issues
+
+- _None open._ The principal known issue (effects run under the resumer's principal, not the owner's) is **resolved by R3k** for every execution started on 1.23.0 — see Security below. Executions started before 1.23.0 recorded no principal and keep the old behaviour exactly (see "Legacy logs" in the R3k entry).

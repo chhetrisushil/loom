@@ -1,6 +1,6 @@
 # ADR 0143 — `EncryptingContentStore`: a subject-aware ContentStore so claim-check works under `security.crypto`
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #737 (follow-up of ADR 0140 D8, which refuses `execution.claimCheck` with
   `security.crypto` unless the store declares `sealsContent: true`, and shipped no such store). Owner rulings:

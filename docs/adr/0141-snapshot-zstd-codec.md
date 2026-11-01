@@ -1,6 +1,6 @@
 # ADR 0141 — An opt-in zstd snapshot codec: a format byte, a BYTEA/BLOB frame, compress before sealing
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #733 (part 3 of 3 of the snapshot-size umbrella #730), from the measurement in #730:
   a zstd-3 frame stored as `BYTEA` is smaller than Postgres `JSONB` under pglz AND reads about 2x faster.

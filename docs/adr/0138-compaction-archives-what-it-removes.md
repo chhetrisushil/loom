@@ -1,6 +1,6 @@
 # ADR 0138 — Compaction archives what it removes, and the fold stops copying settled steps' inputs
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #725, from the item 4 investigation of #721 (an uncompacted `agentLoop$` keeps every
   turn's full model input in the folded state: 3.54 MB at 50 turns, 54.9 MB at 200).
