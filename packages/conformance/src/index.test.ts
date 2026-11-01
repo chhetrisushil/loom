@@ -1,3 +1,4 @@
+import vm from "node:vm";
 import type { ExecutionState } from "@loom/core";
 import { DISPATCHER_SPI_VERSION, LocalDispatcher, SupervisingDispatcher } from "@loom/dispatcher";
 import { GrantTable } from "@loom/effect-runtime";
@@ -29,6 +30,7 @@ import {
   textOf,
 } from "@loom/llm";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+import type { SandboxBackend, SandboxRequest } from "@loom/sandbox";
 import {
   InMemoryAsyncSnapshotStore,
   ProfilingSnapshotStore,
@@ -56,6 +58,12 @@ import {
   sealingForwardingProblems,
 } from "./decorators";
 import { snapshotCodecMarkerProblems, tenantMarkerProblems } from "./decorators";
+import {
+  JAVASCRIPT_FIXTURES,
+  checkSandboxAbortStopsBackend,
+  checkSandboxFreshPerRun,
+  checkSandboxNoEscape,
+} from "./index";
 import {
   type ContentStoreLike,
   eventStoreAtRestProblem,
@@ -1261,5 +1269,72 @@ describe("snapshotCodecMarkerProblems (decorator kit negative)", () => {
     // an `own` decorator (a sealing store) may report its own codec, but must report one
     expect(snapshotCodecMarkerProblems("Own", liar, inner, true)).toEqual([]);
     expect(snapshotCodecMarkerProblems("OwnHider", hider, inner, true)).toHaveLength(1);
+  });
+});
+
+// The sandbox kit must FIRE (ADR 0144 D5). `node:vm` is not a security boundary, and a backend that
+// REUSES two contexts round-robin used to pass every case while declaring network "none" and
+// freshPerRun: true — then handed the host `process` through the constructor chain.
+describe("the sandbox kit rejects a backend that is not a sandbox", () => {
+  const roundRobinVm = (): SandboxBackend => {
+    const contexts = [vm.createContext({}), vm.createContext({})];
+    let next = 0;
+    return {
+      capabilities: {
+        language: "javascript",
+        network: "none",
+        wallClock: "hard",
+        memory: false,
+        cpu: false,
+        freshPerRun: true,
+      },
+      async evaluate(req: SandboxRequest) {
+        const ctx = contexts[next++ % contexts.length] as vm.Context;
+        ctx.input = JSON.parse(req.inputJson);
+        try {
+          return { ok: true, value: vm.runInContext(req.script, ctx, { timeout: 300 }) };
+        } catch (e) {
+          const err = e as Error;
+          if (/timed out/.test(err.message))
+            return { ok: false, kind: "limit", limit: "wallClock" };
+          return { ok: false, kind: "threw", name: err.name, message: String(err.message) };
+        }
+      },
+    };
+  };
+
+  it("fails the escape probe: this.constructor.constructor reaches the host process", async () => {
+    // The ORIGINAL kit's network probe (global names only) does not see it ...
+    await expect(checkSandboxNoEscape(roundRobinVm(), JAVASCRIPT_FIXTURES)).rejects.toThrow(
+      /reached a host capability/
+    );
+  });
+
+  it("fails fresh-per-run: the third run of two round-robin contexts sees the first run's state", async () => {
+    await expect(checkSandboxFreshPerRun(roundRobinVm(), JAVASCRIPT_FIXTURES)).rejects.toThrow(
+      /saw state from an earlier run/
+    );
+  });
+
+  it("fails abort mid-run: a backend that never stops after the signal is caught", async () => {
+    const neverStops: SandboxBackend = {
+      capabilities: { ...roundRobinVm().capabilities },
+      evaluate: () => new Promise(() => {}),
+    };
+    // timing-bound: only the failure path waits, for the settle deadline passed here.
+    await expect(
+      checkSandboxAbortStopsBackend(neverStops, JAVASCRIPT_FIXTURES, 200)
+    ).rejects.toThrow(/did not stop/);
+  });
+
+  it("passes abort mid-run for a backend that honours the signal", async () => {
+    const stops: SandboxBackend = {
+      capabilities: { ...roundRobinVm().capabilities },
+      evaluate: (req) =>
+        new Promise((resolve) => {
+          req.signal?.addEventListener("abort", () => resolve({ ok: true, value: null }));
+        }),
+    };
+    await checkSandboxAbortStopsBackend(stops, JAVASCRIPT_FIXTURES, 10_000);
   });
 });

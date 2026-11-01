@@ -865,7 +865,7 @@ describe("constant ids and step factories (L37)", () => {
     const m = /MCP_INVOKE_TOOL_ID = "([^"]+)"/.exec(src);
     expect(KNOWN_STEP_FACTORIES.mcpInvoke$).toEqual({ fixed: m?.[1] });
     const sb = readFileSync(
-      join(__dirname, "../../../plugins/sandbox/src/sandboxEval$.ts"),
+      join(__dirname, "../../../packages/sandbox/src/sandboxEval$.ts"),
       "utf8"
     );
     const sm = /SANDBOX_TOOL_ID = "([^"]+)"/.exec(sb);

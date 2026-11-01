@@ -289,7 +289,7 @@ loom plugin new store my-backend --first-party # first-party: ./plugins/my-backe
 Seams: `store`, `dispatcher`, `telemetry`, `middleware`, `timer`, `lease`, `content`,
 `durable-state`, `read-model`, `keystore`, `memory`, `projection`, `worker`, `llm`,
 `authorizer`, `execution-authorizer`,
-`resume-authenticator`, `timer-dispatcher`, `policy`. Then implement
+`resume-authenticator`, `timer-dispatcher`, `policy`, `sandbox`. Then implement
 the SPI, un-comment the conformance test, and run your formatter.
 
 **`policy` is the one seam that is not a `defineConfig` contributor.** Every other seam is
@@ -299,6 +299,42 @@ deliberate — the runtime never learns a policy exists, so a learned choice can
 through `ctx.decide`, where it is recorded, replayable and auditable. Everything else about
 authoring one is identical: same naming, same peer-dependency rule, same conformance
 requirement (`runPolicyConformance`).
+
+**`sandbox` is the second flow-code seam.** A `SandboxBackend` ([ADR 0144](adr/0144-sandbox-backend-spi.md))
+is wired with `registerSandboxBackend(effects, scripts, backend, spec?)` from `@loom/sandbox`, next
+to the content store that holds the scripts, not through `defineConfig`.
+
+### Write your own sandbox
+
+Any production deployment that runs model-written code brings its own isolation boundary. Implement
+`SandboxBackend` for it and keep loom's guarantees without copying them:
+
+```
+loom plugin new sandbox my-box
+```
+
+- A backend is only the **engine**: `evaluate({ script, inputJson, limits, signal })` returns a
+  closed `SandboxOutcome` (`ok` / `limit` / `threw` / `inputTooLarge` / `infrastructure`). It never
+  throws a typed failure. `SandboxEffect` (in `@loom/sandbox`) owns the input and output ceilings, the
+  content-address check, the `scriptError` / `limitExceeded` / `shapeMismatch` channels, bounded
+  storable error text, cancellation precedence and the JSON replay form of the result.
+- Declare `capabilities` honestly. `network` other than `"none"` and `freshPerRun: false` are
+  refused at construction unless the operator passes `allowNetwork: true` /
+  `allowReusedEnvironment: true`; the effect is `idempotent` only for `network: "none"` with
+  `freshPerRun: true`. The declaration is snapshotted at construction. The scaffold declares the
+  worst case (`network: "open"`, `freshPerRun: false`, soft clock, `memory: false`, `cpu: false`)
+  and each stronger value must be earned by the kit. `memory: false` / `cpu: false` mean an
+  in-process backend can exhaust the host.
+- A backend that never settles loses: the effect races it against the caller's abort and a
+  `wallClockMs + backendGraceMs` deadline (default 60 s) and hands it a combined signal; whatever it
+  throws is untyped and bounded, never a channel.
+- Prove it: `runSandboxBackendConformance(() => backend, { fixtures? })` from `@loom/conformance`
+  runs ADR 0064's security list through the effect. QuickJS (`@loom/plugin-sandbox`) passes it in both
+  in-process and worker mode. A non-JavaScript backend supplies its own `fixtures`.
+- A remote backend (Cloud Run, Firecracker, E2B): no service account or credentials, egress denied at
+  the network layer, one request per instance, the request timeout as the hard kill, memory and CPU
+  caps, no shared writable state. The scaffolded README carries this checklist.
+- `@loom/isolate` is a different thing: it runs TRUSTED tool code with brokered egress.
 
 Validate it against the contract at any time:
 

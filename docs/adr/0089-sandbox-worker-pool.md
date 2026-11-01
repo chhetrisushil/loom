@@ -6,6 +6,7 @@
   in 0064 is withdrawn; this adds a second place the same evaluation can run.
 - Related: K7 / `@loom/isolate` (the isolation contract 0064 follows), ADR 0060
   (typed channels).
+- Amended by: [ADR 0144](0144-sandbox-backend-spi.md) (the worker pool is now part of `QuickJsSandboxBackend`; outcome interpretation moved into the backend).
 - No kernel changes.
 
 ## Context

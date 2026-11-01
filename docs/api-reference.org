@@ -2917,6 +2917,28 @@ function assertGrounded(claimed: readonly string[], passages: readonly Passage[]
 
 Reached through ~app.knowledge(scope)~, over the same ~memoryStore~ that backs ~app.memory~; operated from the CLI with ~loom knowledge sync|search|list~.
 
+** ~@loom/sandbox~ — the sandbox backend SPI
+
+The engine seam for running model-written code in your own isolation boundary (ADR 0144). ~SANDBOX_BACKEND_SPI_VERSION~ is ~1.0.0~. ~@loom/plugin-sandbox~ (below) is the QuickJS reference backend; every other backend is a third-party package.
+
+#+begin_src typescript
+interface SandboxBackend { capabilities: SandboxBackendCapabilities; evaluate(r: SandboxRequest): Promise<SandboxOutcome>; warm?(): Promise<void>; close?(): Promise<void> }
+interface SandboxRequest { script: string; inputJson: string; limits: { wallClockMs: number; memoryBytes: number }; signal?: AbortSignal }
+type SandboxOutcome =
+  | { ok: true; value: unknown }
+  | { ok: false; kind: "limit"; limit: "cpu" | "memory" | "wallClock" }
+  | { ok: false; kind: "threw"; name?: string; message: string }
+  | { ok: false; kind: "inputTooLarge" }
+  | { ok: false; kind: "infrastructure"; message: string }
+interface SandboxBackendCapabilities { language: string; network: "none" | "allowlist" | "open"; wallClock: "hard" | "soft"; memory: boolean; cpu: boolean; freshPerRun: boolean }
+class SandboxEffect implements Effect { constructor(scripts: ScriptReader, backend: SandboxBackend, options?: SandboxEffectOptions); idempotent: boolean /* network === "none" */; warm(); close() }
+interface SandboxEffectOptions { limits?: { memoryBytes?; wallClockMs?; maxOutputBytes?; maxInputBytes? }; allowNetwork?: boolean; allowReusedEnvironment?: boolean; backendGraceMs?: number }
+function registerSandboxBackend(effectRuntime: EffectRuntime, scripts: ScriptReader, backend: SandboxBackend, spec?: { id?: string } & SandboxEffectOptions): SandboxEffect
+// moved here from @loom/plugin-sandbox (re-exported there): sandboxEval$, SANDBOX_TOOL_ID, SANDBOX_ERRORS, SandboxEvalInput, ScriptReader, shapeHash, shapeOf, boundText
+#+end_src
+
+The effect validates every outcome at run time (a malformed one fails untyped), bounds ~threw~ text itself, lets cancellation win over any outcome, maps ~infrastructure~ to an untyped failure, and returns the success value as its JSON round-trip, so the first run and a replay see the same value. ~runSandboxBackendConformance~ (~@loom/conformance~) proves a backend; ~loom plugin new sandbox <name>~ scaffolds one.
+
 ** ~@loom/plugin-sandbox~ — untrusted code as an effect
 
 #+begin_src typescript
@@ -2947,6 +2969,7 @@ class SandboxWorkerPool {   // opt-in (ADR 0089): a hard kill for a script that 
 }
 class SandboxWorkerStartupError extends Error { waitedMs: number; limitMs: number; phase: "compile" | "start" }  // not a TypedFailure; retryable by default
 // a `scriptRef` is re-hashed before eval — ContentStore.get carries no verify-on-read obligation
+class QuickJsSandboxBackend implements SandboxBackend { constructor(o?: { interruptBudget?: number; workers?: SandboxWorkers }) } // ADR 0144: the engine; SandboxEvalEffect is SandboxEffect over it
 #+end_src
 
 ** ~@loom/plugin-sentinel~ — the perpetual-agent preset

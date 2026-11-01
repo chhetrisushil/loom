@@ -22,10 +22,12 @@
   "dependencies": {
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
+    "@loom/sandbox": "workspace:*",
     "quickjs-emscripten": "^0.31.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@loom/conformance": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/plugin-content": "workspace:*",

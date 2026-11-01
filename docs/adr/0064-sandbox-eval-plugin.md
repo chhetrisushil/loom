@@ -7,6 +7,7 @@
   hashing), ADR 0046 (content-addressed scripts), K7 (`@loom/isolate` — the
   isolation contract this follows).
 - Part of: the GenUI/DE corrected series. No kernel changes.
+- Amended by: [ADR 0144](0144-sandbox-backend-spi.md) (the engine becomes a `SandboxBackend` SPI in `@loom/sandbox`; QuickJS stays the default backend with the same limits, channels and security list; the success value is returned as its JSON round-trip).
 
 ## Context
 

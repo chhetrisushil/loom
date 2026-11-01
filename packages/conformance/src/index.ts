@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
+import { TypedFailure } from "@loom/core";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
-import type { CapabilityAuthorizer, CapabilityRequest } from "@loom/effect-runtime";
+import type { CapabilityAuthorizer, CapabilityRequest, EffectContext } from "@loom/effect-runtime";
 import type {
   BranchRef,
   BranchRegistry,
@@ -25,6 +27,8 @@ import {
 import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
 import { assembleStream, mediaTypeAccepted } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
+import { SandboxEffect } from "@loom/sandbox";
+import type { SandboxBackend, ScriptReader } from "@loom/sandbox";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
@@ -4581,6 +4585,450 @@ export function runArchiveStoreConformance(
       expect((await store.headers("b")).length).toBe(1);
       await store.deleteExecution("a"); // idempotent
       await store.close();
+    });
+  });
+}
+
+// ── ADR 0144 D5 — the sandbox security list as a conformance kit ─────────────
+//
+// Runs ADR 0064's list against any `SandboxBackend`, THROUGH `SandboxEffect`, so it proves the
+// composition a user actually deploys (limits, channels, replay form) and not a backend in
+// isolation. Scripts are language-specific, so the kit takes `fixtures`; JAVASCRIPT_FIXTURES is
+// the default. A backend for another language must supply its own: the kit refuses to run
+// without them rather than pass vacuously.
+
+/** One script per case. Each documents the contract the backend's language must honour. */
+export interface SandboxFixtures {
+  /** Returns the global `input` unchanged. */
+  echo: string;
+  /** Throws an error whose message is exactly `throwsMessage`. */
+  throws: string;
+  throwsMessage: string;
+  /** Does not parse. */
+  syntaxError: string;
+  /** Never finishes on its own. */
+  runaway: string;
+  /** Allocates until the memory limit. */
+  allocationBomb: string;
+  /**
+   * Tries to reach a network and returns `{ reached: boolean }` (`reached: true` only if it
+   * could); throwing because the capability does not exist is an equally good answer.
+   */
+  networkProbe: string;
+  /**
+   * Tries every route out of the language's own sandbox it can think of (reach the global object
+   * through a constructor chain, `Function`, indirect `eval`, …) and returns `{ reached: boolean }`:
+   * `true` if ANY route yields host capabilities (a process, `require`, a network API). A backend
+   * built on a language-level "sandbox" (`node:vm`, a reused interpreter) fails here.
+   */
+  escapeProbe: string;
+  /**
+   * Writes to ambient state the language offers (a global, a file, an env var) and returns how
+   * many times it has run in THIS environment: `1` on a fresh one, `2` on a reused one.
+   */
+  statefulProbe: string;
+  /** Throws an error whose message is far past 2048 characters. */
+  hugeThrow: string;
+  /**
+   * Returns a nested structure with unicode, escapes and integers past 2^31, exactly as
+   * {@link SandboxFixtures.richValue}: the backend must carry it across its boundary unchanged.
+   */
+  richValueScript: string;
+  /** What `richValueScript` must come back as. */
+  richValue: unknown;
+}
+
+/** Unicode (BMP, astral), escapes, integers past 2^31, nesting: what a boundary that mangles values gets wrong. */
+const RICH_VALUE = {
+  s: 'h\u00e9llo \u4e16\u754c \ud83d\ude00 "q" \\ \n\t',
+  big: 9007199254740991,
+  neg: -4294967297,
+  f: 1.5e-7,
+  deep: [[{ a: [1, [2, { b: null }]] }]],
+  empty: { o: {}, a: [] },
+  t: true,
+};
+
+/** The default fixtures: QuickJS's convention (ADR 0064) — a global `input`, the completion value. */
+export const JAVASCRIPT_FIXTURES: SandboxFixtures = {
+  echo: "input",
+  throws: 'throw new Error("loom-conformance-boom")',
+  throwsMessage: "loom-conformance-boom",
+  syntaxError: "function (",
+  runaway: "while (true) {}",
+  allocationBomb: "(() => { const a = []; while (true) a.push(new Array(100000).fill(1)); })()",
+  networkProbe:
+    '(() => { const names = ["fetch", "XMLHttpRequest", "WebSocket", "require", "process"]; return { reached: names.some((n) => typeof globalThis[n] !== "undefined") }; })()',
+  statefulProbe:
+    "(() => { globalThis.__loomRuns = (globalThis.__loomRuns ?? 0) + 1; return globalThis.__loomRuns; })()",
+  hugeThrow: 'throw new Error("x".repeat(100000))',
+  escapeProbe:
+    '(() => { const names = ["process", "require", "fetch", "XMLHttpRequest", "WebSocket", "Deno", "Bun"]; const roots = []; const grab = (f) => { try { const r = f(); if (r !== undefined && r !== null) roots.push(r); } catch (e) {} }; grab(() => globalThis); grab(() => this.constructor.constructor("return this")()); grab(() => Function("return this")()); grab(() => (0, eval)("this")); grab(() => (function () { return this; })()); grab(() => Object.getPrototypeOf(async function () {}).constructor("return this")()); let reached = false; for (const r of roots) for (const n of names) { try { if (typeof r[n] !== "undefined") reached = true; } catch (e) {} } return { reached }; })()',
+  richValueScript: `(() => JSON.parse(${JSON.stringify(JSON.stringify(RICH_VALUE))}))()`,
+  richValue: RICH_VALUE,
+};
+
+export interface SandboxConformanceOptions {
+  /** Required for any backend whose `capabilities.language` is not `"javascript"`. */
+  fixtures?: SandboxFixtures;
+  /** Per-test timeout. Default 60_000: a runaway or allocation bomb may take a remote kill. */
+  timeoutMs?: number;
+  label?: string;
+}
+
+/** The bomb must hit the MEMORY ceiling first, so the clock is generous (a slow or loaded host would otherwise win the race). */
+const BOMB_LIMITS = { wallClockMs: 30_000 };
+
+/** Sequential runs, then a concurrent batch, for the fresh-per-run case (ADR 0144 D5). */
+const FRESH_SEQUENTIAL_RUNS = 16;
+const FRESH_CONCURRENT_RUNS = 8;
+
+/**
+ * The wall clock handed to the mid-run abort case: far past any test timeout, so a backend that
+ * ignores the abort signal cannot finish by itself inside the case — it is stopped, or it times out.
+ */
+const ABORT_CASE_WALL_CLOCK_MS = 600_000;
+
+const sandboxEncoder = new TextEncoder();
+
+/** A content-addressed in-memory script store (the real `sha256:<hex>` address the effect checks). */
+class SandboxScripts implements ScriptReader {
+  private readonly blobs = new Map<string, Uint8Array>();
+  put(code: string): { __loomContent: string } {
+    const bytes = sandboxEncoder.encode(code);
+    const ref = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    this.blobs.set(ref, bytes);
+    return { __loomContent: ref };
+  }
+  async get(ref: { __loomContent: string }): Promise<Uint8Array | null> {
+    return this.blobs.get(ref.__loomContent) ?? null;
+  }
+}
+
+const sandboxCtx = (signal?: AbortSignal): EffectContext => ({
+  executionId: "conformance-1",
+  stepId: "sandbox#0",
+  workflowId: "conformance",
+  attempt: 1,
+  emit: () => {},
+  ...(signal !== undefined && { signal }),
+});
+
+async function sandboxFailureOf(p: Promise<unknown>): Promise<unknown> {
+  try {
+    await p;
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected the run to fail, but it completed");
+}
+
+function expectSandboxChannel(err: unknown, channel: string): TypedFailure {
+  expect(err, `expected a typed failure on "${channel}", got ${String(err)}`).toBeInstanceOf(
+    TypedFailure
+  );
+  expect((err as TypedFailure).channel).toBe(channel);
+  return err as TypedFailure;
+}
+
+const SANDBOX_LONE_SURROGATE =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * Build the effect around a backend with the opt-ins its OWN declaration requires, and nothing
+ * more: a backend that declares egress or a reused environment is exercised (so the gated cases
+ * skip rather than the whole kit refusing), while one that declares neither gets no opt-in at all.
+ */
+function sandboxHarness(
+  backend: SandboxBackend,
+  fixtures: SandboxFixtures,
+  limits: { wallClockMs?: number } = {}
+) {
+  const caps = backend.capabilities;
+  const scripts = new SandboxScripts();
+  const effect = new SandboxEffect(scripts, backend, {
+    limits: { wallClockMs: 1_000, memoryBytes: 16 * 1024 * 1024, ...limits },
+    ...(caps?.network !== "none" && { allowNetwork: true }),
+    ...(caps?.freshPerRun === false && { allowReusedEnvironment: true }),
+  });
+  const run = (code: string, input?: unknown, ctx: EffectContext = sandboxCtx()) =>
+    effect.execute({ scriptRef: scripts.put(code), input }, ctx);
+  return { backend, effect, scripts, fx: fixtures, run };
+}
+
+/**
+ * Escape probe (network: none). A language-level "sandbox" is not a boundary: the probe walks the
+ * realm-escape routes (`this.constructor.constructor`, `Function`, indirect `eval`, …) and fails
+ * if ANY of them reaches a host capability.
+ */
+export async function checkSandboxNoEscape(
+  backend: SandboxBackend,
+  fixtures: SandboxFixtures = JAVASCRIPT_FIXTURES
+): Promise<void> {
+  const { run, fx } = sandboxHarness(backend, fixtures);
+  for (const probe of [fx.networkProbe, fx.escapeProbe]) {
+    let result: unknown;
+    try {
+      result = await run(probe);
+    } catch (err) {
+      // Throwing because the capability does not exist is as good as reporting it unreachable.
+      expectSandboxChannel(err, "scriptError");
+      continue;
+    }
+    expect(result, "the probe reached a host capability").toEqual({ reached: false });
+  }
+}
+
+/**
+ * Fresh per run: state written by one run is absent in the next. A reused context shows up on the
+ * second run, or on the Nth when a pool of contexts is round-robined — so the probe runs
+ * {@link FRESH_SEQUENTIAL_RUNS} times in sequence and then a concurrent batch.
+ */
+export async function checkSandboxFreshPerRun(
+  backend: SandboxBackend,
+  fixtures: SandboxFixtures = JAVASCRIPT_FIXTURES
+): Promise<void> {
+  const { run, fx } = sandboxHarness(backend, fixtures);
+  for (let i = 0; i < FRESH_SEQUENTIAL_RUNS; i++) {
+    expect(
+      await run(fx.statefulProbe),
+      `sequential run ${i + 1} saw state from an earlier run`
+    ).toBe(1);
+  }
+  const batch = await Promise.all(
+    Array.from({ length: FRESH_CONCURRENT_RUNS }, () => run(fx.statefulProbe))
+  );
+  expect(batch, "a concurrent run saw state from an earlier run").toEqual(batch.map(() => 1));
+}
+
+/**
+ * Abort mid-run (wallClock: hard): a runaway script with a very long wall clock is aborted once
+ * the backend has been CALLED. The effect must settle as the caller's cancellation, AND the
+ * BACKEND's own call must settle (it stopped) within `settleTimeoutMs` — the effect cancels
+ * whatever the backend does, so the backend's stopping has to be observed separately.
+ */
+export async function checkSandboxAbortStopsBackend(
+  backend: SandboxBackend,
+  fixtures: SandboxFixtures = JAVASCRIPT_FIXTURES,
+  settleTimeoutMs = 60_000
+): Promise<void> {
+  let started!: () => void;
+  const startedP = new Promise<void>((r) => {
+    started = r;
+  });
+  let settled!: () => void;
+  const settledP = new Promise<void>((r) => {
+    settled = r;
+  });
+  const observed: SandboxBackend = {
+    capabilities: backend.capabilities,
+    evaluate: (request) => {
+      started();
+      const call = backend.evaluate(request);
+      call.then(settled, settled);
+      return call;
+    },
+  };
+  const { run, fx } = sandboxHarness(observed, fixtures, {
+    wallClockMs: ABORT_CASE_WALL_CLOCK_MS,
+  });
+  const controller = new AbortController();
+  const reason = new Error("conformance-cancelled");
+  const outcome = sandboxFailureOf(run(fx.runaway, undefined, sandboxCtx(controller.signal)));
+  await startedP;
+  controller.abort(reason);
+  expect(await outcome).toBe(reason);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // timing-bound: a hard kill / signal delivery on a remote backend; this only ever waits on the
+  // failure path (a backend that ignored the abort).
+  const gaveUp = new Promise<"gave up">((r) => {
+    timer = setTimeout(() => r("gave up"), settleTimeoutMs);
+  });
+  const result = await Promise.race([settledP.then(() => "stopped" as const), gaveUp]);
+  clearTimeout(timer);
+  expect(result, "the backend kept running after the abort (it did not stop)").toBe("stopped");
+}
+
+/**
+ * Prove a {@link SandboxBackend} (`@loom/sandbox`) conforms to the SPI (ADR 0144).
+ *
+ * `factory` is called once per case, so no state is shared between cases other than what the
+ * backend itself leaks (which is exactly what the `fresh per run` case checks). The kit calls
+ * `close()` on every backend it creates, and passes the effect `allowNetwork` /
+ * `allowReusedEnvironment` exactly when the backend's declaration needs them.
+ */
+export function runSandboxBackendConformance(
+  factory: () => SandboxBackend | Promise<SandboxBackend>,
+  options: SandboxConformanceOptions = {}
+): void {
+  const { label = "SandboxBackend", timeoutMs = 60_000 } = options;
+
+  /** Build the backend + effect, run `body`, always close. Refuses a non-JS backend without fixtures. */
+  async function withBackend(
+    body: (h: ReturnType<typeof sandboxHarness>) => Promise<void>,
+    limits: { wallClockMs?: number } = {}
+  ): Promise<void> {
+    const backend = await factory();
+    try {
+      const language = backend.capabilities?.language;
+      const fx = options.fixtures ?? (language === "javascript" ? JAVASCRIPT_FIXTURES : undefined);
+      if (fx === undefined) {
+        throw new Error(
+          `runSandboxBackendConformance: the backend declares language "${String(language)}"; pass { fixtures } with one script per case in that language (refusing to run the JavaScript scripts against it, or to pass vacuously)`
+        );
+      }
+      await body(sandboxHarness(backend, fx, limits));
+    } finally {
+      await backend.close?.();
+    }
+  }
+
+  describe(`${label} conformance (Sandbox backend SPI)`, () => {
+    it("declares complete capabilities and is accepted by the effect", async () => {
+      await withBackend(async ({ backend }) => {
+        const c = backend.capabilities;
+        expect(typeof c.language).toBe("string");
+        expect(["none", "allowlist", "open"]).toContain(c.network);
+        expect(["hard", "soft"]).toContain(c.wallClock);
+        for (const flag of [c.memory, c.cpu, c.freshPerRun]) expect(typeof flag).toBe("boolean");
+      });
+    });
+
+    it("echo: input round-trips as the result", { timeout: timeoutMs }, async () => {
+      await withBackend(async ({ run, fx }) => {
+        const input = { a: [1, 2, { b: "x" }], s: "é", n: null, t: true };
+        expect(await run(fx.echo, input)).toEqual(input);
+        // No input at all is `null`, not an error.
+        expect(await run(fx.echo)).toBeNull();
+      });
+    });
+
+    it("rich value: unicode, escapes, large integers and nesting cross the boundary exactly", async () => {
+      await withBackend(async ({ run, fx }) => {
+        // Out of the script, then in through `input` and back out again.
+        expect(await run(fx.richValueScript)).toEqual(fx.richValue);
+        expect(await run(fx.echo, fx.richValue)).toEqual(fx.richValue);
+      });
+    });
+
+    it("throw: the script's exception is a scriptError carrying its message", async () => {
+      await withBackend(async ({ run, fx }) => {
+        const err = expectSandboxChannel(await sandboxFailureOf(run(fx.throws)), "scriptError");
+        expect((err.payload as { message: string }).message).toContain(fx.throwsMessage);
+      });
+    });
+
+    it("syntax error: a script that does not parse is a scriptError", async () => {
+      await withBackend(async ({ run, fx }) => {
+        expectSandboxChannel(await sandboxFailureOf(run(fx.syntaxError)), "scriptError");
+      });
+    });
+
+    it(
+      "runaway loop: killed as limitExceeded cpu or wallClock (finishing inside the timeout is the proof)",
+      { timeout: timeoutMs },
+      async () => {
+        await withBackend(async ({ run, fx }) => {
+          const err = expectSandboxChannel(
+            await sandboxFailureOf(run(fx.runaway)),
+            "limitExceeded"
+          );
+          expect(["cpu", "wallClock"]).toContain((err.payload as { kind: string }).kind);
+        });
+      }
+    );
+
+    it(
+      "allocation bomb: killed as limitExceeded memory (when memory: true)",
+      { timeout: timeoutMs },
+      async (ctx) => {
+        await withBackend(async ({ backend, run, fx }) => {
+          if (!backend.capabilities.memory) return ctx.skip();
+          const err = expectSandboxChannel(
+            await sandboxFailureOf(run(fx.allocationBomb)),
+            "limitExceeded"
+          );
+          expect((err.payload as { kind: string }).kind).toBe("memory");
+        }, BOMB_LIMITS);
+      }
+    );
+
+    it(
+      "no network, no escape: neither the probe nor any realm-escape route reaches the host (when network: none)",
+      { timeout: timeoutMs },
+      async (ctx) => {
+        let applicable = true;
+        await withBackend(async ({ backend, fx }) => {
+          if (backend.capabilities.network !== "none") {
+            applicable = false;
+            return;
+          }
+          await checkSandboxNoEscape(backend, fx);
+        });
+        if (!applicable) ctx.skip();
+      }
+    );
+
+    it(
+      "fresh per run: 16 sequential runs and a concurrent batch of 8 each see no earlier state (when freshPerRun: true)",
+      { timeout: timeoutMs },
+      async (ctx) => {
+        let applicable = true;
+        await withBackend(async ({ backend, fx }) => {
+          if (!backend.capabilities.freshPerRun) {
+            applicable = false;
+            return;
+          }
+          await checkSandboxFreshPerRun(backend, fx);
+        });
+        if (!applicable) ctx.skip();
+      }
+    );
+
+    it(
+      "abort: an already-aborted signal yields cancellation, not a channel",
+      { timeout: timeoutMs },
+      async () => {
+        await withBackend(async ({ run, fx }) => {
+          const controller = new AbortController();
+          const reason = new Error("conformance-cancelled");
+          controller.abort(reason);
+          const err = await sandboxFailureOf(
+            run(fx.runaway, undefined, sandboxCtx(controller.signal))
+          );
+          expect(err).not.toBeInstanceOf(TypedFailure);
+          expect(err).toBe(reason);
+        });
+      }
+    );
+
+    it(
+      "abort mid-run: the backend STOPS a runaway script when aborted (when wallClock: hard)",
+      { timeout: timeoutMs },
+      async (ctx) => {
+        // A soft-clock backend is synchronous or cooperative: nothing can preempt it, so the
+        // case cannot be run honestly. Its wall clock is the only bound, and `runaway loop` proves it.
+        let applicable = true;
+        await withBackend(async ({ backend, fx }) => {
+          if (backend.capabilities.wallClock !== "hard") {
+            applicable = false;
+            return;
+          }
+          await checkSandboxAbortStopsBackend(backend, fx, timeoutMs / 2);
+        });
+        if (!applicable) ctx.skip();
+      }
+    );
+
+    it("composition (not the backend): an oversized thrown message reaches the log bounded and storable", async () => {
+      await withBackend(async ({ run, fx }) => {
+        const err = expectSandboxChannel(await sandboxFailureOf(run(fx.hugeThrow)), "scriptError");
+        const { message, name } = err.payload as { message: string; name?: string };
+        expect(message.length).toBeLessThanOrEqual(2048);
+        expect(message).not.toMatch(SANDBOX_LONE_SURROGATE);
+        expect(message).not.toContain("\u0000");
+        if (name !== undefined) expect(name.length).toBeLessThanOrEqual(128);
+      });
     });
   });
 }

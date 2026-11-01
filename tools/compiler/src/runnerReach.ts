@@ -117,11 +117,11 @@ export type StepFactoryShape =
 /**
  * First-party factories whose effect id is fixed and whose source is in a package (never followed
  * through an import). `mcp.invoke` is `MCP_INVOKE_TOOL_ID` in `@loom/plugin-mcp` and `sandbox.eval` is
- * `SANDBOX_TOOL_ID` in `@loom/plugin-sandbox`; a test pins each to its package.
+ * `SANDBOX_TOOL_ID` in `@loom/sandbox` (re-exported by `@loom/plugin-sandbox`, ADR 0144); a test pins each to its package.
  */
 export const KNOWN_STEP_FACTORIES: Readonly<Record<string, StepFactoryShape>> = {
   mcpInvoke$: { fixed: "mcp.invoke" },
-  // `sandboxEval$(id, toolId = SANDBOX_TOOL_ID)` in `@loom/plugin-sandbox`.
+  // `sandboxEval$(id, toolId = SANDBOX_TOOL_ID)` in `@loom/sandbox` (ADR 0144).
   sandboxEval$: { argIndex: 1, default: "sandbox.eval" },
 };
 
@@ -584,7 +584,7 @@ function importedNames(sf: ts.SourceFile): Map<string, { spec: string; imported:
  */
 const KNOWN_FACTORY_SOURCES: Readonly<Record<string, readonly string[]>> = {
   mcpInvoke$: ["@loom/plugin-mcp", "@loom/sdk"],
-  sandboxEval$: ["@loom/plugin-sandbox", "@loom/sdk/sandbox"],
+  sandboxEval$: ["@loom/plugin-sandbox", "@loom/sandbox", "@loom/sdk/sandbox"],
 };
 
 /** The string a literal-ish expression denotes (`"x"`, an expression-free template, `"x" as const`). */

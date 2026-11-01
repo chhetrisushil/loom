@@ -29,7 +29,8 @@
     "@loom/projection-runtime": "workspace:*",
     "@loom/worker-runtime": "workspace:*",
     "@loom/llm": "workspace:*",
-    "@loom/effect-runtime": "workspace:*"
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/sandbox": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

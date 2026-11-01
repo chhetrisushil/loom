@@ -4,7 +4,7 @@
 > the handful of things that reliably bite. Every writing command is a dry run until
 > `--apply`. Card I is [what the kernel gives you](cheatsheet-features.md).
 >
-> **19** plugin seams · **20** conformance kits (`loom plugin seams` shows which seams have one) ·
+> **20** plugin seams · **21** conformance kits (`loom plugin seams` shows which seams have one) ·
 > every log command takes `--config` or `--db` (`knowledge`, `verify`, `deploy check` are `--config` only)
 
 ## Day one
@@ -141,7 +141,7 @@ Rules the repo enforces on tests: wait on a *condition*, never a fixed `sleep`; 
 ## Authoring a plugin
 
 ```bash
-loom plugin seams              # 19 seams, and how each is wired
+loom plugin seams              # 20 seams, and how each is wired
 loom plugin new lease my-redis
 loom plugin check --publish    # npm-readiness too; needs a real @loom/conformance import AND a real run*Conformance( call
 loom plugin try --module ./dist/index.js [--preset <name>] [--options <json>] [--verbose]
@@ -151,7 +151,7 @@ loom plugin search <term>
 Seams: `store` · `dispatcher` · `telemetry` · `middleware` · `timer` · `lease` · `content` ·
 `durable-state` · `read-model` · `keystore` · `memory` · `projection` · `worker` · `llm` ·
 `authorizer` · `execution-authorizer` · `resume-authenticator` · `timer-dispatcher` ·
-`policy`.
+`policy` · `sandbox`.
 
 > **Run the conformance kit.** Every seam with one ships `run<Spi>Conformance(factory)` — it
 > covers the concurrent cases (two owners racing, re-apply, renewal after expiry) that
