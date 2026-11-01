@@ -1,6 +1,6 @@
 # ADR 0136 — Postgres snapshot state: opt-in lz4 TOAST compression, measured
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #707 (part 2 of the #706 snapshot-growth plan). The issue proposed switching
   `snapshots.state` from the default pglz TOAST compression to lz4 to shrink snapshot storage without

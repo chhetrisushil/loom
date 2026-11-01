@@ -1,6 +1,6 @@
 # ADR 0140 — Agent claim-check opt-in: `execution.claimCheck`
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #731 (step 1 of the snapshot-size plan in #730). Owner ruling: default behaviour
   is unchanged; this is OPT-IN only.

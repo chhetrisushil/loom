@@ -105,7 +105,8 @@ export const CAPABILITIES: readonly Capability[] = [
     title: "Snapshot Store SPI",
     package: "@loom/snapshot-runtime",
     level: "L5",
-    summary: "Point/latest/before snapshot SPI, bounding replay tail.",
+    summary:
+      "Point/latest/before snapshot SPI, bounding replay tail; superseded snapshots are pruned without losing a compaction checkpoint or a fork point (ADR 0134).",
     evidence: {
       versionConstant: "SNAPSHOT_STORE_SPI_VERSION",
       conformanceTest: "packages/conformance/src/index.test.ts",
@@ -117,7 +118,7 @@ export const CAPABILITIES: readonly Capability[] = [
     package: "@loom/event-runtime",
     level: "L5",
     summary:
-      "Append-only archive of the events `LogLifecycle.compact` removes (ADR 0138): compaction MOVES them, never deletes them, so archive ∪ surviving log is the original log byte-exact (in-memory / SQLite / Postgres, sealed under the log's KeyStore for an encrypting store).",
+      "Append-only archive of the events `LogLifecycle.compact` removes (ADR 0138): compaction MOVES them, never deletes them, so archive ∪ surviving log is the original log byte-exact (in-memory / SQLite / Postgres, sealed under the log's KeyStore for an encrypting store); reserved-stream trims and deletes (inbox, topic, quarantine) archive the same way before removal (ADR 0139).",
     evidence: {
       versionConstant: "ARCHIVE_STORE_SPI_VERSION",
       conformanceTest: "packages/conformance/src/index.test.ts",

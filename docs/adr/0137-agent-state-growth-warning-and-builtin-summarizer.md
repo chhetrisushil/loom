@@ -1,6 +1,6 @@
 # ADR 0137 — Agent state growth: an opt-in warning and a built-in compaction summarizer
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #721 (measurement and plan). Owner ruling: `agentLoop$` compaction stays
   OPT-IN; there is NO default behaviour change.

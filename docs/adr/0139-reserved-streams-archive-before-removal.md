@@ -1,6 +1,6 @@
 # ADR 0139 — Reserved streams archive what a trim or a delete removes
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #728, from the review of #727 ([ADR 0138](0138-compaction-archives-what-it-removes.md)). It predates that PR.
 - Builds on: [ADR 0138](0138-compaction-archives-what-it-removes.md) (the `ArchiveStore` SPI, the erasure and tenant guards, the audit reads, the sweep), [ADR 0110](0110-durable-inbox-and-receive-select.md) (the inbox streams), [ADR 0130](0130-sealed-payload-delivery-guard.md) residuals D9 (the quarantine stream).

@@ -1,6 +1,6 @@
 # ADR 0134 — Snapshot pruning: dropping superseded snapshots without losing a checkpoint or a fork point
 
-- Status: **Proposed** (2026-10-31) — implemented in the PR that carries it; accepted on merge
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
 - Date: 2026-10-31
 - Found by: GitHub issue #706 (fix 1 of 3). `SnapshotStore` only deletes via `deleteExecution`, so a
   long-lived execution keeps every snapshot it ever took (suspend, fork, and every `snapshotEvery`
