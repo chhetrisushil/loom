@@ -26,5 +26,5 @@ export {
   isValidPackageName,
   packageNameFrom,
 } from "./names";
-export { pluginFiles, listSeams, SEAM_KEYS } from "./plugin";
+export { pluginFiles, pluginNextSteps, listSeams, SEAM_KEYS } from "./plugin";
 export { FLOW_TEMPLATES, isFlowTemplate, templateNotes, type FlowTemplate } from "./flowTemplates";

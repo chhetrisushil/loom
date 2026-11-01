@@ -9,6 +9,30 @@ import { camel, pascal } from "./codegen";
 // seam, in either first-party (`@loom/plugin-*`, in `plugins/`) or third-party
 // (`loom-plugin-*`, standalone) shape.
 
+/**
+ * Join a plugin's name to a seam's noun WITHOUT repeating words: `cloudrun-sandbox` + `SandboxBackend`
+ * is `CloudrunSandboxBackend`, not `CloudrunSandboxSandboxBackend`. Words are compared as camel-case
+ * words, case-insensitively; the longest suffix of `base` that is a prefix of `noun` is shared, so
+ * `FooTimerStore` + `TimerStore` is `FooTimerStore` and a name sharing no words is plain concatenation.
+ */
+export function joinNoun(base: string, noun: string): string {
+  const words = (x: string): string[] => x.split(/(?=[A-Z])/).map((w) => w.toLowerCase());
+  const b = words(base);
+  const n = words(noun);
+  for (let k = Math.min(b.length, n.length); k > 0; k--) {
+    if (b.slice(b.length - k).join("|") === n.slice(0, k).join("|")) {
+      return (
+        base +
+        noun
+          .split(/(?=[A-Z])/)
+          .slice(k)
+          .join("")
+      );
+    }
+  }
+  return base + noun;
+}
+
 /** A replaceable seam a plugin can target. */
 interface SeamDef {
   /** CLI key, e.g. "store". */
@@ -26,7 +50,10 @@ interface SeamDef {
    * composition root says so instead of implying a config key that doesn't exist.
    */
   wiring: string;
-  /** SPI packages the plugin depends on (besides `@loom/core`). */
+  /**
+   * `@loom/*` packages the generated source imports. Per seam: `@loom/core` is listed only where
+   * the template really imports it (`templateTypes.test.ts` checks the list against the imports).
+   */
   spiDeps: string[];
   /** `@loom/conformance` runners to pre-wire, if any. */
   conformance: string[];
@@ -70,7 +97,7 @@ const SEAMS: Record<string, SeamDef> = {
         `import type { SnapshotStore } from "@loom/snapshot-runtime";`,
         `import type { CustomStorage } from "@loom/plugin-kit";`,
         "",
-        `export interface ${P}StorageOptions {`,
+        `export interface ${joinNoun(P, "StorageOptions")} {`,
         "  /** Whatever your backend needs — a URL, a directory, a token. */",
         "  url: string;",
         "  /** Also provision a branch registry for fork/branch (optional). */",
@@ -82,21 +109,21 @@ const SEAMS: Record<string, SeamDef> = {
         " * your stores constructed — so `@loom/app` never learns your backend exists and a",
         " * third-party backend wires exactly like a first-party one (ADR 0043).",
         " */",
-        `export function ${c}Storage(options: ${P}StorageOptions): CustomStorage {`,
+        `export function ${joinNoun(c, "Storage")}(options: ${joinNoun(P, "StorageOptions")}): CustomStorage {`,
         "  return {",
         '    kind: "custom",',
-        `    eventStore: new ${P}EventStore(options.url),`,
-        `    snapshotStore: new ${P}SnapshotStore(options.url),`,
+        `    eventStore: new ${joinNoun(P, "EventStore")}(options.url),`,
+        `    snapshotStore: new ${joinNoun(P, "SnapshotStore")}(options.url),`,
         "    // Compaction MOVES the events it removes here (ADR 0138): without it `compact` refuses.",
-        `    archiveStore: new ${P}ArchiveStore(options.url),`,
-        `    // ...(options.branching === true && { branchRegistry: new ${P}BranchRegistry(options.url) }),`,
+        `    archiveStore: new ${joinNoun(P, "ArchiveStore")}(options.url),`,
+        `    // ...(options.branching === true && { branchRegistry: new ${joinNoun(P, "BranchRegistry")}(options.url) }),`,
         "  };",
         "}",
         "",
         "// --- Implement the SPIs against your backend; prove them with the conformance",
         "// kit (see index.test.ts). These stubs exist only so the template type-checks. ---",
         "",
-        `export class ${P}EventStore implements EventStore {`,
+        `export class ${joinNoun(P, "EventStore")} implements EventStore {`,
         "  constructor(private readonly url: string) {}",
         "  append(): Promise<void> {",
         "    throw new Error(`not implemented (${this.url})`);",
@@ -115,7 +142,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  }",
         "}",
         "",
-        `export class ${P}ArchiveStore implements ArchiveStore {`,
+        `export class ${joinNoun(P, "ArchiveStore")} implements ArchiveStore {`,
         "  constructor(private readonly url: string) {}",
         "  append(_executionId: string, _segment: ArchiveSegment): Promise<void> {",
         "    throw new Error(`not implemented (${this.url})`);",
@@ -134,7 +161,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  }",
         "}",
         "",
-        `export class ${P}SnapshotStore implements SnapshotStore {`,
+        `export class ${joinNoun(P, "SnapshotStore")} implements SnapshotStore {`,
         "  constructor(private readonly url: string) {}",
         "  save(): Promise<void> {",
         "    throw new Error(`not implemented (${this.url})`);",
@@ -167,18 +194,18 @@ const SEAMS: Record<string, SeamDef> = {
         "//   runSnapshotStoreConformance,",
         "//   runArchiveStoreConformance,",
         '// } from "@loom/conformance";',
-        `// import { ${P}ArchiveStore, ${P}EventStore, ${P}SnapshotStore } from "./index";`,
+        `// import { ${joinNoun(P, "ArchiveStore")}, ${joinNoun(P, "EventStore")}, ${joinNoun(P, "SnapshotStore")} } from "./index";`,
         "//",
-        `// runEventStoreConformance(() => new ${P}EventStore(":memory:"));`,
-        `// runSnapshotStoreConformance(() => new ${P}SnapshotStore(":memory:"));`,
-        `// runArchiveStoreConformance(() => new ${P}ArchiveStore(":memory:"));`,
+        `// runEventStoreConformance(() => new ${joinNoun(P, "EventStore")}(":memory:"));`,
+        `// runSnapshotStoreConformance(() => new ${joinNoun(P, "SnapshotStore")}(":memory:"));`,
+        `// runArchiveStoreConformance(() => new ${joinNoun(P, "ArchiveStore")}(":memory:"));`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${c}Storage } from "./index";`,
+        `import { ${joinNoun(c, "Storage")} } from "./index";`,
         "",
-        `describe("${c}Storage preset", () => {`,
+        `describe("${joinNoun(c, "Storage")} preset", () => {`,
         '  it("returns a custom storage descriptor", () => {',
-        `    const s = ${c}Storage({ url: ":memory:" });`,
+        `    const s = ${joinNoun(c, "Storage")}({ url: ":memory:" });`,
         '    expect(s.kind).toBe("custom");',
         "    expect(s.eventStore).toBeDefined();",
         "    expect(s.snapshotStore).toBeDefined();",
@@ -208,14 +235,14 @@ const SEAMS: Record<string, SeamDef> = {
         "  ExecutionResult,",
         `} from "@loom/dispatcher";`,
         "",
-        `export interface ${P}DispatcherOptions {`,
+        `export interface ${joinNoun(P, "DispatcherOptions")} {`,
         "  /** Where/how this dispatcher places work. */",
         "  endpoint?: string;",
         "}",
         "",
         "/** An `ExecutionDispatcher`: decides WHERE an execution runs. Wire as `dispatcher`. */",
-        `export class ${P}Dispatcher implements ExecutionDispatcher {`,
-        `  constructor(private readonly options: ${P}DispatcherOptions = {}) {}`,
+        `export class ${joinNoun(P, "Dispatcher")} implements ExecutionDispatcher {`,
+        `  constructor(private readonly options: ${joinNoun(P, "DispatcherOptions")} = {}) {}`,
         "",
         "  dispatch(pkg: ExecutionPackage, _meta?: DispatchMetadata): Promise<ExecutionResult> {",
         "    throw new Error(`not implemented: dispatch ${pkg.executionId} to ${this.options.endpoint}`);",
@@ -237,15 +264,15 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove your dispatcher with the conformance kit once dispatch() is real:",
         '// import { runExecutionDispatcherConformance } from "@loom/conformance";',
-        `// import { ${P}Dispatcher } from "./index";`,
-        `// runExecutionDispatcherConformance(() => new ${P}Dispatcher());`,
+        `// import { ${joinNoun(P, "Dispatcher")} } from "./index";`,
+        `// runExecutionDispatcherConformance(() => new ${joinNoun(P, "Dispatcher")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}Dispatcher } from "./index";`,
+        `import { ${joinNoun(P, "Dispatcher")} } from "./index";`,
         "",
-        `describe("${P}Dispatcher", () => {`,
+        `describe("${joinNoun(P, "Dispatcher")}", () => {`,
         '  it("constructs and cancel() is a safe no-op", async () => {',
-        `    const d = new ${P}Dispatcher();`,
+        `    const d = new ${joinNoun(P, "Dispatcher")}();`,
         '    await expect(d.cancel("x")).resolves.toBeUndefined();',
         "  });",
         "});",
@@ -267,16 +294,16 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         `import type { TelemetryAdapter } from "@loom/telemetry";`,
         "",
-        `export interface ${P}TelemetryOptions {`,
+        `export interface ${joinNoun(P, "TelemetryOptions")} {`,
         "  /** e.g. a sink URL, a logger, a sampling rate. */",
         "  sink?: (line: string) => void;",
         "}",
         "",
         "/**",
         " * A `TelemetryAdapter`. Every hook is optional — implement the ones you care about.",
-        ` * Wire it as \`observability: { telemetry: [${c}Telemetry()] }\`; \`defineConfig\` composes multiple.`,
+        ` * Wire it as \`observability: { telemetry: [${joinNoun(c, "Telemetry")}()] }\`; \`defineConfig\` composes multiple.`,
         " */",
-        `export function ${c}Telemetry(options: ${P}TelemetryOptions = {}): TelemetryAdapter {`,
+        `export function ${joinNoun(c, "Telemetry")}(options: ${joinNoun(P, "TelemetryOptions")} = {}): TelemetryAdapter {`,
         "  const emit: (line: string) => void = options.sink ?? (() => {});",
         "  return {",
         "    onStepComplete(info) {",
@@ -295,12 +322,12 @@ const SEAMS: Record<string, SeamDef> = {
       const c = camel(name);
       return [
         'import { describe, expect, it } from "vitest";',
-        `import { ${c}Telemetry } from "./index";`,
+        `import { ${joinNoun(c, "Telemetry")} } from "./index";`,
         "",
         `describe("${P} telemetry", () => {`,
         '  it("emits on step completion", () => {',
         "    const lines: string[] = [];",
-        `    const t = ${c}Telemetry({ sink: (l) => lines.push(l) });`,
+        `    const t = ${joinNoun(c, "Telemetry")}({ sink: (l) => lines.push(l) });`,
         "    t.onStepComplete?.({",
         '      executionId: "e",',
         '      workflowId: "w",',
@@ -331,7 +358,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         `import type { EffectMiddleware } from "@loom/effect-runtime";`,
         "",
-        `export interface ${P}MiddlewareOptions {`,
+        `export interface ${joinNoun(P, "MiddlewareOptions")} {`,
         "  /** your knobs here */",
         "  label?: string;",
         "}",
@@ -339,7 +366,7 @@ const SEAMS: Record<string, SeamDef> = {
         "/**",
         " * An `EffectMiddleware` — an onion layer over every effect. `middleware[0]` is",
         " * outermost. It runs only for non-completed steps, so it is replay-safe. Wire as",
-        ` * \`execution: { effectMiddleware: [${c}Middleware()] }\`; order is behavioural, so document where`,
+        ` * \`execution: { effectMiddleware: [${joinNoun(c, "Middleware")}()] }\`; order is behavioural, so document where`,
         " * yours belongs relative to retry/metering.",
         " *",
         " * STREAMING (ADR 0119): if this middleware REJECTS or REWRITES the effect's output after",
@@ -348,7 +375,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * `deltaGuard` that checks the running text. Leave both unset only if you never alter or",
         " * refuse the output.",
         " */",
-        `export function ${c}Middleware(options: ${P}MiddlewareOptions = {}): EffectMiddleware {`,
+        `export function ${joinNoun(c, "Middleware")}(options: ${joinNoun(P, "MiddlewareOptions")} = {}): EffectMiddleware {`,
         `  const label = options.label ?? "${name}";`,
         "  return async (ctx, input, next) => {",
         "    // before: inspect ctx.stepId / ctx.attempt / ctx.emit(...)",
@@ -366,11 +393,11 @@ const SEAMS: Record<string, SeamDef> = {
       const c = camel(name);
       return [
         'import { describe, expect, it } from "vitest";',
-        `import { ${c}Middleware } from "./index";`,
+        `import { ${joinNoun(c, "Middleware")} } from "./index";`,
         "",
         `describe("${P} middleware", () => {`,
         '  it("passes the effect result through", async () => {',
-        `    const mw = ${c}Middleware();`,
+        `    const mw = ${joinNoun(c, "Middleware")}();`,
         "    const ctx = {",
         '      executionId: "e",',
         '      stepId: "s",',
@@ -401,7 +428,7 @@ const SEAMS: Record<string, SeamDef> = {
         'import type { TimerRecord, TimerStore } from "@loom/event-runtime";',
         "",
         "/** A `TimerStore` — the findable half of `ctx.sleep`. Wire as `timers: { store }`. */",
-        `export class ${P}TimerStore implements TimerStore {`,
+        `export class ${joinNoun(P, "TimerStore")} implements TimerStore {`,
         "  schedule(_timer: TimerRecord): Promise<void> {",
         '    throw new Error("not implemented");',
         "  }",
@@ -423,15 +450,15 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove your timer store with the conformance kit once the methods are real:",
         '// import { runTimerStoreConformance } from "@loom/conformance";',
-        `// import { ${P}TimerStore } from "./index";`,
-        `// runTimerStoreConformance(() => new ${P}TimerStore());`,
+        `// import { ${joinNoun(P, "TimerStore")} } from "./index";`,
+        `// runTimerStoreConformance(() => new ${joinNoun(P, "TimerStore")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}TimerStore } from "./index";`,
+        `import { ${joinNoun(P, "TimerStore")} } from "./index";`,
         "",
-        `describe("${P}TimerStore", () => {`,
+        `describe("${joinNoun(P, "TimerStore")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}TimerStore()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "TimerStore")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -477,7 +504,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * Postgres stores each do it in ONE statement, because a read-then-write is exactly the",
         " * race this is meant to close.",
         " */",
-        `export class ${P}LeaseStore implements LeaseStore {`,
+        `export class ${joinNoun(P, "LeaseStore")} implements LeaseStore {`,
         "  acquire(",
         "    _executionId: string,",
         "    _owner: string,",
@@ -513,15 +540,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// skip it: the kit covers the concurrent cases (two owners racing, renewal after",
         "// expiry, release by a non-owner) that a hand-written test usually misses.",
         '// import { runLeaseStoreConformance } from "@loom/conformance";',
-        `// import { ${P}LeaseStore } from "./index";`,
-        `// runLeaseStoreConformance(() => new ${P}LeaseStore());`,
+        `// import { ${joinNoun(P, "LeaseStore")} } from "./index";`,
+        `// runLeaseStoreConformance(() => new ${joinNoun(P, "LeaseStore")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}LeaseStore } from "./index";`,
+        `import { ${joinNoun(P, "LeaseStore")} } from "./index";`,
         "",
-        `describe("${P}LeaseStore", () => {`,
+        `describe("${joinNoun(P, "LeaseStore")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}LeaseStore()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "LeaseStore")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -553,7 +580,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * replay. `delete` is idempotent PHYSICAL erasure — it is the K10 shredding path, so",
         " * deleting what is already gone must succeed rather than object.",
         " */",
-        `export class ${P}ContentStore implements ContentStore {`,
+        `export class ${joinNoun(P, "ContentStore")} implements ContentStore {`,
         "  put(_bytes: Uint8Array): Promise<ContentRef> {",
         '    throw new Error("not implemented");',
         "  }",
@@ -589,15 +616,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// Prove it with the kit once the methods are real — it covers the idempotence that",
         "// content addressing depends on (same bytes twice, delete twice, get after delete):",
         '// import { runContentStoreConformance } from "@loom/conformance";',
-        `// import { ${P}ContentStore } from "./index";`,
-        `// runContentStoreConformance(() => new ${P}ContentStore());`,
+        `// import { ${joinNoun(P, "ContentStore")} } from "./index";`,
+        `// runContentStoreConformance(() => new ${joinNoun(P, "ContentStore")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}ContentStore } from "./index";`,
+        `import { ${joinNoun(P, "ContentStore")} } from "./index";`,
         "",
-        `describe("${P}ContentStore", () => {`,
+        `describe("${joinNoun(P, "ContentStore")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}ContentStore()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "ContentStore")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -630,7 +657,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * `load` returns `null` when the key was never written — distinct from a record whose",
         " * payload happens to be empty.",
         " */",
-        `export class ${P}DurableStateStore implements DurableStateStore {`,
+        `export class ${joinNoun(P, "DurableStateStore")} implements DurableStateStore {`,
         "  load(_key: string): Promise<DurableStateRecord | null> {",
         '    throw new Error("not implemented");',
         "  }",
@@ -656,15 +683,15 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// The kit covers the concurrent compare-and-set cases a hand-written test misses:",
         '// import { runDurableStateStoreConformance } from "@loom/conformance";',
-        `// import { ${P}DurableStateStore } from "./index";`,
-        `// runDurableStateStoreConformance(() => new ${P}DurableStateStore());`,
+        `// import { ${joinNoun(P, "DurableStateStore")} } from "./index";`,
+        `// runDurableStateStoreConformance(() => new ${joinNoun(P, "DurableStateStore")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}DurableStateStore } from "./index";`,
+        `import { ${joinNoun(P, "DurableStateStore")} } from "./index";`,
         "",
-        `describe("${P}DurableStateStore", () => {`,
+        `describe("${joinNoun(P, "DurableStateStore")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}DurableStateStore()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "DurableStateStore")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -702,7 +729,7 @@ const SEAMS: Record<string, SeamDef> = {
         " *",
         " * `query` pages by KEYSET, not offset: a read model grows while you page through it.",
         " */",
-        `export class ${P}ReadModelStore implements ReadModelStore {`,
+        `export class ${joinNoun(P, "ReadModelStore")} implements ReadModelStore {`,
         "  apply(",
         "    _modelId: string,",
         "    _executionId: string,",
@@ -736,15 +763,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// The kit covers idempotent re-apply and watermark monotonicity — the two things a",
         "// read model is wrong about silently:",
         '// import { runReadModelStoreConformance } from "@loom/conformance";',
-        `// import { ${P}ReadModelStore } from "./index";`,
-        `// runReadModelStoreConformance(() => new ${P}ReadModelStore());`,
+        `// import { ${joinNoun(P, "ReadModelStore")} } from "./index";`,
+        `// runReadModelStoreConformance(() => new ${joinNoun(P, "ReadModelStore")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}ReadModelStore } from "./index";`,
+        `import { ${joinNoun(P, "ReadModelStore")} } from "./index";`,
         "",
-        `describe("${P}ReadModelStore", () => {`,
+        `describe("${joinNoun(P, "ReadModelStore")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}ReadModelStore()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "ReadModelStore")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -780,7 +807,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * write, e.g. INSERT ... ON CONFLICT DO NOTHING then re-read), never get -> write: two racing",
         " * first calls must get the SAME key, or an erasure destroys one and the other stays readable.",
         " */",
-        `export class ${P}KeyStore implements KeyStore {`,
+        `export class ${joinNoun(P, "KeyStore")} implements KeyStore {`,
         "  getOrCreate(_subjectId: string): Promise<Buffer> {",
         '    throw new Error("not implemented");',
         "  }",
@@ -806,15 +833,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// The kit covers the irreversibility: get-after-destroy is null, and getOrCreate does",
         "// NOT resurrect a shredded subject.",
         '// import { runKeyStoreConformance } from "@loom/conformance";',
-        `// import { ${P}KeyStore } from "./index";`,
-        `// runKeyStoreConformance(() => new ${P}KeyStore());`,
+        `// import { ${joinNoun(P, "KeyStore")} } from "./index";`,
+        `// runKeyStoreConformance(() => new ${joinNoun(P, "KeyStore")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}KeyStore } from "./index";`,
+        `import { ${joinNoun(P, "KeyStore")} } from "./index";`,
         "",
-        `describe("${P}KeyStore", () => {`,
+        `describe("${joinNoun(P, "KeyStore")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}KeyStore()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "KeyStore")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -871,7 +898,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * `runMemoryStoreConformance` covers the required verbs and skips the optional",
         " * ones you have not added.",
         " */",
-        `export class ${P}MemoryStore implements MemoryStore {`,
+        `export class ${joinNoun(P, "MemoryStore")} implements MemoryStore {`,
         "  append(_key: string, _entry: MemoryEntry): Promise<void> {",
         '    throw new Error("not implemented");',
         "  }",
@@ -890,15 +917,15 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove your memory store with the conformance kit once the methods are real:",
         '// import { runMemoryStoreConformance } from "@loom/conformance";',
-        `// import { ${P}MemoryStore } from "./index";`,
-        `// runMemoryStoreConformance(() => new ${P}MemoryStore());`,
+        `// import { ${joinNoun(P, "MemoryStore")} } from "./index";`,
+        `// runMemoryStoreConformance(() => new ${joinNoun(P, "MemoryStore")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}MemoryStore } from "./index";`,
+        `import { ${joinNoun(P, "MemoryStore")} } from "./index";`,
         "",
-        `describe("${P}MemoryStore", () => {`,
+        `describe("${joinNoun(P, "MemoryStore")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}MemoryStore()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "MemoryStore")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -911,7 +938,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "ProjectionRuntime",
     title: "Projection runtime (custom read-model backend)",
     wiring: "projectionRuntime: new <Name>ProjectionRuntime()",
-    spiDeps: ["@loom/projection-runtime"],
+    spiDeps: ["@loom/core", "@loom/projection-runtime"],
     conformance: ["runProjectionRuntimeConformance"],
     index: (name) => {
       const P = pascal(name);
@@ -920,7 +947,7 @@ const SEAMS: Record<string, SeamDef> = {
         'import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";',
         "",
         "/** A `ProjectionRuntime` — folds events into read-models. Wire as `projectionRuntime`. */",
-        `export class ${P}ProjectionRuntime implements ProjectionRuntime {`,
+        `export class ${joinNoun(P, "ProjectionRuntime")} implements ProjectionRuntime {`,
         "  register<TState>(_projection: Projection<TState>): void {",
         '    throw new Error("not implemented");',
         "  }",
@@ -963,15 +990,15 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove your projection runtime with the conformance kit once methods are real:",
         '// import { runProjectionRuntimeConformance } from "@loom/conformance";',
-        `// import { ${P}ProjectionRuntime } from "./index";`,
-        `// runProjectionRuntimeConformance(() => new ${P}ProjectionRuntime());`,
+        `// import { ${joinNoun(P, "ProjectionRuntime")} } from "./index";`,
+        `// runProjectionRuntimeConformance(() => new ${joinNoun(P, "ProjectionRuntime")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}ProjectionRuntime } from "./index";`,
+        `import { ${joinNoun(P, "ProjectionRuntime")} } from "./index";`,
         "",
-        `describe("${P}ProjectionRuntime", () => {`,
+        `describe("${joinNoun(P, "ProjectionRuntime")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}ProjectionRuntime()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "ProjectionRuntime")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -998,7 +1025,7 @@ const SEAMS: Record<string, SeamDef> = {
         '} from "@loom/worker-runtime";',
         "",
         "/** A `WorkerRuntime` — runs an ExecutionPackage on some compute; wrap it in a dispatcher. */",
-        `export class ${P}Worker implements WorkerRuntime {`,
+        `export class ${joinNoun(P, "Worker")} implements WorkerRuntime {`,
         "  allocate(request: WorkerRequest): Promise<WorkerLease> {",
         "    return Promise.resolve({ leaseId: `lease-${request.executionId}` });",
         "  }",
@@ -1018,15 +1045,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// Prove your worker with the conformance kit once execute() is real — it needs a",
         "// package your worker can run, so the factory returns { worker, pkg }:",
         '// import { runWorkerRuntimeConformance } from "@loom/conformance";',
-        `// import { ${P}Worker } from "./index";`,
-        `// runWorkerRuntimeConformance(() => ({ worker: new ${P}Worker(), pkg: /* runnable ExecutionPackage */ }));`,
+        `// import { ${joinNoun(P, "Worker")} } from "./index";`,
+        `// runWorkerRuntimeConformance(() => ({ worker: new ${joinNoun(P, "Worker")}(), pkg: /* runnable ExecutionPackage */ }));`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}Worker } from "./index";`,
+        `import { ${joinNoun(P, "Worker")} } from "./index";`,
         "",
-        `describe("${P}Worker", () => {`,
+        `describe("${joinNoun(P, "Worker")}", () => {`,
         '  it("allocate returns a lease", async () => {',
-        `    const lease = await new ${P}Worker().allocate({ executionId: "e" });`,
+        `    const lease = await new ${joinNoun(P, "Worker")}().allocate({ executionId: "e" });`,
         '    expect(typeof lease.leaseId).toBe("string");',
         "  });",
         "});",
@@ -1049,14 +1076,14 @@ const SEAMS: Record<string, SeamDef> = {
         'import type { LlmCapabilities, LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";',
         "",
         "/** An `LlmProvider` — wire via `createLlmEffect({ provider })` or an agent's `provider`. */",
-        `export class ${P}Provider implements LlmProvider {`,
+        `export class ${joinNoun(P, "Provider")} implements LlmProvider {`,
         "  // Media this provider accepts (R5). ABSENT = text + tool calls only; declare e.g.",
         '  // `{ image: ["image/png", "image/jpeg"] }` and map the parts in complete().',
         "  readonly capabilities?: LlmCapabilities;",
         "",
         "  async complete(request: LlmRequest): Promise<LlmResponse> {",
         "    // Fail closed on an undeclared modality BEFORE any network call.",
-        `    assertRequestSupported(request, this.capabilities, "${P}Provider");`,
+        `    assertRequestSupported(request, this.capabilities, "${joinNoun(P, "Provider")}");`,
         "    // Message content is `string | LlmContentPart[]` — read it with `textOf` / `toParts`.",
         "    throw new Error(`not implemented: complete (${request.messages.length} messages)`);",
         "  }",
@@ -1071,19 +1098,19 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove your provider with the conformance kit once complete() is real:",
         '// import { runLlmProviderConformance } from "@loom/conformance";',
-        `// import { ${P}Provider } from "./index";`,
+        `// import { ${joinNoun(P, "Provider")} } from "./index";`,
         "//",
         "// A `toolRequest` this provider answers WITH a tool call is REQUIRED once it has",
         "// `stream` — without one the kit fails (an unproven tool-call parity is a refusal,",
         "// not a pass). A provider that never calls tools opts out with `toolRequest: null`.",
-        `// runLlmProviderConformance(() => new ${P}Provider(), "${P}Provider", { toolRequest: someToolRequest });`,
+        `// runLlmProviderConformance(() => new ${joinNoun(P, "Provider")}(), "${joinNoun(P, "Provider")}", { toolRequest: someToolRequest });`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}Provider } from "./index";`,
+        `import { ${joinNoun(P, "Provider")} } from "./index";`,
         "",
-        `describe("${P}Provider", () => {`,
+        `describe("${joinNoun(P, "Provider")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}Provider()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "Provider")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -1108,7 +1135,7 @@ const SEAMS: Record<string, SeamDef> = {
         '} from "@loom/effect-runtime";',
         "",
         "/** A `CapabilityAuthorizer` — allow/deny each effect. Wire as `authorizer`. */",
-        `export class ${P}Authorizer implements CapabilityAuthorizer {`,
+        `export class ${joinNoun(P, "Authorizer")} implements CapabilityAuthorizer {`,
         "  authorize(req: CapabilityRequest): CapabilityDecision {",
         "    // TODO: your policy. Default-deny is the safe placeholder.",
         "    return { allowed: false, reason: `not implemented (${req.toolId})` };",
@@ -1122,15 +1149,15 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove your authorizer with the conformance kit (decision shape + determinism):",
         '// import { runCapabilityAuthorizerConformance } from "@loom/conformance";',
-        `// import { ${P}Authorizer } from "./index";`,
-        `// runCapabilityAuthorizerConformance(() => new ${P}Authorizer());`,
+        `// import { ${joinNoun(P, "Authorizer")} } from "./index";`,
+        `// runCapabilityAuthorizerConformance(() => new ${joinNoun(P, "Authorizer")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}Authorizer } from "./index";`,
+        `import { ${joinNoun(P, "Authorizer")} } from "./index";`,
         "",
-        `describe("${P}Authorizer", () => {`,
+        `describe("${joinNoun(P, "Authorizer")}", () => {`,
         '  it("returns a boolean decision", () => {',
-        `    const d = new ${P}Authorizer().authorize({`,
+        `    const d = new ${joinNoun(P, "Authorizer")}().authorize({`,
         '      toolId: "t",',
         '      executionId: "e",',
         '      workflowId: "w",',
@@ -1174,7 +1201,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * denying anonymous access and allowing it are both real policies; throwing is not,",
         " * because the caller is left with no verdict to act on.",
         " */",
-        `export class ${P}ExecutionAuthorizer implements ExecutionAuthorizer {`,
+        `export class ${joinNoun(P, "ExecutionAuthorizer")} implements ExecutionAuthorizer {`,
         "  authorize(request: ExecutionAuthzRequest): ExecutionAuthzVerdict {",
         "    // TODO: your policy. Default-deny is the safe placeholder.",
         "    return { allowed: false, reason: `not implemented (${request.op})` };",
@@ -1189,15 +1216,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// The kit checks every lifecycle op is answered, determinism, and that the verdict is",
         "// synchronous — un-comment once your policy is real:",
         '// import { runExecutionAuthorizerConformance } from "@loom/conformance";',
-        `// import { ${P}ExecutionAuthorizer } from "./index";`,
-        `// runExecutionAuthorizerConformance(() => new ${P}ExecutionAuthorizer());`,
+        `// import { ${joinNoun(P, "ExecutionAuthorizer")} } from "./index";`,
+        `// runExecutionAuthorizerConformance(() => new ${joinNoun(P, "ExecutionAuthorizer")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}ExecutionAuthorizer } from "./index";`,
+        `import { ${joinNoun(P, "ExecutionAuthorizer")} } from "./index";`,
         "",
-        `describe("${P}ExecutionAuthorizer", () => {`,
+        `describe("${joinNoun(P, "ExecutionAuthorizer")}", () => {`,
         '  it("denies by default until a policy is written", () => {',
-        `    const verdict = new ${P}ExecutionAuthorizer().authorize({`,
+        `    const verdict = new ${joinNoun(P, "ExecutionAuthorizer")}().authorize({`,
         '      op: "start",',
         '      executionId: "e",',
         '      workflowId: "w",',
@@ -1244,7 +1271,7 @@ const SEAMS: Record<string, SeamDef> = {
         " *   opinion and lets the resume proceed. It is NOT a soft denial: returning it for an",
         " *   event you meant to refuse has allowed that event.",
         " */",
-        `export class ${P}ResumeAuthenticator implements ResumeAuthenticator {`,
+        `export class ${joinNoun(P, "ResumeAuthenticator")} implements ResumeAuthenticator {`,
         "  verify(event: ResumeEvent): ResumeVerdict {",
         "    // TODO: verify the signature/token over the WHOLE event — `payload` AND, when present,",
         "    // `discardLegacyAnswers` (ADR 0104: honoured only on a verified event, so a signature",
@@ -1262,15 +1289,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// The kit checks the verdict is one of the three statuses, is deterministic, and that",
         "// a rejection carries a non-empty reason:",
         '// import { runResumeAuthenticatorConformance } from "@loom/conformance";',
-        `// import { ${P}ResumeAuthenticator } from "./index";`,
-        `// runResumeAuthenticatorConformance(() => new ${P}ResumeAuthenticator());`,
+        `// import { ${joinNoun(P, "ResumeAuthenticator")} } from "./index";`,
+        `// runResumeAuthenticatorConformance(() => new ${joinNoun(P, "ResumeAuthenticator")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}ResumeAuthenticator } from "./index";`,
+        `import { ${joinNoun(P, "ResumeAuthenticator")} } from "./index";`,
         "",
-        `describe("${P}ResumeAuthenticator", () => {`,
+        `describe("${joinNoun(P, "ResumeAuthenticator")}", () => {`,
         '  it("refuses by default until the verification is written", () => {',
-        `    const verdict = new ${P}ResumeAuthenticator().verify({`,
+        `    const verdict = new ${joinNoun(P, "ResumeAuthenticator")}().verify({`,
         '      eventType: "Approved",',
         "      payload: {},",
         "    });",
@@ -1308,7 +1335,7 @@ const SEAMS: Record<string, SeamDef> = {
         " * Pass `resumeEvent` through UNCHANGED. The kernel owns the resume vocabulary (K7.5);",
         " * a transport that reinterprets it changes what the log records.",
         " */",
-        `export class ${P}TimerDispatcher implements TimerDispatcher {`,
+        `export class ${joinNoun(P, "TimerDispatcher")} implements TimerDispatcher {`,
         "  dispatch(",
         "    _pkg: {",
         "      executionId: string;",
@@ -1331,15 +1358,15 @@ const SEAMS: Record<string, SeamDef> = {
         "// The kit checks the two things a dispatcher is silently wrong about: an unknown",
         "// target must not strand the wake, and the resume event must pass through unchanged.",
         '// import { runTimerDispatcherConformance } from "@loom/conformance";',
-        `// import { ${P}TimerDispatcher } from "./index";`,
-        `// runTimerDispatcherConformance(() => new ${P}TimerDispatcher());`,
+        `// import { ${joinNoun(P, "TimerDispatcher")} } from "./index";`,
+        `// runTimerDispatcherConformance(() => new ${joinNoun(P, "TimerDispatcher")}());`,
         "",
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}TimerDispatcher } from "./index";`,
+        `import { ${joinNoun(P, "TimerDispatcher")} } from "./index";`,
         "",
-        `describe("${P}TimerDispatcher", () => {`,
+        `describe("${joinNoun(P, "TimerDispatcher")}", () => {`,
         '  it("constructs", () => {',
-        `    expect(new ${P}TimerDispatcher()).toBeDefined();`,
+        `    expect(new ${joinNoun(P, "TimerDispatcher")}()).toBeDefined();`,
         "  });",
         "});",
         "",
@@ -1380,14 +1407,14 @@ const SEAMS: Record<string, SeamDef> = {
         " *    Return 1 only if this policy is genuinely deterministic — a log written that",
         " *    way holds no counterfactuals and can never evaluate the next candidate.",
         " */",
-        `export class ${P}Policy<A = string> implements Policy<A> {`,
+        `export class ${joinNoun(P, "Policy")}<A = string> implements Policy<A> {`,
         `  readonly id = "${name}";`,
         "  /** Bump when you retrain. A policy object is one immutable snapshot. */",
         '  readonly version = "1";',
         "",
         "  select(context: PolicyContext, actions: readonly A[]): PolicyChoice<A> {",
         "    if (actions.length === 0) {",
-        `      throw new Error("${P}Policy: no actions to choose from");`,
+        `      throw new Error("${joinNoun(P, "Policy")}: no actions to choose from");`,
         "    }",
         "    // Replace with your algorithm. Train offline from `trajectories(events)`",
         "    // and ship the result as a NEW version.",
@@ -1403,19 +1430,19 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         'import { runPolicyConformance } from "@loom/conformance";',
         'import { describe, expect, it } from "vitest";',
-        `import { ${P}Policy } from "./index";`,
+        `import { ${joinNoun(P, "Policy")} } from "./index";`,
         "",
         "// The SPI kit: proves the shape and the propensity contract, never the quality",
         "// of what you choose. Pass observations representative of what you will see.",
         "runPolicyConformance<string>(",
-        `  () => new ${P}Policy<string>(),`,
+        `  () => new ${joinNoun(P, "Policy")}<string>(),`,
         '  ["a", "b", "c"],',
         "  [{ feature: 0 }, { feature: 1 }]",
         ");",
         "",
-        `describe("${P}Policy", () => {`,
+        `describe("${joinNoun(P, "Policy")}", () => {`,
         '  it("chooses from the offered actions", () => {',
-        `    expect(["a", "b"]).toContain(new ${P}Policy<string>().select({}, ["a", "b"]).action);`,
+        `    expect(["a", "b"]).toContain(new ${joinNoun(P, "Policy")}<string>().select({}, ["a", "b"]).action);`,
         "  });",
         "});",
         "",
@@ -1436,14 +1463,14 @@ const SEAMS: Record<string, SeamDef> = {
     readmeWire: (name, packageName) => [
       "```ts",
       'import { registerSandboxBackend } from "@loom/sandbox";',
-      `import { ${pascal(name)}SandboxBackend } from "${packageName}";`,
+      `import { ${joinNoun(pascal(name), "SandboxBackend")} } from "${packageName}";`,
       "",
       "// Registered from flow code, next to the content store that holds the scripts.",
       "// There is no defineConfig key for it.",
       "const effect = registerSandboxBackend(",
       "  effects,",
       "  scripts,",
-      `  new ${pascal(name)}SandboxBackend({ /* endpoint, image, … */ })`,
+      `  new ${joinNoun(pascal(name), "SandboxBackend")}({ /* endpoint, image, … */ })`,
       ");",
       "await effect.warm(); // boot",
       "await effect.close(); // shutdown",
@@ -1478,7 +1505,13 @@ const SEAMS: Record<string, SeamDef> = {
       "  the backend. Declare them `true` only for a backend that enforces the caps (an engine memory",
       "  limit, or a separate process or instance); never run an uncapped backend inside your host.",
       "",
-      "A non-JavaScript backend must pass its own `fixtures` to `runSandboxBackendConformance`.",
+      "A non-JavaScript backend must pass its own `fixtures` to `runSandboxBackendConformance`",
+      "(model them on `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in `@loom/conformance`).",
+      "",
+      "A backend that cold-starts an instance per run cannot finish the kit's `fresh per run` case",
+      "(16 sequential runs plus 8 concurrent) inside the default 60 s per-test timeout. Pass a larger",
+      "`timeoutMs` to `runSandboxBackendConformance` (e.g. `300_000`); it applies to every case, and",
+      "the run counts do not change.",
     ],
     index: (name) => {
       const P = pascal(name);
@@ -1490,7 +1523,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  SandboxRequest,",
         '} from "@loom/sandbox";',
         "",
-        `export interface ${P}SandboxBackendOptions {`,
+        `export interface ${joinNoun(P, "SandboxBackendOptions")} {`,
         "  /** Whatever your backend needs — a service URL, an image, a token source. */",
         "  endpoint?: string;",
         "}",
@@ -1507,8 +1540,11 @@ const SEAMS: Record<string, SeamDef> = {
         ' * it. The effect refuses `network` other than "none" and `freshPerRun: false` unless the',
         " * operator opts in, and then is not `idempotent`.",
         " */",
-        `export class ${P}SandboxBackend implements SandboxBackend {`,
+        `export class ${joinNoun(P, "SandboxBackend")} implements SandboxBackend {`,
         "  readonly capabilities: SandboxBackendCapabilities = {",
+        '    // "javascript" runs the kit\'s built-in fixtures. A backend for any OTHER language must',
+        "    // pass its own `fixtures` (one script per case) to runSandboxBackendConformance in",
+        "    // index.test.ts — model them on `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in @loom/conformance.",
         '    language: "javascript",',
         '    network: "open",',
         '    wallClock: "soft",',
@@ -1517,12 +1553,28 @@ const SEAMS: Record<string, SeamDef> = {
         "    freshPerRun: false,",
         "  };",
         "",
-        `  constructor(private readonly options: ${P}SandboxBackendOptions = {}) {}`,
+        `  constructor(private readonly options: ${joinNoun(P, "SandboxBackendOptions")} = {}) {}`,
         "",
         "  async evaluate(request: SandboxRequest): Promise<SandboxOutcome> {",
         "    // TODO: run `request.script` with `request.inputJson` parsed as the script's `input`,",
         "    // inside your isolation boundary, honouring `request.limits` and `request.signal`.",
         "    // Report a closed outcome: { ok: true, value } | limit | threw | inputTooLarge | infrastructure.",
+        "    //",
+        "    // A REMOTE backend (uncomment and adapt; this is the shape, not live code):",
+        "    //",
+        "    //   const res = await fetch(this.options.endpoint, {",
+        '    //     method: "POST",',
+        "    //     body: JSON.stringify({ script: request.script, input: request.inputJson }),",
+        "    //     signal: request.signal, // the effect aborts through this; a hung call must stop",
+        "    //   });",
+        "    //   // Cap what you read: a log is append-only, never buffer an unbounded body.",
+        "    //   const bytes = await readAtMost(res, MAX_RESPONSE_BYTES); // your helper",
+        "    //   if (!res.ok || bytes === undefined) {",
+        "    //     // Any unexpected response is infrastructure, with a message YOU wrote —",
+        "    //     // never the response body (it is untrusted and may carry secrets).",
+        '    //     return { ok: false, kind: "infrastructure", message: `backend returned ${res.status}` };',
+        "    //   }",
+        "    //   return parseOutcome(bytes); // map to the closed SandboxOutcome set, or infrastructure",
         "    void request;",
         "    return {",
         "      ok: false,",
@@ -1544,12 +1596,16 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         'import { runSandboxBackendConformance } from "@loom/conformance";',
-        `import { ${P}SandboxBackend } from "./index";`,
+        `import { ${joinNoun(P, "SandboxBackend")} } from "./index";`,
         "",
         "// The SPI kit: runs ADR 0064's security list through SandboxEffect — echo, throw, syntax",
         "// error, runaway loop, allocation bomb, no network, fresh per run, abort, outcome hygiene.",
-        "// It fails until evaluate() is real. For a language other than JavaScript, pass `fixtures`.",
-        `runSandboxBackendConformance(() => new ${P}SandboxBackend(), { label: "${P}SandboxBackend" });`,
+        "// It fails until evaluate() is real.",
+        "// - A language other than JavaScript: pass `fixtures` (one script per case), modelled on",
+        "//   `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in @loom/conformance.",
+        "// - A backend that cold-starts per run: pass a larger `timeoutMs` (e.g. 300_000) — the",
+        "//   `fresh per run` case makes 16 sequential + 8 concurrent runs under one timeout.",
+        `runSandboxBackendConformance(() => new ${joinNoun(P, "SandboxBackend")}(), { label: "${joinNoun(P, "SandboxBackend")}" });`,
         "",
       ].join("\n");
     },
@@ -1582,28 +1638,27 @@ export function listSeams(): string {
 }
 
 function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boolean): string {
-  // @loom/core is foundational (its types back every seam) and is always in the
-  // tsconfig references, so it is always a dependency — deduped against seam.spiDeps.
-  const spi = [...new Set(["@loom/core", ...seam.spiDeps])];
+  // Per seam: only what the template imports (a peer dependency nothing imports is a
+  // constraint on the consumer for no reason).
+  const spi = [...new Set(seam.spiDeps)];
   const version = firstParty ? "workspace:*" : "*";
   const deps: Record<string, string> = {};
   for (const d of spi) deps[d] = version;
 
   const devDeps: Record<string, string> = {};
   if (seam.conformance.length > 0) devDeps["@loom/conformance"] = version;
+  devDeps["@types/node"] = "^22.0.0";
   devDeps.typescript = "^5.6.3";
   devDeps.vitest = "^2.1.8";
-  // A template that writes `Buffer` in a signature needs node's ambient types, or the package
-  // it scaffolds does not compile — which is how `loom plugin new keystore` shipped code
-  // nobody could build. Derived from the emitted source rather than listed per seam, so a
-  // template that starts using Buffer tomorrow is covered without anyone remembering.
-  if (usesNodeGlobals(seam.index("probe"))) devDeps["@types/node"] = "^22.0.0";
+  // `@types/node` is always declared: a template that writes `Buffer` in a signature needs it
+  // to compile (which is how `loom plugin new keystore` once shipped code nobody could build),
+  // and vitest's config and any real backend reach for node's modules anyway.
 
   const pkg: Record<string, unknown> = {
     name: packageName,
     version: "0.0.0",
     ...(firstParty ? {} : { private: false }),
-    description: `A Loom ${seam.key} plugin — ${seam.title}.`,
+    description: pluginDescription(seam),
     keywords: firstParty ? ["loom", "loom-plugin"] : ["loom", "loom-plugin", `loom-${seam.key}`],
     type: "commonjs",
     main: "./dist/index.js",
@@ -1618,10 +1673,12 @@ function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boole
         default: "./dist/index.js",
       },
     },
+    ...(firstParty ? {} : { engines: { node: ">=20.0.0" }, files: ["dist"] }),
     scripts: {
       build: "tsc --build",
       test: "vitest run",
       clean: "rm -rf dist tsconfig.tsbuildinfo",
+      ...(firstParty ? { "typecheck:tests": "tsc -p tsconfig.test.json" } : {}),
     },
     ...(firstParty ? { dependencies: deps } : { peerDependencies: deps }),
     devDependencies: firstParty ? devDeps : { ...deps, ...devDeps },
@@ -1644,9 +1701,53 @@ export function usesNodeGlobals(source: string): boolean {
   return NODE_GLOBALS.test(code);
 }
 
+/**
+ * One-line description, shared by package.json and the README. Several seam titles begin with the
+ * seam's own word ("Sandbox backend (…)"), which read back-to-back after "A Loom sandbox plugin —".
+ */
+function pluginDescription(seam: SeamDef): string {
+  const norm = (x: string): string => x.toLowerCase().replace(/-/g, " ");
+  return norm(seam.title).startsWith(norm(seam.key))
+    ? `A Loom plugin — ${seam.title}.`
+    : `A Loom ${seam.key} plugin — ${seam.title}.`;
+}
+
+function pluginVitestConfig(firstParty: boolean): string {
+  if (firstParty) {
+    return 'import { loomTest } from "../../vitest.shared";\n\nexport default loomTest();\n';
+  }
+  return [
+    'import { defineConfig } from "vitest/config";',
+    "",
+    "export default defineConfig({",
+    '  resolve: { conditions: ["require", "default"] },',
+    '  test: { environment: "node" },',
+    "});",
+    "",
+  ].join("\n");
+}
+
+function pluginTsconfigTest(): string {
+  return [
+    "{",
+    '  "extends": "./tsconfig.json",',
+    '  "compilerOptions": {',
+    '    "noEmit": true,',
+    '    "composite": false,',
+    '    "declaration": false,',
+    '    "declarationMap": false,',
+    '    "sourceMap": false',
+    "  },",
+    '  "include": ["src/**/*.ts"],',
+    '  "exclude": ["node_modules", "dist"]',
+    "}",
+    "",
+  ].join("\n");
+}
+
 function pluginTsconfig(seam: SeamDef, firstParty: boolean): string {
   if (firstParty) {
-    const refs = ["@loom/core", ...seam.spiDeps].map(
+    const refs = [...new Set(seam.spiDeps)].map(
       (d) => `    { "path": "../../packages/${d.replace("@loom/", "")}" }`
     );
     return [
@@ -1688,7 +1789,9 @@ function pluginReadme(
   packageName: string,
   firstParty: boolean
 ): string {
-  const wire = seam.wiring.replace(/<name>/g, camel(name)).replace(/<Name>/g, pascal(name));
+  const wire = seam.wiring
+    .replace(/<name>/g, camel(name))
+    .replace(/<Name>([A-Za-z]*)/g, (_m, noun: string) => joinNoun(pascal(name), noun));
   const wireBlock =
     seam.readmeWire !== undefined
       ? seam.readmeWire(name, packageName)
@@ -1703,7 +1806,7 @@ function pluginReadme(
   return [
     `# ${packageName}`,
     "",
-    `A Loom **${seam.key}** plugin — ${seam.title}.`,
+    pluginDescription(seam).replace(/^A Loom (\S+) plugin/, "A Loom **$1** plugin"),
     "",
     "## Wire it",
     "",
@@ -1751,8 +1854,53 @@ export function pluginFiles(
   return {
     [`${dir}/package.json`]: pluginPackageJson(seam, packageName, opts.firstParty),
     [`${dir}/tsconfig.json`]: pluginTsconfig(seam, opts.firstParty),
+    [`${dir}/vitest.config.ts`]: pluginVitestConfig(opts.firstParty),
+    ...(opts.firstParty ? { [`${dir}/tsconfig.test.json`]: pluginTsconfigTest() } : {}),
     [`${dir}/src/index.ts`]: seam.index(name),
     [`${dir}/src/index.test.ts`]: seam.test(name),
     [`${dir}/README.md`]: pluginReadme(seam, name, packageName, opts.firstParty),
   };
+}
+
+/**
+ * The "next:" guidance `loom plugin new` prints, derived from what was generated so it cannot
+ * drift from it: whether the conformance test is live or commented out is read from the test file
+ * itself, and a third-party author is told which `@loom/*` packages need resolving.
+ */
+export function pluginNextSteps(
+  files: Record<string, string>,
+  opts: { firstParty: boolean; root: string }
+): string[] {
+  const testKey = Object.keys(files).find((f) => f.endsWith("src/index.test.ts")) ?? "";
+  const test = files[testKey] ?? "";
+  const live = /^(?!\s*\/\/).*\brun\w+Conformance\(/m.test(test);
+  const lines = [
+    "",
+    live
+      ? `next: implement the SPI in ${opts.root}/src/index.ts (the conformance test in src/index.test.ts is`
+      : `next: implement the SPI in ${opts.root}/src/index.ts, un-comment the conformance test in`,
+    live
+      ? "      already wired and fails until you do), and run your formatter (e.g. biome/prettier)."
+      : "      src/index.test.ts, and run your formatter (e.g. biome/prettier) to tidy the scaffold.",
+  ];
+  if (!opts.firstParty) {
+    const pkgKey = Object.keys(files).find((f) => f.endsWith("package.json")) ?? "";
+    const pkg = JSON.parse(files[pkgKey] ?? "{}") as Record<string, Record<string, string>>;
+    const loom = [
+      ...new Set(
+        [
+          ...Object.keys(pkg.peerDependencies ?? {}),
+          ...Object.keys(pkg.devDependencies ?? {}),
+        ].filter((d) => d.startsWith("@loom/"))
+      ),
+    ].sort();
+    lines.push(
+      "",
+      `this plugin depends on: ${loom.join(", ")}`,
+      "      If you consume an unpublished Loom checkout, your workspace needs a pnpm override",
+      "      (a `link:` path into your Loom checkout) for each of them, e.g.",
+      '      "@loom/<name>": "link:../loom/packages/<dir>" under pnpm.overrides in the root package.json.'
+    );
+  }
+  return lines;
 }
