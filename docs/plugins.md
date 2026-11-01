@@ -68,7 +68,9 @@ via a **subpath**, not the main barrel:
   `@loom/plugin-a2a`, `@loom/plugin-mcp`, `@loom/plugin-renderer-terminal`.
 - Native/heavy 1P plugins → their own subpath: `import { SqliteEventStore } from "@loom/sdk/sqlite"`,
   `import { postgresStorage } from "@loom/sdk/postgres"`,
-  `import { sandboxEval$ } from "@loom/sdk/sandbox"`.
+  `import { sandboxEval$ } from "@loom/sdk/sandbox"`. The sandbox subpath also carries the backend
+  SPI (`SandboxBackend`, `SandboxEffect`, `registerSandboxBackend`, ADR 0144); a third-party backend
+  package depends on `@loom/sandbox` directly instead, since the subpath loads QuickJS too.
 
 Plugins outside the barrel (renderers with a framework peer dependency, the compute adapters, the
 UI-protocol plugins) are imported by their own package name — being outside the barrel is a

@@ -1322,6 +1322,9 @@ importers:
       '@loom/registry':
         specifier: workspace:*
         version: link:../registry
+      '@loom/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
