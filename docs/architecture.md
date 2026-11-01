@@ -674,7 +674,7 @@ flowchart TB
 | **Composition** | `app` (`defineConfig`), `registry`, `sdk` (the public re-export barrel) |
 | **Effects** | `effect-runtime`, `middleware` |
 | **Projection / UI** | `projection-runtime`, `agent-surface`, `blueprint-runtime`, `plugin-a2ui`, `plugin-renderer-react`, `plugin-renderer-terminal`, `plugin-renderer-dom` |
-| **Agentic** | `agent`, `llm`, `reasoning`, `capability`, `intent`, `planner`, `memory`, `knowledge`, `orchestrator`, `plugin-a2a`, `plugin-mcp`, `plugin-mcp-app`, `plugin-sandbox`, `plugin-sentinel` (the perpetual-agent pattern as one preset) |
+| **Agentic** | `agent`, `llm`, `reasoning`, `capability`, `intent`, `planner`, `memory`, `knowledge`, `orchestrator`, `plugin-a2a`, `plugin-mcp`, `plugin-mcp-app`, `sandbox` (the backend SPI, ADR 0144), `plugin-sandbox`, `plugin-sentinel` (the perpetual-agent pattern as one preset) |
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `graph-executor`, `scheduler`, `plugin-worker-remote`, `plugin-worker-server`, `plugin-cloudrun` |
 | **Storage backends** | `plugin-sqlite`, `plugin-postgres`, `plugin-durable-state`, `plugin-read-model` |
 | **Governance / verification** | `spec` (the kernel manifest + layering guard), `conformance` (SPI kits), `verify`, `replay-inspector` (ADR 0071) |

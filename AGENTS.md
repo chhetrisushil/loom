@@ -111,15 +111,16 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
   default, because the two answers differ and CI wants the one that ships.
 - Vitest config lives once, in `vitest.shared.ts`; each package's
   `vitest.config.ts` is a two-line re-export so turbo can run tests per package.
-- **`pnpm build` (turbo) runs 71 separate `tsc --build` processes**, one per
+- **`pnpm build` (turbo) runs 78 separate `tsc --build` processes**, one per
   package, and per-process startup dominates: the cold profile is flat, with tiny
   packages costing nearly as much as large ones. `pnpm build:fast` is the same
-  graph in ONE process via project references. Measured on this repo:
+  graph in ONE process via project references. Timings below were measured on an earlier,
+  smaller tree (72 tasks); only the counts are current:
 
   | | `pnpm build` (turbo) | `pnpm build:fast` |
   | --- | --- | --- |
   | cold | 22.9s wall / 132.5s CPU | **6.1s / 9.8s** |
-  | after editing `@loom/core` | 8.4s (63 of 72 tasks re-ran) | **0.54s** |
+  | after editing `@loom/core` | 8.4s (63 of 72 tasks re-ran; now 69 of 78 by the task graph) | **0.54s** |
   | no-op | 0.69s (full turbo cache) | ~0.3s |
 
   Use `build:fast` for the edit-rebuild loop. `pnpm build` stays canonical because

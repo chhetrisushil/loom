@@ -1102,6 +1102,13 @@ const shaped = await ctx.run(sandboxEval$(`reshape#${i}`), {
 });
 ```
 
+`sandboxEval$` runs on `QuickJsSandboxBackend`, the reference implementation of the
+`SandboxBackend` SPI (`@loom/sandbox`, ADR 0144). To run the scripts in your own isolation
+boundary instead, implement the SPI and register it with `registerSandboxBackend`
+([Write your own sandbox](plugins.md#write-your-own-sandbox)); `sandboxEval$`, its channels and
+replay are unchanged. The result is the JSON round-trip of what the script returned (`NaN`
+becomes `null`), which is what replay returns.
+
 Per-recipient credentials ride the opaque `ctx.principal` (mapped to transport headers inside
 the effect) or a `secretRef` in the input resolved by `redactionMiddleware` — never the log
 (string tokens are rejected unless `acceptResolvedTokens: true` asserts the middleware is

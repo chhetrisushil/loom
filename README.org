@@ -26,7 +26,7 @@ TypeScript; Loom provides the durable spine that makes it trustworthy in product
 - 🎯  *Typed failure channels* — a contract declares its EXPECTED failure modes (~errors: { schemaDrift: schema }~); a ~fail(channel, payload)~ is recorded with its validated payload and *substituted on replay* like a completed result, so flows branch on failure deterministically (ADR 0060).
 - 🧮  *The interpreter pattern* — a statically compiled flow may issue ~ctx.run~ over runtime-loaded plan data (a blueprint, a runbook) and stay fully replayable under the step-identity rule (~`${id}#${index}`~, linted by the compiler; ADR 0061). ~fanout$~ gives runtime-sized deterministic parallelism.
 - 🌱  *Git-style branching* — fork an in-flight execution, simulate alternatives concurrently, and promote a winner. Branch-only, no merge.
-- 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools (incl. schema-hash-pinned *dynamic dispatch* with typed drift repair, ADR 0063), sandboxed LLM-authored code (QuickJS, ADR 0064), and agent-to-agent calls are all durable, replayable *effects*. *Reasoning* adds cheap-first model routing with confidence-based elevation; *tiered memory* adds working/semantic/procedural recall.
+- 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools (incl. schema-hash-pinned *dynamic dispatch* with typed drift repair, ADR 0063), sandboxed LLM-authored code (QuickJS by default, or your own isolation boundary via the sandbox backend SPI, ADR 0064/0144), and agent-to-agent calls are all durable, replayable *effects*. *Reasoning* adds cheap-first model routing with confidence-based elevation; *tiered memory* adds working/semantic/procedural recall.
 - 🛡️ *A real kernel* — a versioned syscall ABI, a capability *protection ring* (ungranted effects
   are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit
   breakers). Hardened end to end (K1–K12, T1–T2): behavioral safety, data-plane isolation + brokered
@@ -191,7 +191,7 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 | Tier | Location | What |
 |------+----------+------|
 | *Kernel* | ~packages/~ | mechanism + ABI: ~core~, ~event-runtime~, ~snapshot-runtime~, ~replay-vm~, ~effect-runtime~, ~workflow-runtime~, ~scheduler~, ~wire-abi~ |
-| *SPI contracts* | ~packages/~ | the seams adapters implement: ~worker-runtime~, ~projection-runtime~, ~llm~, ~blueprint-runtime~, ~registry~, ~telemetry~, ~dispatcher~ |
+| *SPI contracts* | ~packages/~ | the seams adapters implement: ~worker-runtime~, ~projection-runtime~, ~llm~, ~blueprint-runtime~, ~registry~, ~telemetry~, ~dispatcher~, ~sandbox~ |
 | *Advisory* | ~packages/~ | optional modules: ~reasoning~, ~memory~, ~agent~, ~planner~, ~intent~, ~capability~, ~saga~, ~orchestration~, ~analytics~, ~middleware~, ~app~, ~classify~ (data-sensitivity markers), ~compliance~ (GDPR subject rights), ~isolate~, ~verify~, ~spec~, ~conformance~, … |
 | *Plugins (1P adapters)* | ~plugins/~ | ~@loom/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (client + server, incl. ~mcpInvoke$~ dynamic dispatch), ~mcp-app~ (MCP Apps egress), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~a2a~, ~a2ui~, ~renderer-react~, ~renderer-terminal~, ~renderer-dom~ |
 | *Plugin authoring* | ~packages/~ | ~@loom/plugin-kit~ (typed presets), ~@loom/conformance~ (SPI conformance kits) |

@@ -1233,7 +1233,7 @@ npx loom plugin seams
 ```text
 Loom plugin seams (loom plugin new <seam> <name>):
 
-  store         Durable storage backend (EventStore + SnapshotStore [+ BranchRegistry]) (conformance ✓)
+  store         Durable storage backend (EventStore + SnapshotStore + ArchiveStore [+ BranchRegistry]) (conformance ✓)
                 wire: storage: <name>Storage({ /* … */ })
   dispatcher    Compute placement (ExecutionDispatcher) (conformance ✓)
                 wire: execution: { dispatcher: new <Name>Dispatcher({ /* … */ }) }
@@ -1260,7 +1260,7 @@ npx loom plugin new store redis                 # → loom-plugin-redis/
 npx loom plugin new store redis --first-party   # → packages/… as @loom/plugin-redis
 ```
 
-Exit `0` when at least one file was written, `1` when everything was skipped (the package already exists). For most seams the scaffold's conformance test ships commented out — un-comment it once your SPI impl is real (the `sandbox` and `policy` seams ship it live, and the printed `next:` line says which applies). For a third-party plugin the command also prints the `@loom/*` packages it depends on: an unpublished Loom checkout needs a `pnpm.overrides` `link:` entry for each (the command never edits your root `package.json`). Run your formatter over the generated files.
+Exit `0` when at least one file was written, `1` when everything was skipped (the package already exists). For most seams the scaffold's conformance test ships commented out — un-comment it once your SPI impl is real (the `sandbox` seam ships it live, and the printed `next:` line says which applies). For a third-party plugin the command also prints the `@loom/*` packages it depends on: an unpublished Loom checkout needs a `pnpm.overrides` `link:` entry for each (the command never edits your root `package.json`). Run your formatter over the generated files.
 
 ### `loom plugin check [--dir .] [--publish]`
 

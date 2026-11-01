@@ -206,7 +206,7 @@ All optional, all separate.
 | `@loom/agent-surface` | `surface(ctx)` — durable, replayable UI patches (replaces `ctx.ui`) |
 | `@loom/blueprint-runtime` + `plugin-renderer-{dom,react,terminal}` | one Blueprint IR, several renderers |
 | `plugin-a2a` · `plugin-mcp` · `plugin-a2ui` · `plugin-mcp-app` | agent-to-agent, MCP client, A2UI and MCP-App egress |
-| `plugin-sandbox` · `@loom/isolate` | run LLM-authored code / tool effects in a separate authority domain |
+| `plugin-sandbox` (+ the `@loom/sandbox` backend SPI) · `@loom/isolate` | run LLM-authored code / tool effects in a separate authority domain |
 | `plugin-sentinel` · `plugin-durable-state` | perpetual-agent preset; typed state carried across bounded runs |
 
 ## Scale and placement
