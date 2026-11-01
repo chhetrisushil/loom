@@ -4656,7 +4656,14 @@ export const JAVASCRIPT_FIXTURES: SandboxFixtures = {
   throwsMessage: "loom-conformance-boom",
   syntaxError: "function (",
   runaway: "while (true) {}",
-  allocationBomb: "(() => { const a = []; while (true) a.push(new Array(100000).fill(1)); })()",
+  // Geometric growth, so the allocation that crosses the ceiling is ONE large request that fails at
+  // once. A bomb of many small allocations creeps up to the ceiling instead, and an engine near its
+  // limit gets slow (QuickJS: 2.6 s to fail at 32 MiB on a fast laptop, vs 16 ms for this one),
+  // slow enough on a loaded CI worker to lose the race to the wall clock. `ArrayBuffer`, not a
+  // string, so a backend with a large limit is not stopped first by the engine's string-length
+  // cap; chunks stop doubling at 256 MiB so no single request is an invalid buffer length.
+  allocationBomb:
+    "(() => { const keep = []; let n = 1 << 20; while (true) { keep.push(new ArrayBuffer(n)); if (n < 1 << 28) n *= 2; } })()",
   networkProbe:
     '(() => { const names = ["fetch", "XMLHttpRequest", "WebSocket", "require", "process"]; return { reached: names.some((n) => typeof globalThis[n] !== "undefined") }; })()',
   statefulProbe:
@@ -4681,7 +4688,10 @@ export interface SandboxConformanceOptions {
   label?: string;
 }
 
-/** The bomb must hit the MEMORY ceiling first, so the clock is generous (a slow or loaded host would otherwise win the race). */
+/**
+ * The bomb must hit the MEMORY ceiling first. The fixture fails fast (one large allocation crosses
+ * the ceiling), so this clock is headroom for a remote backend or a slow host, not a race it relies on.
+ */
 const BOMB_LIMITS = { wallClockMs: 30_000 };
 
 /** Sequential runs, then a concurrent batch, for the fresh-per-run case (ADR 0144 D5). */
