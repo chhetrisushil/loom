@@ -57,7 +57,7 @@ The capability authorizer runs before any middleware, and isolation is innermost
 | Approvers | Authenticated only with a `ResumeAuthenticator` | HMAC proof bound to one park of one execution, with expiry (ADR 0117). |
 | Model output (text, tool calls, reasoning) | Untrusted | Tool names checked against the menu, inputs schema-checked, approval gates, budgets (ADR 0121). |
 | Third-party content: MCP results, A2A peers, fetched documents, remote tool descriptions | Untrusted | Tainted at ingress, refused in any instruction position (ADR 0085, 0125 D14). |
-| LLM-authored code | Untrusted | Run only in `@loom/plugin-sandbox`: QuickJS compiled to WASM with no I/O, plus an optional worker-thread pool with a hard kill (ADR 0064, 0089). |
+| LLM-authored code | Untrusted | Run only behind a `SandboxBackend` (`@loom/sandbox`): by default `@loom/plugin-sandbox`, QuickJS compiled to WASM with no I/O, plus an optional worker-thread pool with a hard kill (ADR 0064, 0089); or your own isolation boundary (ADR 0144). |
 | Other tenants | Untrusted | Key-prefixed stores, owner-checked lifecycle ops, per-tenant budgets and fair scheduling (ADR 0024, 0038, 0039). |
 | Store operator, database at rest | Partly trusted | Field-level AES-256-GCM and crypto-shred for confidentiality; hash chain with Ed25519 signatures for tamper evidence (ADR 0022, 0037). |
 | Network path between nodes | Not addressed by loom | TLS and mTLS are the deployment's job; the `authorize` hook sees `req.socket` for mTLS. |
@@ -207,7 +207,7 @@ Each model response and each tool outcome is a recorded decision, so a resume re
 
 ## 6. Isolation and code execution
 
-Loom has two isolation boundaries: a child process for untrusted tool code (`@loom/isolate`) and a capability-empty WASM VM for model-written code (`@loom/plugin-sandbox`). Both sit innermost in the effect chain, so authorization, metering and validation stay on the trusted side.
+Loom has two isolation boundaries: a child process for untrusted tool code (`@loom/isolate`) and, for model-written code, a capability-empty WASM VM (`@loom/plugin-sandbox`) or a backend you bring (`@loom/sandbox`, ADR 0144). Both sit innermost in the effect chain, so authorization, metering and validation stay on the trusted side.
 
 ### Isolated tool executor (ADR 0019, K7)
 
@@ -219,13 +219,14 @@ Loom has two isolation boundaries: a child process for untrusted tool code (`@lo
 - **Acceptance test:** a malicious tool that reads `/etc/passwd`, dials an unlisted host and appends to the event log fails all three, each as a durable fact.
 - **Stated limits:** this is hardening, not OS confinement. A hostile tool can override its runner's handlers, and hostile-code-grade confinement needs netns, seccomp or container egress rules. The allowlist is not re-checked against private IP ranges after resolution (ADR 0045 S7, deferred), so an allowlisted name that resolves to a metadata address is reachable.
 
-### Sandbox for model-authored code (ADR 0064, 0089)
+### Sandbox for model-authored code (ADR 0064, 0089, 0144)
 
-- **Engine:** QuickJS compiled to WebAssembly. A fresh runtime holds nothing but what is injected: no filesystem, network, process or timers. "No I/O" is a property of construction, not a scrub list.
+- **Engine:** the reference backend is QuickJS compiled to WebAssembly. A fresh runtime holds nothing but what is injected: no filesystem, network, process or timers. "No I/O" is a property of construction, not a scrub list.
 - **Limits:** memory limit, interrupt-based CPU budget and a wall clock, each a typed `limitExceeded { kind }` outcome. The optional worker-thread pool (`SandboxSpec.workers`) adds a hard kill at `wallClockMs + hardKillGraceMs`. It is needed because a script that never loops never yields to the interrupt handler (measured: 790 ms against a 50 ms wall clock in-process).
 - **Provenance:** scripts are content-addressed; a blueprint pins a script by hash, and a rewrite is a new version, never a mutation. Output shape is checked against a pinned hash (`shapeMismatch`).
 - **Error text is data:** script exception text is bounded (2,048 characters, no stack) and is never used as a prompt instruction.
 - One guard implementation (`evalCore.ts`) serves both engines, and the same security test list runs against both.
+- **Bring your own sandbox (ADR 0144):** a `SandboxBackend` is only the engine; `SandboxEffect` (`@loom/sandbox`) keeps the input and output ceilings, the content-address check, the typed channels, bounded error text, cancellation precedence and the JSON round-trip of the result, so a third-party backend cannot weaken them. The backend declares its `capabilities`, and the effect refuses at construction one that declares egress (`network` other than `"none"`) or a reused environment (`freshPerRun: false`) unless the operator passes `allowNetwork` / `allowReusedEnvironment`; the step is `idempotent` only for `network: "none"` with `freshPerRun: true`. A backend that never settles loses to abort and to a `wallClockMs + backendGraceMs` deadline, and whatever it throws is untyped and bounded. `runSandboxBackendConformance` (`@loom/conformance`) runs the security list through the effect, including a realm-escape probe, fresh-per-run runs and a mid-run abort. Loom vouches for QuickJS only; a third-party backend's isolation is the operator's to review.
 
 ### Developer tooling: file writes and codegen
 
@@ -351,7 +352,7 @@ Loom's guardrails are pinned by tests that include the negative case (the attack
 4. Classify schemas with `secret()`, `sensitive()` and `externalized()`; wire `security.secrets.resolver` to a vault; compose `@loom/plugin-crypto` with a KMS-backed `KeyStore` declared `durable`.
 5. Wrap stores per tenant (`TenantScopedEventStore`) and add `@loom/plugin-audit-chain` with an Ed25519 signer; verify chains before archiving.
 6. Enable `taintResults` on MCP and A2A producers; paste `UNTRUSTED_CONTENT_SYSTEM_NOTE` into system prompts; set `needsApproval` for destructive tools and declare `idempotent: false` on non-idempotent ones.
-7. Run untrusted tool code under `@loom/isolate` with an egress allowlist inside an OS sandbox or container with egress rules; run model-written code only in `@loom/plugin-sandbox` with `workers` set.
+7. Run untrusted tool code under `@loom/isolate` with an egress allowlist inside an OS sandbox or container with egress rules; run model-written code only in `@loom/plugin-sandbox` with `workers` set, or in a backend whose declared capabilities (`network: "none"`, `freshPerRun: true`, hard wall clock, memory and CPU caps) pass `runSandboxBackendConformance` against the deployed backend: a declaration is earned by the kit, not by reading it.
 8. Configure budgets, rate limits, spawn limits and a kill switch; declare per-flow deadlines.
 9. Run `loom doctor` and `@loom/verify` in CI, and treat their warnings as findings.
 
@@ -378,7 +379,7 @@ ADRs live in `docs/adr/`; each one's amendments record review findings and fixes
 | 0046, 0054, 0120 | Thin log, claim-check, media `ContentResolver` | `@loom/plugin-content`, `@loom/llm` |
 | 0048, 0084, 0073 | `policy$`, effect classes, effect mode | `@loom/app`, `@loom/verify`, `@loom/effect-runtime` |
 | 0063 | MCP dispatch, principals kept out of the log | `@loom/plugin-mcp` |
-| 0064, 0089 | WASM sandbox, worker pool hard kill | `@loom/plugin-sandbox` |
+| 0064, 0089, 0144 | WASM sandbox, worker pool hard kill, sandbox backend SPI | `@loom/plugin-sandbox`, `@loom/sandbox` |
 | 0077, 0117 | Typed resume payloads, bound and signed approvals | `@loom/workflow-runtime` |
 | 0085, 0125 | Taint and the prompt boundary, withheld third-party descriptions | `@loom/classify`, `@loom/llm`, `@loom/agent` |
 | 0104 | Recovery never answers a gate | `@loom/workflow-runtime` |

@@ -83,7 +83,7 @@ imports, so the 1P/3P distinction stays purely organisational.
 
 ### Current first-party plugins
 
-Eighteen, grouped by the seam each one fills. Storage and data first, then protocols, surfaces,
+Twenty, grouped by the seam each one fills. Storage and data first, then protocols, surfaces,
 and compute.
 
 **Storage & data**
@@ -126,7 +126,10 @@ and compute.
   are typed channels so a planner re-plans and replay never re-burns CPU. `scriptError
   { name?, message }` is the script's own throw (incl. a SyntaxError or a non-Error value),
   bounded and stack-free; worker-pool, integrity and cancellation failures stay untyped
-  ([ADR 0064](adr/0064-sandbox-eval-plugin.md)).
+  ([ADR 0064](adr/0064-sandbox-eval-plugin.md)). It is the **reference backend** of the
+  `SandboxBackend` SPI in `@loom/sandbox` (`QuickJsSandboxBackend`, in-process or worker pool;
+  QuickJS stays the default engine): to run model-written code in a different isolation boundary,
+  see [Write your own sandbox](#write-your-own-sandbox) ([ADR 0144](adr/0144-sandbox-backend-spi.md)).
 
 **Protocols**
 
@@ -290,7 +293,7 @@ Seams: `store`, `dispatcher`, `telemetry`, `middleware`, `timer`, `lease`, `cont
 `durable-state`, `read-model`, `keystore`, `memory`, `projection`, `worker`, `llm`,
 `authorizer`, `execution-authorizer`,
 `resume-authenticator`, `timer-dispatcher`, `policy`, `sandbox`. Then implement
-the SPI, un-comment the conformance test (where it ships commented out; `sandbox` and `policy` ship it live), and run your formatter.
+the SPI, un-comment the conformance test (where it ships commented out; `sandbox` ships it live), and run your formatter.
 
 **`policy` is the one seam that is not a `defineConfig` contributor.** Every other seam is
 passed to the composition root; a `Policy` ([ADR 0080](adr/0080-learning-substrate.md)) is
@@ -340,6 +343,9 @@ loom plugin new sandbox my-box
   the network layer, one request per instance, the request timeout as the hard kill, memory and CPU
   caps, no shared writable state. The scaffolded README carries this checklist.
 - `@loom/isolate` is a different thing: it runs TRUSTED tool code with brokered egress.
+- A third-party example exists: `loom-plugin-cloudrun-sandbox` in the `loom-plugins` repo (a Python
+  script on Cloud Run). It has not been verified on a real deployment and its memory cap is untested;
+  treat it as a worked example of the checklist above, not a vouched backend.
 
 Validate it against the contract at any time:
 
