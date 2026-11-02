@@ -564,7 +564,8 @@ export class SealedSnapshotScanError extends TypeError {
  * physically erase refs that are neither pinned nor load-bearing and whose
  * effective citation time is older than the TTL — i.e. only refs cited solely as an
  * envelope's `ref`. ADR 0146: a citing execution that has ENDED (newest kernel terminal event, not
- * re-opened) ages its citations from `max(citation, end)`, so a blob outlives the log citing it; a
+ * re-opened) ages its citations from `max(citation, end)`, so with a content TTL at least the log TTL a blob is
+ * never reclaimable before retention could delete the log citing it (exceptions: ADR 0146); a
  * running execution (or a reserved stream) keeps the citation clock. Never earlier than the citation. Their erasure is invisible to replay by the claim-check
  * contract (ADR 0054 — the fold never resolves); `resolveClaimCheck` readers get
  * `null`. A bare ref is never reclaimed while cited (ADR 0055 D4): the resolving

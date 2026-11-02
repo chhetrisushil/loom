@@ -1,6 +1,6 @@
 # ADR 0145 — App-owned retention policy: one validated value the existing retention passes consume
 
-- Status: **Proposed** (2026-11-02)
+- Status: **Accepted** (2026-11-02)
 - Date: 2026-11-02
 - Builds on: [ADR 0022](0022-k10-log-lifecycle-retention-redaction-encryption.md) (log lifecycle: retention,
   archive-before-delete), [ADR 0055](0055-k10-6-pin-seam-content-gc.md) (content GC),

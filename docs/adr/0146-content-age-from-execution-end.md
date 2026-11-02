@@ -1,6 +1,6 @@
 # ADR 0146 — Reclaimable content ages from the citing execution's end
 
-- Status: **Proposed** (2026-11-02)
+- Status: **Accepted** (2026-11-02)
 - Date: 2026-11-02
 - Amends: [ADR 0055](0055-k10-6-pin-seam-content-gc.md) (the sweep's clock, D2/D4) and
   [ADR 0140](0140-agent-claim-check-opt-in.md) (D6, "TTL-reclaimed"). Neither rule about WHICH refs are
