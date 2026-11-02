@@ -560,6 +560,35 @@ commits (`@loom/orchestration`); a supervised child may itself rotate, and the p
 output. `@loom/analytics`'s `chainLineage(events, id)` lists a chain's generations and head;
 `runtime.recordOutcome` on a rotated generation attaches the reward to the generation that made the decision.
 
+### Re-open a finished execution and leave it parked: `resumeAs` (ADR 0104)
+
+`resume` refuses an execution that is not `suspended` (`ResumeRefusedError`, reason `not-suspended`), so an
+ENDED run (`completed` / `failed`) cannot be re-opened with it. `resumeAs(id, newFlowId, event, { strategy })`
+can ([ADR 0104](adr/0104-recovery-never-answers-a-gate.md) D1): it appends `EXECUTION_MIGRATED`, records your
+event as a plain log entry, appends `EXECUTION_RESUMED(null)` (which re-opens the status and answers NO gate,
+because nothing is parked), then re-drives the target flow over the old log. A `cancelled` or `continued`
+execution is refused.
+
+The old log replays, so the same code simply finishes again. The re-opened run stays open only when the target
+flow has a gate the log holds no answer for: it parks at the FIRST such gate, and the resume event does not
+answer it. So "a deploy added a review stage" is the recipe: register the new flow version with one extra
+`ctx.suspend({ on: "Review" })` after the old body, then
+
+```ts
+await runtime.resumeAs(
+  executionId,
+  "report-run-reviewed", // the new flow id
+  { eventType: "Reopen", payload: { by: "operator" } }, // a kernel-namespace name is refused
+  { strategy: "operator-ack" }
+);
+// the execution is now `suspended` on "Review"; answer it later with runtime.resume(...)
+```
+
+The framework cannot supply that gate for you, because a gate is flow code. Retention treats the run as
+`not-terminal` while it is parked; a content sweep ages its reclaimable refs on the citation clock
+(`ContentSweepReport.refsOfReopened`, [ADR 0146](adr/0146-content-age-from-execution-end.md)). A runnable
+version lives in the `retention-policy` example in `loom-examples` (see [examples](examples.md)).
+
 ## Step 10 — Branch: fork / simulate / promote
 
 Explore alternative decisions from a suspension gate, compare projected outcomes, and promote a winner — git-style, no merge. Requires `storage: { branching: true }` (or a `BranchRegistry`).

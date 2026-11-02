@@ -57,14 +57,14 @@ erase stays conditional on the store's own touch clock. Proved by a seeded fuzz 
 `ContentSweepReport.refsAgedByEnd` counts unpinned refs whose effective time came from an end. A DRY RUN also
 returns `heldByEndClock`: the refs the citation clock alone would have reclaimed that the end clock keeps.
 The erasing sweep keeps no second map, so mark memory is not doubled (it holds a `viaEnd` Set, at most one entry per ref, for the metric). `loom sweep content` prints the count
-only when non-zero, so unchanged sweeps print unchanged text.
+only when non-zero, so unchanged sweeps print unchanged text. The re-opened exception below prints the same way.
 
 ### ADR 0145 consequence
 
 With a policy used by BOTH commands, `content.unpinnedAfterMs >= terminalTtlMs` now makes a reclaimable
 blob never reclaimable before retention could delete the log: it becomes reclaimable at `max(end, citation) +
 unpinnedAfterMs >= end + terminalTtlMs`, when retention makes the log eligible (same policy, numeric
-timestamps). Exceptions, where the log lives on past eligibility while the blob is reclaimed: retention gates (pinned predicate, blocked-by-branch, unsupported, unsafe-archive) can keep the log longer; a running or re-opened execution keeps the citation clock; the retention archive's copy keeps citing forever; and a legacy log compacted before the terminal event was preserved is aged by retention from its last event while the sweep finds no terminal (citation clock). It still holds only within one policy used by both commands
+timestamps). Exceptions, where the log lives on past eligibility while the blob is reclaimed: retention gates (pinned predicate, blocked-by-branch, unsupported, unsafe-archive) can keep the log longer; a running or re-opened execution keeps the citation clock (owner ruling 2026-11-02: kept on purpose, so a re-opened sentinel's telemetry still ages; the fix is VISIBILITY only: `ContentSweepReport.refsOfReopened` counts, on every sweep, the unpinned refs whose newest citation came from an execution re-opened after a terminal event, and a dry run's `reclaimedWhileReopened` lists those among `reclaimed`; a plain running or parked execution is not counted); the retention archive's copy keeps citing forever; and a legacy log compacted before the terminal event was preserved is aged by retention from its last event while the sweep finds no terminal (citation clock). It still holds only within one policy used by both commands
 (a bare `--ttl` on either breaks it), and it never protects a retained or bare ref, which no TTL reclaims.
 
 ## Alternatives

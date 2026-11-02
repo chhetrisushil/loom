@@ -178,6 +178,13 @@ export type RetentionOutcome =
   | "unsafe-archive";
 
 /**
+ * What {@link LogLifecycle.evaluate} returns: every {@link RetentionOutcome} an apply can return
+ * except `"reclaimed"`, plus `"reclaimable"` - the PREVIEW of `"reclaimed"` ("a real run would delete
+ * this"). Every other value is returned identically by `evaluate` and `applyRetention`. Type only.
+ */
+export type RetentionVerdict = Exclude<RetentionOutcome, "reclaimed"> | "reclaimable";
+
+/**
  * Thrown by {@link LogLifecycle.compact} when the event store encrypts at rest and the
  * snapshot store does not share its `KeyStore` (ADR 0022 Amendment).
  *
@@ -450,6 +457,16 @@ export class LogLifecycle {
   private readonly keep: ReadonlySet<string>;
 
   /**
+   * The pinned event KINDS this lifecycle was configured with (`options.pinnedEventTypes`), in
+   * declaration order, de-duplicated; `[]` when none. Read-only. A caller that owns the lifecycle
+   * can hand the same list to `pinByEventKinds` and `sweepUnpinnedContent` (ADR 0106) instead of
+   * restating it. A deployment that sweeps with no lifecycle keeps its own constant.
+   */
+  get pinnedEventTypes(): readonly string[] {
+    return Object.freeze([...this.keep]);
+  }
+
+  /**
    * ADR 0134 D6 - the tail of each execution's `compact`/`pruneSnapshots` chain. An
    * entry exists only while an operation is queued or running and is removed when the chain
    * drains, so the map is bounded by the executions in flight.
@@ -579,7 +596,7 @@ export class LogLifecycle {
     executionId: string,
     policy: RetentionPolicy,
     now: number
-  ): Promise<RetentionOutcome | "reclaimable"> {
+  ): Promise<RetentionVerdict> {
     assertRetentionPolicy(policy); // ADR 0145: a plain literal cannot bypass the rules
     if (this.eventStore.deleteExecution === undefined) return "unsupported";
     if (!this.archiveIsSafe()) return "unsafe-archive";
