@@ -141,11 +141,11 @@ maintain
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
-  loom retention run <store-flags> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
+  loom retention run <store-flags> (--ttl <dur|ms> | --policy <module>) [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms | --policy <module>] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
                                                   (--orphans also erases blobs NOTHING scanned
                                                    cites, so it needs the snapshot store and
                                                    every archive; with --apply and no archive
@@ -951,7 +951,7 @@ control streams (`__loom_*`) are filtered automatically. See [data classificatio
 
 **Nothing prunes on a timer** — the operator drives every sweep, and both reclaiming commands are **dry-run by default**.
 
-### `loom retention run --db <events.db> --snap <snap.db> --ttl <dur|ms> [--apply]`
+### `loom retention run --db <events.db> --snap <snap.db> (--ttl <dur|ms> | --policy <module>) [--apply]`
 
 Reclaim terminal executions older than the TTL (K10.1). **Dry run by default** — it reports
 `would-reclaim` / `kept` / `not-terminal` per execution; `--apply` performs the deletion via
@@ -968,6 +968,27 @@ npx loom retention run --db .data/events.db --snap .data/snapshots.db --ttl 90d 
 npx loom retention run --db .data/events.db --snap .data/snapshots.db --ttl 90d --apply
 ```
 
+**`--policy <module>`** (opt-in, [ADR 0145](adr/0145-app-owned-retention-policy.md)) reads the TTL from
+an app-owned retention policy instead of a flag: the module exports the value as `retention` (or as its
+default export), built with `retentionPolicy()` from `@loom/workflow-runtime`. `--ttl` still works and
+**overrides** the policy's `terminalTtlMs` (the result is validated again); with neither flag the
+command refuses as above. A `snapshots` section is validated but **not** applied by this command (use
+`LogLifecycle.pruneSnapshots`).
+
+```ts
+// retention.ts - the app owns the value; loom owns the type, the validator and the consumers
+import { retentionPolicy } from "@loom/workflow-runtime";
+
+export const retention = retentionPolicy({
+  terminalTtlMs: 90 * 86_400_000,
+  content: { unpinnedAfterMs: 90 * 86_400_000 }, // must be >= terminalTtlMs
+});
+```
+
+```bash
+npx loom retention run --db .data/events.db --snap .data/snapshots.db --policy ./retention.js
+```
+
 ### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
 
 The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md)) — content-store garbage collection for claim-check payloads whose log references have aged out.
@@ -979,6 +1000,7 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--archive-db` | no | — | also scan an archived event store, so evidence cited by findings in archived runs stays pinned |
 | `--pin` | no | — | comma-separated event **kinds** to treat as pinning |
 | `--ttl` | no | `2592000000` (30 days) | age threshold in ms |
+| `--policy` | no | — | an app-owned retention policy module ([ADR 0145](adr/0145-app-owned-retention-policy.md)): its `content.unpinnedAfterMs` is the age threshold; `--ttl` overrides it. A policy with no `content` section leaves the 30-day default. |
 | `--orphans` | no | off | also erase blobs that NO scanned event cites and that were untouched for the TTL: runs deleted without an archive, crashes between `put` and the append ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6). Needs the snapshot store (`--snap`, `--archive-snap`), because a compacted execution's prefix refs live only in its checkpoint. **Every archive must be scanned**: under `--config` the app's `durability.retention.archive` is scanned automatically; on the `--db` path pass `--archive-db`. With `--apply` and no archive the command refuses. A fork or an append that carries an existing ref touches the blob (ContentStore SPI 1.4.0 `touch`, [ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment 2), so a fork made mid-sweep is safe; `--orphans --apply` therefore refuses a `--content` store that lacks `touch` (the SQLite store has it). The touch only protects a write shorter than the TTL, so `--orphans --apply` also refuses `--ttl` below 60000 ms (`--ttl 0` included); a dry run is exempt. `--orphans --apply` also needs `--snapshots-touch-content` (below), and a `--content` store with `touchClock` as well as `touch` (the SQLite store has both). |
 | `--snapshots-touch-content` | with `--orphans --apply` | off | assert that the runtime which WROTE the snapshot stores wrapped them in `ContentTouchingSnapshotStore` (`@loom/plugin-content`, outside any encrypting snapshot store, over the same content store). A fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else; only that wrapper touches them. The CLI opens raw snapshot stores and cannot tell, so without the flag `--orphans --apply` refuses and erases nothing; a dry run is exempt. loom does not build the wrapper for you: wire it where you build your `ContentResolvingEventStore`. |
 | `--compaction-archive` / `--no-compaction-archive` | with `--orphans --apply` over a compacted log | `archive.db` beside `--db`, if it exists; under `--config` the app's `storage.archiveStore` | the compaction archive ([ADR 0138](adr/0138-compaction-archives-what-it-removes.md)): compaction MOVES events there, so a blob only an archived event cites is an orphan without it. An erasing pass over a compacted log refuses without one; `--no-compaction-archive` asserts that none exists, which alone no longer passes a compacted log: the archive's headers must cover its removed range, or `--acknowledge-unarchived` states that the history is already gone (logs compacted before the archive; fork children) and erasing their orphan blobs is accepted - the executions are printed. An explicit path that does not exist is refused, not created. |
@@ -1343,8 +1365,8 @@ npx loom plugin search postgres
 | `loom deploy check` | replay logs vs new flow defs | `--logs` *(req)*, `--config` *(req)* | resume-breaking change |
 | `loom repair terminal-event` | restore the terminal event a pre-0116 compaction left off a `[0]`+checkpoint execution so it can take a late outcome (ADR 0116) | `--config` (preferred) or `--db` + `--snap`, `--apply` | (refusals are exit `2`) |
 | `loom repair blank-stream` | re-home events the pre-0106 compaction bug wrote to `""` (ADR 0107) | `--config` (preferred) or `--db` + `--snap`, `--assign`, `--apply` | (refusals are exit `2`) |
-| `loom retention run` | reclaim aged terminal executions | store *(req)*, `--snap` (or `--config`), `--ttl` *(req)*, `--apply` | (refusals are exit `2`) |
-| `loom sweep content` | K10.6 pinned blob sweep | store *(req)*, `--content` *(req)*, `--snap`, `--archive-db`, `--archive-snap`, `--compaction-archive`, `--no-compaction-archive`, `--acknowledge-unarchived`, `--pin`, `--ttl`, `--orphans`, `--no-archive`, `--snapshots-touch-content`, `--apply` | (refusals are exit `2`) |
+| `loom retention run` | reclaim aged terminal executions | store *(req)*, `--snap` (or `--config`), `--ttl` or `--policy` *(one req)*, `--apply` | (refusals are exit `2`) |
+| `loom sweep content` | K10.6 pinned blob sweep | store *(req)*, `--content` *(req)*, `--snap`, `--archive-db`, `--archive-snap`, `--compaction-archive`, `--no-compaction-archive`, `--acknowledge-unarchived`, `--pin`, `--ttl`, `--policy`, `--orphans`, `--no-archive`, `--snapshots-touch-content`, `--apply` | (refusals are exit `2`) |
 | `loom compliance report` | data-subject inventory | store *(req)*, `--subject-path` *(req)*, `--tenant-path` | (never; a store that cannot enumerate is exit `2`) |
 | `loom knowledge sync` | reconcile a directory into a corpus | `--config` *(req)*, `--scope` *(req)*, `--dir` *(req)*, `--ext`, `--max-bytes`, `--source`, `--apply` | (usage errors are exit `2`) |
 | `loom knowledge list` | what the corpus holds | `--config` *(req)*, `--scope` *(req)* | (usage errors are exit `2`) |

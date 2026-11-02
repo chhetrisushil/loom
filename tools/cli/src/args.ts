@@ -210,15 +210,15 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     flags: { ...STORE, apply: "boolean", force: "boolean", assign: "string" },
   },
   retention: {
-    summary: "reclaim aged terminal executions (needs --ttl; dry run unless --apply)",
-    usage: ["loom retention run <store-flags> --ttl <dur|ms> [--apply]"],
+    summary: "reclaim aged terminal executions (needs --ttl or --policy; dry run unless --apply)",
+    usage: ["loom retention run <store-flags> (--ttl <dur|ms> | --policy <module>) [--apply]"],
     subcommands: ["run"],
-    flags: { ...STORE, ttl: "duration", apply: "boolean" },
+    flags: { ...STORE, ttl: "duration", policy: "string", apply: "boolean" },
   },
   sweep: {
     summary: "pinned blob sweep over content stores (dry run unless --apply)",
     usage: [
-      "loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]",
+      "loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms | --policy <module>] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]",
     ],
     subcommands: ["content"],
     flags: {
@@ -231,6 +231,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       "acknowledge-unarchived": "boolean",
       pin: "string",
       ttl: "duration",
+      policy: "string",
       apply: "boolean",
       orphans: "boolean",
       "no-archive": "boolean",

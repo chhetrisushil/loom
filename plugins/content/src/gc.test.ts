@@ -52,7 +52,10 @@ const storedAtEpoch = (): InMemoryContentStore => new InMemoryContentStore({ now
  * the store's clock is the TTL cutoff on the log's (ADR 0055 D5 keeps the two apart).
  */
 const sweepOneClock = (options: ContentSweepOptions) =>
-  sweepUnpinnedContent({ touchedBefore: options.now - options.olderThanMs, ...options });
+  sweepUnpinnedContent({
+    touchedBefore: options.now - (options.olderThanMs as number),
+    ...options,
+  });
 
 function envelopeFor(address: string): ClaimCheckEnvelope {
   return { __loomClaimCheck: true, ref: { __loomContent: address }, size: 1 };
@@ -194,6 +197,53 @@ describe("sweepUnpinnedContent (K10.6, ADR 0055)", () => {
         now: NOW,
       })
     ).rejects.toThrow(/listExecutions/);
+  });
+});
+
+describe("sweepUnpinnedContent - ADR 0145 retention policy", () => {
+  const base = (f: Awaited<ReturnType<typeof fixture>>) => ({
+    eventStores: [f.live, f.archive],
+    contentStore: f.content,
+    pinnedEventTypes: ["FINDING_RECORDED"],
+    touchedBefore: NOW - 30 * DAY,
+    now: NOW,
+  });
+
+  it("policy.content.unpinnedAfterMs reclaims exactly what the equivalent olderThanMs does", async () => {
+    const viaPolicy = await fixture();
+    const viaTtl = await fixture();
+    const a = await sweepUnpinnedContent({
+      ...base(viaPolicy),
+      policy: { content: { unpinnedAfterMs: 30 * DAY } },
+    });
+    const b = await sweepUnpinnedContent({ ...base(viaTtl), olderThanMs: 30 * DAY });
+    expect(a.reclaimed).toEqual([viaPolicy.staleTelemetry.__loomContent]);
+    expect(a.reclaimed).toEqual(b.reclaimed); // content addresses are deterministic
+    expect(a.refsSeen).toBe(b.refsSeen);
+    expect(a.refsPinned).toBe(b.refsPinned);
+    expect(await viaPolicy.content.get(viaPolicy.staleTelemetry)).toBeNull();
+    expect(await viaPolicy.content.get(viaPolicy.freshTelemetry)).not.toBeNull();
+  });
+
+  it("refuses both a TTL and a policy, and neither, with a clear error", async () => {
+    const f = await fixture();
+    await expect(
+      sweepUnpinnedContent({
+        ...base(f),
+        olderThanMs: 30 * DAY,
+        policy: { content: { unpinnedAfterMs: 30 * DAY } },
+      })
+    ).rejects.toThrow(/olderThanMs OR policy, not both/);
+    await expect(sweepUnpinnedContent(base(f))).rejects.toThrow(/needs a TTL/);
+    // Nothing was erased by either refusal.
+    expect(await f.content.get(f.staleTelemetry)).not.toBeNull();
+  });
+
+  it("a policy with no content section is an error, not a silent no-op", async () => {
+    const f = await fixture();
+    await expect(sweepUnpinnedContent({ ...base(f), policy: {} })).rejects.toThrow(
+      /policy\.content\.unpinnedAfterMs must be a finite integer > 0 \(milliseconds\); got undefined/
+    );
   });
 });
 

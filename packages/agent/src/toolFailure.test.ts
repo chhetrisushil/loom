@@ -25,6 +25,9 @@ import {
 
 /** Fed back to the model as an `isError` result. */
 const FEEDBACK = new Set([
+  // workflow-runtime (ADR 0145): an invalid retention policy is a refusal at the retention pass; it
+  // never gates a tool call
+  "RetentionPolicyError",
   // llm: a provider's non-2xx is classified by STATUS (see the LlmHttpError block below); a bare
   // instance has no status, so it is feedback
   "LlmHttpError",

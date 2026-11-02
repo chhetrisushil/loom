@@ -171,6 +171,11 @@ export {
   type RehomeProof,
   type UnattributedRun,
 } from "./blankStream";
+export {
+  assertRetentionPolicy,
+  retentionPolicy,
+  RetentionPolicyError,
+} from "./retentionPolicy";
 export { parseCron, nextOccurrence, type CronSpec } from "./cron";
 export { answerApproval, approvalViewDigest, viewDigest } from "./approvalBinding";
 export {
