@@ -581,8 +581,11 @@ export class LogLifecycle {
 
   /**
    * Journal a retention control fact to the dedicated lifecycle stream (P9: audit its own
-   * pruning). `read().length` is the next sequence only because a reserved stream is never
-   * compacted — {@link compact} refuses one (ADR 0106).
+   * pruning). The next sequence is the stream's TIP + 1, through the indexed `head()` — never
+   * `read().length`: the stream is never pruned (a reserved stream is never compacted —
+   * {@link compact} refuses one, ADR 0106), so reading it whole on every fact made deletion
+   * number k read all k−1 earlier facts, quadratic over a deployment's life, until the read
+   * outgrew a statement timeout and every `applyRetention` failed before its delete.
    */
   private async emitLifecycleFact(
     eventType: "EXECUTION_ARCHIVED" | "EXECUTION_DELETED" | "EVENTS_REHOMED",
@@ -590,19 +593,19 @@ export class LogLifecycle {
     now: number,
     detail: Record<string, unknown> = {}
   ): Promise<void> {
-    // Two lifecycle writers (a retention sweep beside a repair, say) can read the same length.
+    // Two lifecycle writers (a retention sweep beside a repair, say) can read the same tip.
     // The loser's append is a write conflict and nothing was written, so re-read and retry.
     // One imprecision, accepted: a `CoalescingEventStore` over a store without `appendBatch`
     // can hand a caller the conflict of a batch its own fact was part of AND landed in, so the
     // retry may journal that fact twice. A duplicated audit fact is harmless; a lost one is not.
     for (let attempt = 1; ; attempt++) {
-      const prior = await this.eventStore.read(LIFECYCLE_STREAM);
+      const tip = await headOf(this.eventStore, LIFECYCLE_STREAM);
       const fact: EventEnvelope = {
         id: ulid(),
         workflowId: LIFECYCLE_STREAM,
         executionId: LIFECYCLE_STREAM,
         eventType,
-        sequence: prior.length,
+        sequence: tip === null ? 0 : tip + 1,
         timestamp: now,
         payload: { executionId, ...detail },
       };

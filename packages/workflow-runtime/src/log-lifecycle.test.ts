@@ -648,3 +648,74 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     );
   });
 });
+
+describe("lifecycle facts are sequenced from the stream TIP, not a full read", () => {
+  // The lifecycle stream is reserved and never pruned. Sequencing a fact by `read().length` made
+  // deletion number k read every one of the k−1 facts before it — quadratic over the life of a
+  // deployment, and on Postgres an unbounded SELECT that eventually outgrew the statement
+  // timeout, after which every `applyRetention` threw before its delete, permanently.
+  function countingLifecycleReads(eventStore: InMemoryAsyncEventStore) {
+    const counts = { lifecycleReads: 0 };
+    const counting = Object.assign(Object.create(eventStore) as InMemoryAsyncEventStore, {
+      read: (...a: Parameters<InMemoryAsyncEventStore["read"]>) => {
+        if (a[0] === LIFECYCLE_STREAM) counts.lifecycleReads++;
+        return eventStore.read(...a);
+      },
+    });
+    return { counting, counts };
+  }
+
+  it("N deletions never read the lifecycle stream and journal dense sequences 0..2N-1", async () => {
+    const app = boot();
+    const n = 25;
+    for (let i = 0; i < n; i++) {
+      await (
+        await app.runtime.start(app.flow, { n: i }, { executionId: `tip-${i}` })
+      ).waitForCompletion();
+    }
+    const { counting, counts } = countingLifecycleReads(app.eventStore);
+    const life = new LogLifecycle(counting, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      archive: { eventStore: new InMemoryAsyncEventStore() },
+    });
+    const later = Date.now() + 1e9;
+    for (let i = 0; i < n; i++) {
+      expect(await life.applyRetention(`tip-${i}`, { terminalTtlMs: 0 }, later)).toBe("reclaimed");
+    }
+    // O(1) work per fact: the tip comes from `head()`, so the stream is never read whole.
+    expect(counts.lifecycleReads).toBe(0);
+    const facts = await app.eventStore.read(LIFECYCLE_STREAM);
+    // One ARCHIVED + one DELETED fact per execution, densely sequenced.
+    expect(facts.map((f) => f.sequence)).toEqual(Array.from({ length: 2 * n }, (_, i) => i));
+    expect(facts.filter((f) => f.eventType === "EXECUTION_DELETED")).toHaveLength(n);
+  });
+
+  it("two concurrent lifecycle writers lose no fact and share no sequence", async () => {
+    const app = boot();
+    const n = 10;
+    for (let i = 0; i < 2 * n; i++) {
+      await (
+        await app.runtime.start(app.flow, { n: i }, { executionId: `race-${i}` })
+      ).waitForCompletion();
+    }
+    const a = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
+    const b = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
+    const later = Date.now() + 1e9;
+    const sweep = async (life: LogLifecycle, parity: number) => {
+      for (let i = parity; i < 2 * n; i += 2) {
+        expect(await life.applyRetention(`race-${i}`, { terminalTtlMs: 0 }, later)).toBe(
+          "reclaimed"
+        );
+      }
+    };
+    await Promise.all([sweep(a, 0), sweep(b, 1)]);
+    const facts = await app.eventStore.read(LIFECYCLE_STREAM);
+    expect(facts.map((f) => f.sequence)).toEqual(Array.from({ length: 2 * n }, (_, i) => i));
+    const deleted = new Set(facts.map((f) => (f.payload as { executionId: string }).executionId));
+    expect(deleted.size).toBe(2 * n);
+  });
+});
