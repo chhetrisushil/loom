@@ -56,14 +56,15 @@ erase stays conditional on the store's own touch clock. Proved by a seeded fuzz 
 
 `ContentSweepReport.refsAgedByEnd` counts unpinned refs whose effective time came from an end. A DRY RUN also
 returns `heldByEndClock`: the refs the citation clock alone would have reclaimed that the end clock keeps.
-The erasing sweep keeps no second map, so mark memory is not doubled. `loom sweep content` prints the count
+The erasing sweep keeps no second map, so mark memory is not doubled (it holds a `viaEnd` Set, at most one entry per ref, for the metric). `loom sweep content` prints the count
 only when non-zero, so unchanged sweeps print unchanged text.
 
 ### ADR 0145 consequence
 
 With a policy used by BOTH commands, `content.unpinnedAfterMs >= terminalTtlMs` now makes a reclaimable
-blob outlive the log citing it: it becomes reclaimable at `max(end, citation) + unpinnedAfterMs >= end +
-terminalTtlMs`, when retention deletes the log. It still holds only within one policy used by both commands
+blob never reclaimable before retention could delete the log: it becomes reclaimable at `max(end, citation) +
+unpinnedAfterMs >= end + terminalTtlMs`, when retention makes the log eligible (same policy, numeric
+timestamps). Exceptions, where the log lives on past eligibility while the blob is reclaimed: retention gates (pinned predicate, blocked-by-branch, unsupported, unsafe-archive) can keep the log longer; a running or re-opened execution keeps the citation clock; the retention archive's copy keeps citing forever; and a legacy log compacted before the terminal event was preserved is aged by retention from its last event while the sweep finds no terminal (citation clock). It still holds only within one policy used by both commands
 (a bare `--ttl` on either breaks it), and it never protects a retained or bare ref, which no TTL reclaims.
 
 ## Alternatives
@@ -74,7 +75,7 @@ terminalTtlMs`, when retention deletes the log. It still holds only within one p
 - **Opt-in flag.** Rejected: the change is monotone-safe and fixes a real mismatch; a flag leaves the
   surprising default and a second code path.
 - **Import `terminalEndedAt` from workflow-runtime.** Rejected: it would invert layering. The four-kind check
-  is duplicated and a drift test pins it against the ReplayVM fold.
+  is duplicated and a drift test (`plugins/content/src/gc.endClock.test.ts` (l)) pins it against the ReplayVM fold.
 
 ## Consequences
 

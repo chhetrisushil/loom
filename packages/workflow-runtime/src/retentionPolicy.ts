@@ -20,8 +20,10 @@ export interface RetentionPolicy {
    * `reclaimable` is TTL-reclaimable (readers tolerate it; `resolveClaimCheck` returns null) -
    * retained blobs and bare refs are never TTL-reclaimed while cited. Per ADR 0146 the sweep ages a
    * terminal execution's citations from its END (never earlier than the citation), the instant
-   * retention measures from (ADR 0140 D6), so with this rule a reclaimable blob outlives the log
-   * citing it; a running execution keeps the citation clock. It holds only when `retention run`
+   * retention measures from (ADR 0140 D6), so with this rule a reclaimable blob is never reclaimable
+   * before retention could delete the log (numeric timestamps, same policy). Exceptions: retention gates keep a
+   * log longer, a running or re-opened execution keeps the citation clock, the retention archive's copy keeps
+   * citing, and a legacy log compacted before its terminal event was preserved uses the citation clock. It holds only when `retention run`
    * and `sweep content` use the same policy (no bare `--ttl`).
    */
   content?: { unpinnedAfterMs: number };

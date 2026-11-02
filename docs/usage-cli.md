@@ -994,8 +994,8 @@ reclaimable-telemetry window. Per [ADR 0055](adr/0055-k10-6-pin-seam-content-gc.
 envelope's own ref that the app marked `reclaimable` is TTL-reclaimed (retained blobs and bare refs never are
 while cited). Per [ADR 0146](adr/0146-content-age-from-execution-end.md) the sweep ages a terminal execution's
 citations from its end, the instant retention measures from ([ADR 0140](adr/0140-agent-claim-check-opt-in.md)
-D6), so with this rule a reclaimable blob outlives the log citing it; a running execution keeps the citation
-clock. It is checked within one policy object, so it only holds when both commands use the same policy and
+D6), so with this rule a reclaimable blob is never reclaimable before retention could delete the log (same policy,
+numeric timestamps). Exceptions: retention gates (pinned predicate, blocked-by-branch, unsupported, unsafe-archive) can keep the log longer; a running or re-opened execution keeps the citation clock; the retention archive's copy keeps citing forever; and a legacy log compacted before the terminal event was preserved is aged by retention from its last event while the sweep finds no terminal (citation clock). It is checked within one policy object, so it only holds when both commands use the same policy and
 neither is given a bare `--ttl`.
 
 ### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`

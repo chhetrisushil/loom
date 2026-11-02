@@ -782,7 +782,8 @@ async function sweepResolved(
       // ADR 0146: a terminal execution's citations age from its END (never earlier than the citation).
       const endedAt = isReservedStream(executionId) ? undefined : terminalEndOf(events);
       for (const event of events) {
-        const at = endedAt === undefined ? event.timestamp : Math.max(event.timestamp, endedAt);
+        // Only a finite end strictly after the citation moves the clock; anything else is today's clock exactly.
+        const at = endedAt !== undefined && endedAt > event.timestamp ? endedAt : event.timestamp;
         visitCitedAddresses(
           event.payload,
           (address, inEnvelope) => {
