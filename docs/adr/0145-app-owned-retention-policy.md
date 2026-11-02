@@ -127,6 +127,8 @@ start the app.
   (`BlankStreamUnrepairedError`). The section is validated and the report says it was not applied. Snapshot
   pruning stays a `LogLifecycle.pruneSnapshots` call (which does take the policy) until a snapshot-prune
   command is justified on its own.
+  (Since [ADR 0134's 2026-11-02 amendment](0134-snapshot-pruning.md), `pruneSnapshots({ dryRun })` previews the
+  count on a store with `listSequences`; the decision above, that `retention run` leaves snapshots alone, stands.)
 
 ### D6 - Opt-in, and absence changes nothing
 
