@@ -68,7 +68,12 @@ export {
   DEFAULT_MAX_CHAIN_HOPS,
   ForkPastContinuationError,
   ReservedSuccessorIdError,
+  chainOfFirstEnvelope,
   chainOfState,
+  deepestGeneration,
+  isVerifiedSuccessor,
+  routeKeepSet,
+  sameLineage,
   successorIdOf,
   type ChainIdentity,
 } from "./continuation";
