@@ -454,6 +454,15 @@ export class LogLifecycle {
        */
       pinnedEventTypes?: readonly string[];
       /**
+       * Retention pins an execution whose log holds an event of one of `pinnedEventTypes`
+       * (outcome `"pinned"`), the check `pinByEventKinds(store, kinds)` from `@loom/plugin-content`
+       * makes, read from the events retention already loaded: no second list to keep in step, no
+       * extra read. ORed with `pinned`. Compaction keeps those events in place (ADR 0106), so the
+       * check holds on a compacted log. Off by default; `true` with no `pinnedEventTypes` throws,
+       * since it would pin nothing while reading as if it did.
+       */
+      pinByEventTypes?: boolean;
+      /**
        * ADR 0106 — executions whose WHOLE log must stay uncompacted (a legal hold by tag, an
        * audit freeze): `compact` returns `null` for them, always. Distinct from `pinned`, which
        * governs retention and consults compaction only when no `pinnedEventTypes` are declared.
@@ -474,6 +483,14 @@ export class LogLifecycle {
   ) {
     assertPinnedEventTypes(options.pinnedEventTypes ?? []);
     this.keep = new Set(options.pinnedEventTypes);
+    if (options.pinByEventTypes !== undefined && typeof options.pinByEventTypes !== "boolean") {
+      throw new TypeError("LogLifecycle: pinByEventTypes must be a boolean");
+    }
+    if (options.pinByEventTypes === true && this.keep.size === 0) {
+      throw new TypeError(
+        "LogLifecycle: pinByEventTypes is true but pinnedEventTypes is empty, so it would pin nothing. Declare the pinned kinds in pinnedEventTypes."
+      );
+    }
   }
 
   /** {@link LogLifecycle} options' `pinnedEventTypes`, as a set. */
@@ -482,8 +499,9 @@ export class LogLifecycle {
   /**
    * The pinned event KINDS this lifecycle was configured with (`options.pinnedEventTypes`), in
    * declaration order, de-duplicated; `[]` when none. Read-only. A caller that owns the lifecycle
-   * can hand the same list to `pinByEventKinds` and `sweepUnpinnedContent` (ADR 0106) instead of
-   * restating it. A deployment that sweeps with no lifecycle keeps its own constant.
+   * can hand the same list to `sweepUnpinnedContent` (ADR 0106) instead of restating it; for
+   * retention's own pin, set the `pinByEventTypes` option rather than a `pinByEventKinds`
+   * predicate. A deployment that sweeps with no lifecycle keeps its own constant.
    */
   get pinnedEventTypes(): readonly string[] {
     return Object.freeze([...this.keep]);
@@ -637,6 +655,9 @@ export class LogLifecycle {
     if (await this.hasLiveDescendant(executionId)) return "blocked-by-branch";
 
     // K10.6 — the pin gate, last before anything is copied or destroyed.
+    if (this.options.pinByEventTypes === true && events.some((e) => this.keep.has(e.eventType))) {
+      return "pinned";
+    }
     if (this.options.pinned !== undefined && (await this.options.pinned(executionId)) === true) {
       return "pinned";
     }
