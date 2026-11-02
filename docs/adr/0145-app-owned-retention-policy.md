@@ -210,7 +210,9 @@ storage, no event, no SPI method and nothing on a hot path.
   over one contiguous run of heads and never again once released, so a decision made against an older, smaller head
   is still safe when the chain rotates. A perpetual child under a parked parent therefore holds `O(log H)` logs,
   not `H`. Any doubt keeps (and warns once per chain): a generation whose recorded number
-  disagrees with its id, a search that crosses a deleted member (a pre-pin gap), a head that fails
+  disagrees with its id, a search that crosses a deleted member (a pre-pin gap) when that leaves a candidate
+  outside `K(D)` below `D-1` (a gap that ends the search early enough that every candidate is kept anyway keeps
+  silently), a head that fails
   verification or has a successor, a throwing probe read. Three cases keep SILENTLY, because there is nothing to
   reason about and a warning would only add noise: the original id (always addressable), a chain whose root (generation 0) is missing, and a
   crypto-shredded log (unreadable by design and forever, as for any shredded log). The cheap, pure decision
