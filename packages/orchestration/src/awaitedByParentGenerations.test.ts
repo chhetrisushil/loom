@@ -142,7 +142,7 @@ describe("awaitedByParent - a continued child keeps routeKeepSet(head), not ever
 describe("awaitedByParent - generations fail safe (keep + warn once)", () => {
   it("a pre-pin gap in the search path (a member of E(H) deleted directly) pins every generation and warns once", async () => {
     const store = await seedChain(20);
-    await store.deleteExecution?.(idOf(7)); // 7 in E(20): the gallop now stops at 3
+    await store.deleteExecution?.(idOf(15)); // 15 in E(20): the search now ends at 14, a CONTINUED generation
     const warnings: string[] = [];
     expect(await releasable(store, 20, (m) => warnings.push(m))).toEqual([]);
     expect(warnings).toHaveLength(1);
@@ -187,6 +187,68 @@ describe("awaitedByParent - generations fail safe (keep + warn once)", () => {
     const warnings: string[] = [];
     expect(await awaitedByParent(failing, { onWarn: (m) => warnings.push(m) })(idOf(2))).toBe(true);
     expect(warnings).toEqual([]);
+  });
+
+  it("a busy head (70 events after its newest lifecycle event: the tip scan is capped) still releases exactly the complement of K(D) and does not warn", async () => {
+    const store = await seedChain(20);
+    for (let i = 0; i < 70; i++) await store.append(ev(idOf(20), 2 + i, "STEP_COMPLETED", {}));
+    const warnings: string[] = [];
+    expect(await releasable(store, 20, (m) => warnings.push(m))).toEqual(complement(20));
+    expect(warnings).toEqual([]);
+  });
+
+  it("the cheap keep decision runs first: a K(D) member skips verification (no tip read) and a doubt never names it", async () => {
+    const store = await seedChain(20);
+    await markContinued(store, 20); // head 20 is "continued": verification would doubt
+    const tipReads: string[] = [];
+    const counting = new Proxy(store, {
+      get: (t, p, r) =>
+        p === "head"
+          ? async (id: string) => {
+              tipReads.push(id);
+              return t.head(id);
+            }
+          : Reflect.get(t, p, r),
+    });
+    const warnings: string[] = [];
+    const pin = awaitedByParent(counting, { onWarn: (m) => warnings.push(m) });
+    const parentTipReads = () => tipReads.filter((id) => id === idOf(20)).length;
+    expect(routeKeepSet(20).has(7)).toBe(true);
+    expect(await pin(idOf(7))).toBe(true);
+    expect(parentTipReads()).toBe(0); // the saving: no tip scan of the head for a K member
+    expect(warnings).toEqual([]);
+    expect(routeKeepSet(20).has(2)).toBe(false);
+    expect(await pin(idOf(2))).toBe(true); // doubt: the head is continued
+    expect(parentTipReads()).toBe(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(idOf(2));
+  });
+
+  it("a rotation between the pin's head search and its decision keeps the candidate; the next pass collects against the new head", async () => {
+    const store = await seedChain(20);
+    let rotated = false;
+    const rotating = new Proxy(store, {
+      get: (t, p, r) =>
+        p === "readRange"
+          ? async (id: string, from: number, to: number) => {
+              const out = await t.readRange(id, from, to);
+              if (id === idOf(20) && !rotated) {
+                rotated = true; // the search has just found head 20; the chain rotates now
+                await markContinued(t, 20);
+                await addGeneration(t, 21);
+              }
+              return out;
+            }
+          : Reflect.get(t, p, r),
+    });
+    const warnings: string[] = [];
+    expect(await awaitedByParent(rotating, { onWarn: (m) => warnings.push(m) })(idOf(2))).toBe(
+      true
+    );
+    expect(rotated).toBe(true);
+    for (const g of await releasable(store, 21)) await store.deleteExecution?.(idOf(g));
+    expect(await deepestGeneration(0, existsIn(store))).toBe(21);
+    for (const g of routeKeepSet(21)) expect((await store.read(idOf(g))).length).toBeGreaterThan(0);
   });
 
   it("a squatter beyond the head (not a verified successor) pins and warns, and is never taken for the head", async () => {

@@ -209,12 +209,91 @@ storage, no event, no SPI method and nothing on a hot path.
   a kernel `EXECUTION_CONTINUED`) and keeps `m` iff `m >= D-1` or `routeKeepSet(D).has(m)`. A generation is needed
   over one contiguous run of heads and never again once released, so a decision made against an older, smaller head
   is still safe when the chain rotates. A perpetual child under a parked parent therefore holds `O(log H)` logs,
-  not `H`. Any doubt keeps (and warns once per chain): the original id, a generation whose recorded number
-  disagrees with its id, a missing root, a search that crosses a deleted member (a pre-pin gap), a head that fails
-  verification or has a successor, a throwing probe read. Cost: `O(log D)` point reads per candidate generation,
-  at retention time only. The kernel side adds no storage and no resume cost: a `running` head still makes one
-  existence read (`g+1`), and one retry follows a failed head verification (a walk that read `H` and found `H-1`
-  released after a rotation). Verification is unchanged, so a squatter or forged log is never routed to.
+  not `H`. Any doubt keeps (and warns once per chain): a generation whose recorded number
+  disagrees with its id, a search that crosses a deleted member (a pre-pin gap), a head that fails
+  verification or has a successor, a throwing probe read. Three cases keep SILENTLY, because there is nothing to
+  reason about and a warning would only add noise: the original id (always addressable), a chain whose root (generation 0) is missing, and a
+  crypto-shredded log (unreadable by design and forever, as for any shredded log). The cheap, pure decision
+  (`m >= D-1` or `routeKeepSet(D).has(m)`) runs FIRST, right after the head `D` is found, so a member of
+  `K(D)` skips the verification and a doubt warning never names a generation that is kept anyway. Cost: `O(log D)`
+  point reads per candidate generation, at retention time only. The kernel side adds no storage and no resume
+  cost: a `running` head still makes one existence read (`g+1`), and one retry follows a failed head
+  verification (a walk that read `H` and found `H-1` released after a rotation). Verification is unchanged, so a
+  squatter or forged log is never routed to.
+- **A busy head still releases.** The "newest lifecycle event is not a kernel CONTINUED" check scans a bounded
+  tip (64 events). A head with more events than that since its newest lifecycle event (a child that rotates by
+  event count is in that state most of each generation's life) is read as "not continued", not as a doubt. That
+  is safe by proof (c) below: release safety needs only that `D` is a real generation that passed
+  `isVerifiedSuccessor` and `sameLineage` (so the true head is `>= D`), not that `D` IS the head. Verification
+  and the `D+1`-absent check stay.
+
+  **Proofs** (the head search is `deepestGeneration` / `routeKeepSet` in `@loom/workflow-runtime`; they hold
+  for every head `H <= 2^31 - 2`, the bound of the search's `step < 2^30` guard).
+
+  *Notation.* The search gallops from `lo = 0`, `step = 1`: while `step < 2^30` and the probe at `lo + step`
+  answers yes, `lo += step` and `step *= 2`. Then `hi = lo + step` and it bisects with
+  `mid = lo + floor((hi - lo) / 2)`. `&&` short-circuits, so nothing is probed once the guard fails.
+  `Oracle_H(q)` is `[q <= H]`; `E(H)` is the set of probes answered yes under `Oracle_H`;
+  `K(H) = routeKeepSet(H) = {0, H, H-1} U E(H)`. `N = H + 1`, `trunc_t(x) = floor(x / 2^t) * 2^t`.
+
+  *Lemma 1 (gallop).* After `i` yes-answers `lo = 2^i - 1` and `step = 2^i`; the next probe `2^(i+1) - 1` answers
+  yes iff `2^(i+1) <= N`. Let `j = floor(log2 N)`. If `j < 30` the gallop stops on a no at `2^(j+1) - 1 > H`, so
+  `hi = 2^(j+1) - 1 > H`. If `j = 30`, after 30 yes-answers `step = 2^30`, the guard fails, `hi = 2^31 - 1` is
+  never probed, and `hi > H` still holds because `N < 2^31`. Either way `lo = 2^j - 1 <= H < hi` and
+  `hi - lo = 2^j`.
+
+  *Lemma 2 (bisection).* Let `r = H - (2^j - 1) = N - 2^j`, so `0 <= r < 2^j`. Invariant: when `hi - lo = 2^k`,
+  `lo = 2^j - 1 + trunc_k(r)` (true at `k = j`, since `trunc_j(r) = 0`). The midpoint `lo + 2^(k-1)` is `<= H` iff
+  bit `k-1` of `r` is set, and in both cases the new `lo = 2^j - 1 + trunc_(k-1)(r)`. At `k = 0`, `lo = H`. So
+  the search returns `H` for every `H <= 2^31 - 2`.
+
+  *Closed form.* The yes-probes are the gallop points `{2^i - 1 : 1 <= i <= j}` and
+  `{2^j - 1 + trunc_t(r) : bit t of r is set}`. Since `{trunc_t(r) : t set} U {0} = {trunc_t(r) : 0 <= t <= j}`
+  and `2^j + trunc_t(r) = trunc_t(N)` for `t <= j`: `m` is in `K(H)` iff `m = H-1`, or `m+1` is a power of two
+  `<= N`, or `m+1 = trunc_t(N)` for some `t` with `trunc_t(N) > 0` (or `m = 0`). A generation `m` with `m+1` a
+  power of two is kept forever (the gallop spine, about `log2 H` generations); any other `m` is kept for the
+  heads with `H+1` in `[m+1, m+2^v2(m+1)]` (`v2` = trailing zero bits), plus `H = m+1`. `|K(H)|` is at most
+  `2*log2(H) + 2`.
+
+  *(a) Search correctness.* Take any `known <= H`, a store holding exactly `K(H)` and nothing above `H`.
+  (1) A probe `q <= known` is answered yes WITHOUT a read, which equals `Oracle_H(q)` because `q <= known <= H`.
+  (2) A probe `q > known` is read. If the run so far matches the `Oracle_H` run: `q <= H` means `q` is a
+  yes-probe of that run, so `q` is in `E(H)`, hence in `K(H)`, hence present, so the read says yes; `q > H` is
+  absent, so the read says no. (3) By induction the run IS the `Oracle_H` run: it returns `H` (Lemma 2), reads no
+  generation `<= H` outside `E(H)`, and its reads above `H` are of absent ids. (4) Verification reads `H` and
+  `H-1`, both in `K(H)` (`H-1 = 0` is read as the chain id). The kernel's `known` is always (the addressed
+  generation `g`) + 1: `g+1` was created by the kernel and heads never decrease, so `g+1 <= H` even if `g+1` has
+  since been reclaimed (the shortcut answers it without a read, which is why survivors still reach the head).
+
+  *(b) Monotonicity.* `m <= D <= H'` and `m` in `K(H')` imply `m` in `K(D)`. Let `n = m+1`, `M = D+1`,
+  `N' = H'+1`, so `n <= M <= N'`. If `m = H'-1`, then `D` is `m` (`m` is `D`'s head) or `m+1` (`m = D-1`); either
+  way `m` is in `K(D)`. If `n` is a power of two `<= N'`, then `n <= M` puts `n` in `K(D)` by the same clause. If
+  `n = trunc_t(N')`: `trunc_t` is non-decreasing, so `n = trunc_t(n) <= trunc_t(M) <= trunc_t(N') = n`, hence
+  `trunc_t(M) = n` and `m` is in `K(D)`. (`m = 0` is in every `K`.) The closed form needs `H' <= 2^31 - 2`.
+
+  *(c) Release safety.* Invariant `I(t)`: every member of `K(H(t))` is present, `H(t)` being the true head,
+  which never decreases. Base: a chain is created contiguously. Rotation `H -> H+1`: by (b) with `D = H`, every
+  member of `K(H+1)` except `H+1` is in `K(H)`, so already present. Pin release: `m` is released only if
+  `m < D-1` and `m` is not in `K(D)`, where `D` is a present generation that passed `isVerifiedSuccessor` and
+  `sameLineage`. `x~digits` ids are created only by the kernel's `startSuccessor`; `assertCreatable` and
+  `restoreFromState` refuse them for every caller and a continued member cannot be resumed. So `D` existing
+  means `H(t) >= D` at the read and at every later time, including the deletion time. By the contrapositive of
+  (b), `m` not in `K(D)` with `m <= D` gives `m` not in `K(H')` for every `H' >= D`, in particular the head at
+  deletion time. The invariant therefore survives any interleaving: rotations in the middle of a pass,
+  concurrent passes, evaluate-then-apply. Release safety needs only "`D` is a real generation `<=` head", not
+  "`D` is the head"; the other checks (`D+1` absent, newest lifecycle event not CONTINUED, and `m >= D-1`, which
+  is redundant since `D-1, D` are in `K(D)`) are defence in depth for chains with pre-existing gaps.
+
+  *Beyond `H = 2^31 - 2`.* (a) and (b) are not claimed: the search returns `2^31 - 2` for a longer chain, the
+  kernel then steps the verified links the rest of the way (as it always could), and the pin keeps everything,
+  because its `D+1`-absent check fails.
+
+  **Residuals (accepted).** (1) A squatter planted at `H+1` of a chain whose intermediates were reclaimed fails
+  verification, so it is never routed to or trusted; the cost is liveness only (the supervisor reads such a
+  chain as "running"). (2) Retention over a raw, tenant-prefixed PHYSICAL store sees physical ids, so a child id
+  differs from `successorIdOf(logical chain)`: the pin keeps the generation and warns once per chain (fails safe,
+  noisy). Run retention over the logical store. (3) The chain analytics in `@loom/analytics` show the
+  reclaimed generations as gaps; that is the intended view of a bounded history, not a loss of the chain.
 - **Where it is wired, on by default.** `defineConfig` ORs it into `app.lifecycle`'s `pinned` (after the app's
   own `durability.retention.pinned`, never replacing it) whether or not `app.supervise` was called, and
   `loom retention run` passes it to its `LogLifecycle`. `LogLifecycle.evaluate` reports such a child as
