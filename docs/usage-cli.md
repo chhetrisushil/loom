@@ -998,7 +998,7 @@ D6), so with this rule a reclaimable blob is never reclaimable before retention 
 numeric timestamps). Exceptions: retention gates (pinned predicate, blocked-by-branch, unsupported, unsafe-archive) can keep the log longer; a running or re-opened execution keeps the citation clock; the retention archive's copy keeps citing forever; and a legacy log compacted before the terminal event was preserved is aged by retention from its last event while the sweep finds no terminal (citation clock). It is checked within one policy object, so it only holds when both commands use the same policy and
 neither is given a bare `--ttl`.
 
-### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
+### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--pin KIND,KIND] [--ttl <ms> | --policy <module>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
 
 The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md)) — content-store garbage collection for claim-check payloads whose log references have aged out.
 

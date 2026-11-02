@@ -741,6 +741,10 @@ deletes superseded snapshots in one statement (~SnapshotStore.pruneSnapshots~, S
 count. It never prunes the latest ~keepLatest~ (default 1), a compacted log's checkpoint and everything at or
 below it, a log compacted through its tip (~[0]~), a ~compactionExempt~ execution, or ~keepSequences~; so every
 fork point and every fold is unchanged (a fork may fold more events). The runtime never calls it on its own.
+~{ dryRun: true }~ resolves with the count a real call would delete and deletes nothing, through the same
+selection code; it needs the optional ~SnapshotStore.listSequences~ (SPI 1.3.0, the ADR 0134 amendment) and
+over a store without it refuses with ~SnapshotListingUnsupportedError~ (an exact count or none). ~{ policy }~
+(ADR 0145, a ~retentionPolicy()~ value) supplies ~keepLatest~ from ~policy.snapshots~; an explicit ~keepLatest~ wins.
 
 *Compaction archives what it removes (ADR 0138, ~ARCHIVE_STORE_SPI_VERSION~ 1.1.0).* ~LogLifecycle.compact~ appends the exact
 envelopes it removes to an ~ArchiveStore~, THEN saves the checkpoint, THEN truncates (a crash leaves a duplicate, never a gap), and
@@ -792,7 +796,10 @@ the tip when it keeps events, so a checkpoint is always the log's highest missin
 rule). Every kernel-written kind and every non-string is refused in ~pinnedEventTypes~. ~compact~
 consults the ~pinned~ predicate only when ~pinnedEventTypes~ is empty (then a pinned execution is
 left uncompacted); with kinds declared, a pinned execution compacts around them. ~compactionExempt~
-(consulted always) keeps a whole log uncompacted. ~compact~ refuses reserved control streams.
+(consulted always) keeps a whole log uncompacted. ~pinByEventTypes: true~ (also ~durability.retention.pinByEventTypes~)
+makes ~evaluate~ / ~applyRetention~ pin an execution whose log holds one of ~pinnedEventTypes~, so the kinds are declared
+once instead of again in a ~pinByEventKinds~ predicate (ORed with ~pinned~; off by default; ~true~ with no kinds throws);
+~lifecycle.pinnedEventTypes~ is the read-only getter for the configured kinds. ~compact~ refuses reserved control streams.
 ~shredSubject~ places its tombstone after the folded tip (pass a ~snapshotStore~, raw or the app's
 encrypting one, tenant-scoped or not; required on a compactable store) and is retry-safe, and
 ~EraseCoordinator~ takes a ~snapshotStore~ so a compacted terminal execution is not read as live. A
@@ -1037,7 +1044,7 @@ const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]         
 type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
 function installOptional<S extends object, M extends keyof S>(target: S, inner: S, plan: DecoratorPlan<S, M>, bindTo?: object): void
 function refusalsOf(store: object): ReadonlyMap<string, string>                    // what installOptional recorded as refused
-// @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution" | "loadLatestSealed" | "pruneSnapshots"), OPTIONAL_SNAPSHOT_STORE_METHODS
+// @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution" | "loadLatestSealed" | "pruneSnapshots" | "listSequences"), OPTIONAL_SNAPSHOT_STORE_METHODS
 
 class Tenant implements EventStore {
   readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;   // …one field per optional method
@@ -1063,6 +1070,8 @@ interface SnapshotStore {
   loadLatestSealed?(executionId: string): Promise<Snapshot | null>;  // optional (SPI 1.1.0, ADR 0106): at rest, never decrypted
   pruneSnapshots?(executionId: string, range: { after: number; before: number }, keep?: readonly number[]): Promise<number>;
       // optional (SPI 1.2.0, ADR 0134): delete after < sequence < before minus `keep`, one statement; the CALLER (LogLifecycle.pruneSnapshots) decides what is safe
+  listSequences?(executionId: string, range?: { after?: number; before?: number }): Promise<number[]>;
+      // optional (SPI 1.3.0, ADR 0134 amendment): the stored sequences ascending, one per snapshot, exclusive bounds, no state read; backs pruneSnapshots({ dryRun })
   close(): Promise<void>;
 }
 class InMemoryAsyncSnapshotStore { constructor(options?: { latencyMs?: number }) }
@@ -1152,7 +1161,9 @@ function sweepUnpinnedContent(options: ContentSweepOptions): Promise<ContentSwee
 interface ContentSweepOptions {
   eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[]   // live AND every archive
   contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage">
-  pinnedEventTypes: Iterable<string>; olderThanMs: number; dryRun?: boolean
+  pinnedEventTypes: Iterable<string>; dryRun?: boolean
+  olderThanMs?: number                  // EXACTLY ONE of olderThanMs / policy (ADR 0145: policy.content.unpinnedAfterMs; a policy with no content section throws)
+  policy?: RetentionPolicy
   now: number                           // LOG time: the TTL is measured back from it
   touchedBefore?: number                // STORE time: guard cutoff (default touchClock() − olderThanMs)
   snapshotStores?: readonly SnapshotLookup[]   // checkpoint + latest snapshot refs are pinned
@@ -1173,6 +1184,9 @@ interface SnapshotLookup {   // structurally a SnapshotStore; pass the live one 
 }
 interface ContentSweepReport {
   executionsScanned: number; refsSeen: number; refsPinned: number; refsLoadBearing: number
+  refsAgedByEnd: number; heldByEndClock?: string[]   // ADR 0146: aged from the citing execution's end (held list: dry run only)
+  refsOfReopened: number; reclaimedWhileReopened?: string[]   // re-opened executions keep the citation clock (list: dry run only)
+  keptByTouch: number; touchCutoff?: number   // eligible blobs the conditional erase refused (0 on a dry run), and the store-clock cutoff
   reclaimed: string[]; orphansReclaimed: string[]
   raceSafe: boolean                     // D5: false = plain delete, a mid-sweep re-cite can be lost
 }

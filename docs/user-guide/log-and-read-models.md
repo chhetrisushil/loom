@@ -134,7 +134,9 @@ an erasing `reclaimOrphans` pass refuses `olderThanMs <= 0` or a margin under 60
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
 too (ADR 0106): a pinned execution then compacts around its findings. (With no
-`pinnedEventTypes`, `lifecycle.compact` leaves an execution `pinned` pins uncompacted.) To keep
+`pinnedEventTypes`, `lifecycle.compact` leaves an execution `pinned` pins uncompacted.) Add
+`retention.pinByEventTypes: true` and retention pins an execution holding one of those kinds too, so
+the kinds are declared once instead of again in a `pinByEventKinds` predicate. To keep
 a WHOLE log uncompacted — a legal hold by tag — use `retention.compactionExempt`, which
 `compact` always consults.
 The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
