@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LogLifecycle, highestMissing } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { retentionPolicy } from "./retentionPolicy";
 import type { FlowRunner } from "./types";
 
 // ADR 0134 — `LogLifecycle.pruneSnapshots`. The contract: a snapshot is a cache over the log, so
@@ -488,5 +489,45 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
     // log alone can only use the registered version. The kept snapshot still carries v1.
     expect(await versionAt(latest, "a2")).toBe("1.0.0");
     expect(await versionAt(mid, "a1")).toBe("2.0.0");
+  });
+});
+
+describe("ADR 0145 - pruneSnapshots keepLatest from an app-owned retention policy", () => {
+  it("policy.snapshots.keepLatest prunes exactly like the explicit keepLatest", async () => {
+    const viaPolicy = boot();
+    const explicit = boot();
+    await toGate(viaPolicy, "e1", 4);
+    await toGate(explicit, "e1", 4);
+    const policy = retentionPolicy({ terminalTtlMs: 0, snapshots: { keepLatest: 2 } });
+
+    const a = await viaPolicy.lifecycle.pruneSnapshots("e1", { policy });
+    const b = await explicit.lifecycle.pruneSnapshots("e1", { keepLatest: 2 });
+
+    expect(a).toBe(b);
+    expect(a).toBeGreaterThan(0);
+    const kept = await snapshotSequences(viaPolicy, "e1");
+    expect(kept).toEqual(await snapshotSequences(explicit, "e1"));
+    expect(kept.length).toBe(2);
+  });
+
+  it("an explicit keepLatest wins over the policy", async () => {
+    const app = boot();
+    await toGate(app, "e1", 4);
+    const policy = retentionPolicy({ terminalTtlMs: 0, snapshots: { keepLatest: 3 } });
+    await app.lifecycle.pruneSnapshots("e1", { policy, keepLatest: 1 });
+    expect((await snapshotSequences(app, "e1")).length).toBe(1);
+  });
+
+  it("a policy without a snapshots section changes nothing: the default (keep 1) applies", async () => {
+    const withPolicy = boot();
+    const plain = boot();
+    await toGate(withPolicy, "e1", 4);
+    await toGate(plain, "e1", 4);
+    const a = await withPolicy.lifecycle.pruneSnapshots("e1", {
+      policy: retentionPolicy({ terminalTtlMs: 0 }),
+    });
+    const b = await plain.lifecycle.pruneSnapshots("e1");
+    expect(a).toBe(b);
+    expect(await snapshotSequences(withPolicy, "e1")).toEqual(await snapshotSequences(plain, "e1"));
   });
 });

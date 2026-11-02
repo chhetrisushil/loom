@@ -1,5 +1,5 @@
 import { isReservedStream, iterateExecutionIds } from "@loom/event-runtime";
-import { LogLifecycle } from "@loom/workflow-runtime";
+import { LogLifecycle, type RetentionPolicy } from "@loom/workflow-runtime";
 import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
 
@@ -32,9 +32,15 @@ function tally(outcomes: string[]): string {
  * terminal executions older than the TTL. Dry run unless `--apply`.
  */
 export async function cmdRetentionRun(
-  flags: StoreFlags & { ttlMs: number; apply: boolean }
+  flags: StoreFlags & {
+    ttlMs: number;
+    apply: boolean;
+    /** ADR 0145: the validated app policy `--policy` loaded; its `terminalTtlMs` equals `ttlMs`. */
+    policy?: RetentionPolicy;
+  }
 ): Promise<string> {
   const { ttlMs, apply } = flags;
+  const policy: RetentionPolicy = flags.policy ?? { terminalTtlMs: ttlMs };
   const stores = await resolveStores(flags);
   const events = stores.eventStore;
   const branchRegistry = stores.branchRegistry;
@@ -76,8 +82,8 @@ export async function cmdRetentionRun(
       seen++;
       // Same gates either way — `evaluate` is exactly what `applyRetention` consults.
       const outcome = apply
-        ? await lifecycle.applyRetention(id, { terminalTtlMs: ttlMs }, now)
-        : ((await lifecycle.evaluate(id, { terminalTtlMs: ttlMs }, now)) as string).replace(
+        ? await lifecycle.applyRetention(id, policy, now)
+        : ((await lifecycle.evaluate(id, policy, now)) as string).replace(
             "reclaimable",
             "would-reclaim"
           );
@@ -95,9 +101,15 @@ export async function cmdRetentionRun(
           : "\n  ⚠ no --branches given: the live-descendant guard (R5.3) is OFF, so a parent with live branches is not protected"
         : "";
     const header = `retention ${mode} — ttl ${ttlMs}ms — ${seen} execution(s)`;
+    // ADR 0145 D6: a snapshots section is valid policy for the library (`pruneSnapshots({ policy })`),
+    // but this command does not prune snapshots; say so rather than let it look applied.
+    const note =
+      flags.policy?.snapshots !== undefined
+        ? "\n  note: the policy's snapshots.keepLatest is not applied by `retention run` (ADR 0145: deferred); use LogLifecycle.pruneSnapshots"
+        : "";
     return seen === 0
-      ? `${header}${guard}\n  (no executions)`
-      : `${header}${guard}\n${rows.join("\n")}\n${tally(outcomes)}`;
+      ? `${header}${guard}${note}\n  (no executions)`
+      : `${header}${guard}${note}\n${rows.join("\n")}\n${tally(outcomes)}`;
   } finally {
     await stores.close();
   }

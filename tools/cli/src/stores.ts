@@ -228,6 +228,29 @@ export function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
   return run;
 }
 
+/**
+ * Load a plain module's exports (CJS or ESM, `.ts` via the project's own tsx) WITHOUT the app
+ * guards `loadLoomApp` adds - for modules that export a value, not a composed app (ADR 0145's
+ * retention policy). Failures are a {@link ConfigLoadError} like a config's.
+ */
+export async function loadModuleExports(modulePath: string): Promise<Record<string, unknown>> {
+  const file = path.resolve(modulePath);
+  let loader: ReturnType<typeof registerTsLoader> | undefined;
+  try {
+    if (TS_CONFIG.test(file)) loader = registerTsLoader(file);
+    return await loadModule(file, loader?.esm);
+  } catch (err) {
+    if (err instanceof ConfigLoadError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    const hint = !fs.existsSync(file)
+      ? "no such file - built? point --policy at the compiled .js"
+      : "run with --verbose (or LOOM_DEBUG=1) for the stack";
+    throw new ConfigLoadError(`while loading ${file}: ${message}\n  hint: ${hint}`, 1, err);
+  } finally {
+    loader?.unregister();
+  }
+}
+
 let loadChain: Promise<void> = Promise.resolve();
 
 async function loadLoomAppNow(modulePath: string): Promise<Partial<LoomApp>> {

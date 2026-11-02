@@ -143,11 +143,11 @@ maintain
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
-  loom retention run <store-flags> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
+  loom retention run <store-flags> (--ttl <dur|ms> | --policy <module>) [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms | --policy <module>] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
                                                   (--orphans also erases blobs NOTHING scanned
                                                    cites, so it needs the snapshot store and
                                                    every archive; with --apply and no archive
@@ -571,19 +571,32 @@ async function dispatch(
       requirePositional(positionals, "run"); // `loom retention run`
       if (!hasStoreFlagsOrDiscover(flags, "retention")) return storeFlagError("retention");
       // No default: an omitted --ttl used to mean 0, i.e. "every terminal execution is aged
-      // enough" — a destructive sweep chosen by forgetting a flag.
-      if (flags.ttl === undefined) {
+      // enough" - a destructive sweep chosen by forgetting a flag. An app-owned policy
+      // (ADR 0145, --policy) is the other explicit way to name the TTL; --ttl overrides it.
+      if (flags.ttl === undefined && flags.policy === undefined) {
         throw new UsageError(
-          "loom retention run needs an explicit --ttl <duration> (e.g. --ttl 30d, or milliseconds): there is no default, and --ttl 0 reclaims every terminal execution."
+          "loom retention run needs an explicit --ttl <duration> (e.g. --ttl 30d, or milliseconds) or --policy <module> (an app-owned retention policy): there is no default, and --ttl 0 reclaims every terminal execution."
         );
       }
       const { parseDuration } = await import("./duration");
       const { cmdRetentionRun } = await import("./retention");
-      const ttl = parseDuration(flags.ttl);
+      let ttl: number;
+      let policy: import("@loom/workflow-runtime").RetentionPolicy | undefined;
+      if (flags.policy !== undefined) {
+        const { loadRetentionPolicy, overridePolicy } = await import("./retentionPolicy");
+        policy = overridePolicy(
+          await loadRetentionPolicy(flags.policy),
+          flags.ttl !== undefined ? { terminalTtlMs: parseDuration(flags.ttl) } : {}
+        );
+        ttl = policy.terminalTtlMs;
+      } else {
+        ttl = parseDuration(flags.ttl as string);
+      }
       out(
         await cmdRetentionRun({
           ...storeFlagsOf(flags),
           ttlMs: ttl,
+          ...(policy !== undefined && { policy }),
           apply: flags.apply === "true",
         })
       );
@@ -595,7 +608,17 @@ async function dispatch(
       requireFlag(flags, "content");
       const { parseDuration } = await import("./duration");
       const { cmdSweepContent } = await import("./sweepContent");
-      const ttl = flags.ttl !== undefined ? parseDuration(flags.ttl) : 30 * 24 * 3_600_000;
+      let ttl = flags.ttl !== undefined ? parseDuration(flags.ttl) : 30 * 24 * 3_600_000;
+      if (flags.policy !== undefined) {
+        // ADR 0145: the policy's content.unpinnedAfterMs; --ttl overrides it (re-validated). A
+        // policy with no content section leaves today's default (30d) in place.
+        const { loadRetentionPolicy, overridePolicy } = await import("./retentionPolicy");
+        const policy = overridePolicy(
+          await loadRetentionPolicy(flags.policy),
+          flags.ttl !== undefined ? { unpinnedAfterMs: ttl } : {}
+        );
+        if (policy.content !== undefined) ttl = policy.content.unpinnedAfterMs;
+      }
       out(
         await cmdSweepContent({
           ...storeFlagsOf(flags),

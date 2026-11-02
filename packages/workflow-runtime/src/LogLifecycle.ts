@@ -54,6 +54,7 @@ import {
   tenantScopeOf,
 } from "./checkpointGuard";
 import { chainIdOf, deleteInbox, firstNonEmptyChainStream, inboxStreamId } from "./inbox";
+import { type RetentionPolicy, assertRetentionPolicy } from "./retentionPolicy";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 import { isWriteConflict } from "./writeConflict";
 
@@ -139,10 +140,7 @@ const TERMINAL = new Set<ExecutionState["status"]>([
   "continued", // ADR 0109: terminal for retention; the successor's sequence 0 is durable first
 ]);
 
-export interface RetentionPolicy {
-  /** Keep a terminal execution this long after its last event, then reclaim it. */
-  terminalTtlMs: number;
-}
+export type { RetentionPolicy };
 
 /**
  * Envelopes per archive round-trip. Bounded so a long execution cannot turn a
@@ -228,8 +226,13 @@ export class CompactionCheckpointMissingError extends Error {
 
 /** Options of {@link LogLifecycle.pruneSnapshots}. */
 export interface PruneSnapshotsOptions {
-  /** Newest snapshots to keep (integer >= 1, default 1). */
+  /** Newest snapshots to keep (integer >= 1, default 1). Wins over `policy.snapshots.keepLatest`. */
   keepLatest?: number;
+  /**
+   * ADR 0145 - an app-owned retention policy: its `snapshots.keepLatest` is used when
+   * `keepLatest` is not given. Re-validated here. A policy without a `snapshots` section changes nothing.
+   */
+  policy?: RetentionPolicy;
   /** Extra snapshot sequences to keep. */
   keepSequences?: readonly number[];
   /**
@@ -577,6 +580,7 @@ export class LogLifecycle {
     policy: RetentionPolicy,
     now: number
   ): Promise<RetentionOutcome | "reclaimable"> {
+    assertRetentionPolicy(policy); // ADR 0145: a plain literal cannot bypass the rules
     if (this.eventStore.deleteExecution === undefined) return "unsupported";
     if (!this.archiveIsSafe()) return "unsafe-archive";
     const events = await this.eventStore.read(executionId);
@@ -656,6 +660,7 @@ export class LogLifecycle {
     policy: RetentionPolicy,
     now: number
   ): Promise<RetentionOutcome> {
+    assertRetentionPolicy(policy);
     const verdict = await this.evaluate(executionId, policy, now);
     if (verdict !== "reclaimable") return verdict;
     // `evaluate` already refused a store that cannot delete; this re-reads it to narrow the
@@ -1625,7 +1630,8 @@ export class LogLifecycle {
         `refusing to prune the snapshots of "${executionId}": a blank id or a reserved control stream names no execution.`
       );
     }
-    const keepLatest = options.keepLatest ?? 1;
+    if (options.policy !== undefined) assertRetentionPolicy(options.policy);
+    const keepLatest = options.keepLatest ?? options.policy?.snapshots?.keepLatest ?? 1;
     if (!Number.isInteger(keepLatest) || keepLatest < 1) {
       throw new RangeError(
         `pruneSnapshots: keepLatest must be an integer >= 1 (the latest snapshot is never pruned); got ${String(keepLatest)}`

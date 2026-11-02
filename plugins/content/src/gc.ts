@@ -148,8 +148,17 @@ export interface ContentSweepBase {
   >;
   /** Event kinds whose cited refs are pinned — retained as long as the citing fact exists. */
   pinnedEventTypes: Iterable<string>;
-  /** Reclaim an unpinned ref only when its latest citation is older than this. */
-  olderThanMs: number;
+  /**
+   * Reclaim an unpinned ref only when its latest citation is older than this. EXACTLY ONE of
+   * `olderThanMs` / `policy` must be given.
+   */
+  olderThanMs?: number;
+  /**
+   * ADR 0145 - an app-owned retention policy (`retentionPolicy()` from `@loom/workflow-runtime`;
+   * typed structurally here so this package takes no dependency on it). `content.unpinnedAfterMs`
+   * is used as `olderThanMs`. A policy without a `content` section is an error, not a silent no-op.
+   */
+  policy?: { content?: { unpinnedAfterMs: number } };
   /**
    * LOG time, in epoch ms: the instant the TTL is measured back from, compared against event
    * `timestamp`s (`now − latest citation ≥ olderThanMs`). It is NOT the store's clock. A
@@ -550,7 +559,33 @@ export class SealedSnapshotScanError extends TypeError {
  * O(events + blobs), all membership tests are Set/Map lookups.
  */
 export async function sweepUnpinnedContent(
-  options: ContentSweepOptions
+  given: ContentSweepOptions
+): Promise<ContentSweepReport> {
+  const hasTtl = given.olderThanMs !== undefined;
+  const hasPolicy = given.policy !== undefined;
+  if (hasTtl === hasPolicy) {
+    throw new TypeError(
+      hasTtl
+        ? "sweepUnpinnedContent: pass olderThanMs OR policy, not both - they name the same TTL"
+        : "sweepUnpinnedContent: needs a TTL - pass olderThanMs, or policy (a retention policy with a content.unpinnedAfterMs section)"
+    );
+  }
+  let olderThanMs = given.olderThanMs as number;
+  if (hasPolicy) {
+    const u = given.policy?.content?.unpinnedAfterMs;
+    if (typeof u !== "number" || !Number.isInteger(u) || u <= 0) {
+      throw new TypeError(
+        `sweepUnpinnedContent: policy.content.unpinnedAfterMs must be a finite integer > 0 (milliseconds); got ${String(u)} - add a content section to the retention policy, or pass olderThanMs`
+      );
+    }
+    olderThanMs = u;
+  }
+  const { policy: _policy, ...rest } = given;
+  return sweepResolved({ ...rest, olderThanMs } as ContentSweepOptions & { olderThanMs: number });
+}
+
+async function sweepResolved(
+  options: ContentSweepOptions & { olderThanMs: number }
 ): Promise<ContentSweepReport> {
   const store = options.contentStore;
   const requested = options.reclaimOrphans as unknown;
