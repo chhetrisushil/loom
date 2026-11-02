@@ -386,6 +386,14 @@ const NOT_A_CAPABILITY = new Set([
   // `sealsContent` marker, and a 1P store seals per subject. The SPI version bump is the contract change (the
   // compatibility matrix carries it); no new capability, event, ABI or subsystem to grade.
   "0143",
+  // 0145 - the app-owned, opt-in retention policy: a validated value (`retentionPolicy()`) that the existing
+  // explicit passes (`LogLifecycle` retention and snapshot pruning, `sweepUnpinnedContent`, the CLI `--policy`)
+  // read in place of per-command TTLs. No event, SPI, ABI or subsystem change; it extends the K10 retention
+  // capability, nothing new to grade.
+  "0145",
+  // 0146 - reclaimable content ages from the citing execution's end: a change to the content sweep's clock
+  // that only ever reclaims less (ADR 0055 GC). No event, SPI, ABI or subsystem change; nothing to grade.
+  "0146",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
