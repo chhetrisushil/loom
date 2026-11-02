@@ -38,6 +38,33 @@ describe("retentionPolicy / assertRetentionPolicy", () => {
     expect(p.snapshots).not.toBe(spec.snapshots);
   });
 
+  it("reads each field exactly once: a getter that changes its answer cannot pass a rule-breaking value", () => {
+    let ttlReads = 0;
+    let contentReads = 0;
+    const spec = {
+      get terminalTtlMs() {
+        ttlReads++;
+        return ttlReads === 1 ? 5 : 500;
+      },
+      get content() {
+        contentReads++;
+        return { unpinnedAfterMs: contentReads === 1 ? 9 : 1 };
+      },
+    };
+    const p = retentionPolicy(spec);
+    expect(p).toEqual({ terminalTtlMs: 5, content: { unpinnedAfterMs: 9 } });
+    expect(ttlReads).toBe(1);
+    expect(contentReads).toBe(1);
+    expect(Object.getOwnPropertyDescriptor(p, "terminalTtlMs")?.get).toBeUndefined();
+    expect(Object.isFrozen(p)).toBe(true);
+  });
+
+  it("states the advisory rule in its refusal", () => {
+    expect(() => retentionPolicy({ terminalTtlMs: 10, content: { unpinnedAfterMs: 9 } })).toThrow(
+      /advisory consistency rule/
+    );
+  });
+
   const bad: [string, unknown, RegExp][] = [
     ["negative ttl", { terminalTtlMs: -1 }, /terminalTtlMs must be a finite integer >= 0.*got -1/],
     ["fractional ttl", { terminalTtlMs: 1.5 }, /terminalTtlMs must be a finite integer/],

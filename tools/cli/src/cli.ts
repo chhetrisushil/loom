@@ -578,19 +578,21 @@ async function dispatch(
           "loom retention run needs an explicit --ttl <duration> (e.g. --ttl 30d, or milliseconds) or --policy <module> (an app-owned retention policy): there is no default, and --ttl 0 reclaims every terminal execution."
         );
       }
-      const { parseDuration } = await import("./duration");
       const { cmdRetentionRun } = await import("./retention");
       let ttl: number;
       let policy: import("@loom/workflow-runtime").RetentionPolicy | undefined;
       if (flags.policy !== undefined) {
-        const { loadRetentionPolicy, overridePolicy } = await import("./retentionPolicy");
+        const { loadRetentionPolicy, overridePolicy, parseTtlFlag } = await import(
+          "./retentionPolicy"
+        );
         policy = overridePolicy(
           await loadRetentionPolicy(flags.policy),
-          flags.ttl !== undefined ? { terminalTtlMs: parseDuration(flags.ttl) } : {}
+          flags.ttl !== undefined ? { terminalTtlMs: parseTtlFlag(flags.ttl) } : {}
         );
         ttl = policy.terminalTtlMs;
       } else {
-        ttl = parseDuration(flags.ttl as string);
+        const { parseTtlFlag } = await import("./retentionPolicy");
+        ttl = parseTtlFlag(flags.ttl as string);
       }
       out(
         await cmdRetentionRun({
@@ -611,13 +613,21 @@ async function dispatch(
       let ttl = flags.ttl !== undefined ? parseDuration(flags.ttl) : 30 * 24 * 3_600_000;
       if (flags.policy !== undefined) {
         // ADR 0145: the policy's content.unpinnedAfterMs; --ttl overrides it (re-validated). A
-        // policy with no content section leaves today's default (30d) in place.
-        const { loadRetentionPolicy, overridePolicy } = await import("./retentionPolicy");
-        const policy = overridePolicy(
-          await loadRetentionPolicy(flags.policy),
-          flags.ttl !== undefined ? { unpinnedAfterMs: ttl } : {}
+        // policy with no content section is refused (the library throws for the same input).
+        const { loadRetentionPolicy, overridePolicy, parseTtlFlag } = await import(
+          "./retentionPolicy"
         );
-        if (policy.content !== undefined) ttl = policy.content.unpinnedAfterMs;
+        const loaded = await loadRetentionPolicy(flags.policy);
+        if (loaded.content === undefined && flags.ttl === undefined) {
+          throw new UsageError(
+            `--policy ${flags.policy}: the retention policy has no \`content\` section, so it names no content TTL - add \`content: { unpinnedAfterMs: ... }\` to it, or pass --ttl`
+          );
+        }
+        const policy = overridePolicy(
+          loaded,
+          flags.ttl !== undefined ? { unpinnedAfterMs: parseTtlFlag(flags.ttl) } : {}
+        );
+        ttl = (policy.content as { unpinnedAfterMs: number }).unpinnedAfterMs;
       }
       out(
         await cmdSweepContent({

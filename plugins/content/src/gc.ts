@@ -157,8 +157,15 @@ export interface ContentSweepBase {
    * ADR 0145 - an app-owned retention policy (`retentionPolicy()` from `@loom/workflow-runtime`;
    * typed structurally here so this package takes no dependency on it). `content.unpinnedAfterMs`
    * is used as `olderThanMs`. A policy without a `content` section is an error, not a silent no-op.
+   * Re-validated structurally (see `resolvePolicyTtl`): unknown keys are refused, and
+   * `unpinnedAfterMs >= terminalTtlMs` when the policy carries one (an advisory consistency rule,
+   * ADR 0145 D2).
    */
-  policy?: { content?: { unpinnedAfterMs: number } };
+  policy?: {
+    terminalTtlMs?: number;
+    snapshots?: unknown;
+    content?: { unpinnedAfterMs: number };
+  };
   /**
    * LOG time, in epoch ms: the instant the TTL is measured back from, compared against event
    * `timestamp`s (`now − latest citation ≥ olderThanMs`). It is NOT the store's clock. A
@@ -571,17 +578,61 @@ export async function sweepUnpinnedContent(
     );
   }
   let olderThanMs = given.olderThanMs as number;
-  if (hasPolicy) {
-    const u = given.policy?.content?.unpinnedAfterMs;
-    if (typeof u !== "number" || !Number.isInteger(u) || u <= 0) {
-      throw new TypeError(
-        `sweepUnpinnedContent: policy.content.unpinnedAfterMs must be a finite integer > 0 (milliseconds); got ${String(u)} - add a content section to the retention policy, or pass olderThanMs`
-      );
-    }
-    olderThanMs = u;
-  }
+  if (hasPolicy) olderThanMs = resolvePolicyTtl(given.policy);
   const { policy: _policy, ...rest } = given;
   return sweepResolved({ ...rest, olderThanMs } as ContentSweepOptions & { olderThanMs: number });
+}
+
+/**
+ * ADR 0145 D3 - structural re-validation of a retention policy, WITHOUT a dependency on
+ * `@loom/workflow-runtime`. Each field is read ONCE into a plain snapshot, then the snapshot is
+ * checked, so a getter answering differently on a second read cannot pass a rule-breaking value.
+ * Checks what the sweep consumes: unknown keys (top level and `content`), `unpinnedAfterMs` a
+ * finite integer > 0, and, when `terminalTtlMs` is present, a finite integer >= 0 with
+ * `unpinnedAfterMs >= terminalTtlMs`. `snapshots` is allowed and not inspected (the sweep reads
+ * nothing from it; `LogLifecycle` validates it).
+ */
+function resolvePolicyTtl(policy: unknown): number {
+  const bad = (m: string): never => {
+    throw new TypeError(`sweepUnpinnedContent: policy ${m}`);
+  };
+  if (typeof policy !== "object" || policy === null || Array.isArray(policy)) {
+    return bad("must be a retention policy object");
+  }
+  for (const k of Object.keys(policy)) {
+    if (k !== "terminalTtlMs" && k !== "snapshots" && k !== "content") {
+      bad(`has unknown key "${k}" (expected terminalTtlMs, snapshots, content)`);
+    }
+  }
+  const o = policy as Record<string, unknown>;
+  const ttl = o.terminalTtlMs;
+  const content = o.content;
+  if (ttl !== undefined && (typeof ttl !== "number" || !Number.isInteger(ttl) || ttl < 0)) {
+    bad(`terminalTtlMs must be a finite integer >= 0 (milliseconds); got ${String(ttl)}`);
+  }
+  if (content === undefined) {
+    return bad(
+      "has no content section - add content.unpinnedAfterMs to the retention policy, or pass olderThanMs"
+    );
+  }
+  if (typeof content !== "object" || content === null || Array.isArray(content)) {
+    return bad("content must be an object with unpinnedAfterMs");
+  }
+  for (const k of Object.keys(content)) {
+    if (k !== "unpinnedAfterMs") {
+      bad(`has unknown key "content.${k}" (expected unpinnedAfterMs)`);
+    }
+  }
+  const u = (content as Record<string, unknown>).unpinnedAfterMs;
+  if (typeof u !== "number" || !Number.isInteger(u) || u <= 0) {
+    return bad(
+      `content.unpinnedAfterMs must be a finite integer > 0 (milliseconds); got ${String(u)}`
+    );
+  }
+  if (typeof ttl === "number" && u < ttl) {
+    bad(`content.unpinnedAfterMs (${u}) must be >= terminalTtlMs (${ttl})`);
+  }
+  return u;
 }
 
 async function sweepResolved(

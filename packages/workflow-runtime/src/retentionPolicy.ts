@@ -16,7 +16,12 @@ export interface RetentionPolicy {
   snapshots?: { keepLatest: number };
   /**
    * Content GC: reclaim a claim-check ref only once its latest citation is this old. Must be
-   * `>= terminalTtlMs`, so a kept log never names bytes that are gone.
+   * `>= terminalTtlMs`. This is an ADVISORY consistency check, not a guarantee that a kept log
+   * never names gone bytes: per ADR 0055 only a claim-check envelope's own ref the app marked
+   * `reclaimable` is TTL-reclaimable (readers tolerate it; `resolveClaimCheck` returns null) -
+   * retained blobs and bare refs are never TTL-reclaimed while cited - and the sweep measures
+   * age from the latest CITATION while retention measures from the TERMINAL end (ADR 0140 D6).
+   * It holds only when `retention run` and `sweep content` use the same policy (no bare `--ttl`).
    */
   content?: { unpinnedAfterMs: number };
 }
@@ -54,10 +59,10 @@ function checkSection(
 }
 
 /**
- * Validate a retention policy. Throws {@link RetentionPolicyError}. Every pass that RECEIVES a
- * policy calls this, so a plain object literal cannot bypass the rules.
+ * Read each field of `p` exactly once into plain objects, then validate THAT snapshot (so a
+ * getter that answers differently on a second read cannot pass a rule-breaking value).
  */
-export function assertRetentionPolicy(p: unknown): asserts p is RetentionPolicy {
+function snapshotPolicy(p: unknown): RetentionPolicy {
   if (typeof p !== "object" || p === null || Array.isArray(p)) {
     reject("must be an object like { terminalTtlMs: 2_592_000_000 }");
   }
@@ -70,20 +75,28 @@ export function assertRetentionPolicy(p: unknown): asserts p is RetentionPolicy 
   }
   const o = p as Record<string, unknown>;
   const ttl = o.terminalTtlMs;
+  const snapshots = o.snapshots;
+  const content = o.content;
   if (typeof ttl !== "number" || !Number.isInteger(ttl) || ttl < 0) {
     reject(`terminalTtlMs must be a finite integer >= 0 (milliseconds); got ${String(ttl)}`);
   }
-  if (o.snapshots !== undefined) {
-    const s = checkSection("snapshots", o.snapshots, ["keepLatest"]);
+  const out: {
+    terminalTtlMs: number;
+    snapshots?: { keepLatest: number };
+    content?: { unpinnedAfterMs: number };
+  } = { terminalTtlMs: ttl };
+  if (snapshots !== undefined) {
+    const s = checkSection("snapshots", snapshots, ["keepLatest"]);
     const k = s.keepLatest;
     if (typeof k !== "number" || !Number.isInteger(k) || k < 1) {
       reject(
         `snapshots.keepLatest must be an integer >= 1 (the latest snapshot is never pruned: a compacted execution's checkpoint IS its state); got ${String(k)}`
       );
     }
+    out.snapshots = { keepLatest: k };
   }
-  if (o.content !== undefined) {
-    const c = checkSection("content", o.content, ["unpinnedAfterMs"]);
+  if (content !== undefined) {
+    const c = checkSection("content", content, ["unpinnedAfterMs"]);
     const u = c.unpinnedAfterMs;
     if (typeof u !== "number" || !Number.isInteger(u) || u <= 0) {
       reject(
@@ -92,18 +105,32 @@ export function assertRetentionPolicy(p: unknown): asserts p is RetentionPolicy 
     }
     if (u < ttl) {
       reject(
-        `content.unpinnedAfterMs (${u}) must be >= terminalTtlMs (${ttl}): content must outlive the logs that cite it, or a kept log names bytes that are gone`
+        `content.unpinnedAfterMs (${u}) must be >= terminalTtlMs (${ttl}): the advisory consistency rule (ADR 0145 D2) - a reclaimable-telemetry ref should outlive the logs that cite it`
       );
     }
+    out.content = { unpinnedAfterMs: u };
   }
+  return out;
 }
 
-/** Validate and freeze a retention policy (deeply). Returns a new object; the input is not mutated. */
+/**
+ * Validate a retention policy. Throws {@link RetentionPolicyError}. Every pass that RECEIVES a
+ * policy calls this, so a plain object literal cannot bypass the rules. This is an assertion
+ * only: it does not return the value it checked - use {@link retentionPolicy} for that.
+ */
+export function assertRetentionPolicy(p: unknown): asserts p is RetentionPolicy {
+  snapshotPolicy(p);
+}
+
+/**
+ * Snapshot, validate and deeply freeze a retention policy. Returns a new object built from the
+ * validated snapshot (each input field is read once); the input is not mutated.
+ */
 export function retentionPolicy(spec: RetentionPolicy): Readonly<RetentionPolicy> {
-  assertRetentionPolicy(spec);
+  const snap = snapshotPolicy(spec);
   return Object.freeze({
-    terminalTtlMs: spec.terminalTtlMs,
-    ...(spec.snapshots !== undefined && { snapshots: Object.freeze({ ...spec.snapshots }) }),
-    ...(spec.content !== undefined && { content: Object.freeze({ ...spec.content }) }),
+    terminalTtlMs: snap.terminalTtlMs,
+    ...(snap.snapshots !== undefined && { snapshots: Object.freeze(snap.snapshots) }),
+    ...(snap.content !== undefined && { content: Object.freeze(snap.content) }),
   });
 }

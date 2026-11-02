@@ -217,10 +217,24 @@ function registerTsLoader(file: string): {
  * A failure is reported as `while loading <abs file>: <message>` plus a hint; the original
  * error (stack included) is its `cause`, printed by `--verbose` / `LOOM_DEBUG=1`.
  */
-export function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
+export async function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
+  const mod = await loadGuarded(modulePath, "--config");
+  return (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
+}
+
+/**
+ * Load a plain module's exports (ADR 0145's retention policy) under the SAME guards and
+ * serialisation as {@link loadLoomApp}: a policy exported from `loom.config.ts` runs
+ * `defineConfig` here too, and it must not autostart.
+ */
+export function loadModuleExports(modulePath: string): Promise<Record<string, unknown>> {
+  return loadGuarded(modulePath, "--policy");
+}
+
+function loadGuarded(modulePath: string, flag: string): Promise<Record<string, unknown>> {
   // Serialized: the load swaps process.env (LOOM_NO_AUTOSTART / LOOM_QUIET) and restores it, so two
   // overlapping loads would capture each other's "1" as the value to restore and leak it.
-  const run = loadChain.then(() => loadLoomAppNow(modulePath));
+  const run = loadChain.then(() => loadGuardedNow(modulePath, flag));
   loadChain = run.then(
     () => undefined,
     () => undefined
@@ -228,32 +242,9 @@ export function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
   return run;
 }
 
-/**
- * Load a plain module's exports (CJS or ESM, `.ts` via the project's own tsx) WITHOUT the app
- * guards `loadLoomApp` adds - for modules that export a value, not a composed app (ADR 0145's
- * retention policy). Failures are a {@link ConfigLoadError} like a config's.
- */
-export async function loadModuleExports(modulePath: string): Promise<Record<string, unknown>> {
-  const file = path.resolve(modulePath);
-  let loader: ReturnType<typeof registerTsLoader> | undefined;
-  try {
-    if (TS_CONFIG.test(file)) loader = registerTsLoader(file);
-    return await loadModule(file, loader?.esm);
-  } catch (err) {
-    if (err instanceof ConfigLoadError) throw err;
-    const message = err instanceof Error ? err.message : String(err);
-    const hint = !fs.existsSync(file)
-      ? "no such file - built? point --policy at the compiled .js"
-      : "run with --verbose (or LOOM_DEBUG=1) for the stack";
-    throw new ConfigLoadError(`while loading ${file}: ${message}\n  hint: ${hint}`, 1, err);
-  } finally {
-    loader?.unregister();
-  }
-}
-
 let loadChain: Promise<void> = Promise.resolve();
 
-async function loadLoomAppNow(modulePath: string): Promise<Partial<LoomApp>> {
+async function loadGuardedNow(modulePath: string, flag: string): Promise<Record<string, unknown>> {
   // Restored in `finally`: defineConfig reads it while composing, which happens during the import,
   // so restoring afterwards cannot re-enable autostart for the app already built - and a caller
   // that goes on to spawn processes (`loom dev`) must not hand them our inspect-only switch.
@@ -265,9 +256,8 @@ async function loadLoomAppNow(modulePath: string): Promise<Partial<LoomApp>> {
   let loader: ReturnType<typeof registerTsLoader> | undefined;
   try {
     if (TS_CONFIG.test(file)) loader = registerTsLoader(file);
-    let mod: Record<string, unknown>;
     try {
-      mod = await loadModule(file, loader?.esm);
+      return await loadModule(file, loader?.esm);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const code = (err as NodeJS.ErrnoException).code;
@@ -275,13 +265,12 @@ async function loadLoomAppNow(modulePath: string): Promise<Partial<LoomApp>> {
         /top-level await/i.test(message) && TS_CONFIG.test(file)
           ? 'top-level await needs an ES-module config: name it loom.config.mts, or set "type": "module" in its package.json (tsx compiles a plain .ts in a CommonJS package to CommonJS)'
           : code === "MODULE_NOT_FOUND" && !fs.existsSync(file)
-            ? "no such file - built? point --config at the compiled .js"
+            ? `no such file - built? point ${flag} at the compiled .js`
             : code === "MODULE_NOT_FOUND"
-              ? "a dependency of the config is missing - is it installed (and built, for a workspace package)?"
+              ? "a dependency of the module is missing - is it installed (and built, for a workspace package)?"
               : "run with --verbose (or LOOM_DEBUG=1) for the stack";
       throw new ConfigLoadError(`while loading ${file}: ${message}\n  hint: ${hint}`, 1, err);
     }
-    return (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
   } finally {
     loader?.unregister();
     if (autostartBefore === undefined) Reflect.deleteProperty(process.env, "LOOM_NO_AUTOSTART");
