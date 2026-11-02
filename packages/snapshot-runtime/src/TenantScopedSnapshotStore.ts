@@ -12,6 +12,7 @@ export class TenantScopedSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
   readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
+  readonly listSequences?: NonNullable<SnapshotStore["listSequences"]>;
 
   constructor(
     private readonly inner: SnapshotStore,
@@ -30,6 +31,8 @@ export class TenantScopedSnapshotStore implements SnapshotStore {
       loadLatestSealed: async (id) => this.unscope(await inner.loadLatestSealed!(this.scope(id))),
       // ADR 0134 — the id is scoped, so a tenant can only prune its own snapshots.
       pruneSnapshots: (id, range, keep) => inner.pruneSnapshots!(this.scope(id), range, keep),
+      // ADR 0134 amendment - the id is scoped, so a tenant lists only its own sequences.
+      listSequences: (id, range) => inner.listSequences!(this.scope(id), range),
     } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }

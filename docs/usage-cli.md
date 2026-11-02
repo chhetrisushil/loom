@@ -973,7 +973,7 @@ an app-owned retention policy instead of a flag: the module exports the value as
 default export), built with `retentionPolicy()` from `@loom/workflow-runtime`. `--ttl` still works and
 **overrides** the policy's `terminalTtlMs` (the result is validated again); with neither flag the
 command refuses as above. A non-finite or oversized `--ttl` is a usage error (exit 2). A `snapshots` section is validated but **not** applied by this command (use
-`LogLifecycle.pruneSnapshots`).
+`LogLifecycle.pruneSnapshots`, whose `dryRun: true` previews the count).
 
 ```ts
 // retention.ts - the app owns the value; loom owns the type, the validator and the consumers

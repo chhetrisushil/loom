@@ -248,6 +248,14 @@ export interface PruneSnapshotsOptions {
    * false. A re-homable segment always refuses, with or without this.
    */
   acceptUnattributedBlankStream?: boolean;
+  /**
+   * ADR 0134 amendment (2026-11-02) - count, delete nothing. Resolves with the number of snapshots a
+   * real call WOULD delete, through the SAME selection (keep-set, anchor, refusals, exemptions, the
+   * moved-gap check), so the preview cannot drift from the apply. Uses the store's `listSequences`
+   * (SPI 1.3.0) when present; otherwise it walks the range with `loadLatestBefore` (one point read
+   * per snapshot in the range, and several snapshots sharing one sequence count once). Default false.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -1634,7 +1642,7 @@ export class LogLifecycle {
    * `keepSequences` entry that is not a safe integer. Costs two log reads (before and after the
    * snapshot reads), `keepLatest` snapshot point reads, plus a walk of the snapshots above the
    * gap (O(snapshots above the gap)) only for a gapped log with neither a snapshot at its gap
-   * nor a fork seed; one `head` read of `""` plus, when a blank stream exists, the blank-stream census (every execution), memoized per instance while `""` is unchanged (`acceptUnattributedBlankStream` accepts unattributed runs only). The delete is one statement.
+   * nor a fork seed (`dryRun` adds one `listSequences` call, or a walk of one point read per snapshot in the range without it); one `head` read of `""` plus, when a blank stream exists, the blank-stream census (every execution), memoized per instance while `""` is unchanged (`acceptUnattributedBlankStream` accepts unattributed runs only). The delete is one statement.
    */
   pruneSnapshots(executionId: string, options: PruneSnapshotsOptions = {}): Promise<number> {
     // ADR 0134 D6 - serialized with `compact` on the same execution (within this instance).
@@ -1740,7 +1748,37 @@ export class LogLifecycle {
     // means `after` no longer protects the new checkpoint, so delete nothing. Retry later.
     const again = await this.eventStore.read(executionId);
     if (highestMissing(again) !== gap) return 0;
-    return snapshots.pruneSnapshots(executionId, { after, before }, [...keepSequences]);
+    if (options.dryRun !== true) {
+      return snapshots.pruneSnapshots(executionId, { after, before }, [...keepSequences]);
+    }
+    return this.countPrunable(executionId, { after, before }, new Set(keepSequences));
+  }
+
+  /**
+   * ADR 0134 amendment - how many snapshots strictly inside `(after, before)` and outside `keep` a
+   * delete would remove. With `listSequences` one entry per stored snapshot, so the count equals the
+   * delete's. Without it, a walk down from `before` by `loadLatestBefore`: one read per distinct
+   * sequence in the range (snapshots sharing a sequence count once there).
+   */
+  private async countPrunable(
+    executionId: string,
+    range: { readonly after: number; readonly before: number },
+    keep: ReadonlySet<number>
+  ): Promise<number> {
+    const snapshots = this.snapshotStore;
+    let n = 0;
+    if (snapshots.listSequences !== undefined) {
+      for (const seq of await snapshots.listSequences(executionId, range)) {
+        if (!keep.has(seq)) n++;
+      }
+      return n;
+    }
+    let s = await snapshots.loadLatestBefore(executionId, range.before - 1);
+    while (s !== null && s.sequence > range.after) {
+      if (!keep.has(s.sequence)) n++;
+      s = s.sequence > 0 ? await snapshots.loadLatestBefore(executionId, s.sequence - 1) : null;
+    }
+    return n;
   }
 
   /**

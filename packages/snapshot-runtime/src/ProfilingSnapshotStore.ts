@@ -138,6 +138,7 @@ export class ProfilingSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
   readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
+  readonly listSequences?: NonNullable<SnapshotStore["listSequences"]>;
 
   private saves = 0;
   private measured = 0;
@@ -221,6 +222,8 @@ export class ProfilingSnapshotStore implements SnapshotStore {
       },
       // A sealed read hands back stored bytes; nothing to measure or track.
       loadLatestSealed: "forward",
+      // ADR 0134 amendment - a read of sequences only; no size to measure.
+      listSequences: "forward",
     } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }

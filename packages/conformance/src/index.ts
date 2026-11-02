@@ -1311,6 +1311,37 @@ export function runSnapshotStoreConformance(
       await store.close();
     });
 
+    it("listSequences (if implemented) lists ascending, exclusive bounds, per execution (SPI 1.3.0)", async () => {
+      const store = factory();
+      if (store.listSequences === undefined) return void (await store.close());
+      // Saved out of order: the listing is ascending regardless.
+      for (const s of [5, 0, 3, 1, 6, 2, 4]) {
+        await store.save(snap("l", s));
+        await store.save(snap("other", s + 10));
+      }
+      expect(await store.listSequences("l")).toEqual([0, 1, 2, 3, 4, 5, 6]);
+      expect(await store.listSequences("l", {})).toEqual([0, 1, 2, 3, 4, 5, 6]);
+      // Both bounds are exclusive, and either may be omitted.
+      expect(await store.listSequences("l", { after: 1, before: 5 })).toEqual([2, 3, 4]);
+      expect(await store.listSequences("l", { after: 4 })).toEqual([5, 6]);
+      expect(await store.listSequences("l", { before: 2 })).toEqual([0, 1]);
+      expect(await store.listSequences("l", { after: -1, before: 1 })).toEqual([0]);
+      // Empty, inverted and unknown ranges; another execution is never listed.
+      expect(await store.listSequences("l", { after: 3, before: 4 })).toEqual([]);
+      expect(await store.listSequences("l", { after: 5, before: 2 })).toEqual([]);
+      expect(await store.listSequences("nope")).toEqual([]);
+      expect(await store.listSequences("other")).toEqual([10, 11, 12, 13, 14, 15, 16]);
+      // It tracks a prune, and its length is what a keep-less prune of the same range deletes.
+      if (store.pruneSnapshots !== undefined) {
+        const range = { after: 1, before: 6 };
+        const listed = await store.listSequences("l", range);
+        expect(await store.pruneSnapshots("l", range, [3])).toBe(listed.length - 1);
+        expect(await store.listSequences("l")).toEqual([0, 1, 3, 6]);
+        expect(await store.listSequences("other")).toHaveLength(7);
+      }
+      await store.close();
+    });
+
     it("deleteExecution removes an execution's snapshots (when supported)", async () => {
       const store = factory();
       if (store.deleteExecution === undefined) return; // OPTIONAL (K10.1)

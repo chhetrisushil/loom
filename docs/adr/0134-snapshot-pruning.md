@@ -1,6 +1,6 @@
 # ADR 0134 — Snapshot pruning: dropping superseded snapshots without losing a checkpoint or a fork point
 
-- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner
+- Status: **Accepted** (2026-11-01) — proposed 2026-10-31, implemented and merged; accepted by the owner. Amended 2026-11-02 (below): the list surface rejected in D1 is added.
 - Date: 2026-10-31
 - Found by: GitHub issue #706 (fix 1 of 3). `SnapshotStore` only deletes via `deleteExecution`, so a
   long-lived execution keeps every snapshot it ever took (suspend, fork, and every `snapshotEvery`
@@ -234,3 +234,47 @@ becomes the cost.
   against SPI 1.1.0 keeps working: `pruneSnapshots` returns `0` for it.
 - No automatic cadence is shipped. If one is wanted it is a thin scheduler over the same operation; if it
   runs after a cadence save it must be fire-and-forget and report through `onStorageError`.
+
+## Amendment (2026-11-02) — a list surface and a dry run
+
+**Decision (owner, 2026-11-02): reverse D1's rejection of a list surface.** D1 rejected `listSnapshots` plus a
+per-id delete, for one consumer and a per-row loop. Both reasons moved. There are now consumers that need the
+answer BEFORE the delete: the retention policy of [ADR 0145](0145-app-owned-retention-policy.md) (an operator
+wants "how many would this policy prune?" before the first apply, as `loom retention run` already offers for
+executions), tooling that shows an execution's snapshot cadence, and the doctor, which noted the SPI cannot
+enumerate. The rejected shape is still not built: no per-id delete and no state read. The delete stays one
+bounded statement; only the sequences are listed.
+
+- **SPI 1.2.0 -> 1.3.0 (additive MINOR).** `SNAPSHOT_STORE_SPI_VERSION` is `1.3.0`. A new OPTIONAL method:
+
+  ```ts
+  listSequences?(
+    executionId: string,
+    range?: { readonly after?: number; readonly before?: number }
+  ): Promise<number[]>;
+  ```
+
+  Ascending sequences, ONE entry per stored snapshot (two snapshots sharing a sequence list it twice), bounds
+  EXCLUSIVE and either omissible, exactly the convention of `pruneSnapshots`. So `listSequences(id, range).length`
+  is what `pruneSnapshots(id, range)` with no keep-set deletes. No state is read: SQLite
+  `SELECT sequence ... ORDER BY sequence`, Postgres the same over `idx_snapshots_exec` (no `state` / `state_z`
+  column), a slice of the sorted list in memory. An unknown execution lists `[]`. A 1.2.0 store conforms; the
+  conformance case is skipped when the method is absent.
+- **Decorators (D4 applies).** `TenantScopedSnapshotStore` scopes the id (a tenant lists only its own);
+  `EncryptingSnapshotStore`, `ContentTouchingSnapshotStore`, `ProfilingSnapshotStore` and the kernel's
+  `SealGuardedSnapshotStore` forward, because sequences are not sealed state and cite no content. Each exposes the
+  method only when its inner store has it (the same `DecoratorPlan` as `pruneSnapshots`); the decorator conformance
+  kit's `OPTIONAL_SNAPSHOT_STORE_METHODS` lists it.
+- **`PruneSnapshotsOptions.dryRun?: boolean`.** `LogLifecycle.pruneSnapshots(id, { dryRun: true })` resolves with
+  the number a real call would delete and deletes nothing. It runs the SAME code as the apply (the one `pruneOnce`:
+  validation, exemption, blank-stream refusal, anchor and `keepLatest` derivation, the moved-gap re-read); only the
+  last step differs: the real call issues `SnapshotStore.pruneSnapshots`, the preview counts the range minus
+  `keepSequences` (`countPrunable`). So the preview cannot drift from the apply, and every D3 invariant (latest,
+  checkpoints, fork points, `[0]`, exempt) holds for it. The return type stays `number`; without `dryRun` the
+  behaviour is byte-identical.
+- **Fallback.** With `listSequences` the preview is one extra call. Without it (a 1.2.0 store) it walks the range
+  downward with `loadLatestBefore`: one point read per distinct sequence in the range, O(snapshots in the
+  range). The walk sees one snapshot per sequence, so where a cadence save and a suspend save share a sequence
+  the fallback count is LOWER than what the delete removes (which deletes both, D1); the listed form is exact.
+  The preview is a snapshot of a moment: a concurrent save or prune changes the answer (D6).
+- **Unchanged.** `KERNEL_ABI`, `EVENT_SCHEMA`, `EVENT_STORE_SPI`: no change. Default behaviour: no change.

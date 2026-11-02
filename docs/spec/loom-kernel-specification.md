@@ -353,7 +353,7 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
   (single-node).
 - **Other optional methods:** `SnapshotStore.deleteExecution`, `loadLatestSealed` (SPI 1.1.0) and
   `pruneSnapshots` (SPI 1.2.0, [ADR 0134](../adr/0134-snapshot-pruning.md): a range delete the CALLER,
-  `LogLifecycle.pruneSnapshots`, decides is safe); `ArchiveStore.deleteExecution` and `replaceSegments` (SPI 1.1.0,
+  `LogLifecycle.pruneSnapshots`, decides is safe) and `listSequences` (SPI 1.3.0, the ADR 0134 amendment: the stored sequences, ascending, one per snapshot; backs `pruneSnapshots({ dryRun })`); `ArchiveStore.deleteExecution` and `replaceSegments` (SPI 1.1.0,
   [ADR 0139](../adr/0139-reserved-streams-archive-before-removal.md) D14). `LogLifecycle.compact` appends the exact
   envelopes it removes to the `ArchiveStore` before it truncates and refuses without one
   ([ADR 0138](../adr/0138-compaction-archives-what-it-removes.md)); `readRange`, replay and resume never read it.
