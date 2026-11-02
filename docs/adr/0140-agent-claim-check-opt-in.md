@@ -57,7 +57,7 @@ cap is on the UTF-8 length of the JSON text, as ever; exactly 1024 bytes stays i
 `effectMiddleware` entry: what is stored is what redaction already scrubbed, and a user middleware (a retry,
 a safety validator) sees the real result, not an envelope. A stopped effect never reaches it.
 
-**D6 - replay, resume and the sweep: the blob is RETAINED (owner ruling: auditability intact).** The envelope IS
+**D6 - replay, resume and the sweep: the blob is RETAINED (owner ruling: auditability intact).** *(Amended by [ADR 0146](0146-content-age-from-execution-end.md): where D6 says a ref is "TTL-reclaimed", the TTL is measured from the citing execution's end once it has ended, not from the citation.)* The envelope IS
 the recorded value: a fresh app resuming a parked run replays every recorded turn with ZERO content-store calls
 and no tool or model re-run. But the log no longer holds the tool output, so the blob is the ONLY copy of a fact
 the log once held, and nothing may prune it except erasure. The first cut left the envelope on the ADR 0054

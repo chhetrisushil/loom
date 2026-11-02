@@ -64,9 +64,11 @@ Both live in `packages/workflow-runtime/src/retentionPolicy.ts`; a violation is 
   check on the reclaimable-telemetry window, not a guarantee** that a kept log never names bytes that are gone.
   Per [ADR 0055](0055-k10-6-pin-seam-content-gc.md) (D4) only a claim-check envelope's own ref that the app
   marked `reclaimable` (claim-check config; readers tolerate it, `resolveClaimCheck` returns `null`) is
-  TTL-reclaimable; retained blobs and bare refs are never TTL-reclaimed while cited. The sweep measures age from
-  the latest CITATION, retention measures from the TERMINAL end ([ADR 0140](0140-agent-claim-check-opt-in.md) D6), so the two clocks differ by
-  design. The rule is also checked **within one policy object only**: it holds when `loom retention run` and
+  TTL-reclaimable; retained blobs and bare refs are never TTL-reclaimed while cited. Per
+  [ADR 0146](0146-content-age-from-execution-end.md) the sweep measures a terminal execution's citations from
+  its END (never earlier than the citation), the same instant retention measures from
+  ([ADR 0140](0140-agent-claim-check-opt-in.md) D6), so with this rule a reclaimable blob outlives the log citing
+  it; a running execution keeps the citation clock. The rule is also checked **within one policy object only**: it holds when `loom retention run` and
   `loom sweep content` both use the same policy; a bare `--ttl` on either command, or a different policy file,
   is not compared.
 - **Unknown keys are rejected**, at the top level and inside each section. A typo must not silently disable a

@@ -990,12 +990,13 @@ npx loom retention run --db .data/events.db --snap .data/snapshots.db --policy .
 ```
 
 The `content.unpinnedAfterMs >= terminalTtlMs` rule is an **advisory consistency check** on the
-reclaimable-telemetry window, not a guarantee that a kept log never names bytes that are gone: per
-[ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) only a claim-check envelope's own ref that the app marked
-`reclaimable` is TTL-reclaimed (retained blobs and bare refs never are while cited), and the sweep measures
-age from the latest citation while retention measures from the terminal end
-([ADR 0140](adr/0140-agent-claim-check-opt-in.md) D6). It is checked within one policy object, so it only holds
-when both commands use the same policy and neither is given a bare `--ttl`.
+reclaimable-telemetry window. Per [ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) only a claim-check
+envelope's own ref that the app marked `reclaimable` is TTL-reclaimed (retained blobs and bare refs never are
+while cited). Per [ADR 0146](adr/0146-content-age-from-execution-end.md) the sweep ages a terminal execution's
+citations from its end, the instant retention measures from ([ADR 0140](adr/0140-agent-claim-check-opt-in.md)
+D6), so with this rule a reclaimable blob outlives the log citing it; a running execution keeps the citation
+clock. It is checked within one policy object, so it only holds when both commands use the same policy and
+neither is given a bare `--ttl`.
 
 ### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
 
