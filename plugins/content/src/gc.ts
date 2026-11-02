@@ -10,7 +10,7 @@ import {
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
 import { retainRootsOf, visitCitedAddresses } from "./citations";
-import { terminalEndOf } from "./executionEnd";
+import { terminalEndOf, wasReopened } from "./executionEnd";
 
 // ── K10.6 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
 //
@@ -444,9 +444,13 @@ export interface ContentSweepReport {
   refsSeen: number;
   refsPinned: number;
   /**
-   * ADR 0055 D4 — refs cited at least once anywhere but as a claim-check envelope's
-   * `ref` (a digest counts as anywhere). These are
-   * load-bearing and are never reclaimed while any scanned event cites them.
+   * ADR 0055 D4 - refs cited at least once anywhere but as a RECLAIMABLE claim-check envelope's
+   * `ref` (a digest counts as anywhere). Since ADR 0140 that includes a `retain: true` envelope
+   * whose ref sits at a trusted root (the top-level `output` of a STEP_COMPLETED, through a taint
+   * wrapper), and a R5 media source `{ kind: "ref", ref: { address } }`. Every address cited by an
+   * `archiveStores` segment is counted unconditionally. These are never reclaimed while any scanned
+   * event cites them. The set OVERLAPS `refsPinned` (a ref can be in both): the two are not disjoint
+   * partitions of `refsSeen`.
    */
   refsLoadBearing: number;
   /**
@@ -461,8 +465,35 @@ export interface ContentSweepReport {
    * that would not also have been by the old one, so this is the whole delta.
    */
   heldByEndClock?: string[];
+  /**
+   * Unpinned refs whose age clock stayed on the CITATION because the newest citing execution was
+   * RE-OPENED after a terminal event (`resumeAs` onto an ended run, ADR 0104 D1; ADR 0146's exception):
+   * they can be reclaimed while that execution's log is still live. Counted on every sweep. A plain
+   * running or parked execution that never ended is NOT counted. Decisions are unchanged: visibility only.
+   */
+  refsOfReopened: number;
+  /**
+   * DRY RUN ONLY (absent on an erasing sweep, which keeps no second list): of `reclaimed`, the addresses
+   * counted in `refsOfReopened`, so an operator sees them before `--apply`.
+   */
+  reclaimedWhileReopened?: string[];
   /** Content addresses erased this sweep — or, under `dryRun`, that WOULD be. */
   reclaimed: string[];
+  /**
+   * Eligible addresses (refs and orphans) whose conditional erase was REFUSED by the touch/race guard:
+   * `deleteIfUntouchedSince` returned false because the blob was touched after `touchCutoff` (a
+   * concurrent re-cite, or a content-store clock that is not the one the log's `now` runs on).
+   * ALWAYS 0 on a dry run, which never calls the store: a dry run can list N in `reclaimed` while the
+   * apply reports `reclaimed: []` and `keptByTouch: N`; when it does, compare `touchCutoff` with the
+   * store's touch stamps (see `touchedBefore`). Also 0 when the store is not `raceSafe` (plain delete).
+   */
+  keptByTouch: number;
+  /**
+   * The cutoff the guard compared touch stamps with, on the CONTENT STORE's clock (resolved from
+   * `touchedBefore`, else `touchClock() - olderThanMs`). Present on a dry run too (where it was not
+   * enforced); `undefined` when the store is not `raceSafe`.
+   */
+  touchCutoff?: number;
   /**
    * ADR 0055 D5 — every erase was conditional on the blob's touch time
    * (`deleteIfUntouchedSince`), so a `put` that re-cited a blob during the sweep kept it.
@@ -742,11 +773,14 @@ async function sweepResolved(
     if (!(margin >= MIN_ORPHAN_ERASE_MARGIN_MS)) throw new ReclaimOrphansMarginError(margin);
   }
   /** Erase one address; `true` iff it is gone because of this sweep (or would be). */
+  let keptByTouch = 0;
   const erase = async (address: string): Promise<boolean> => {
     if (dryRun) return true;
     const ref = { __loomContent: address };
     if (store.deleteIfUntouchedSince !== undefined) {
-      return store.deleteIfUntouchedSince(ref, cutoff);
+      const gone = await store.deleteIfUntouchedSince(ref, cutoff);
+      if (!gone) keptByTouch++;
+      return gone;
     }
     await store.delete(ref);
     return true;
@@ -758,6 +792,8 @@ async function sweepResolved(
   const lastCited = new Map<string, number>();
   const rawCited = options.dryRun === true ? new Map<string, number>() : undefined;
   const viaEnd = new Set<string>();
+  // Refs whose newest citation came from a RE-OPENED execution (same tie rule as `viaEnd`).
+  const viaReopened = new Set<string>();
   const pinned = new Set<string>();
   const loadBearing = new Set<string>();
   let executionsScanned = 0;
@@ -782,6 +818,8 @@ async function sweepResolved(
       const events = await eventStore.read(executionId);
       // ADR 0146: a terminal execution's citations age from its END (never earlier than the citation).
       const endedAt = isReservedStream(executionId) ? undefined : terminalEndOf(events);
+      const reopened =
+        !isReservedStream(executionId) && endedAt === undefined && wasReopened(events);
       for (const event of events) {
         // Only a finite end strictly after the citation moves the clock; anything else is today's clock exactly.
         const at = endedAt !== undefined && endedAt > event.timestamp ? endedAt : event.timestamp;
@@ -793,6 +831,8 @@ async function sweepResolved(
               lastCited.set(address, at);
               if (at > event.timestamp) viaEnd.add(address);
               else viaEnd.delete(address);
+              if (reopened) viaReopened.add(address);
+              else viaReopened.delete(address);
             }
             if (rawCited !== undefined) {
               const rawPrior = rawCited.get(address);
@@ -991,6 +1031,7 @@ async function sweepResolved(
               if (prior === undefined || event.timestamp > prior) {
                 lastCited.set(address, event.timestamp);
                 viaEnd.delete(address);
+                viaReopened.delete(address);
               }
               if (rawCited !== undefined) {
                 const rawPrior = rawCited.get(address);
@@ -1050,10 +1091,14 @@ async function sweepResolved(
 
   const reclaimed: string[] = [];
   const heldByEndClock: string[] = [];
+  const reclaimedWhileReopened: string[] = [];
   let refsAgedByEnd = 0;
+  let refsOfReopened = 0;
   for (const [address, citedAt] of lastCited) {
     if (pinned.has(address) || loadBearing.has(address) || roots.has(address)) continue;
     if (viaEnd.has(address)) refsAgedByEnd++;
+    const ofReopened = viaReopened.has(address);
+    if (ofReopened) refsOfReopened++;
     if (options.now - citedAt < options.olderThanMs) {
       const raw = rawCited?.get(address);
       if (raw !== undefined && options.now - raw >= options.olderThanMs) {
@@ -1061,7 +1106,10 @@ async function sweepResolved(
       }
       continue;
     }
-    if (await erase(address)) reclaimed.push(address);
+    if (await erase(address)) {
+      reclaimed.push(address);
+      if (ofReopened && dryRun) reclaimedWhileReopened.push(address);
+    }
   }
 
   // ADR 0055 D6 — orphans: stored, untouched since the cutoff, and cited by nothing scanned.
@@ -1093,7 +1141,11 @@ async function sweepResolved(
     refsLoadBearing: loadBearing.size,
     refsAgedByEnd,
     ...(dryRun && { heldByEndClock }),
+    refsOfReopened,
+    ...(dryRun && { reclaimedWhileReopened }),
     reclaimed,
+    keptByTouch,
+    ...(raceSafe && { touchCutoff: cutoff }),
     raceSafe,
     orphansReclaimed,
     snapshotStoresTouching,

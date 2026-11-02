@@ -1,7 +1,7 @@
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { describe, expect, it } from "vitest";
-import { LogLifecycle } from "./LogLifecycle";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import { LogLifecycle, type RetentionVerdict } from "./LogLifecycle";
 import { RetentionPolicyError, assertRetentionPolicy, retentionPolicy } from "./retentionPolicy";
 
 // ADR 0145 - the app-owned retention policy value and its re-validation at every consumer.
@@ -180,5 +180,24 @@ describe("re-validation at the consumers (a plain literal cannot bypass the rule
     await expect(life.pruneSnapshots("r", { policy: { terminalTtlMs: -1 } })).rejects.toThrow(
       RetentionPolicyError
     );
+  });
+});
+
+describe("LogLifecycle.pinnedEventTypes / RetentionVerdict", () => {
+  it("the getter returns the configured kinds, frozen; [] when unconfigured", () => {
+    const es = new InMemoryAsyncEventStore();
+    const ss = new InMemoryAsyncSnapshotStore();
+    const configured = new LogLifecycle(es, ss, {
+      pinnedEventTypes: ["FINDING", "NOTE", "FINDING"],
+    });
+    expect(configured.pinnedEventTypes).toEqual(["FINDING", "NOTE"]);
+    expect(Object.isFrozen(configured.pinnedEventTypes)).toBe(true);
+    expect(new LogLifecycle(es, ss).pinnedEventTypes).toEqual([]);
+  });
+
+  it("evaluate's declared return type is RetentionVerdict", () => {
+    expectTypeOf<Awaited<ReturnType<LogLifecycle["evaluate"]>>>().toEqualTypeOf<RetentionVerdict>();
+    expectTypeOf<"reclaimed">().not.toMatchTypeOf<RetentionVerdict>();
+    expectTypeOf<"reclaimable">().toMatchTypeOf<RetentionVerdict>();
   });
 });

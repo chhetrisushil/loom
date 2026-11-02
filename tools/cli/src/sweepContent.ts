@@ -59,6 +59,23 @@ function formatReport(
           `  held by end clock (${report.heldByEndClock.length}): the citation clock alone would reclaim these, the citing execution ended later`,
         ]
       : []),
+    // Shown only when non-zero, so the unchanged text stays stable. Visibility only (ADR 0146).
+    ...(report.refsOfReopened > 0
+      ? [
+          `  re-opened: ${report.refsOfReopened} ref(s) age on the citation clock because the citing execution was re-opened after it ended${
+            report.reclaimedWhileReopened !== undefined && report.reclaimedWhileReopened.length > 0
+              ? `; would-reclaim while its log is live (${report.reclaimedWhileReopened.length}): ${report.reclaimedWhileReopened.join(", ")}`
+              : ""
+          }`,
+        ]
+      : []),
+    ...(report.keptByTouch > 0
+      ? [
+          `  kept by touch guard: ${report.keptByTouch} eligible blob(s) were touched after the cutoff${
+            report.touchCutoff !== undefined ? ` (${report.touchCutoff} on the store clock)` : ""
+          } - a concurrent re-cite, or the content store's clock is not the log's now (see touchedBefore, "Clocks in a sweep")`,
+        ]
+      : []),
     // ADR 0055 D5: "no" = plain delete, so a blob re-put during the sweep can be lost.
     `  race-safe: ${report.raceSafe ? "yes" : "NO (the content store lacks deleteIfUntouchedSince)"}`,
     `  ${verb} (${report.reclaimed.length}):`,

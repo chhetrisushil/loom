@@ -35,3 +35,30 @@ export function terminalEndOf(events: readonly EventEnvelope[]): number | undefi
   }
   return undefined;
 }
+
+/**
+ * ADR 0146 - was this execution RE-OPENED after a terminal event? True iff its tail is live
+ * (`terminalEndOf` returns `undefined` because a RESUMED / SUSPENDED / STARTED follows) AND a terminal
+ * event (the same set as `terminalEndOf`) precedes that live tail. A run that never ended is false.
+ * A terminal event with a non-finite timestamp still counts as an end here (the log shows it ended).
+ */
+export function wasReopened(events: readonly EventEnvelope[]): boolean {
+  let live = false;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i] as EventEnvelope;
+    switch (e.eventType) {
+      case "EXECUTION_RESUMED":
+      case "EXECUTION_SUSPENDED":
+      case "EXECUTION_STARTED":
+        live = true;
+        break;
+      case "EXECUTION_COMPLETED":
+      case "EXECUTION_FAILED":
+      case "EXECUTION_CANCELLED":
+        return live;
+      case "EXECUTION_CONTINUED":
+        if (e.metadata?.kernel === true) return live;
+    }
+  }
+  return false;
+}

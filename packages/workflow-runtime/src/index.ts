@@ -159,6 +159,7 @@ export {
   type RetentionPolicy,
   type ArchiveStores,
   type RetentionOutcome,
+  type RetentionVerdict,
   type PinPredicate,
   type RestoreTerminalResult,
 } from "./LogLifecycle";

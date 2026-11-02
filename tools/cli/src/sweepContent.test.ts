@@ -144,6 +144,72 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     expect(applied).not.toContain("held by end clock");
   });
 
+  async function seedOne(
+    cite: { at: number; storeNow: number },
+    tail: Array<[string, number]>
+  ): Promise<{ db: string; contentDb: string; address: string }> {
+    dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
+    const db = join(dir, "events.db");
+    const contentDb = join(dir, "content.db");
+    const events = new SqliteEventStore(db);
+    const content = new SqliteContentStore(contentDb, { now: () => cite.storeNow });
+    const blob = await content.put(new TextEncoder().encode("telemetry"));
+    const ev = (sequence: number, eventType: string, timestamp: number, payload: unknown) => ({
+      id: `e-${sequence}`,
+      workflowId: "wf",
+      executionId: "x",
+      eventType,
+      sequence,
+      timestamp,
+      payload,
+    });
+    await events.append(
+      ev(0, "STEP_COMPLETED", cite.at, {
+        stepId: "read",
+        output: { __loomClaimCheck: true, ref: { __loomContent: blob.__loomContent }, size: 1 },
+      })
+    );
+    let n = 1;
+    for (const [type, at] of tail) await events.append(ev(n++, type, at, {}));
+    await events.close();
+    await content.close();
+    return { db, contentDb, address: blob.__loomContent };
+  }
+
+  it("kept by touch guard: a store clock ahead of the log makes --apply reclaim nothing, and says why", async () => {
+    // Cited 90 days ago on the log; the blob was stamped 1000 days in the FUTURE of the store clock.
+    const { db, contentDb } = await seedOne(
+      { at: Date.now() - 90 * DAY, storeNow: Date.now() + 1000 * DAY },
+      []
+    );
+    const base = { db, content: contentDb, pin: "", ttlMs: 30 * DAY };
+    const dry = await cmdSweepContent({ ...base, apply: false });
+    expect(dry).toContain("would-reclaim (1)");
+    expect(dry).not.toContain("kept by touch guard");
+    const applied = await cmdSweepContent({ ...base, apply: true });
+    expect(applied).toContain("reclaimed (0)");
+    expect(applied).toContain("kept by touch guard: 1 eligible blob(s)");
+    expect(applied).toContain("touchedBefore");
+  });
+
+  it("re-opened: the dry run names the ref reclaimed while its execution's log is live; no line otherwise", async () => {
+    const { db, contentDb, address } = await seedOne(
+      { at: Date.now() - 90 * DAY, storeNow: Date.now() - 90 * DAY },
+      [
+        ["EXECUTION_COMPLETED", Date.now() - 60 * DAY],
+        ["EXECUTION_RESUMED", Date.now() - 59 * DAY],
+      ]
+    );
+    const base = { db, content: contentDb, pin: "", ttlMs: 30 * DAY };
+    const dry = await cmdSweepContent({ ...base, apply: false });
+    expect(dry).toContain("re-opened: 1 ref(s)");
+    expect(dry).toContain(`would-reclaim while its log is live (1): ${address}`);
+    const applied = await cmdSweepContent({ ...base, apply: true });
+    expect(applied).toContain("re-opened: 1 ref(s)");
+    expect(applied).not.toContain("while its log is live");
+    expect(applied).not.toContain("kept by touch guard");
+  });
+
   it("never reclaims a stale BARE ref, and says why (ADR 0055 D4)", async () => {
     dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
     const db = join(dir, "events.db");

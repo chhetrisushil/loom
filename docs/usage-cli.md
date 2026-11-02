@@ -1043,6 +1043,31 @@ is kept ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D5). The SQLite conte
 supports this. An app with blobs cited from its own tables sweeps through the API instead, with
 `sweepUnpinnedContent({ roots })` (D7). Pins are recomputed from the log on **every** sweep, so a run that becomes pinned between sweeps is protected without any bookkeeping.
 
+#### Clocks in a sweep
+
+A sweep reads two clocks, and they are not the same clock.
+
+| Option | Clock | Compared with | Default |
+|---|---|---|---|
+| `now` | the LOG's time (the CLI passes `Date.now()`) | event `timestamp`s: `now - effective citation time >= olderThanMs` | required in the API |
+| `touchedBefore` | the CONTENT STORE's time | the touch stamps the store wrote (`put`, `touch`): the race guard of `deleteIfUntouchedSince` and orphan eligibility | `touchClock() - olderThanMs`, read once at the start |
+
+In a real deployment both are wall clock. In a simulated or replayed world they are not: events stamped by a
+simulated clock, a store stamping real time. Every blob is then "touched after the cutoff", the guard refuses
+every erase, and the asymmetry bites: a **dry run never calls the store**, so it lists N addresses as
+`would-reclaim` while `--apply` reports `reclaimed (0)`. The report says which happened:
+`ContentSweepReport.keptByTouch` counts the eligible blobs whose conditional erase was refused (always 0 on a
+dry run, and 0 when the store is not race-safe), and `touchCutoff` is the cutoff the guard compared with, on the
+store's clock. `loom sweep content` prints `kept by touch guard: N ...` only when N is greater than 0. A non-zero
+count means either a concurrent re-cite (expected, rare) or clocks that disagree: give the content store the same
+clock as the log (`new SqliteContentStore(path, { now })`), or pass an explicit `touchedBefore` to
+`sweepUnpinnedContent`.
+
+Re-opened executions are the other thing a dry run can show you ahead of time: `refsOfReopened` counts the refs
+whose citing execution was re-opened after it ended (they age on the citation clock, [ADR 0146](adr/0146-content-age-from-execution-end.md)),
+and `reclaimedWhileReopened` (dry run only) lists those among the would-reclaim set, i.e. blobs that go while
+their execution's log is still live. Decisions are unchanged; the line is printed only when the count is non-zero.
+
 ### `loom repair blank-stream (--config <module> | --db <events.db> --snap <snap.db>) [--assign <id>:<from>-<through>,…] [--apply]`
 
 Before [ADR 0106](adr/0106-compaction-integrity.md), a compaction checkpoint named execution
