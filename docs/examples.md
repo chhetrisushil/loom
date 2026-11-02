@@ -33,6 +33,12 @@ pnpm --filter @loom/db-observability start
   [`transient-interpreter.md`](./transient-interpreter.md), ADR 0065/0066.
 - **`db-sentinel`** — the perpetual-agent / sentinel pattern via `sentinelPreset`
   (schedule + durable carry-state + claim-checked telemetry).
+- **`retention-policy`** — an app-owned, opt-in retention policy (`retentionPolicy()`, kept in
+  the app's own module, not `defineConfig`) driving the explicit passes on a simulated clock:
+  a retention dry run then an archive-first apply (pinned, not-terminal and re-opened executions
+  kept), snapshot pruning via `pruneSnapshots({ policy })`, and `sweepUnpinnedContent({ policy })`
+  where a reclaimable blob is held by the end-of-execution clock (`heldByEndClock`) while retained
+  blobs are never TTL-reclaimed. ADR 0145/0146.
 - **`child-orchestration`** — cross-execution orchestration (`@loom/orchestration`), waiting
   on the log with `@loom/live-query` instead of polling `loadState` for a terminal state
   end to end: a release pipeline that fans out builds with `awaitChildren`
