@@ -9,7 +9,7 @@ import type { ExecutionState } from "@loom/core";
  * 1.2.0: added optional `pruneSnapshots()` (ADR 0134 — delete an execution's snapshots inside
  *   an exclusive sequence range, minus an explicit keep-set, in one bounded statement).
  */
-export const SNAPSHOT_STORE_SPI_VERSION = "1.2.0";
+export const SNAPSHOT_STORE_SPI_VERSION = "1.3.0";
 
 export interface Snapshot {
   id: string;
@@ -83,6 +83,19 @@ export interface SnapshotStore {
     range: { readonly after: number; readonly before: number },
     keep?: readonly number[]
   ): Promise<number>;
+  /**
+   * OPTIONAL (SPI 1.3.0, ADR 0134 amendment 2026-11-02). The sequences of the execution's stored
+   * snapshots, ASCENDING, ONE entry per stored snapshot (several snapshots sharing a sequence list it
+   * once each), optionally restricted to `after < sequence < before` (both EXCLUSIVE, like
+   * `pruneSnapshots`; either may be omitted). So `listSequences(id, range).length` is exactly what
+   * `pruneSnapshots(id, range)` with no keep-set would delete. Reads no state (no decode, no key): an
+   * index scan. An unknown execution resolves `[]`. Every decorator must decide it (forward it, or refuse
+   * it with a reason) - its `DecoratorPlan` does not compile otherwise.
+   */
+  listSequences?(
+    executionId: string,
+    range?: { readonly after?: number; readonly before?: number }
+  ): Promise<number[]>;
   close(): Promise<void>;
 }
 
@@ -101,6 +114,7 @@ export const OPTIONAL_SNAPSHOT_STORE_METHODS = [
   "deleteExecution",
   "loadLatestSealed",
   "pruneSnapshots",
+  "listSequences",
 ] as const satisfies readonly OptionalSnapshotStoreMethod[];
 
 type _MissingOptionalSnapshotMethod = Exclude<

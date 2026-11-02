@@ -143,6 +143,7 @@ export interface EncryptingSnapshotStoreOptions {
 export class EncryptingSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
+  readonly listSequences?: NonNullable<SnapshotStore["listSequences"]>;
   /**
    * ADR 0130 D8 — structural marker: the WHOLE folded state is sealed (not just static paths).
    * A plain property so neither `loom doctor` nor the kernel depends on @loom/plugin-crypto.
@@ -221,6 +222,8 @@ export class EncryptingSnapshotStore implements SnapshotStore {
       deleteExecution: "forward",
       // ADR 0134 — a range delete over ciphertext rows: no key is read, no plaintext produced.
       pruneSnapshots: "forward",
+      // ADR 0134 amendment - sequences are not sealed state: no key is read.
+      listSequences: "forward",
     } satisfies DecoratorPlan<
       SnapshotStore,
       Exclude<OptionalSnapshotStoreMethod, "loadLatestSealed">

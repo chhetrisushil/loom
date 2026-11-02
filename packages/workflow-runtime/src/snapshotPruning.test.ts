@@ -531,3 +531,145 @@ describe("ADR 0145 - pruneSnapshots keepLatest from an app-owned retention polic
     expect(await snapshotSequences(withPolicy, "e1")).toEqual(await snapshotSequences(plain, "e1"));
   });
 });
+
+// ---- ADR 0134 amendment (2026-11-02) - dryRun and listSequences -----------------------------------
+
+/** The same store, with `listSequences` hidden: a store written against SPI 1.2.0. */
+function withoutList(store: InMemoryAsyncSnapshotStore) {
+  const calls = {};
+  const bare = new Proxy(store, {
+    get(t, k) {
+      if (k === "listSequences") return undefined;
+      const v = (t as unknown as Record<PropertyKey, unknown>)[k];
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  return { bare, calls };
+}
+
+describe("ADR 0134 amendment - LogLifecycle.pruneSnapshots({ dryRun })", () => {
+  async function scenarios(): Promise<
+    Array<{ name: string; app: App; options: Parameters<LogLifecycle["pruneSnapshots"]>[1] }>
+  > {
+    const gapFree = boot();
+    await toGate(gapFree, "e1", 4);
+    const kept = boot();
+    await toGate(kept, "e1", 4);
+    const pinned = (await snapshotSequences(kept, "e1"))[1]!;
+    const compacted = boot();
+    await toGate(compacted, "e1", 3);
+    await compacted.lifecycle.compact("e1");
+    await resumeGate(compacted, "e1", 3);
+    return [
+      { name: "gap-free keepLatest 1", app: gapFree, options: {} },
+      {
+        name: "keepLatest 2 + keepSequences",
+        app: kept,
+        options: { keepLatest: 2, keepSequences: [pinned] },
+      },
+      { name: "compacted (checkpoint + fork points kept)", app: compacted, options: {} },
+    ];
+  }
+
+  it("the preview equals what the real call then deletes, deletes nothing itself, and is exact", async () => {
+    for (const { name, app, options } of await scenarios()) {
+      const before = await snapshotSequences(app, "e1");
+      const listed = await app.snapshotStore.listSequences("e1");
+      // One entry per stored snapshot: a cadence save and a suspend save can share a sequence.
+      expect([...new Set(listed)], name).toEqual(before);
+
+      const preview = await app.lifecycle.pruneSnapshots("e1", { ...options, dryRun: true });
+      expect(await app.snapshotStore.listSequences("e1"), name).toEqual(listed); // nothing deleted
+      expect(preview, name).toBeGreaterThan(0);
+      expect(await app.lifecycle.pruneSnapshots("e1", { ...options, dryRun: true })).toBe(preview);
+
+      const real = await app.lifecycle.pruneSnapshots("e1", options);
+      expect(real, name).toBe(preview);
+      expect((await app.snapshotStore.listSequences("e1")).length, name).toBe(listed.length - real);
+      // After the apply there is nothing left to preview.
+      expect(await app.lifecycle.pruneSnapshots("e1", { ...options, dryRun: true })).toBe(0);
+    }
+  });
+
+  it("exact values: a gap-free run previews every snapshot but the latest", async () => {
+    const app = boot();
+    await toGate(app, "e1", 4);
+    const seqs = await app.snapshotStore.listSequences("e1");
+    const at = (n: number) => seqs.filter((q) => q === n).length;
+    const latest = seqs[seqs.length - 1]!;
+    const beforeLatest = seqs.filter((q) => q < latest);
+    expect(await app.lifecycle.pruneSnapshots("e1", { dryRun: true })).toBe(beforeLatest.length);
+    const second = Math.max(...beforeLatest);
+    expect(await app.lifecycle.pruneSnapshots("e1", { dryRun: true, keepLatest: 2 })).toBe(
+      beforeLatest.filter((q) => q < second).length
+    );
+    expect(
+      await app.lifecycle.pruneSnapshots("e1", { dryRun: true, keepSequences: [seqs[0]!] })
+    ).toBe(beforeLatest.length - at(seqs[0]!));
+  });
+
+  it("without listSequences the walk counts each distinct sequence once (the documented fallback)", async () => {
+    let sawShared = false;
+    for (const { name, app, options } of await scenarios()) {
+      const withList = await app.lifecycle.pruneSnapshots("e1", { ...options, dryRun: true });
+      const { bare } = withoutList(app.snapshotStore);
+      expect(bare.listSequences).toBeUndefined();
+      const walk = new LogLifecycle(app.eventStore, bare, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
+      const walked = await walk.pruneSnapshots("e1", { ...options, dryRun: true });
+      // Identical unless snapshots share a sequence; then the walk (which sees one per sequence) is lower.
+      const listed = await app.snapshotStore.listSequences("e1");
+      const shared = listed.length !== new Set(listed).size;
+      sawShared ||= shared;
+      if (!shared) expect(walked, name).toBe(withList);
+      else expect(walked, name).toBeLessThanOrEqual(withList);
+      expect(walked, name).toBeGreaterThan(0);
+      // Deleting nothing either way.
+      expect(await app.snapshotStore.listSequences("e1")).toEqual(listed);
+    }
+    expect(sawShared).toBe(true); // the scenarios do exercise a shared sequence
+  });
+
+  it("without listSequences and with distinct sequences the walk equals the listing exactly", async () => {
+    const app = boot();
+    await toGate(app, "e1", 4);
+    // Collapse to distinct sequences, then compare the two paths.
+    const store = new InMemoryAsyncSnapshotStore();
+    for (const q of new Set(await app.snapshotStore.listSequences("e1"))) {
+      await store.save((await app.snapshotStore.loadAt("e1", q))!);
+    }
+    const listing = new LogLifecycle(app.eventStore, store, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
+    const walk = new LogLifecycle(app.eventStore, withoutList(store).bare, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
+    for (const o of [{}, { keepLatest: 2 }, { keepSequences: [1] }]) {
+      expect(await walk.pruneSnapshots("e1", { ...o, dryRun: true })).toBe(
+        await listing.pruneSnapshots("e1", { ...o, dryRun: true })
+      );
+    }
+  });
+
+  it("applies the same refusals: exempt, nothing to prune, unknown execution, store without prune", async () => {
+    const app = boot();
+    await toGate(app, "e1", 4);
+    const exempt = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      compactionExempt: () => true,
+    });
+    expect(await exempt.pruneSnapshots("e1", { dryRun: true })).toBe(0);
+    expect(await app.lifecycle.pruneSnapshots("never", { dryRun: true })).toBe(0);
+    expect(await app.lifecycle.pruneSnapshots("e1", { dryRun: true, keepLatest: 99 })).toBe(0);
+    await expect(
+      app.lifecycle.pruneSnapshots("e1", { dryRun: true, keepLatest: 0 })
+    ).rejects.toThrow(RangeError);
+    await expect(app.lifecycle.pruneSnapshots("", { dryRun: true })).rejects.toThrow(TypeError);
+
+    const tipOnly = boot();
+    await toGate(tipOnly, "e2", 3);
+    await tipOnly.lifecycle.compact("e2"); // [0]: compacted through the tip
+    expect(await tipOnly.lifecycle.pruneSnapshots("e2", { dryRun: true })).toBe(0);
+  });
+});

@@ -528,6 +528,7 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
   readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
+  readonly listSequences?: NonNullable<SnapshotStore["listSequences"]>;
 
   constructor(
     readonly inner: SnapshotStore,
@@ -538,6 +539,8 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
       loadLatestSealed: "forward",
       // ADR 0134 — a range delete reads and returns no state, so there is nothing to guard.
       pruneSnapshots: "forward",
+      // ADR 0134 amendment - sequences only, no state to guard.
+      listSequences: "forward",
     } satisfies SnapshotPlan;
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }

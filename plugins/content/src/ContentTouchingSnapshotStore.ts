@@ -53,6 +53,7 @@ export class ContentTouchingSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
   readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
+  readonly listSequences?: NonNullable<SnapshotStore["listSequences"]>;
   /** Brand: see {@link isContentTouchingSnapshotStore}. */
   readonly [CONTENT_TOUCHING_SNAPSHOT_STORE] = true;
   private readonly onTouchError: TouchErrorHook | undefined;
@@ -70,6 +71,8 @@ export class ContentTouchingSnapshotStore implements SnapshotStore {
       // snapshot cited was never pinned by the sweep (it pins the latest and the checkpoint,
       // both of which pruning keeps), so no sweep decision changes.
       pruneSnapshots: "forward",
+      // ADR 0134 amendment - a read of sequences cites no content.
+      listSequences: "forward",
     } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }

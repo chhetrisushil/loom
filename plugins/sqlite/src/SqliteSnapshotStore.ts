@@ -113,6 +113,23 @@ export class SqliteSnapshotStore implements SnapshotStore {
     this.db.prepare<[string]>("DELETE FROM snapshots WHERE execution_id = ?").run(executionId);
   }
 
+  async listSequences(
+    executionId: string,
+    range: { readonly after?: number; readonly before?: number } = {}
+  ): Promise<number[]> {
+    const rows = this.db
+      .prepare<[string, number, number], { sequence: number }>(
+        `SELECT sequence FROM snapshots WHERE execution_id = ? AND sequence > ? AND sequence < ?
+         ORDER BY sequence`
+      )
+      .all(
+        executionId,
+        range.after ?? Number.MIN_SAFE_INTEGER,
+        range.before ?? Number.MAX_SAFE_INTEGER
+      );
+    return rows.map((r) => r.sequence);
+  }
+
   async pruneSnapshots(
     executionId: string,
     range: { readonly after: number; readonly before: number },

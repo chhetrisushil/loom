@@ -208,6 +208,23 @@ export class PostgresSnapshotStore implements SnapshotStore {
     await this.pool.query("DELETE FROM snapshots WHERE execution_id = $1", [executionId]);
   }
 
+  async listSequences(
+    executionId: string,
+    range: { readonly after?: number; readonly before?: number } = {}
+  ): Promise<number[]> {
+    await this.ready;
+    // Index-only over idx_snapshots_exec (execution_id, sequence DESC); no state column is read.
+    // A bound the caller omitted is NULL = unbounded. Bigint comes back as a string.
+    const res = await this.pool.query<{ sequence: string | number }>(
+      `SELECT sequence FROM snapshots WHERE execution_id = $1
+       AND ($2::bigint IS NULL OR sequence > $2::bigint)
+       AND ($3::bigint IS NULL OR sequence < $3::bigint)
+       ORDER BY sequence`,
+      [executionId, range.after ?? null, range.before ?? null]
+    );
+    return res.rows.map((r) => Number(r.sequence));
+  }
+
   async pruneSnapshots(
     executionId: string,
     range: { readonly after: number; readonly before: number },
