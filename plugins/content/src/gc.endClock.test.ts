@@ -245,6 +245,25 @@ describe("end clock (ADR 0146)", () => {
         events: [start, S(1, "EXECUTION_SUSPENDED", 3, { condition: { type: "approval" } })],
         end: undefined,
       },
+      // A non-kernel EXECUTION_CONTINUED is an application event: a no-op in the fold, not an end.
+      { events: [start, S(1, "EXECUTION_CONTINUED", 4, { successorId: "Y" })], end: undefined },
+      {
+        events: [
+          start,
+          S(1, "EXECUTION_COMPLETED", 5),
+          S(2, "EXECUTION_CONTINUED", 6, { successorId: "Y" }),
+        ],
+        end: 5,
+      },
+      // A wait-addressed EXECUTION_RESUMED (kernel-stamped) re-opens a terminal execution.
+      {
+        events: [
+          start,
+          S(1, "EXECUTION_COMPLETED", 5),
+          S(2, "EXECUTION_RESUMED", 6, { waitId: "w1", payload: 1 }, true),
+        ],
+        end: undefined,
+      },
     ];
     const terminal = new Set(["completed", "failed", "cancelled", "continued"]);
     for (const { events, end: expected } of table) {
@@ -256,7 +275,65 @@ describe("end clock (ADR 0146)", () => {
     }
   });
 
-  it("(m) fuzz: the end clock never reclaims a ref the citation clock keeps (seeded)", async () => {
+  it("(n) a non-numeric terminal timestamp falls back to the citation clock exactly", async () => {
+    // Cited 10d, ends "20d" but the terminal timestamp is garbage; sweep at 11d (cited 1 day ago).
+    // Old clock keeps (1d < 30d TTL); at 45d old clock reclaims (35d >= 30d). Both must hold.
+    const bad: unknown[] = [
+      Number.NaN,
+      "2026-01-01",
+      "864000000",
+      "9007199254740993",
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      null,
+      undefined,
+    ];
+    for (const ts of bad) {
+      const t = await setup((ref) => [
+        [
+          evt("A", 0, "EXECUTION_STARTED", {}, 0),
+          cite("A", 1, ref, 10 * DAY),
+          end("A", 2, "EXECUTION_COMPLETED", ts as number),
+        ],
+      ]);
+      expect(terminalEndOf((await t.store.read("A")) as EventEnvelope[]), String(ts)).toBe(
+        undefined
+      );
+      const keep = await t.sweep(11 * DAY, { dryRun: true });
+      expect(keep.reclaimed, String(ts)).toEqual([]);
+      expect(keep.refsAgedByEnd, String(ts)).toBe(0);
+      const gone = await t.sweep(45 * DAY, { dryRun: true });
+      expect(gone.reclaimed, String(ts)).toEqual([t.ref]);
+    }
+    // Same for an unstamped-kernel-free CONTINUED with a bad timestamp.
+    expect(
+      terminalEndOf([evt("A", 0, "EXECUTION_CONTINUED", {}, Number.NaN, { kernel: true })])
+    ).toBeUndefined();
+  });
+
+  it("(o) a non-numeric CITATION timestamp behaves as it did before ADR 0146", async () => {
+    // Old behaviour is whatever `now - NaN < olderThanMs` gives; the end clock must not change it.
+    for (const cts of [Number.NaN, "2026-01-01"]) {
+      const ended = await setup((ref) => [
+        [
+          evt("A", 0, "EXECUTION_STARTED", {}, 0),
+          cite("A", 1, ref, cts as number),
+          end("A", 2, "EXECUTION_COMPLETED", 20 * DAY),
+        ],
+      ]);
+      const open = await setup((ref) => [
+        [evt("A", 0, "EXECUTION_STARTED", {}, 0), cite("A", 1, ref, cts as number)],
+      ]);
+      // An open execution never consults the end: the pure old path.
+      for (const now of [11 * DAY, 45 * DAY]) {
+        const a = await ended.sweep(now, { dryRun: true });
+        const b = await open.sweep(now, { dryRun: true });
+        expect(a.reclaimed.length, `${String(cts)} @${now}`).toBe(b.reclaimed.length);
+      }
+    }
+  });
+
+  it("(m) fuzz: the end clock never reclaims a ref the citation clock keeps; exact new set vs an oracle (seeded)", async () => {
     const SEED = 0x146;
     const ITERATIONS = 300;
     let s = SEED;
@@ -279,19 +356,33 @@ describe("end clock (ADR 0146)", () => {
       "EXECUTION_SUSPENDED",
       "EXECUTION_STARTED",
     ];
+    const BAD = [
+      Number.NaN,
+      "2026-01-01",
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      null,
+    ];
+    const BAD_FRACTION = 0.25;
     let sawHeld = 0;
     let sawEnded = 0;
+    let sawBad = 0;
     for (let i = 0; i < ITERATIONS; i++) {
       const content = new InMemoryContentStore({ now: () => 1 });
       const refs: string[] = [];
       for (let r = 0; r < 5; r++)
         refs.push((await content.put(bytes(`blob-${i}-${r}`))).__loomContent);
-      const store = new InMemoryAsyncEventStore();
+      const stores = [new InMemoryAsyncEventStore(), new InMemoryAsyncEventStore()];
+      // Independent oracle: per ref, the newest effective time, computed from the generated logs.
+      const logs: EventEnvelope[][] = [];
       const rawMax = new Map<string, number>();
       const bare = new Set<string>();
       const executions = 1 + Math.floor(rnd() * 4);
       for (let x = 0; x < executions; x++) {
         const id = `E${x}`;
+        const store = stores[x % 2] as InMemoryAsyncEventStore;
+        const log: EventEnvelope[] = [];
+        logs.push(log);
         const n = 1 + Math.floor(rnd() * 8);
         for (let q = 0; q < n; q++) {
           const kind = pick(KINDS);
@@ -309,27 +400,31 @@ describe("end clock (ADR 0146)", () => {
             rawMax.set(ref, Math.max(rawMax.get(ref) ?? -1, at));
             if (isBare) bare.add(ref);
           }
-          await store.append(
-            evt(
-              id,
-              q,
-              kind,
-              payload,
-              at,
-              kind === "EXECUTION_CONTINUED" && rnd() < 0.5 ? { kernel: true } : undefined
-            )
+          const e = evt(
+            id,
+            q,
+            kind,
+            payload,
+            at,
+            kind === "EXECUTION_CONTINUED" && rnd() < 0.5 ? { kernel: true } : undefined
           );
+          log.push(e);
+          await store.append(e);
         }
         // Most executions end, so the end clock is exercised, not just the citation fallback.
         if (rnd() < 0.7) {
-          const at = Math.floor(rnd() * 60 * DAY);
-          await store.append(evt(id, n, pick(["EXECUTION_COMPLETED", "EXECUTION_FAILED"]), {}, at));
+          const isBad = rnd() < BAD_FRACTION;
+          if (isBad) sawBad++;
+          const at = isBad ? (pick(BAD) as number) : Math.floor(rnd() * 60 * DAY);
+          const e = evt(id, n, pick(["EXECUTION_COMPLETED", "EXECUTION_FAILED"]), {}, at);
+          log.push(e);
+          await store.append(e);
         }
       }
       const now = Math.floor(rnd() * 120 * DAY);
       const ttl = Math.floor(rnd() * 40 * DAY);
       const opts = {
-        eventStores: [store],
+        eventStores: stores,
         contentStore: content,
         pinnedEventTypes: [] as string[],
         olderThanMs: ttl,
@@ -342,6 +437,38 @@ describe("end clock (ADR 0146)", () => {
       const dry = await sweepUnpinnedContent({ ...opts, dryRun: true });
       for (const r of dry.reclaimed) expect(oldReclaimed.has(r), `iteration ${i}`).toBe(true);
       const newSet = new Set(dry.reclaimed);
+      const effMax = new Map<string, number>();
+      for (const log of logs) {
+        let endAt: number | undefined;
+        for (let k = log.length - 1; k >= 0; k--) {
+          const e = log[k] as EventEnvelope;
+          if (
+            ["EXECUTION_RESUMED", "EXECUTION_SUSPENDED", "EXECUTION_STARTED"].includes(e.eventType)
+          )
+            break;
+          const terminal =
+            ["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"].includes(
+              e.eventType
+            ) ||
+            (e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel === true);
+          if (terminal) {
+            if (typeof e.timestamp === "number" && Number.isFinite(e.timestamp))
+              endAt = e.timestamp;
+            break;
+          }
+        }
+        for (const e of log) {
+          const p = e.payload as { output?: { ref?: { __loomContent?: string } } };
+          const r = p.output?.ref?.__loomContent;
+          if (r === undefined) continue;
+          const at = endAt !== undefined && endAt > e.timestamp ? endAt : e.timestamp;
+          effMax.set(r, Math.max(effMax.get(r) ?? -1, at));
+        }
+      }
+      const oracleNew = new Set(
+        [...effMax].filter(([r, at]) => !bare.has(r) && now - at >= ttl).map(([r]) => r)
+      );
+      expect(newSet, `oracle iteration ${i}`).toEqual(oracleNew);
       expect(new Set(dry.heldByEndClock)).toEqual(
         new Set([...oldReclaimed].filter((r) => !newSet.has(r)))
       );
@@ -353,5 +480,6 @@ describe("end clock (ADR 0146)", () => {
     // The generator must actually exercise the rule, or the subset check is vacuous.
     expect(sawHeld).toBeGreaterThan(20);
     expect(sawEnded).toBeGreaterThan(20);
+    expect(sawBad).toBeGreaterThan(50);
   });
 });

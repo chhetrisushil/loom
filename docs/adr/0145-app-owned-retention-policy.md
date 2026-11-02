@@ -67,8 +67,9 @@ Both live in `packages/workflow-runtime/src/retentionPolicy.ts`; a violation is 
   TTL-reclaimable; retained blobs and bare refs are never TTL-reclaimed while cited. Per
   [ADR 0146](0146-content-age-from-execution-end.md) the sweep measures a terminal execution's citations from
   its END (never earlier than the citation), the same instant retention measures from
-  ([ADR 0140](0140-agent-claim-check-opt-in.md) D6), so with this rule a reclaimable blob outlives the log citing
-  it; a running execution keeps the citation clock. The rule is also checked **within one policy object only**: it holds when `loom retention run` and
+  ([ADR 0140](0140-agent-claim-check-opt-in.md) D6), so with this rule a reclaimable blob is never reclaimable
+  before retention could delete the log (same policy, numeric timestamps). Exceptions, where the log lives on
+  past eligibility while the blob is reclaimed: retention gates (pinned predicate, blocked-by-branch, unsupported, unsafe-archive) can keep the log longer; a running or re-opened execution keeps the citation clock; the retention archive's copy keeps citing forever; and a legacy log compacted before the terminal event was preserved is aged by retention from its last event while the sweep finds no terminal (citation clock). The rule is also checked **within one policy object only**: it holds when `loom retention run` and
   `loom sweep content` both use the same policy; a bare `--ttl` on either command, or a different policy file,
   is not compared.
 - **Unknown keys are rejected**, at the top level and inside each section. A typo must not silently disable a
