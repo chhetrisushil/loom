@@ -144,4 +144,32 @@ describe("SqliteSnapshotStore", () => {
     expect(loaded!.state).toEqual(state);
     expect(loaded!.state.suspendedOn?.on).toBe("ApprovalGranted");
   });
+
+  it("listSequences: an omitted bound is unbounded, even at the safe-integer extremes", async () => {
+    for (const [id, sequence] of [
+      ["m1", Number.MAX_SAFE_INTEGER],
+      ["m2", Number.MIN_SAFE_INTEGER],
+      ["m3", 0],
+    ] as const) {
+      await store.save({
+        id,
+        executionId: "ext",
+        workflowId: "f",
+        sequence,
+        state: makeState("ext", sequence),
+        createdAt: 1,
+      });
+    }
+    expect(await store.listSequences("ext")).toEqual([
+      Number.MIN_SAFE_INTEGER,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    ]);
+    expect(await store.listSequences("ext", { after: 0 })).toEqual([Number.MAX_SAFE_INTEGER]);
+    expect(await store.listSequences("ext", { before: 1 })).toEqual([Number.MIN_SAFE_INTEGER, 0]);
+    expect(await store.listSequences("ext", { before: Number.MAX_SAFE_INTEGER })).toEqual([
+      Number.MIN_SAFE_INTEGER,
+      0,
+    ]);
+  });
 });

@@ -272,9 +272,15 @@ bounded statement; only the sequences are listed.
   `keepSequences` (`countPrunable`). So the preview cannot drift from the apply, and every D3 invariant (latest,
   checkpoints, fork points, `[0]`, exempt) holds for it. The return type stays `number`; without `dryRun` the
   behaviour is byte-identical.
-- **Fallback.** With `listSequences` the preview is one extra call. Without it (a 1.2.0 store) it walks the range
-  downward with `loadLatestBefore`: one point read per distinct sequence in the range, O(snapshots in the
-  range). The walk sees one snapshot per sequence, so where a cadence save and a suspend save share a sequence
-  the fallback count is LOWER than what the delete removes (which deletes both, D1); the listed form is exact.
-  The preview is a snapshot of a moment: a concurrent save or prune changes the answer (D6).
+- **No fallback: a store without `listSequences` refuses the preview.** `pruneSnapshots(id, { dryRun: true })`
+  over a 1.2.0 store throws `SnapshotListingUnsupportedError` (exported from `@loom/workflow-runtime`, next
+  to `BlankStreamUnrepairedError`) and deletes nothing. A walk with `loadLatestBefore` was considered and
+  rejected (review, 2026-11-02): it decodes every in-range snapshot through the decorators, so a preview
+  could THROW (`PlaintextSnapshotRefusedError`, `SealedStreamUnreadableError`) where the apply succeeds,
+  costs a full decode each, and sees one snapshot per sequence so it undercounts where a cadence save and a
+  suspend save share one. A count that can be wrong or can fail where the apply does not is worse than no
+  preview, so the preview is always exact or refused. Every 1P store implements `listSequences`; only a 3P
+  1.2.0 store sees the refusal. `dryRun` must be `undefined` or a boolean (a `"true"` or `1` from a JS
+  caller throws a `TypeError`, so a preview flag can never become a delete). The preview is a snapshot of
+  a moment: a concurrent save or prune changes the answer (D6).
 - **Unchanged.** `KERNEL_ABI`, `EVENT_SCHEMA`, `EVENT_STORE_SPI`: no change. Default behaviour: no change.

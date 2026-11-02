@@ -251,9 +251,10 @@ export interface PruneSnapshotsOptions {
   /**
    * ADR 0134 amendment (2026-11-02) - count, delete nothing. Resolves with the number of snapshots a
    * real call WOULD delete, through the SAME selection (keep-set, anchor, refusals, exemptions, the
-   * moved-gap check), so the preview cannot drift from the apply. Uses the store's `listSequences`
-   * (SPI 1.3.0) when present; otherwise it walks the range with `loadLatestBefore` (one point read
-   * per snapshot in the range, and several snapshots sharing one sequence count once). Default false.
+   * moved-gap check), so the preview cannot drift from the apply. Needs the store's `listSequences`
+   * (SPI 1.3.0); over a store without it the call throws {@link SnapshotListingUnsupportedError} and
+   * deletes nothing (an exact count is not available there). Must be `undefined` or a boolean, anything
+   * else throws a TypeError and deletes nothing (a preview flag fails toward not deleting). Default false.
    */
   dryRun?: boolean;
 }
@@ -288,6 +289,20 @@ export class BlankStreamCensusUnavailableError extends Error {
       `refusing to prune snapshots: the blank execution "" holds events, and deciding whether they are repaired needs the event store to enumerate executions, but it implements neither ${missing.join(" nor ")}. Nothing was deleted.`
     );
     this.name = "BlankStreamCensusUnavailableError";
+  }
+}
+
+/**
+ * ADR 0134 amendment - `pruneSnapshots({ dryRun: true })` needs an exact count, which only
+ * `SnapshotStore.listSequences` (SPI 1.3.0) gives; this store (written against SPI 1.2.0) lacks it.
+ * A refusal: nothing was deleted. Apply without `dryRun`, or upgrade the store.
+ */
+export class SnapshotListingUnsupportedError extends Error {
+  constructor() {
+    super(
+      "refusing to preview snapshot pruning: the snapshot store does not implement listSequences (SnapshotStore SPI 1.3.0), so an exact count is not available. Nothing was deleted."
+    );
+    this.name = "SnapshotListingUnsupportedError";
   }
 }
 
@@ -1642,7 +1657,7 @@ export class LogLifecycle {
    * `keepSequences` entry that is not a safe integer. Costs two log reads (before and after the
    * snapshot reads), `keepLatest` snapshot point reads, plus a walk of the snapshots above the
    * gap (O(snapshots above the gap)) only for a gapped log with neither a snapshot at its gap
-   * nor a fork seed (`dryRun` adds one `listSequences` call, or a walk of one point read per snapshot in the range without it); one `head` read of `""` plus, when a blank stream exists, the blank-stream census (every execution), memoized per instance while `""` is unchanged (`acceptUnattributedBlankStream` accepts unattributed runs only). The delete is one statement.
+   * nor a fork seed (`dryRun` adds one `listSequences` call and throws {@link SnapshotListingUnsupportedError} without it); one `head` read of `""` plus, when a blank stream exists, the blank-stream census (every execution), memoized per instance while `""` is unchanged (`acceptUnattributedBlankStream` accepts unattributed runs only). The delete is one statement.
    */
   pruneSnapshots(executionId: string, options: PruneSnapshotsOptions = {}): Promise<number> {
     // ADR 0134 D6 - serialized with `compact` on the same execution (within this instance).
@@ -1672,8 +1687,18 @@ export class LogLifecycle {
         );
       }
     }
+    // A preview flag must fail toward NOT deleting: only a real boolean (or absence) is accepted, so a
+    // JS caller's "true" / 1 never turns a preview into a delete.
+    if (options.dryRun !== undefined && typeof options.dryRun !== "boolean") {
+      throw new TypeError(
+        `pruneSnapshots: dryRun must be a boolean or undefined; got ${JSON.stringify(options.dryRun)} (nothing was deleted)`
+      );
+    }
     const snapshots = this.snapshotStore;
     if (snapshots.pruneSnapshots === undefined) return 0;
+    if (options.dryRun === true && snapshots.listSequences === undefined) {
+      throw new SnapshotListingUnsupportedError();
+    }
     if (
       this.options.compactionExempt !== undefined &&
       (await this.options.compactionExempt(executionId)) === true
@@ -1751,32 +1776,23 @@ export class LogLifecycle {
     if (options.dryRun !== true) {
       return snapshots.pruneSnapshots(executionId, { after, before }, [...keepSequences]);
     }
-    return this.countPrunable(executionId, { after, before }, new Set(keepSequences));
+    return this.countPrunable(snapshots, executionId, { after, before }, new Set(keepSequences));
   }
 
   /**
    * ADR 0134 amendment - how many snapshots strictly inside `(after, before)` and outside `keep` a
-   * delete would remove. With `listSequences` one entry per stored snapshot, so the count equals the
-   * delete's. Without it, a walk down from `before` by `loadLatestBefore`: one read per distinct
-   * sequence in the range (snapshots sharing a sequence count once there).
+   * delete would remove: `listSequences` lists one entry per stored snapshot, so the count equals the
+   * delete's. The caller has already refused a store without `listSequences`.
    */
   private async countPrunable(
+    snapshots: SnapshotStore,
     executionId: string,
     range: { readonly after: number; readonly before: number },
     keep: ReadonlySet<number>
   ): Promise<number> {
-    const snapshots = this.snapshotStore;
     let n = 0;
-    if (snapshots.listSequences !== undefined) {
-      for (const seq of await snapshots.listSequences(executionId, range)) {
-        if (!keep.has(seq)) n++;
-      }
-      return n;
-    }
-    let s = await snapshots.loadLatestBefore(executionId, range.before - 1);
-    while (s !== null && s.sequence > range.after) {
-      if (!keep.has(s.sequence)) n++;
-      s = s.sequence > 0 ? await snapshots.loadLatestBefore(executionId, s.sequence - 1) : null;
+    for (const seq of (await snapshots.listSequences?.(executionId, range)) ?? []) {
+      if (!keep.has(seq)) n++;
     }
     return n;
   }

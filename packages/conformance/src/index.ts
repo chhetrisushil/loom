@@ -1209,9 +1209,9 @@ export function runEventStoreConformance(
   });
 }
 
-function snap(executionId: string, sequence: number): Snapshot {
+function snap(executionId: string, sequence: number, id?: string): Snapshot {
   return {
-    id: `${executionId}-${sequence}`,
+    id: id ?? `${executionId}-${sequence}`,
     executionId,
     workflowId: "wf",
     sequence,
@@ -1331,12 +1331,23 @@ export function runSnapshotStoreConformance(
       expect(await store.listSequences("l", { after: 5, before: 2 })).toEqual([]);
       expect(await store.listSequences("nope")).toEqual([]);
       expect(await store.listSequences("other")).toEqual([10, 11, 12, 13, 14, 15, 16]);
+      // Two snapshots at ONE sequence (a cadence save and a suspend save): listed once PER SNAPSHOT,
+      // so a `SELECT DISTINCT sequence` store fails here instead of undercounting a dry run.
+      await store.save(snap("l", 3, "l-3b"));
+      expect(await store.listSequences("l")).toEqual([0, 1, 2, 3, 3, 4, 5, 6]);
+      expect(await store.listSequences("l", { after: 2, before: 4 })).toEqual([3, 3]);
       // It tracks a prune, and its length is what a keep-less prune of the same range deletes.
       if (store.pruneSnapshots !== undefined) {
         const range = { after: 1, before: 6 };
         const listed = await store.listSequences("l", range);
-        expect(await store.pruneSnapshots("l", range, [3])).toBe(listed.length - 1);
-        expect(await store.listSequences("l")).toEqual([0, 1, 3, 6]);
+        expect(listed).toEqual([2, 3, 3, 4, 5]);
+        // Keeping sequence 3 keeps BOTH snapshots there.
+        expect(await store.pruneSnapshots("l", range, [3])).toBe(listed.length - 2);
+        expect(await store.listSequences("l")).toEqual([0, 1, 3, 3, 6]);
+        // A keep-less prune over the same range deletes exactly the listed length.
+        const again = await store.listSequences("l", { after: 0, before: 6 });
+        expect(await store.pruneSnapshots("l", { after: 0, before: 6 })).toBe(again.length);
+        expect(await store.listSequences("l")).toEqual([0, 6]);
         expect(await store.listSequences("other")).toHaveLength(7);
       }
       await store.close();

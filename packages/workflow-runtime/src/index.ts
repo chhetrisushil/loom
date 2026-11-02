@@ -153,6 +153,7 @@ export {
   assertPinnedEventTypes,
   UnsafeCompactionError,
   BlankStreamCensusUnavailableError,
+  SnapshotListingUnsupportedError,
   BlankStreamUnrepairedError,
   CompactionCheckpointMissingError,
   type PruneSnapshotsOptions,
