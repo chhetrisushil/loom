@@ -28,6 +28,9 @@ const FEEDBACK = new Set([
   // workflow-runtime (ADR 0145): an invalid retention policy is a refusal at the retention pass; it
   // never gates a tool call
   "RetentionPolicyError",
+  // workflow-runtime (ADR 0134 amendment): a dry-run refusal over a store without listSequences; nothing
+  // deleted, never gates a tool call
+  "SnapshotListingUnsupportedError",
   // llm: a provider's non-2xx is classified by STATUS (see the LlmHttpError block below); a bare
   // instance has no status, so it is feedback
   "LlmHttpError",

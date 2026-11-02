@@ -214,7 +214,8 @@ export class PostgresSnapshotStore implements SnapshotStore {
   ): Promise<number[]> {
     await this.ready;
     // Index-only over idx_snapshots_exec (execution_id, sequence DESC); no state column is read.
-    // A bound the caller omitted is NULL = unbounded. Bigint comes back as a string.
+    // A bound the caller omitted is NULL = unbounded. Bigint comes back as a string; like
+    // rowToSnapshot, `Number(...)` loses precision past 2^53 (sequences are safe integers in practice).
     const res = await this.pool.query<{ sequence: string | number }>(
       `SELECT sequence FROM snapshots WHERE execution_id = $1
        AND ($2::bigint IS NULL OR sequence > $2::bigint)

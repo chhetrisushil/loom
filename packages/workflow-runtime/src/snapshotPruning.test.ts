@@ -5,7 +5,7 @@ import { InMemoryArchiveStore, InMemoryAsyncEventStore, headOf } from "@loom/eve
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { LogLifecycle, highestMissing } from "./LogLifecycle";
+import { LogLifecycle, SnapshotListingUnsupportedError, highestMissing } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { retentionPolicy } from "./retentionPolicy";
 import type { FlowRunner } from "./types";
@@ -536,7 +536,6 @@ describe("ADR 0145 - pruneSnapshots keepLatest from an app-owned retention polic
 
 /** The same store, with `listSequences` hidden: a store written against SPI 1.2.0. */
 function withoutList(store: InMemoryAsyncSnapshotStore) {
-  const calls = {};
   const bare = new Proxy(store, {
     get(t, k) {
       if (k === "listSequences") return undefined;
@@ -544,7 +543,7 @@ function withoutList(store: InMemoryAsyncSnapshotStore) {
       return typeof v === "function" ? v.bind(t) : v;
     },
   });
-  return { bare, calls };
+  return { bare };
 }
 
 describe("ADR 0134 amendment - LogLifecycle.pruneSnapshots({ dryRun })", () => {
@@ -608,48 +607,37 @@ describe("ADR 0134 amendment - LogLifecycle.pruneSnapshots({ dryRun })", () => {
     ).toBe(beforeLatest.length - at(seqs[0]!));
   });
 
-  it("without listSequences the walk counts each distinct sequence once (the documented fallback)", async () => {
-    let sawShared = false;
+  it("over a store without listSequences a dry run refuses with a typed error and deletes nothing", async () => {
     for (const { name, app, options } of await scenarios()) {
-      const withList = await app.lifecycle.pruneSnapshots("e1", { ...options, dryRun: true });
+      const listed = await app.snapshotStore.listSequences("e1");
       const { bare } = withoutList(app.snapshotStore);
       expect(bare.listSequences).toBeUndefined();
-      const walk = new LogLifecycle(app.eventStore, bare, {
+      const old = new LogLifecycle(app.eventStore, bare, {
         compactionArchive: new InMemoryArchiveStore(),
       });
-      const walked = await walk.pruneSnapshots("e1", { ...options, dryRun: true });
-      // Identical unless snapshots share a sequence; then the walk (which sees one per sequence) is lower.
-      const listed = await app.snapshotStore.listSequences("e1");
-      const shared = listed.length !== new Set(listed).size;
-      sawShared ||= shared;
-      if (!shared) expect(walked, name).toBe(withList);
-      else expect(walked, name).toBeLessThanOrEqual(withList);
-      expect(walked, name).toBeGreaterThan(0);
-      // Deleting nothing either way.
-      expect(await app.snapshotStore.listSequences("e1")).toEqual(listed);
+      await expect(
+        old.pruneSnapshots("e1", { ...options, dryRun: true }),
+        name
+      ).rejects.toBeInstanceOf(SnapshotListingUnsupportedError);
+      expect(await app.snapshotStore.listSequences("e1"), name).toEqual(listed);
+      // The real call over the same store still works (the refusal is only for the preview).
+      expect(await old.pruneSnapshots("e1", options), name).toBeGreaterThan(0);
     }
-    expect(sawShared).toBe(true); // the scenarios do exercise a shared sequence
   });
 
-  it("without listSequences and with distinct sequences the walk equals the listing exactly", async () => {
+  it("dryRun must be a boolean: a truthy non-boolean throws and deletes nothing", async () => {
     const app = boot();
     await toGate(app, "e1", 4);
-    // Collapse to distinct sequences, then compare the two paths.
-    const store = new InMemoryAsyncSnapshotStore();
-    for (const q of new Set(await app.snapshotStore.listSequences("e1"))) {
-      await store.save((await app.snapshotStore.loadAt("e1", q))!);
+    const listed = await app.snapshotStore.listSequences("e1");
+    for (const bad of ["true", 1, "false", null, 0, {}]) {
+      await expect(
+        app.lifecycle.pruneSnapshots("e1", { dryRun: bad as unknown as boolean }),
+        String(bad)
+      ).rejects.toThrow(TypeError);
+      expect(await app.snapshotStore.listSequences("e1"), String(bad)).toEqual(listed);
     }
-    const listing = new LogLifecycle(app.eventStore, store, {
-      compactionArchive: new InMemoryArchiveStore(),
-    });
-    const walk = new LogLifecycle(app.eventStore, withoutList(store).bare, {
-      compactionArchive: new InMemoryArchiveStore(),
-    });
-    for (const o of [{}, { keepLatest: 2 }, { keepSequences: [1] }]) {
-      expect(await walk.pruneSnapshots("e1", { ...o, dryRun: true })).toBe(
-        await listing.pruneSnapshots("e1", { ...o, dryRun: true })
-      );
-    }
+    // undefined and false are the real call.
+    expect(await app.lifecycle.pruneSnapshots("e1", { dryRun: false })).toBeGreaterThan(0);
   });
 
   it("applies the same refusals: exempt, nothing to prune, unknown execution, store without prune", async () => {

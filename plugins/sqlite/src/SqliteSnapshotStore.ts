@@ -117,16 +117,22 @@ export class SqliteSnapshotStore implements SnapshotStore {
     executionId: string,
     range: { readonly after?: number; readonly before?: number } = {}
   ): Promise<number[]> {
+    // A bound the caller omitted is simply absent from the WHERE (a sentinel would drop a row at it).
+    const where = ["execution_id = ?"];
+    const args: Array<string | number> = [executionId];
+    if (range.after !== undefined) {
+      where.push("sequence > ?");
+      args.push(range.after);
+    }
+    if (range.before !== undefined) {
+      where.push("sequence < ?");
+      args.push(range.before);
+    }
     const rows = this.db
-      .prepare<[string, number, number], { sequence: number }>(
-        `SELECT sequence FROM snapshots WHERE execution_id = ? AND sequence > ? AND sequence < ?
-         ORDER BY sequence`
+      .prepare<Array<string | number>, { sequence: number }>(
+        `SELECT sequence FROM snapshots WHERE ${where.join(" AND ")} ORDER BY sequence`
       )
-      .all(
-        executionId,
-        range.after ?? Number.MIN_SAFE_INTEGER,
-        range.before ?? Number.MAX_SAFE_INTEGER
-      );
+      .all(...args);
     return rows.map((r) => r.sequence);
   }
 

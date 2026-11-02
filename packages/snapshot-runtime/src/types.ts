@@ -8,6 +8,8 @@ import type { ExecutionState } from "@loom/core";
  *   rest, readable after a crypto-shred destroyed the subject's key).
  * 1.2.0: added optional `pruneSnapshots()` (ADR 0134 — delete an execution's snapshots inside
  *   an exclusive sequence range, minus an explicit keep-set, in one bounded statement).
+ * 1.3.0: added optional `listSequences()` (ADR 0134 amendment — the stored sequences, one per
+ *   snapshot, ascending, no state read; backs the `pruneSnapshots` dry run).
  */
 export const SNAPSHOT_STORE_SPI_VERSION = "1.3.0";
 
@@ -86,10 +88,11 @@ export interface SnapshotStore {
   /**
    * OPTIONAL (SPI 1.3.0, ADR 0134 amendment 2026-11-02). The sequences of the execution's stored
    * snapshots, ASCENDING, ONE entry per stored snapshot (several snapshots sharing a sequence list it
-   * once each), optionally restricted to `after < sequence < before` (both EXCLUSIVE, like
-   * `pruneSnapshots`; either may be omitted). So `listSequences(id, range).length` is exactly what
+   * once per snapshot), optionally restricted to `after < sequence < before` (both EXCLUSIVE, like
+   * `pruneSnapshots`; either may be omitted; bounds must be safe integers, which backends disagree on
+   * otherwise - Postgres throws on a fractional or NaN bound). So `listSequences(id, range).length` is exactly what
    * `pruneSnapshots(id, range)` with no keep-set would delete. Reads no state (no decode, no key): an
-   * index scan. An unknown execution resolves `[]`. Every decorator must decide it (forward it, or refuse
+   * index scan. Postgres returns bigint as `Number(...)`, so sequences past 2^53 lose precision (as in `load`). An unknown execution resolves `[]`. Every decorator must decide it (forward it, or refuse
    * it with a reason) - its `DecoratorPlan` does not compile otherwise.
    */
   listSequences?(
