@@ -17,6 +17,7 @@ export {
   CHILD_DONE,
   CHILD_FAILED,
   awaitAll,
+  awaitedByParent,
   awaitChild,
   awaitChildren,
   childIdFor,

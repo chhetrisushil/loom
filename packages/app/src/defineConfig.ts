@@ -70,6 +70,7 @@ import {
   redactionMiddleware,
   secretOutputPathsByStep,
 } from "@loom/middleware";
+import { awaitedByParent } from "@loom/orchestration";
 import { toAgentCard } from "@loom/plugin-a2a";
 import type { AgentCard } from "@loom/plugin-a2a";
 import {
@@ -2404,10 +2405,16 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // supervisor is registered, so the predicate is only added to the lifecycle when one could exist
   // (it is consulted at retention time, never on a hot path).
   const supervisors: Array<{ parkedOnChild(executionId: string): Promise<boolean> }> = [];
+  // ADR 0145 amendment — ON BY DEFAULT: an orchestration child is kept while its parent is alive
+  // (store-only, no supervisor needed; a root id costs no read). The app's predicate is ORed, never replaced.
+  const awaited = awaitedByParent(runtime.events, {
+    ...(stores.snapshotStore !== undefined && { snapshots: stores.snapshotStore }),
+  });
   const pinned = async (executionId: string): Promise<boolean> => {
     if (config.retention?.pinned !== undefined && (await config.retention.pinned(executionId))) {
       return true;
     }
+    if (await awaited(executionId)) return true;
     for (const s of supervisors) if (await s.parkedOnChild(executionId)) return true;
     return false;
   };

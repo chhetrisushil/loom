@@ -4,8 +4,10 @@ import { fail } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import { signDelegation, verifyDelegation } from "@loom/effect-runtime";
 import {
+  type EventStore,
   type ExecutionEnumerable,
   type TimerStore,
+  headOf,
   isPayloadShredded,
   isReservedStream,
   iterateExecutionIds,
@@ -758,6 +760,7 @@ function isStaleFence(err: unknown): boolean {
 
 /** The lifecycle stream retention journals its `EXECUTION_DELETED` facts to (see `LogLifecycle`). */
 const LIFECYCLE_STREAM = "__loom_lifecycle__";
+const TERMINAL_KINDS = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
 
 /**
  * ADR 0118 D3 — a retention pin predicate (`retention.pinned`, ADR 0055): a finished child whose
@@ -777,6 +780,82 @@ export function pinParkedChildren(
   return async (executionId) => {
     const s = typeof supervisor === "function" ? supervisor() : supervisor;
     return s === undefined ? false : s.parkedOnChild(executionId);
+  };
+}
+
+/** Newest events of the parent's log examined for a terminal event ({@link awaitedByParent}). */
+const AWAITED_TAIL_WINDOW = 8;
+
+/**
+ * ADR 0145 amendment — a STORE-ONLY retention pin: an orchestration child is kept while its parent
+ * is still alive, so retention cannot reclaim the log a suspended parent is about to collect (a
+ * deleted child would otherwise read as "reclaimed by retention before its result was collected").
+ * Prevention, not memory: it adds no storage and no hot-path read; it is consulted only for a
+ * retention-ELIGIBLE execution.
+ *
+ * The parent is derived from the deterministic child id ({@link parentOf}), so a root costs a
+ * string scan and no read. For a child it does O(1) reads: `head` of the parent plus one
+ * `readRange` of at most {@link AWAITED_TAIL_WINDOW} tail events.
+ *   - parent has no events (never existed / already reclaimed)  -> not pinned (nobody waits);
+ *   - a terminal event (completed / failed / cancelled / kernel `EXECUTION_CONTINUED`) in that
+ *     tail                                                       -> not pinned. A CONTINUED parent
+ *     (ADR 0109) is as finished as a completed one: the supervisor cancels its non-detached
+ *     children and nothing resumes it, so its children never pin forever;
+ *   - otherwise the parent is live (running or suspended, with whatever non-terminal events it
+ *     appended after parking)                                    -> pinned.
+ * A compacted parent whose terminal event left the log is decided from its checkpoint
+ * (`snapshots`, only when it covers the parent's tip); without `snapshots` that case stays pinned.
+ *
+ * FAILS SAFE: whenever it cannot decide (a read throws, the checkpoint is absent or stale) the
+ * child is PINNED — keeping data is recoverable, a re-run of a deleted child is not. The one
+ * exception is a crypto-shredded parent log (unreadable by design and forever): nothing can be
+ * waiting on it, so it does not pin. Compose with an app predicate by `||`; never replace it.
+ * `wasReclaimed` in the supervisor remains the backstop for deletions made before this pin existed.
+ */
+export function awaitedByParent(
+  store: Pick<EventStore, "read" | "head" | "readFrom" | "readRange">,
+  options?: {
+    /** Checkpoint store, used only for a compacted parent whose terminal event is gone. */
+    snapshots?: {
+      loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>;
+    };
+  }
+): PinPredicate {
+  return async (childId) => {
+    const parentId = parentOf(childId);
+    if (parentId === undefined) return false; // a root: no parent can be waiting
+    try {
+      const head = await headOf(store, parentId);
+      if (head === null) return false;
+      const tail = await readRangeOf(
+        store,
+        parentId,
+        Math.max(0, head - AWAITED_TAIL_WINDOW + 1),
+        head
+      );
+      for (const e of tail) {
+        if (TERMINAL_KINDS.has(e.eventType)) return false;
+        if (e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel === true) return false;
+      }
+      if (options?.snapshots !== undefined) {
+        const snap = await options.snapshots.loadLatest(parentId);
+        const status = (snap?.state as { status?: unknown } | null | undefined)?.status;
+        if (
+          snap !== null &&
+          snap.sequence >= head &&
+          (status === "completed" ||
+            status === "failed" ||
+            status === "cancelled" ||
+            status === "continued")
+        ) {
+          return false;
+        }
+      }
+      return true;
+    } catch (err) {
+      if (isPayloadShredded(rootCause(err)) || isPayloadShredded(err)) return false;
+      return true; // cannot decide: keep the child
+    }
   };
 }
 
@@ -1431,6 +1510,10 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
 
   const TERMINAL = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
 
+  // BACKSTOP (ADR 0145 amendment): retention no longer reclaims a child whose parent is still alive
+  // (`awaitedByParent`), so this lookup now serves only deletions made before that pin existed and
+  // deployments that do not wire it. Kept, not removed: a re-run of a deleted child is unrecoverable.
+  //
   // Executions retention has reclaimed, from the lifecycle stream's `EXECUTION_DELETED` facts
   // (journalled BEFORE the values go — P9 — so "deleted" is distinguishable from "never started").
   // Read incrementally: the stream is reserved and never compacted, so a cursor is sound.

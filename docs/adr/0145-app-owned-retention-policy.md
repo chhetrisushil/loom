@@ -162,3 +162,40 @@ a usage error), consistent with the `--policy` path. This is a deliberate change
   separate decision.
 - **A snapshot-prune command**, and `retention run` applying `snapshots` (D5).
 - **A policy for the pre-existing pin predicates.** They stay options.
+
+## Amendment (2026-11-03) - retention keeps an orchestration child while its parent is alive
+
+Retention could delete a terminal orchestration child BEFORE its suspended parent collected the result. The
+supervisor then had to tell "reclaimed" from "never started" (a re-run is unrecoverable), which it did by
+remembering `EXECUTION_DELETED` facts in a bounded map and, after an eviction, rescanning the whole lifecycle
+stream from sequence 0 for every absent child. This amendment prevents the case instead of remembering it. It
+adds no storage, no event, no SPI method and nothing on a hot path.
+
+- **The pin.** `awaitedByParent(store, { snapshots? })` (`@loom/orchestration`) is a `PinPredicate`. A child id
+  names its parent (`parentOf`, `P::g#0` -> `P`); a root has none and costs no read. For a child it does O(1)
+  reads: the parent's `head` plus one `readRange` of its newest 8 events. It answers "pinned" unless the parent
+  has no events (nobody waits) or a terminal event (`EXECUTION_COMPLETED` / `FAILED` / `CANCELLED`, or a kernel
+  `EXECUTION_CONTINUED`) is in that tail. A late audit row after the terminal event does not keep a child.
+- **A continued parent (ADR 0109) is finished**, not pending: the supervisor cancels its non-detached children
+  when it continues and nothing resumes the old generation, so its children are released, never pinned forever.
+- **A compacted parent** whose terminal event left the log is decided from its checkpoint, and only when the
+  checkpoint covers the parent's tip (`snapshot.sequence >= head`) and reads terminal.
+- **It fails safe.** When it cannot decide (a read throws, no covering checkpoint) the child is PINNED: keeping a
+  log is recoverable, a re-run of a deleted child is not. The one exception is a crypto-shredded parent log
+  (unreadable by design and forever), which pins nothing. A parent whose terminal event sits more than 8 events
+  below its tip, with no covering checkpoint, also stays pinned until its log is compacted or reclaimed.
+- **Where it is wired, on by default.** `defineConfig` ORs it into `app.lifecycle`'s `pinned` (after the app's
+  own `durability.retention.pinned`, never replacing it) whether or not `app.supervise` was called, and
+  `loom retention run` passes it to its `LogLifecycle`. `LogLifecycle.evaluate` reports such a child as
+  `"pinned"`, so the dry run matches the run. The ADR 0118 D3 `pinParkedChildren` stays: it is exact (the parent
+  is parked on THIS child) but needs a registered supervisor and two folds; `awaitedByParent` is coarser (a live
+  parent keeps all its children) and store-only. `loom repair` builds a `LogLifecycle` that never runs
+  `applyRetention`, so it needs no pin.
+- **Observable change.** Terminal children of a still-live parent are kept longer than `terminalTtlMs`, until the
+  parent ends. With no orchestration there are no `::` ids and nothing changes.
+- **The supervisor's `wasReclaimed` rescan stays as a backstop** for deletions made before this pin existed and
+  for deployments that do not wire it; its comments say so.
+
+Not changed: the `LogLifecycle` re-home pass reads the lifecycle stream once per operator pass (to find
+already-journaled `EVENTS_REHOMED` facts). It is per pass, not per fact, and a bounded read of it would need a
+persisted cursor, which is new storage; left as is.

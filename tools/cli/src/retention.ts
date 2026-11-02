@@ -1,4 +1,5 @@
 import { isReservedStream, iterateExecutionIds } from "@loom/event-runtime";
+import { awaitedByParent } from "@loom/orchestration";
 import { LogLifecycle, type RetentionPolicy } from "@loom/workflow-runtime";
 import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
@@ -60,6 +61,8 @@ export async function cmdRetentionRun(
     const snapshots = stores.snapshotStore;
     const now = Date.now();
     const lifecycle = new LogLifecycle(events, snapshots, {
+      // ADR 0145 amendment: a child is kept while its orchestration parent is alive (store-only).
+      pinned: awaitedByParent(events, { snapshots }),
       ...(branchRegistry !== undefined && { branchRegistry }),
       // ADR 0138: with the app's retention archive configured the execution is KEPT elsewhere, so its
       // compaction segments stay; only the plain-delete path removes them (LogLifecycle decides).

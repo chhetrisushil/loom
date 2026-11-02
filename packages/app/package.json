@@ -31,6 +31,7 @@
     "@loom/knowledge": "workspace:*",
     "@loom/memory": "workspace:*",
     "@loom/middleware": "workspace:*",
+    "@loom/orchestration": "workspace:*",
     "@loom/plugin-a2a": "workspace:*",
     "@loom/plugin-crypto": "workspace:*",
     "@loom/projection-runtime": "workspace:*",
