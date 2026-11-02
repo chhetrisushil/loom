@@ -140,18 +140,20 @@ execution pin so the run, and with it the citation, stays:
 
 ```ts
 import { defineConfig } from "@loom/app";
-import { pinByEventKinds, sweepUnpinnedContent } from "@loom/plugin-content";
+import { sweepUnpinnedContent } from "@loom/plugin-content";
 
-defineConfig({
+const app = defineConfig({
   durability: {
-    retention: { pinned: pinByEventKinds(eventStore, ["BLUEPRINT_COMPOSED"]) },
+    // Declared once: compaction keeps these events, and `pinByEventTypes` makes retention
+    // pin every run that holds one (the check `pinByEventKinds` makes, with no second list).
+    retention: { pinnedEventTypes: ["BLUEPRINT_COMPOSED"], pinByEventTypes: true },
   },
 });
 
 await sweepUnpinnedContent({
   eventStores: [eventStore],
   contentStore,
-  pinnedEventTypes: ["BLUEPRINT_COMPOSED"], // ← keeps the artifact even if it is ever claim-checked
+  pinnedEventTypes: app.lifecycle.pinnedEventTypes, // ← keeps the artifact even if it is ever claim-checked
   olderThanMs: 30 * 24 * 60 * 60 * 1000,
   now: Date.now(),
 });

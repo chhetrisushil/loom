@@ -308,6 +308,101 @@ describe("K10.1 R5 — branch guard + control facts", () => {
     expect(await archiveEvents.read("pin-arc")).toEqual([]); // pin means NO copy either
   });
 
+  describe("pinByEventTypes — retention pins from the declared kinds, no second list", () => {
+    const FINDING = "FindingRecorded";
+
+    /** Two completed runs: `with-finding` emits a FINDING event, `without` does not. */
+    async function seeded() {
+      const effects = new EffectRuntime();
+      effects.register(
+        "t1",
+        new ToolEffect(async (input: unknown, ctx) => {
+          if ((input as { n: number }).n === 1) ctx.emit(FINDING, { evidence: "x" });
+          return { n: 0 };
+        })
+      );
+      for (const id of ["t2", "t3"]) effects.register(id, new ToolEffect(async () => ({ n: 0 })));
+      const eventStore = new InMemoryAsyncEventStore();
+      const snapshotStore = new InMemoryAsyncSnapshotStore();
+      const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
+      const flow = completingFlow();
+      runtime.registerFlow(flow.definition, flow.runner);
+      for (const [id, n] of [
+        ["with-finding", 1],
+        ["without", 2],
+      ] as const) {
+        await (await runtime.start(flow, { n }, { executionId: id })).waitForCompletion();
+      }
+      expect((await eventStore.read("with-finding")).some((e) => e.eventType === FINDING)).toBe(
+        true
+      );
+      expect((await eventStore.read("without")).some((e) => e.eventType === FINDING)).toBe(false);
+      return { eventStore, snapshotStore };
+    }
+
+    it("pins an execution whose log holds a declared kind, reading the log once", async () => {
+      const { eventStore, snapshotStore } = await seeded();
+      let reads = 0;
+      const counting = Object.assign(Object.create(eventStore) as InMemoryAsyncEventStore, {
+        read: (...a: Parameters<InMemoryAsyncEventStore["read"]>) => {
+          reads++;
+          return eventStore.read(...a);
+        },
+      });
+      const life = new LogLifecycle(counting, snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+        pinnedEventTypes: [FINDING],
+        pinByEventTypes: true,
+      });
+      const later = Date.now() + 1e9;
+      expect(await life.evaluate("with-finding", { terminalTtlMs: 0 }, later)).toBe("pinned");
+      expect(reads).toBe(1); // the events evaluate already loaded; no predicate re-read
+      expect(await life.evaluate("without", { terminalTtlMs: 0 }, later)).toBe("reclaimable");
+      expect(await life.applyRetention("with-finding", { terminalTtlMs: 0 }, later)).toBe("pinned");
+      expect((await eventStore.read("with-finding")).length).toBeGreaterThan(0);
+      expect(await life.applyRetention("without", { terminalTtlMs: 0 }, later)).toBe("reclaimed");
+    });
+
+    it("is ORed with the pinned predicate, and is off unless asked for", async () => {
+      const { eventStore, snapshotStore } = await seeded();
+      const later = Date.now() + 1e9;
+      const both = new LogLifecycle(eventStore, snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+        pinnedEventTypes: [FINDING],
+        pinByEventTypes: true,
+        pinned: (id) => id === "without",
+      });
+      expect(await both.evaluate("with-finding", { terminalTtlMs: 0 }, later)).toBe("pinned");
+      expect(await both.evaluate("without", { terminalTtlMs: 0 }, later)).toBe("pinned");
+      // Declared kinds alone (the ADR 0106 compaction setting) do not pin for retention.
+      const off = new LogLifecycle(eventStore, snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+        pinnedEventTypes: [FINDING],
+      });
+      expect(await off.evaluate("with-finding", { terminalTtlMs: 0 }, later)).toBe("reclaimable");
+    });
+
+    it("refuses pinByEventTypes with no declared kinds, and a non-boolean", () => {
+      const stores = [new InMemoryAsyncEventStore(), new InMemoryAsyncSnapshotStore()] as const;
+      expect(() => new LogLifecycle(...stores, { pinByEventTypes: true })).toThrow(
+        /pinnedEventTypes is empty/
+      );
+      expect(
+        () => new LogLifecycle(...stores, { pinByEventTypes: true, pinnedEventTypes: [] })
+      ).toThrow(/pinnedEventTypes is empty/);
+      expect(
+        () =>
+          new LogLifecycle(...stores, {
+            pinnedEventTypes: [FINDING],
+            pinByEventTypes: "true" as unknown as boolean,
+          })
+      ).toThrow(/must be a boolean/);
+      expect(
+        () => new LogLifecycle(...stores, { pinnedEventTypes: [FINDING], pinByEventTypes: false })
+      ).not.toThrow();
+    });
+  });
+
   it("journals EXECUTION_DELETED to the lifecycle stream on reclaim", async () => {
     const app = boot();
     const handle = await app.runtime.start(app.flow, { n: 1 }, { executionId: "del-1" });

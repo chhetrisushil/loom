@@ -931,6 +931,13 @@ export interface DurabilityOptions {
      */
     pinnedEventTypes?: readonly string[];
     /**
+     * Retention pins an execution whose log holds an event of one of `pinnedEventTypes`
+     * (outcome `"pinned"`), so the kinds are declared once instead of again in a
+     * `pinByEventKinds(store, kinds)` predicate. ORed with `pinned`. Off by default; `true` with no
+     * `pinnedEventTypes` throws at boot. See `LogLifecycle`'s `pinByEventTypes`.
+     */
+    pinByEventTypes?: boolean;
+    /**
      * ADR 0106 — executions whose whole log `lifecycle.compact` must leave uncompacted (a
      * legal hold by tag). Consulted always, unlike `pinned`.
      */
@@ -2413,6 +2420,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     pinned,
     ...(config.retention?.pinnedEventTypes !== undefined && {
       pinnedEventTypes: config.retention.pinnedEventTypes,
+    }),
+    ...(config.retention?.pinByEventTypes !== undefined && {
+      pinByEventTypes: config.retention.pinByEventTypes,
     }),
     ...(config.retention?.compactionExempt !== undefined && {
       compactionExempt: config.retention.compactionExempt,

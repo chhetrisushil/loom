@@ -385,6 +385,45 @@ describe("defineConfig — retention.pinnedEventTypes (ADR 0106)", () => {
     expect(await log.read("h")).toHaveLength(3);
   });
 
+  it("wires retention.pinByEventTypes: retention pins a run whose log holds a declared kind", async () => {
+    const seed = async (app: ReturnType<typeof defineConfig>) => {
+      const kinds = ["EXECUTION_STARTED", "FINDING_RECORDED", "EXECUTION_COMPLETED"];
+      for (const [sequence, eventType] of kinds.entries()) {
+        await app.stores.eventStore.append({
+          id: `r-${sequence}`,
+          workflowId: "wf",
+          executionId: "r",
+          eventType,
+          sequence,
+          timestamp: sequence,
+          payload: eventType === "EXECUTION_COMPLETED" ? { output: {} } : { input: {} },
+          ...(eventType !== "FINDING_RECORDED" && { metadata: { kernel: true } }),
+        });
+      }
+    };
+    const on = defineConfig({
+      storage: { kind: "memory" },
+      durability: {
+        retention: { pinnedEventTypes: ["FINDING_RECORDED"], pinByEventTypes: true },
+      },
+    });
+    await seed(on);
+    expect(await on.lifecycle.evaluate("r", { terminalTtlMs: 0 }, 1e9)).toBe("pinned");
+    // The same kinds without the option: compaction keeps them, retention does not pin.
+    const off = defineConfig({
+      storage: { kind: "memory" },
+      durability: { retention: { pinnedEventTypes: ["FINDING_RECORDED"] } },
+    });
+    await seed(off);
+    expect(await off.lifecycle.evaluate("r", { terminalTtlMs: 0 }, 1e9)).toBe("reclaimable");
+    expect(() =>
+      defineConfig({
+        storage: { kind: "memory" },
+        durability: { retention: { pinByEventTypes: true } },
+      })
+    ).toThrow(/pinnedEventTypes is empty/);
+  });
+
   it("refuses a kernel kind at config time, before any compaction pass", () => {
     expect(() =>
       defineConfig({
