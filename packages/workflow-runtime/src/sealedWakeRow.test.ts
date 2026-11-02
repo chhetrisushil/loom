@@ -664,6 +664,11 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const svc = new TimerService(s.b.rt, s.raw.timers, {
       isAbandoned: () => true,
       now: () => 0,
+      // PIN the back-off: the default is FULL jitter (`floor(random() * ceiling)`, min 1 ms), so an unpinned
+      // draw near 0 made the window ~1 ms and it expired before the sweep below looked (CI: 2 resumes, not 1).
+      // A fixed 30 s window is wide enough that only a back-off stamped on the WRONG clock (the poll's epoch
+      // 0) can have expired by then, which is exactly what this test is about.
+      redriveBackoff: { baseMs: 60_000, capMs: 60_000, random: () => 0.5 },
     });
     await svc.tick(Date.now() + 1);
     await until(() => resumes.n === 1);
