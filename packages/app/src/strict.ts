@@ -130,7 +130,8 @@ export interface AutonomyEnvelopeOptions {
 
 /**
  * Structurally identical to `@loom/orchestration`'s `SpawnLimits`, declared here so
- * `@loom/app` does not take a dependency on the orchestration package for two numbers.
+ * these two numbers need no import. (`@loom/app` does depend on `@loom/orchestration` since the
+ * `awaitedByParent` retention pin, ADR 0145 amendment; this stays structural, not imported.)
  */
 export interface SpawnLimits {
   maxDepth?: number;

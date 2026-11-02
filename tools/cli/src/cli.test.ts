@@ -965,6 +965,42 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
     expect(unguarded).toContain("OFF");
   });
 
+  it("ADR 0145 amendment: retention run keeps an orchestration child while its parent is alive, releases it once the parent ends", async () => {
+    const store = new SqliteEventStore(cdb);
+    await seed(store, "P", [
+      ["EXECUTION_STARTED", { input: {} }],
+      ["EXECUTION_SUSPENDED", {}],
+    ]);
+    // The child's sequence 0 RECORDS its parent (what the supervisor's lineage grant writes).
+    await seed(store, "P::k", [
+      ["EXECUTION_STARTED", { input: {}, parent: "P" }],
+      ["EXECUTION_COMPLETED", { output: {} }],
+    ]);
+    store.close();
+    const pinnedLine = (text: string) => text.split("\n").find((l) => l.includes("P::k")) ?? "";
+
+    const dry = await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: false });
+    expect(pinnedLine(dry)).toContain("pinned");
+    await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: true });
+    const mid = new SqliteEventStore(cdb);
+    expect(await mid.listExecutions()).toContain("P::k"); // survived --apply
+    await mid.append({
+      id: "P-2",
+      workflowId: "wf",
+      executionId: "P",
+      eventType: "EXECUTION_COMPLETED",
+      sequence: 2,
+      timestamp: 2000,
+      payload: { output: {} },
+    });
+    mid.close();
+
+    await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: true });
+    const after = new SqliteEventStore(cdb);
+    expect(await after.listExecutions()).not.toContain("P::k"); // parent ended: released
+    after.close();
+  });
+
   it("retention run dry-runs by default, reclaims aged terminal executions with --apply", async () => {
     const dry = await cmdRetentionRun({ db: cdb, snap: csnap, ttlMs: 0, apply: false });
     expect(dry).toContain("DRY RUN");

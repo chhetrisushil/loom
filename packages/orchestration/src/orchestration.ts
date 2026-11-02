@@ -760,7 +760,6 @@ function isStaleFence(err: unknown): boolean {
 
 /** The lifecycle stream retention journals its `EXECUTION_DELETED` facts to (see `LogLifecycle`). */
 const LIFECYCLE_STREAM = "__loom_lifecycle__";
-const TERMINAL_KINDS = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
 
 /**
  * ADR 0118 D3 — a retention pin predicate (`retention.pinned`, ADR 0055): a finished child whose
@@ -783,78 +782,154 @@ export function pinParkedChildren(
   };
 }
 
-/** Newest events of the parent's log examined for a terminal event ({@link awaitedByParent}). */
-const AWAITED_TAIL_WINDOW = 8;
+/** Events per backward page of the parent's log ({@link awaitedByParent}). */
+const AWAITED_PAGE = 16;
+/** Pages examined before giving up (fail safe: pinned, with a once-per-parent warning). */
+const AWAITED_MAX_PAGES = 4;
+/** Bound on the "already warned" memory of one predicate. */
+const AWAITED_WARNED_MEMORY = 1024;
 
 /**
- * ADR 0145 amendment — a STORE-ONLY retention pin: an orchestration child is kept while its parent
+ * What an event says about whether its execution is live, by the SAME rules as
+ * `terminalEndOf` / `wasReopened` in `@loom/plugin-content` (`executionEnd.ts`, ADR 0146): a
+ * RESUMED / SUSPENDED / STARTED event means live (`resumeAs` re-opens a failed or completed
+ * execution by appending EXECUTION_RESUMED, ADR 0104 D1 / 0110 D1); a kernel terminal event means
+ * ended; every other event says nothing. Mirrored, not imported: that package is a plugin and this
+ * one must not depend on it. If either set changes, change both (the tests pin the parity cases).
+ */
+function lifeOf(e: EventEnvelope): "live" | "ended" | undefined {
+  switch (e.eventType) {
+    case "EXECUTION_RESUMED":
+    case "EXECUTION_SUSPENDED":
+    case "EXECUTION_STARTED":
+      return "live";
+    case "EXECUTION_COMPLETED":
+    case "EXECUTION_FAILED":
+    case "EXECUTION_CANCELLED":
+      return "ended";
+    case "EXECUTION_CONTINUED":
+      return e.metadata?.kernel === true ? "ended" : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * ADR 0145 amendment - a STORE-ONLY retention pin: an orchestration child is kept while its parent
  * is still alive, so retention cannot reclaim the log a suspended parent is about to collect (a
  * deleted child would otherwise read as "reclaimed by retention before its result was collected").
- * Prevention, not memory: it adds no storage and no hot-path read; it is consulted only for a
- * retention-ELIGIBLE execution.
+ * PREVENTION, with the supervisor's lifecycle-stream rescan (`wasReclaimed`) kept as the BACKSTOP
+ * for deletions made before this pin existed. It adds no storage and no hot-path read; it is
+ * consulted only for a retention-ELIGIBLE execution.
  *
- * The parent is derived from the deterministic child id ({@link parentOf}), so a root costs a
- * string scan and no read. For a child it does O(1) reads: `head` of the parent plus one
- * `readRange` of at most {@link AWAITED_TAIL_WINDOW} tail events.
- *   - parent has no events (never existed / already reclaimed)  -> not pinned (nobody waits);
- *   - a terminal event (completed / failed / cancelled / kernel `EXECUTION_CONTINUED`) in that
- *     tail                                                       -> not pinned. A CONTINUED parent
- *     (ADR 0109) is as finished as a completed one: the supervisor cancels its non-detached
- *     children and nothing resumes it, so its children never pin forever;
- *   - otherwise the parent is live (running or suspended, with whatever non-terminal events it
- *     appended after parking)                                    -> pinned.
- * A compacted parent whose terminal event left the log is decided from its checkpoint
- * (`snapshots`, only when it covers the parent's tip); without `snapshots` that case stays pinned.
+ * Which parent: the child's OWN recorded `parent` (sequence 0; only the kernel's lineage grant
+ * writes it, so it cannot be forged - the same edge `parkedOnChild` reads), never a split of the id
+ * (an app id `acct::42` is not a child of `acct`). No recorded parent (a root, an app id that merely
+ * contains `::`, a log from before R3k) -> not an orchestration child -> not pinned here. An id with
+ * no `::` is a root without a read. The recorded parent is a logical id in the same id space as the
+ * store this predicate is given (a tenant-scoped view un-prefixes both), so it is looked up as is.
+ * A continued child's generations (`P::k~1`, ...) each record the same parent (a verified successor
+ * must), so while P lives EVERY generation stays: `followToHead` from the original id needs each
+ * link (see ADR 0145), so releasing an intermediate is not safe.
  *
- * FAILS SAFE: whenever it cannot decide (a read throws, the checkpoint is absent or stale) the
- * child is PINNED — keeping data is recoverable, a re-run of a deleted child is not. The one
- * exception is a crypto-shredded parent log (unreadable by design and forever): nothing can be
- * waiting on it, so it does not pin. Compose with an app predicate by `||`; never replace it.
- * `wasReclaimed` in the supervisor remains the backstop for deletions made before this pin existed.
+ * Parent state: scanned NEWEST-first from the tip with the re-open rule (a RESUMED / SUSPENDED /
+ * STARTED before any terminal event means LIVE, e.g. a failed parent re-opened by `resumeAs`),
+ * skipping events that say nothing (audit facts, late outcomes). At most {@link AWAITED_MAX_PAGES}
+ * pages of {@link AWAITED_PAGE} events: O(1) reads per candidate (child seq 0, parent head, one
+ * page normally). A compacted parent whose lifecycle events left the log is decided from its
+ * checkpoint (`snapshots`, only when it covers the tip).
+ *   - parent has no events (never existed / already reclaimed) -> not pinned (nobody waits);
+ *   - newest lifecycle event is a terminal one (completed / failed / cancelled / kernel
+ *     CONTINUED) -> not pinned; a live one -> pinned.
+ *
+ * FAILS SAFE: whenever it cannot decide (a read throws, the page cap is hit, the checkpoint is
+ * absent or stale) the child is PINNED - keeping data is recoverable, a re-run of a deleted child is
+ * not - and `onWarn` says why, once per parent. The one exception is a crypto-shredded log
+ * (unreadable by design and forever): nothing can be waiting on it, so it does not pin. Compose
+ * with an app predicate by `||`; never replace it.
  */
 export function awaitedByParent(
   store: Pick<EventStore, "read" | "head" | "readFrom" | "readRange">,
   options?: {
-    /** Checkpoint store, used only for a compacted parent whose terminal event is gone. */
+    /** Checkpoint store, used only for a compacted parent whose lifecycle events are gone. */
     snapshots?: {
       loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>;
     };
+    /** Receives the "cannot decide, keeping the child" warnings. Default: `console.warn`. */
+    onWarn?: (message: string) => void;
   }
 ): PinPredicate {
+  const warned = new Set<string>();
+  const warnOnce = (key: string, message: string): void => {
+    if (warned.has(key)) return;
+    if (warned.size >= AWAITED_WARNED_MEMORY) {
+      const oldest = warned.values().next().value;
+      if (oldest !== undefined) warned.delete(oldest);
+    }
+    warned.add(key);
+    (options?.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`)))(message);
+  };
+  const isShredded = (err: unknown): boolean =>
+    isPayloadShredded(rootCause(err)) || isPayloadShredded(err);
+
   return async (childId) => {
-    const parentId = parentOf(childId);
-    if (parentId === undefined) return false; // a root: no parent can be waiting
+    if (parentOf(childId) === undefined) return false; // a root: no parent can be waiting
+    let parentId: string | undefined;
+    try {
+      const first = (await readRangeOf(store, childId, 0, 0))[0];
+      const recorded = (first?.payload as { parent?: unknown } | null | undefined)?.parent;
+      parentId = typeof recorded === "string" && recorded.length > 0 ? recorded : undefined;
+    } catch (err) {
+      if (isShredded(err)) return false;
+      warnOnce(
+        `child:${childId}`,
+        `awaitedByParent: cannot read "${childId}" to find its parent (${(err as Error)?.message ?? String(err)}); keeping it. An encrypting store read without its keys looks like this: retention will not reclaim orchestration children until the keys are available.`
+      );
+      return true;
+    }
+    if (parentId === undefined) return false; // not an orchestration child
     try {
       const head = await headOf(store, parentId);
       if (head === null) return false;
-      const tail = await readRangeOf(
-        store,
-        parentId,
-        Math.max(0, head - AWAITED_TAIL_WINDOW + 1),
-        head
-      );
-      for (const e of tail) {
-        if (TERMINAL_KINDS.has(e.eventType)) return false;
-        if (e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel === true) return false;
+      let hi = head;
+      for (let page = 0; page < AWAITED_MAX_PAGES && hi >= 0; page++) {
+        const lo = Math.max(0, hi - AWAITED_PAGE + 1);
+        const events = await readRangeOf(store, parentId, lo, hi);
+        for (let i = events.length - 1; i >= 0; i--) {
+          const life = lifeOf(events[i] as EventEnvelope);
+          if (life !== undefined) return life === "live";
+        }
+        hi = lo - 1;
       }
+      // No lifecycle event in the pages read: a compacted log, or a tail of post-terminal facts.
       if (options?.snapshots !== undefined) {
         const snap = await options.snapshots.loadLatest(parentId);
         const status = (snap?.state as { status?: unknown } | null | undefined)?.status;
-        if (
-          snap !== null &&
-          snap.sequence >= head &&
-          (status === "completed" ||
+        if (snap !== null && snap.sequence >= head) {
+          if (
+            status === "completed" ||
             status === "failed" ||
             status === "cancelled" ||
-            status === "continued")
-        ) {
-          return false;
+            status === "continued"
+          ) {
+            return false;
+          }
         }
+      }
+      if (hi >= 0) {
+        warnOnce(
+          `cap:${parentId}`,
+          `awaitedByParent: "${parentId}" has no lifecycle event in its newest ${AWAITED_PAGE * AWAITED_MAX_PAGES} events, so its children (e.g. "${childId}") are kept. Compaction normally removes such a tail; if it persists, the parent's log is growing with post-terminal appends.`
+        );
       }
       return true;
     } catch (err) {
-      if (isPayloadShredded(rootCause(err)) || isPayloadShredded(err)) return false;
-      return true; // cannot decide: keep the child
+      if (isShredded(err)) return false;
+      warnOnce(
+        `read:${parentId}`,
+        `awaitedByParent: cannot read the parent "${parentId}" of "${childId}" (${(err as Error)?.message ?? String(err)}); keeping the child. An encrypting store read without its keys looks like this: retention will not reclaim orchestration children until the keys are available.`
+      );
+      return true;
     }
   };
 }
