@@ -149,6 +149,27 @@ describe("awaitedByParent - generations fail safe (keep + warn once)", () => {
     expect(warnings[0]).toContain(C);
   });
 
+  it("a pre-pin gap that ends the search early keeps every generation SILENTLY (all candidates in K(D) or >= D-1)", async () => {
+    const store = await seedChain(20);
+    // 1 is the search's first probe: with it gone the search ends at D=0, so every surviving m >= D-1 is kept by the
+    // cheap decision and no verification (hence no doubt warning) runs.
+    await store.deleteExecution?.(idOf(1));
+    const warnings: string[] = [];
+    expect(await releasable(store, 20, (m) => warnings.push(m))).toEqual([]);
+    expect(warnings).toEqual([]);
+  });
+
+  it("a pre-pin gap that leaves a candidate outside K(D) below D-1 keeps everything and WARNS", async () => {
+    const store = await seedChain(20);
+    // 7 in E(20): the search now ends at D=6 (a CONTINUED generation); 2 is outside K(6) and below 5, so it is verified,
+    // the head check fails, and the pin keeps and warns once.
+    await store.deleteExecution?.(idOf(7));
+    const warnings: string[] = [];
+    expect(await releasable(store, 20, (m) => warnings.push(m))).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("generation 6 is continued");
+  });
+
   it("a probe read that throws pins and warns", async () => {
     const store = await seedChain(20);
     const failing = new Proxy(store, {
