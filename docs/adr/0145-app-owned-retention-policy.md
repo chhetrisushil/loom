@@ -166,24 +166,44 @@ a usage error), consistent with the `--policy` path. This is a deliberate change
 ## Amendment (2026-11-03) - retention keeps an orchestration child while its parent is alive
 
 Retention could delete a terminal orchestration child BEFORE its suspended parent collected the result. The
-supervisor then had to tell "reclaimed" from "never started" (a re-run is unrecoverable), which it did by
+supervisor then had to tell "reclaimed" from "never started" (a re-run is unrecoverable), which it does by
 remembering `EXECUTION_DELETED` facts in a bounded map and, after an eviction, rescanning the whole lifecycle
-stream from sequence 0 for every absent child. This amendment prevents the case instead of remembering it. It
-adds no storage, no event, no SPI method and nothing on a hot path.
+stream from sequence 0 for every absent child. This amendment adds PREVENTION in front of that and KEEPS the
+rescan as the BACKSTOP (deletions made before the pin existed, deployments that do not wire it). It adds no
+storage, no event, no SPI method and nothing on a hot path.
 
-- **The pin.** `awaitedByParent(store, { snapshots? })` (`@loom/orchestration`) is a `PinPredicate`. A child id
-  names its parent (`parentOf`, `P::g#0` -> `P`); a root has none and costs no read. For a child it does O(1)
-  reads: the parent's `head` plus one `readRange` of its newest 8 events. It answers "pinned" unless the parent
-  has no events (nobody waits) or a terminal event (`EXECUTION_COMPLETED` / `FAILED` / `CANCELLED`, or a kernel
-  `EXECUTION_CONTINUED`) is in that tail. A late audit row after the terminal event does not keep a child.
+- **The pin.** `awaitedByParent(store, { snapshots?, onWarn? })` (`@loom/orchestration`) is a `PinPredicate`.
+- **Which parent: the RECORDED one.** The parent is the `parent` on the child's own sequence 0 (written only
+  under the kernel's lineage grant, so unforgeable; the edge `parkedOnChild` reads), NOT a split of the id: an app
+  id `acct::42` is not a child of `acct`. No recorded parent (a root, an app id that merely contains `::`, a log
+  from before R3k) means "not an orchestration child": not pinned here. An id with no `::` costs no read. The
+  recorded parent is a logical id in the id space of the store the predicate is given (a tenant-scoped view
+  un-prefixes both), so it is looked up as is.
+- **The parent's state: newest lifecycle event wins, the re-open rule.** The parent's log is scanned from the tip
+  backwards for the first event that says live or ended, by the rules of ADR 0146 `terminalEndOf`
+  (`@loom/plugin-content`): `EXECUTION_RESUMED` / `SUSPENDED` / `STARTED` means LIVE (`resumeAs` re-opens a failed
+  or completed execution by appending `RESUMED`, ADR 0104 D1 / 0110 D1, so an old `FAILED` below it does not
+  release the child); `COMPLETED` / `FAILED` / `CANCELLED` or a kernel `EXECUTION_CONTINUED` means ended. Events
+  that say neither (audit rows, late outcomes and rewards after the terminal event) are skipped.
+- **Paging cap.** The scan reads backwards in pages of 16 events, at most 4 pages (64 events): normally 3 reads
+  per candidate (child seq 0, parent `head`, one page), independent of log length. If no lifecycle event is found
+  in 64 events and no covering checkpoint decides, the child stays PINNED and `onWarn` says so once per parent.
 - **A continued parent (ADR 0109) is finished**, not pending: the supervisor cancels its non-detached children
-  when it continues and nothing resumes the old generation, so its children are released, never pinned forever.
-- **A compacted parent** whose terminal event left the log is decided from its checkpoint, and only when the
-  checkpoint covers the parent's tip (`snapshot.sequence >= head`) and reads terminal.
-- **It fails safe.** When it cannot decide (a read throws, no covering checkpoint) the child is PINNED: keeping a
-  log is recoverable, a re-run of a deleted child is not. The one exception is a crypto-shredded parent log
-  (unreadable by design and forever), which pins nothing. A parent whose terminal event sits more than 8 events
-  below its tip, with no covering checkpoint, also stays pinned until its log is compacted or reclaimed.
+  when it continues and nothing resumes the old generation, so its children are released.
+- **A compacted parent** whose lifecycle events left the log is decided from its checkpoint, only when it covers
+  the parent's tip (`snapshot.sequence >= head`) and reads terminal.
+- **It fails safe, and says so.** When it cannot decide (a read throws, the cap is hit, no covering checkpoint)
+  the child is PINNED: keeping a log is recoverable, a re-run of a deleted child is not. A read that throws (an
+  encrypting store read without its keys, a sealed checkpoint) warns once per parent, because the effect is that
+  retention stops reclaiming orchestration children for that run. The one exception is a crypto-shredded log
+  (unreadable by design and forever): nothing can be waiting on it, so it pins nothing.
+- **A continued CHILD keeps every generation.** A child that continues as new has generations `P::k`, `P::k~1`,
+  `P::k~2`, ...; each records the same parent (a verified successor must), so all stay while `P` lives. The
+  supervisor collects through `followToHead(P::k)`, which routes by existence of the deterministic generation ids
+  and otherwise steps verified `_continuedTo` links from the addressed id: it needs every generation present, so
+  releasing an intermediate one would break collection. The bound is therefore "the generations a child rotated
+  through while its parent was alive". Releasing intermediates would need `followToHead` to tolerate gaps and is
+  deliberately not changed here (open question for the owner).
 - **Where it is wired, on by default.** `defineConfig` ORs it into `app.lifecycle`'s `pinned` (after the app's
   own `durability.retention.pinned`, never replacing it) whether or not `app.supervise` was called, and
   `loom retention run` passes it to its `LogLifecycle`. `LogLifecycle.evaluate` reports such a child as
@@ -192,9 +212,7 @@ adds no storage, no event, no SPI method and nothing on a hot path.
   parent keeps all its children) and store-only. `loom repair` builds a `LogLifecycle` that never runs
   `applyRetention`, so it needs no pin.
 - **Observable change.** Terminal children of a still-live parent are kept longer than `terminalTtlMs`, until the
-  parent ends. With no orchestration there are no `::` ids and nothing changes.
-- **The supervisor's `wasReclaimed` rescan stays as a backstop** for deletions made before this pin existed and
-  for deployments that do not wire it; its comments say so.
+  parent ends. With no orchestration nothing changes.
 
 Not changed: the `LogLifecycle` re-home pass reads the lifecycle stream once per operator pass (to find
 already-journaled `EVENTS_REHOMED` facts). It is per pass, not per fact, and a bounded read of it would need a

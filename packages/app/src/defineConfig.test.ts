@@ -355,15 +355,37 @@ describe("defineConfig — retention (K10.1 log lifecycle)", () => {
       } as never);
     await put("P", 0, "EXECUTION_STARTED");
     await put("P", 1, "EXECUTION_SUSPENDED");
-    const pinned = (id: string) =>
-      (
-        app.lifecycle as unknown as { options: { pinned: (id: string) => Promise<boolean> } }
-      ).options.pinned(id);
-    expect(await pinned("P::k")).toBe(true); // parent alive
-    expect(await pinned("legal-hold")).toBe(true); // the app's own predicate still applies
-    expect(await pinned("root")).toBe(false);
+    const done = (id: string, seq: number, parent?: string) =>
+      store.append({
+        id: `${id}-${seq}`,
+        workflowId: id,
+        executionId: id,
+        eventType: seq === 0 ? "EXECUTION_STARTED" : "EXECUTION_COMPLETED",
+        sequence: seq,
+        timestamp: 1,
+        payload: parent === undefined ? {} : { parent },
+      } as never);
+    await done("P::k", 0, "P"); // a child: its sequence 0 RECORDS the parent
+    await done("P::k", 1);
+    await done("legal-hold", 0);
+    await done("legal-hold", 1);
+    await done("root", 0);
+    await done("root", 1);
+    // Driven through the app's own lifecycle (evaluate = the dry run applyRetention obeys).
+    const outcome = (id: string) =>
+      app.lifecycle.evaluate(id, { terminalTtlMs: 0 }, Date.now() + 1e9);
+    expect(await outcome("P::k")).toBe("pinned"); // parent alive
+    expect(await outcome("legal-hold")).toBe("pinned"); // the app's own predicate still applies
+    expect(await outcome("root")).toBe("reclaimable");
+    expect(await app.lifecycle.applyRetention("P::k", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
+      "pinned"
+    );
+    expect(await store.read("P::k")).toHaveLength(2); // untouched
     await put("P", 2, "EXECUTION_COMPLETED");
-    expect(await pinned("P::k")).toBe(false); // parent finished
+    expect(await outcome("P::k")).toBe("reclaimable"); // parent finished
+    expect(await app.lifecycle.applyRetention("P::k", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
+      "reclaimed"
+    );
   });
 });
 
