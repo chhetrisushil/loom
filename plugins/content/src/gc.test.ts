@@ -1188,6 +1188,24 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(ok.orphansReclaimed).toHaveLength(1);
     });
 
+    it("measures the margin against the SAME clock reading as the cutoff (a clock that ticks between reads cannot widen it)", async () => {
+      const { clock, content, base } = await seeded();
+      // A store clock that advances 1 ms on every read: with a second read the margin was
+      // olderThanMs + 1, so a TTL one below the minimum passed the guard (the CI flake in
+      // tools/cli sweepContent.test.ts, which reads a real wall clock twice).
+      const ticking = Object.assign(Object.create(content) as typeof content, {
+        touchClock: async () => clock.now++,
+      });
+      await expect(
+        sweepUnpinnedContent({
+          ...base,
+          contentStore: ticking,
+          olderThanMs: MIN_ORPHAN_ERASE_MARGIN_MS - 1,
+        })
+      ).rejects.toBeInstanceOf(ReclaimOrphansMarginError);
+      expect(content.size).toBe(1);
+    });
+
     it("a policy TTL feeds the DEFAULT cutoff (touchClock - ttl) and the margin guard", async () => {
       const { content, base } = await seeded(); // the orphan was touched 60 days before the clock
       // Below the minimum margin: refused, nothing erased (no explicit touchedBefore).

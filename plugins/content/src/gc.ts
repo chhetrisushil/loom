@@ -753,11 +753,16 @@ async function sweepResolved(
   // log (`now`) is a different clock and never feeds it.
   const raceSafe = store.deleteIfUntouchedSince !== undefined;
   let cutoff = Number.NEGATIVE_INFINITY;
+  // The store's clock as read ONCE for this sweep: the cutoff AND the orphan margin below are
+  // measured against the same reading. A second read made the margin `olderThanMs` plus however
+  // many milliseconds elapsed between the reads, so a sub-minute TTL could pass the guard.
+  let storeNow: number | undefined;
   if (raceSafe) {
     if (options.touchedBefore !== undefined) {
       cutoff = options.touchedBefore;
     } else if (store.touchClock !== undefined) {
-      cutoff = (await store.touchClock()) - options.olderThanMs;
+      storeNow = await store.touchClock();
+      cutoff = storeNow - options.olderThanMs;
     } else {
       throw new TypeError(
         "sweepUnpinnedContent: the content store has deleteIfUntouchedSince() but no touchClock() — pass touchedBefore (a cutoff on the store's clock) explicitly"
@@ -769,7 +774,7 @@ async function sweepResolved(
     // The touch protects a write only while its touch-to-commit window is shorter than the
     // margin between the store's clock and the cutoff (module note; ADR 0055 D6 amendment 2).
     if (!(options.olderThanMs > 0)) throw new ReclaimOrphansMarginError(options.olderThanMs);
-    const margin = (await store.touchClock!()) - cutoff;
+    const margin = (storeNow ?? (await store.touchClock!())) - cutoff;
     if (!(margin >= MIN_ORPHAN_ERASE_MARGIN_MS)) throw new ReclaimOrphansMarginError(margin);
   }
   /** Erase one address; `true` iff it is gone because of this sweep (or would be). */
