@@ -8419,12 +8419,9 @@ export class WorkflowRuntime {
     const headFirst = (await readRangeOf(this.eventStore, headId, 0, 0))[0];
     if (headFirst === undefined) return { kind: "unverified" };
     const prevGen = deepest - 1;
-    const prevId =
-      prevGen === chain.generation
-        ? id
-        : prevGen === 0
-          ? chain.chainId
-          : `${chain.chainId}~${prevGen}`;
+    // deepest > chain.generation, so prevGen >= chain.generation: prevGen === 0 only when
+    // chain.generation === 0, which takes the first branch (the generation-0 id is `id`).
+    const prevId = prevGen === chain.generation ? id : `${chain.chainId}~${prevGen}`;
     const prevFirst =
       prevGen === chain.generation ? first : (await readRangeOf(this.eventStore, prevId, 0, 0))[0];
     if (prevFirst === undefined || !isVerifiedSuccessor(prevFirst, prevId, headFirst, headId)) {

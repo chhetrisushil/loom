@@ -934,7 +934,9 @@ export function awaitedByParent(
         0,
         async (g) => (await readRangeOf(store, idOf(g), 0, 0)).length > 0
       );
-      if (m >= D - 1) return false; // the head and its predecessor are always kept
+      // The cheap, pure keep decision comes FIRST: a member of K(D) (or D-1, D) skips the
+      // verification below, and the doubt warning never names a generation that is kept anyway.
+      if (m >= D - 1 || routeKeepSet(D).has(m)) return false;
       const head = await seq0(D);
       const prev = await seq0(D - 1);
       if (head === undefined || prev === undefined)
@@ -947,10 +949,20 @@ export function awaitedByParent(
       const tip = await headOf(store, idOf(D));
       if (tip === null) return doubt(`generation ${D} has no events`);
       const life = await newestLife(idOf(D), tip);
-      if (life.event === undefined || life.event.eventType === "EXECUTION_CONTINUED") {
+      // A capped scan (no lifecycle event in the newest AWAITED_PAGE * AWAITED_MAX_PAGES events:
+      // a busy head, e.g. a child that rotates by event count) is read as "not continued". That
+      // is SAFE: release safety (ADR 0145 proof (c)) needs only that D is a real generation that
+      // passed isVerifiedSuccessor / sameLineage (so the true head is >= D) - not that D is the
+      // head. A real CONTINUED sitting under 64+ later events just means the head is above D, and
+      // m not in K(D) implies m not in K(H') for every H' >= D (monotonicity, proof (b)).
+      // Only an uncapped scan that finds nothing (no lifecycle event at all) is a doubt.
+      if (life.event === undefined && !life.capped) {
         return doubt(`generation ${D} is not a live or completed head`);
       }
-      return !routeKeepSet(D).has(m);
+      if (life.event?.eventType === "EXECUTION_CONTINUED") {
+        return doubt(`generation ${D} is continued, so it is not the head`);
+      }
+      return true;
     } catch (err) {
       if (isShredded(err)) return false;
       return doubt(`a read failed: ${(err as Error)?.message ?? String(err)}`);
