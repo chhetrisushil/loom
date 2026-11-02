@@ -50,6 +50,15 @@ function formatReport(
     `  executions scanned: ${report.executionsScanned}`,
     // Load-bearing = cited bare somewhere (ADR 0055 D4): never reclaimed while cited.
     `  refs seen: ${report.refsSeen}   pinned: ${report.refsPinned}   load-bearing: ${report.refsLoadBearing}`,
+    // ADR 0146: shown only when the end clock changed something, so the no-change text is stable.
+    ...(report.refsAgedByEnd > 0
+      ? [`  aged from execution end: ${report.refsAgedByEnd} ref(s)`]
+      : []),
+    ...(report.heldByEndClock !== undefined && report.heldByEndClock.length > 0
+      ? [
+          `  held by end clock (${report.heldByEndClock.length}): the citation clock alone would reclaim these, the citing execution ended later`,
+        ]
+      : []),
     // ADR 0055 D5: "no" = plain delete, so a blob re-put during the sweep can be lost.
     `  race-safe: ${report.raceSafe ? "yes" : "NO (the content store lacks deleteIfUntouchedSince)"}`,
     `  ${verb} (${report.reclaimed.length}):`,

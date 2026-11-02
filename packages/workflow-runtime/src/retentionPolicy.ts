@@ -15,13 +15,14 @@ export interface RetentionPolicy {
    */
   snapshots?: { keepLatest: number };
   /**
-   * Content GC: reclaim a claim-check ref only once its latest citation is this old. Must be
-   * `>= terminalTtlMs`. This is an ADVISORY consistency check, not a guarantee that a kept log
-   * never names gone bytes: per ADR 0055 only a claim-check envelope's own ref the app marked
+   * Content GC: reclaim a claim-check ref only once its effective citation time is this old. Must
+   * be `>= terminalTtlMs`. Per ADR 0055 only a claim-check envelope's own ref the app marked
    * `reclaimable` is TTL-reclaimable (readers tolerate it; `resolveClaimCheck` returns null) -
-   * retained blobs and bare refs are never TTL-reclaimed while cited - and the sweep measures
-   * age from the latest CITATION while retention measures from the TERMINAL end (ADR 0140 D6).
-   * It holds only when `retention run` and `sweep content` use the same policy (no bare `--ttl`).
+   * retained blobs and bare refs are never TTL-reclaimed while cited. Per ADR 0146 the sweep ages a
+   * terminal execution's citations from its END (never earlier than the citation), the instant
+   * retention measures from (ADR 0140 D6), so with this rule a reclaimable blob outlives the log
+   * citing it; a running execution keeps the citation clock. It holds only when `retention run`
+   * and `sweep content` use the same policy (no bare `--ttl`).
    */
   content?: { unpinnedAfterMs: number };
 }

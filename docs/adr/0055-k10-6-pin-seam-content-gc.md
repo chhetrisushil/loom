@@ -11,6 +11,8 @@
   "K10.5", which the K10 requirement set had already assigned to encryption-at-rest
   (ADR 0022, `docs/loom-2.0/11-encryption-at-rest.md`). The pin seam is K10.6 everywhere
   (docs, code comments, tests); mechanics unchanged.
+- Amended by [ADR 0146](0146-content-age-from-execution-end.md): the "latest citation" age clock of D2/D4 is the
+  citing execution's END when it has ended (never earlier than the citation); which refs are reclaimable is unchanged.
 - Amendment (2026-10-10): **`reclaimOrphans` requires an explicit completeness acknowledgement** (see the end of D6).
 - Amendment (2026-09-28, L11): compaction keeps pinned event kinds and the D6 checkpoint
   lookup follows the kept events — see the closed "known gap" under D6 and

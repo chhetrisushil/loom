@@ -97,6 +97,53 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     await after.close();
   });
 
+  it("ADR 0146 - a ref cited by an execution that ended recently is held, and the dry run says so", async () => {
+    dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
+    const db = join(dir, "events.db");
+    const contentDb = join(dir, "content.db");
+    const events = new SqliteEventStore(db);
+    const content = new SqliteContentStore(contentDb, { now: () => Date.now() - 90 * DAY });
+    const blob = await content.put(new TextEncoder().encode("telemetry"));
+    const ev = (sequence: number, eventType: string, timestamp: number, payload: unknown) => ({
+      id: `e-${sequence}`,
+      workflowId: "wf",
+      executionId: "ended",
+      eventType,
+      sequence,
+      timestamp,
+      payload,
+    });
+    await events.append(
+      ev(0, "STEP_COMPLETED", Date.now() - 90 * DAY, {
+        stepId: "read",
+        output: { __loomClaimCheck: true, ref: { __loomContent: blob.__loomContent }, size: 1 },
+      })
+    );
+    await events.append(ev(1, "EXECUTION_COMPLETED", Date.now() - 5 * DAY, {}));
+    await events.close();
+    await content.close();
+
+    const dry = await cmdSweepContent({
+      db,
+      content: contentDb,
+      pin: "",
+      ttlMs: 30 * DAY,
+      apply: false,
+    });
+    expect(dry).toContain("would-reclaim (0)");
+    expect(dry).toContain("aged from execution end: 1 ref(s)");
+    expect(dry).toContain("held by end clock (1)");
+    const applied = await cmdSweepContent({
+      db,
+      content: contentDb,
+      pin: "",
+      ttlMs: 30 * DAY,
+      apply: true,
+    });
+    expect(applied).toContain("reclaimed (0)");
+    expect(applied).not.toContain("held by end clock");
+  });
+
   it("never reclaims a stale BARE ref, and says why (ADR 0055 D4)", async () => {
     dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
     const db = join(dir, "events.db");

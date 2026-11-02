@@ -10,6 +10,7 @@ import {
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
 import { retainRootsOf, visitCitedAddresses } from "./citations";
+import { terminalEndOf } from "./executionEnd";
 
 // ── K10.6 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
 //
@@ -149,8 +150,9 @@ export interface ContentSweepBase {
   /** Event kinds whose cited refs are pinned — retained as long as the citing fact exists. */
   pinnedEventTypes: Iterable<string>;
   /**
-   * Reclaim an unpinned ref only when its latest citation is older than this. EXACTLY ONE of
-   * `olderThanMs` / `policy` must be given.
+   * Reclaim an unpinned ref only when its effective citation time is older than this (ADR 0146:
+   * its latest citation, or, for a ref cited by an execution that has ENDED, that execution's end
+   * if later). EXACTLY ONE of `olderThanMs` / `policy` must be given.
    */
   olderThanMs?: number;
   /**
@@ -168,7 +170,7 @@ export interface ContentSweepBase {
   };
   /**
    * LOG time, in epoch ms: the instant the TTL is measured back from, compared against event
-   * `timestamp`s (`now − latest citation ≥ olderThanMs`). It is NOT the store's clock. A
+   * `timestamp`s (`now − effective citation time ≥ olderThanMs`, ADR 0146). It is NOT the store's clock. A
    * simulated or replayed log may run far from the store's wall clock; the race guard uses
    * `touchedBefore` for that reason.
    */
@@ -447,6 +449,18 @@ export interface ContentSweepReport {
    * load-bearing and are never reclaimed while any scanned event cites them.
    */
   refsLoadBearing: number;
+  /**
+   * ADR 0146 - unpinned refs whose age clock came from a citing execution's END rather than from the
+   * citation: a ref cited by an execution that ended after the citation ages from the end. Counted
+   * on every sweep.
+   */
+  refsAgedByEnd: number;
+  /**
+   * ADR 0146 - DRY RUN ONLY (absent on an erasing sweep, which keeps no second map): refs the old
+   * citation clock would have reclaimed that the end clock keeps. Never reclaimed by the end clock
+   * that would not also have been by the old one, so this is the whole delta.
+   */
+  heldByEndClock?: string[];
   /** Content addresses erased this sweep — or, under `dryRun`, that WOULD be. */
   reclaimed: string[];
   /**
@@ -548,8 +562,10 @@ export class SealedSnapshotScanError extends TypeError {
  * designated kinds, and marking refs cited anywhere other than as a
  * claim-check envelope's `ref` (a `digest` included) as load-bearing. Sweep:
  * physically erase refs that are neither pinned nor load-bearing and whose
- * latest citation is older than the TTL — i.e. only refs cited solely as an
- * envelope's `ref`. Their erasure is invisible to replay by the claim-check
+ * effective citation time is older than the TTL — i.e. only refs cited solely as an
+ * envelope's `ref`. ADR 0146: a citing execution that has ENDED (newest kernel terminal event, not
+ * re-opened) ages its citations from `max(citation, end)`, so a blob outlives the log citing it; a
+ * running execution (or a reserved stream) keeps the citation clock. Never earlier than the citation. Their erasure is invisible to replay by the claim-check
  * contract (ADR 0054 — the fold never resolves); `resolveClaimCheck` readers get
  * `null`. A bare ref is never reclaimed while cited (ADR 0055 D4): the resolving
  * store would throw `ContentMissingError` on the next read. Idempotent:
@@ -737,7 +753,10 @@ async function sweepResolved(
 
   // Mark memory is O(distinct cited addresses): one Map entry per address plus the Sets.
   const pinnedKinds = new Set(options.pinnedEventTypes);
+  // ADR 0146: the EFFECTIVE time per ref (end clock). Dry run alone also keeps the raw citation time.
   const lastCited = new Map<string, number>();
+  const rawCited = options.dryRun === true ? new Map<string, number>() : undefined;
+  const viaEnd = new Set<string>();
   const pinned = new Set<string>();
   const loadBearing = new Set<string>();
   let executionsScanned = 0;
@@ -760,13 +779,24 @@ async function sweepResolved(
     for await (const executionId of iterateExecutionIds(eventStore)) {
       executionsScanned++;
       const events = await eventStore.read(executionId);
+      // ADR 0146: a terminal execution's citations age from its END (never earlier than the citation).
+      const endedAt = isReservedStream(executionId) ? undefined : terminalEndOf(events);
       for (const event of events) {
+        const at = endedAt === undefined ? event.timestamp : Math.max(event.timestamp, endedAt);
         visitCitedAddresses(
           event.payload,
           (address, inEnvelope) => {
             const prior = lastCited.get(address);
-            if (prior === undefined || event.timestamp > prior) {
-              lastCited.set(address, event.timestamp);
+            if (prior === undefined || at > prior) {
+              lastCited.set(address, at);
+              if (at > event.timestamp) viaEnd.add(address);
+              else viaEnd.delete(address);
+            }
+            if (rawCited !== undefined) {
+              const rawPrior = rawCited.get(address);
+              if (rawPrior === undefined || event.timestamp > rawPrior) {
+                rawCited.set(address, event.timestamp);
+              }
             }
             if (pinnedKinds.has(event.eventType)) pinned.add(address);
             if (!inEnvelope) loadBearing.add(address);
@@ -958,6 +988,13 @@ async function sweepResolved(
               const prior = lastCited.get(address);
               if (prior === undefined || event.timestamp > prior) {
                 lastCited.set(address, event.timestamp);
+                viaEnd.delete(address);
+              }
+              if (rawCited !== undefined) {
+                const rawPrior = rawCited.get(address);
+                if (rawPrior === undefined || event.timestamp > rawPrior) {
+                  rawCited.set(address, event.timestamp);
+                }
               }
               pinned.add(address);
               loadBearing.add(address);
@@ -1010,9 +1047,18 @@ async function sweepResolved(
   }
 
   const reclaimed: string[] = [];
+  const heldByEndClock: string[] = [];
+  let refsAgedByEnd = 0;
   for (const [address, citedAt] of lastCited) {
     if (pinned.has(address) || loadBearing.has(address) || roots.has(address)) continue;
-    if (options.now - citedAt < options.olderThanMs) continue;
+    if (viaEnd.has(address)) refsAgedByEnd++;
+    if (options.now - citedAt < options.olderThanMs) {
+      const raw = rawCited?.get(address);
+      if (raw !== undefined && options.now - raw >= options.olderThanMs) {
+        heldByEndClock.push(address);
+      }
+      continue;
+    }
     if (await erase(address)) reclaimed.push(address);
   }
 
@@ -1043,6 +1089,8 @@ async function sweepResolved(
     refsSeen: lastCited.size,
     refsPinned: pinned.size,
     refsLoadBearing: loadBearing.size,
+    refsAgedByEnd,
+    ...(dryRun && { heldByEndClock }),
     reclaimed,
     raceSafe,
     orphansReclaimed,
