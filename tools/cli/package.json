@@ -36,6 +36,7 @@
     "@loom/knowledge": "workspace:*",
     "@loom/learning": "workspace:*",
     "@loom/llm": "workspace:*",
+    "@loom/orchestration": "workspace:*",
     "@loom/plugin-content": "workspace:*",
     "@loom/plugin-kit": "workspace:*",
     "@loom/plugin-sqlite": "workspace:*",

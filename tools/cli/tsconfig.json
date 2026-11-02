@@ -60,6 +60,9 @@
       "path": "../../packages/workflow-runtime"
     },
     {
+      "path": "../../packages/orchestration"
+    },
+    {
       "path": "../../packages/plugin-kit"
     },
     {

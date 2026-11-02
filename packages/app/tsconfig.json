@@ -45,6 +45,9 @@
       "path": "../middleware"
     },
     {
+      "path": "../orchestration"
+    },
+    {
       "path": "../projection-runtime"
     },
     {

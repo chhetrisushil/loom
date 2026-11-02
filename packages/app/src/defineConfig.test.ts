@@ -336,6 +336,35 @@ describe("defineConfig — retention (K10.1 log lifecycle)", () => {
     expect(outcome).toBe("reclaimed");
     expect(await app.stores.eventStore.read("r1")).toHaveLength(0);
   });
+
+  it("ADR 0145 amendment: an orchestration child is pinned by default while its parent is alive (no supervisor registered)", async () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      durability: { retention: { pinned: (id: string) => id === "legal-hold" } },
+    });
+    const store = app.stores.eventStore;
+    const put = (id: string, seq: number, eventType: string) =>
+      store.append({
+        id: `${id}-${seq}`,
+        workflowId: id,
+        executionId: id,
+        eventType,
+        sequence: seq,
+        timestamp: 1,
+        payload: {},
+      } as never);
+    await put("P", 0, "EXECUTION_STARTED");
+    await put("P", 1, "EXECUTION_SUSPENDED");
+    const pinned = (id: string) =>
+      (
+        app.lifecycle as unknown as { options: { pinned: (id: string) => Promise<boolean> } }
+      ).options.pinned(id);
+    expect(await pinned("P::k")).toBe(true); // parent alive
+    expect(await pinned("legal-hold")).toBe(true); // the app's own predicate still applies
+    expect(await pinned("root")).toBe(false);
+    await put("P", 2, "EXECUTION_COMPLETED");
+    expect(await pinned("P::k")).toBe(false); // parent finished
+  });
 });
 
 describe("defineConfig — retention.pinnedEventTypes (ADR 0106)", () => {
