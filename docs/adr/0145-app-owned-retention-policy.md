@@ -18,8 +18,9 @@ erases unpinned blobs (ADR 0055). Nothing runs them on a timer; an operator, a c
 schedule calls them. Each pass took its own number: a `terminalTtlMs` argument, a `keepLatest` option, an
 `olderThanMs` option, and the CLI took `--ttl` twice with different meanings (`loom retention run --ttl` is
 the log TTL, `loom sweep content --ttl` is the content TTL). An app that wants "logs 90 days, content 90 days,
-keep two snapshots" had to restate those numbers in every cron script and could not check that they agree. They
-must: a content TTL shorter than the log TTL leaves a kept log naming bytes that are gone.
+keep two snapshots" had to restate those numbers in every cron script and could not check that they agree. A content TTL
+shorter than the log TTL is almost always a mistake, so the policy checks the relation (D2) - as an advisory
+consistency check, not a guarantee (see D2).
 
 Where the answer lives was settled by elimination:
 
@@ -59,8 +60,15 @@ Both live in `packages/workflow-runtime/src/retentionPolicy.ts`; a violation is 
   tests and `--ttl 0` rely on it).
 - `snapshots.keepLatest`: an integer `>= 1`. There is deliberately **no age clock** on snapshots: a compacted
   execution's checkpoint snapshot IS its state, so "snapshots older than N days" would be a way to lose it.
-- `content.unpinnedAfterMs`: a finite integer `> 0` and `>= terminalTtlMs`. Content must outlive the logs
-  that cite it.
+- `content.unpinnedAfterMs`: a finite integer `> 0` and `>= terminalTtlMs`. This is an **advisory consistency
+  check on the reclaimable-telemetry window, not a guarantee** that a kept log never names bytes that are gone.
+  Per [ADR 0055](0055-k10-6-pin-seam-content-gc.md) (D4) only a claim-check envelope's own ref that the app
+  marked `reclaimable` (claim-check config; readers tolerate it, `resolveClaimCheck` returns `null`) is
+  TTL-reclaimable; retained blobs and bare refs are never TTL-reclaimed while cited. The sweep measures age from
+  the latest CITATION, retention measures from the TERMINAL end ([ADR 0140](0140-agent-claim-check-opt-in.md) D6), so the two clocks differ by
+  design. The rule is also checked **within one policy object only**: it holds when `loom retention run` and
+  `loom sweep content` both use the same policy; a bare `--ttl` on either command, or a different policy file,
+  is not compared.
 - **Unknown keys are rejected**, at the top level and inside each section. A typo must not silently disable a
   rule.
 
@@ -69,6 +77,14 @@ Both live in `packages/workflow-runtime/src/retentionPolicy.ts`; a violation is 
 A TypeScript literal can skip `retentionPolicy()`, and a JavaScript caller or a CLI module can pass anything.
 So every pass that RECEIVES a policy calls `assertRetentionPolicy` itself: `evaluate`, `applyRetention` and
 `pruneSnapshots({ policy })`. It accepts every input that was valid before (`{ terminalTtlMs: 0 }` included).
+`sweepUnpinnedContent({ policy })` cannot import the validator (no dependency on `@loom/workflow-runtime`), so
+it re-validates **structurally** with its own copy of the rules: it reads each field once into a plain
+snapshot, rejects unknown keys (top level and `content`), requires `unpinnedAfterMs` a finite integer `> 0`,
+and, when `terminalTtlMs` is present, a finite integer `>= 0` with `unpinnedAfterMs >= terminalTtlMs`. It does
+not check `snapshots` (the sweep reads nothing from it; a `snapshots` key is allowed, its contents are not
+inspected). `retentionPolicy()` reads each input field exactly once, validates that snapshot, and freezes it,
+so a getter that answers differently on a second read cannot smuggle a rule-breaking value;
+`assertRetentionPolicy` stays an assertion, and the CLI uses the frozen snapshot, never the module's raw object.
 
 ### D4 - The consumers
 
@@ -87,14 +103,21 @@ So every pass that RECEIVES a policy calls `assertRetentionPolicy` itself: `eval
 ### D5 - The CLI
 
 `loom retention run` and `loom sweep content` gain `--policy <module>`. The module is imported by path and
-exports the value as the named export `retention` or as its default export; it is validated again with
-`assertRetentionPolicy`, and a broken policy is a refusal (exit 2) that changes nothing.
+exports the value as the named export `retention` or as its default export (a CommonJS
+`module.exports = { terminalTtlMs }` is the default export). If `retention` is present (even `null`) it is THE
+export and is not skipped; a default export that is a loom app/config rather than a plain policy is refused
+with a message to export `retention`. It is validated again through `retentionPolicy()`, and a broken policy
+is a refusal (exit 2) that changes nothing. The module is loaded under the same `LOOM_NO_AUTOSTART` /
+`LOOM_QUIET` guards and serialisation as `--config`, so a policy exported from `loom.config.ts` does not
+start the app.
 
 - `loom retention run --policy` reads `terminalTtlMs`. `--ttl` remains and **overrides** it; the combination
   is re-validated, so `--ttl 90d` against a shorter content TTL is refused. With neither flag the command
   refuses exactly as before: the destructive TTL is still never defaulted.
 - `loom sweep content --policy` reads `content.unpinnedAfterMs`; `--ttl` overrides it (re-validated). A
-  policy with no `content` section leaves the existing 30-day default in place.
+  policy with no `content` section is **refused** (exit 2: add a `content` section or pass `--ttl`),
+  matching the library, which throws for the same input; with `--ttl` alongside, `--ttl` is the value. Without
+  `--policy` the 30-day default is unchanged.
 - `loom retention run` does **not** act on `snapshots`. Pruning the snapshots of the executions it keeps would
   be a second destructive pass under a flag that today means "reclaim aged executions", with a dry-run story
   `pruneSnapshots` does not have (it reports a count only after deleting) and with refusals of its own
@@ -108,7 +131,9 @@ With no policy supplied, every call, CLI command, default, stored byte and event
 signatures accept the same inputs with the same meaning, no `defineConfig` field is added, nothing is
 scheduled, and snapshot pruning stays off unless asked. The one observable difference for an existing caller
 is that an input that was never valid (a negative, fractional or non-finite `terminalTtlMs`) is now refused
-instead of silently comparing.
+instead of silently comparing. This includes `loom retention run --ttl` with a non-finite or unsafe value (a
+400-digit number parses to `Infinity`): on main that kept everything and exited 0; now it is a refusal (exit 2,
+a usage error), consistent with the `--policy` path. This is a deliberate change.
 
 ## Consequences
 
@@ -127,5 +152,8 @@ instead of silently comparing.
   time could drop a partition instead of scanning and deleting row by row, and a decorator could stamp expiry
   at write. Both change storage layout or the write path and need their own decision; this ADR changes
   neither.
+- **Measuring reclaimable-telemetry age from execution end instead of from the latest citation.** It would make
+  the D2 rule exact rather than advisory, but it changes every content sweep (ADR 0055/0140), so it is a
+  separate decision.
 - **A snapshot-prune command**, and `retention run` applying `snapshots` (D5).
 - **A policy for the pre-existing pin predicates.** They stay options.

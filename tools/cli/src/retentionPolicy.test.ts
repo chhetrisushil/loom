@@ -6,7 +6,8 @@ import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageError } from "./args";
 import { run } from "./cli";
-import { loadRetentionPolicy, overridePolicy } from "./retentionPolicy";
+import { loadRetentionPolicy, overridePolicy, parseTtlFlag } from "./retentionPolicy";
+import { loadLoomApp } from "./stores";
 
 // ADR 0145 - `--policy <module>` on `loom retention run` and `loom sweep content`.
 
@@ -109,6 +110,77 @@ describe("loom --policy (ADR 0145)", () => {
       await expect(loadRetentionPolicy(typo)).rejects.toThrow(/unknown key "snapshot"/);
     });
 
+    it("an explicit `retention = null` is refused, not skipped to the default export", async () => {
+      const file = module(
+        "null.cjs",
+        "exports.retention = null; exports.default = { terminalTtlMs: 3 };"
+      );
+      await expect(loadRetentionPolicy(file)).rejects.toThrow(UsageError);
+      await expect(loadRetentionPolicy(file)).rejects.toThrow(/must be an object/);
+      const undef = module(
+        "undef.cjs",
+        "exports.retention = undefined; exports.default = { terminalTtlMs: 3 };"
+      );
+      await expect(loadRetentionPolicy(undef)).rejects.toThrow(/retention export is undefined/);
+    });
+
+    it("a CommonJS `module.exports = { terminalTtlMs }` is the default export", async () => {
+      const file = module("cjs-default.cjs", "module.exports = { terminalTtlMs: 17 };");
+      expect(await loadRetentionPolicy(file)).toEqual({ terminalTtlMs: 17 });
+    });
+
+    it("a default export that is an app/config is refused with a message to export `retention`", async () => {
+      const file = module("app.cjs", "module.exports = { default: { stores: {}, flows: [] } };");
+      await expect(loadRetentionPolicy(file)).rejects.toThrow(UsageError);
+      await expect(loadRetentionPolicy(file)).rejects.toThrow(
+        /default export is not a retention policy.*export `retention`/
+      );
+      const esm = module("app.mjs", "export default { stores: {}, tools: [] };");
+      await expect(loadRetentionPolicy(esm)).rejects.toThrow(/export `retention`/);
+    });
+
+    it("an object `{ retention }` as the default export is unwrapped", async () => {
+      const file = module(
+        "wrapped.cjs",
+        "module.exports = { default: { retention: { terminalTtlMs: 4 } } };"
+      );
+      expect(await loadRetentionPolicy(file)).toEqual({ terminalTtlMs: 4 });
+    });
+
+    it("returns the frozen validated snapshot, never the module's raw object (getter TOCTOU)", async () => {
+      const file = module(
+        "getter.cjs",
+        `let n = 0;
+         exports.retention = {
+           get terminalTtlMs() { return n++ === 0 ? 5 : -1; },
+         };`
+      );
+      const p = await loadRetentionPolicy(file);
+      expect(p).toEqual({ terminalTtlMs: 5 });
+      expect(Object.isFrozen(p)).toBe(true);
+      expect(Object.getOwnPropertyDescriptor(p, "terminalTtlMs")?.get).toBeUndefined();
+    });
+
+    it("loads under the SAME env guards as --config: no autostart, quiet, restored, serialised", async () => {
+      const file = module(
+        "both.cjs",
+        `(globalThis.__seen ??= []).push([process.env.LOOM_NO_AUTOSTART, process.env.LOOM_QUIET]);
+         exports.retention = { terminalTtlMs: 2 };
+         exports.default = { stores: {} };`
+      );
+      const g = globalThis as { __seen?: unknown[] };
+      g.__seen = [];
+      Reflect.deleteProperty(process.env, "LOOM_NO_AUTOSTART");
+      Reflect.deleteProperty(process.env, "LOOM_QUIET");
+      const [policy] = await Promise.all([loadRetentionPolicy(file), loadLoomApp(file)]);
+      expect(policy).toEqual({ terminalTtlMs: 2 });
+      // The module evaluated once (first load wins the cache), and it saw the guards.
+      expect(g.__seen).toEqual([["1", "1"]]);
+      expect(process.env.LOOM_NO_AUTOSTART).toBeUndefined();
+      expect(process.env.LOOM_QUIET).toBeUndefined();
+      Reflect.deleteProperty(g, "__seen");
+    });
+
     it("a module with no policy export is a usage error naming the fix", async () => {
       const file = module("empty.cjs", "exports.other = 1;");
       await expect(loadRetentionPolicy(file)).rejects.toThrow(UsageError);
@@ -128,6 +200,15 @@ describe("loom --policy (ADR 0145)", () => {
         content: { unpinnedAfterMs: 5 },
       });
       expect(() => overridePolicy(p, { unpinnedAfterMs: 4 })).toThrow(UsageError);
+    });
+  });
+
+  describe("parseTtlFlag", () => {
+    it("parses durations and refuses a non-finite or oversized value", () => {
+      expect(parseTtlFlag("2d")).toBe(2 * DAY);
+      expect(parseTtlFlag("0")).toBe(0);
+      expect(() => parseTtlFlag("9".repeat(400))).toThrow(UsageError);
+      expect(() => parseTtlFlag("9".repeat(400))).toThrow(/too large/);
     });
   });
 
@@ -160,6 +241,17 @@ describe("loom --policy (ADR 0145)", () => {
       );
       expect(await run(args("--policy", file, "--ttl", "90d", "--apply"))).toBe(2);
       expect(err.join("\n")).toContain("must be >= terminalTtlMs");
+      expect(await logLength()).toBe(2);
+    });
+
+    it("a 400-digit --ttl is a usage error (exit 2) with and without --policy, and reclaims nothing", async () => {
+      const huge = "9".repeat(400);
+      expect(await run(args("--ttl", huge, "--apply"))).toBe(2);
+      expect(err.join("\n")).toContain("too large");
+      err.length = 0;
+      const file = module("p.cjs", "exports.retention = { terminalTtlMs: 0 };");
+      expect(await run(args("--policy", file, "--ttl", huge, "--apply"))).toBe(2);
+      expect(err.join("\n")).toContain("too large");
       expect(await logLength()).toBe(2);
     });
 
@@ -213,17 +305,33 @@ describe("loom --policy (ADR 0145)", () => {
       expect(out.join("\n")).toContain(`ttl ${7 * DAY}ms`);
     });
 
-    it("--ttl overrides it; a policy without a content section leaves the 30d default", async () => {
+    it("--ttl overrides it", async () => {
       const file = module(
         "c.cjs",
         `exports.retention = { terminalTtlMs: 1, content: { unpinnedAfterMs: ${7 * DAY} } };`
       );
       expect(await run(args("--policy", file, "--ttl", "3d"))).toBe(0);
       expect(out.join("\n")).toContain(`ttl ${3 * DAY}ms`);
-      out.length = 0;
+    });
+
+    it("a policy with no content section is refused (exit 2) unless --ttl is given", async () => {
       const noContent = module("n.cjs", "exports.retention = { terminalTtlMs: 1 };");
-      expect(await run(args("--policy", noContent))).toBe(0);
-      expect(out.join("\n")).toContain(`ttl ${30 * DAY}ms`);
+      expect(await run(args("--policy", noContent))).toBe(2);
+      expect(err.join("\n")).toContain("no `content` section");
+      expect(err.join("\n")).toContain("--ttl");
+      expect(out.join("\n")).not.toContain("content sweep");
+      out.length = 0;
+      // --ttl supplies the content TTL (3d >= the policy's 1ms log TTL), so the sweep runs with it.
+      expect(await run(args("--policy", noContent, "--ttl", "3d"))).toBe(0);
+      expect(out.join("\n")).toContain(`ttl ${3 * DAY}ms`);
+    });
+
+    it("a 400-digit --ttl with --policy is a usage error", async () => {
+      const file = module(
+        "c.cjs",
+        `exports.retention = { terminalTtlMs: 1, content: { unpinnedAfterMs: ${7 * DAY} } };`
+      );
+      expect(await run(args("--policy", file, "--ttl", "9".repeat(400)))).toBe(2);
     });
 
     it("without --policy the default is unchanged", async () => {

@@ -242,8 +242,54 @@ describe("sweepUnpinnedContent - ADR 0145 retention policy", () => {
   it("a policy with no content section is an error, not a silent no-op", async () => {
     const f = await fixture();
     await expect(sweepUnpinnedContent({ ...base(f), policy: {} })).rejects.toThrow(
-      /policy\.content\.unpinnedAfterMs must be a finite integer > 0 \(milliseconds\); got undefined/
+      /policy has no content section/
     );
+  });
+
+  it("re-validates structurally: unknown keys, non-integers, and content shorter than the log TTL", async () => {
+    const f = await fixture();
+    const go = (policy: unknown) => sweepUnpinnedContent({ ...base(f), policy: policy as never });
+    const ok = { unpinnedAfterMs: 30 * DAY };
+    await expect(go({ content: ok, contnt: {} })).rejects.toThrow(/unknown key "contnt"/);
+    await expect(go({ content: { ...ok, ttl: 1 } })).rejects.toThrow(/unknown key "content.ttl"/);
+    await expect(go({ content: { unpinnedAfterMs: 1.5 } })).rejects.toThrow(/got 1.5/);
+    await expect(go({ content: { unpinnedAfterMs: Number.POSITIVE_INFINITY } })).rejects.toThrow(
+      /got Infinity/
+    );
+    await expect(go({ content: { unpinnedAfterMs: 0 } })).rejects.toThrow(/got 0/);
+    await expect(go({ terminalTtlMs: -1, content: ok })).rejects.toThrow(
+      /terminalTtlMs must be a finite integer >= 0.*got -1/
+    );
+    await expect(go({ terminalTtlMs: 30 * DAY + 1, content: ok })).rejects.toThrow(
+      new RegExp(
+        `content.unpinnedAfterMs \\(${30 * DAY}\\) must be >= terminalTtlMs \\(${30 * DAY + 1}\\)`
+      )
+    );
+    // Nothing was erased by any refusal.
+    expect(await f.content.get(f.staleTelemetry)).not.toBeNull();
+    // Equal is accepted; a snapshots section is allowed and not inspected.
+    const accepted = await sweepUnpinnedContent({
+      ...base(f),
+      policy: { terminalTtlMs: 30 * DAY, content: ok, snapshots: { keepLatest: 2 } },
+    });
+    expect(accepted.reclaimed).toEqual([f.staleTelemetry.__loomContent]);
+  });
+
+  it("reads each policy field once: a getter that changes its answer cannot pass a rule-breaking value", async () => {
+    const f = await fixture();
+    let reads = 0;
+    const content = {
+      get unpinnedAfterMs() {
+        reads++;
+        return reads === 1 ? 30 * DAY : 5;
+      },
+    };
+    const report = await sweepUnpinnedContent({
+      ...base(f),
+      policy: { terminalTtlMs: 30 * DAY, content },
+    });
+    expect(reads).toBe(1);
+    expect(report.reclaimed).toEqual([f.staleTelemetry.__loomContent]);
   });
 });
 
@@ -1140,6 +1186,32 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(content.size).toBe(1);
       const ok = await sweepUnpinnedContent({ ...base, olderThanMs: MIN_ORPHAN_ERASE_MARGIN_MS });
       expect(ok.orphansReclaimed).toHaveLength(1);
+    });
+
+    it("a policy TTL feeds the DEFAULT cutoff (touchClock - ttl) and the margin guard", async () => {
+      const { content, base } = await seeded(); // the orphan was touched 60 days before the clock
+      // Below the minimum margin: refused, nothing erased (no explicit touchedBefore).
+      await expect(
+        sweepUnpinnedContent({
+          ...base,
+          policy: { content: { unpinnedAfterMs: MIN_ORPHAN_ERASE_MARGIN_MS - 1 } },
+        })
+      ).rejects.toBeInstanceOf(ReclaimOrphansMarginError);
+      expect(content.size).toBe(1);
+      // 90d: cutoff = clock - 90d is older than the orphan's touch (clock - 60d): kept.
+      const kept = await sweepUnpinnedContent({
+        ...base,
+        policy: { content: { unpinnedAfterMs: 90 * DAY } },
+      });
+      expect(kept.orphansReclaimed).toHaveLength(0);
+      expect(content.size).toBe(1);
+      // 30d: cutoff = clock - 30d is newer than the touch: erased. Exactly the minimum also passes.
+      const erased = await sweepUnpinnedContent({
+        ...base,
+        policy: { content: { unpinnedAfterMs: 30 * DAY } },
+      });
+      expect(erased.orphansReclaimed).toHaveLength(1);
+      expect(content.size).toBe(0);
     });
 
     it("refuses a touchedBefore closer to the store's clock than the minimum, whatever the TTL", async () => {

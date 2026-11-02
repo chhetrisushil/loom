@@ -972,7 +972,7 @@ npx loom retention run --db .data/events.db --snap .data/snapshots.db --ttl 90d 
 an app-owned retention policy instead of a flag: the module exports the value as `retention` (or as its
 default export), built with `retentionPolicy()` from `@loom/workflow-runtime`. `--ttl` still works and
 **overrides** the policy's `terminalTtlMs` (the result is validated again); with neither flag the
-command refuses as above. A `snapshots` section is validated but **not** applied by this command (use
+command refuses as above. A non-finite or oversized `--ttl` is a usage error (exit 2). A `snapshots` section is validated but **not** applied by this command (use
 `LogLifecycle.pruneSnapshots`).
 
 ```ts
@@ -981,13 +981,21 @@ import { retentionPolicy } from "@loom/workflow-runtime";
 
 export const retention = retentionPolicy({
   terminalTtlMs: 90 * 86_400_000,
-  content: { unpinnedAfterMs: 90 * 86_400_000 }, // must be >= terminalTtlMs
+  content: { unpinnedAfterMs: 90 * 86_400_000 }, // must be >= terminalTtlMs (advisory, see below)
 });
 ```
 
 ```bash
 npx loom retention run --db .data/events.db --snap .data/snapshots.db --policy ./retention.js
 ```
+
+The `content.unpinnedAfterMs >= terminalTtlMs` rule is an **advisory consistency check** on the
+reclaimable-telemetry window, not a guarantee that a kept log never names bytes that are gone: per
+[ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) only a claim-check envelope's own ref that the app marked
+`reclaimable` is TTL-reclaimed (retained blobs and bare refs never are while cited), and the sweep measures
+age from the latest citation while retention measures from the terminal end
+([ADR 0140](adr/0140-agent-claim-check-opt-in.md) D6). It is checked within one policy object, so it only holds
+when both commands use the same policy and neither is given a bare `--ttl`.
 
 ### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
 
@@ -1000,7 +1008,7 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--archive-db` | no | — | also scan an archived event store, so evidence cited by findings in archived runs stays pinned |
 | `--pin` | no | — | comma-separated event **kinds** to treat as pinning |
 | `--ttl` | no | `2592000000` (30 days) | age threshold in ms |
-| `--policy` | no | — | an app-owned retention policy module ([ADR 0145](adr/0145-app-owned-retention-policy.md)): its `content.unpinnedAfterMs` is the age threshold; `--ttl` overrides it. A policy with no `content` section leaves the 30-day default. |
+| `--policy` | no | — | an app-owned retention policy module ([ADR 0145](adr/0145-app-owned-retention-policy.md)): its `content.unpinnedAfterMs` is the age threshold; `--ttl` overrides it. A policy with no `content` section is refused (exit 2): add one or pass `--ttl`. |
 | `--orphans` | no | off | also erase blobs that NO scanned event cites and that were untouched for the TTL: runs deleted without an archive, crashes between `put` and the append ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6). Needs the snapshot store (`--snap`, `--archive-snap`), because a compacted execution's prefix refs live only in its checkpoint. **Every archive must be scanned**: under `--config` the app's `durability.retention.archive` is scanned automatically; on the `--db` path pass `--archive-db`. With `--apply` and no archive the command refuses. A fork or an append that carries an existing ref touches the blob (ContentStore SPI 1.4.0 `touch`, [ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment 2), so a fork made mid-sweep is safe; `--orphans --apply` therefore refuses a `--content` store that lacks `touch` (the SQLite store has it). The touch only protects a write shorter than the TTL, so `--orphans --apply` also refuses `--ttl` below 60000 ms (`--ttl 0` included); a dry run is exempt. `--orphans --apply` also needs `--snapshots-touch-content` (below), and a `--content` store with `touchClock` as well as `touch` (the SQLite store has both). |
 | `--snapshots-touch-content` | with `--orphans --apply` | off | assert that the runtime which WROTE the snapshot stores wrapped them in `ContentTouchingSnapshotStore` (`@loom/plugin-content`, outside any encrypting snapshot store, over the same content store). A fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else; only that wrapper touches them. The CLI opens raw snapshot stores and cannot tell, so without the flag `--orphans --apply` refuses and erases nothing; a dry run is exempt. loom does not build the wrapper for you: wire it where you build your `ContentResolvingEventStore`. |
 | `--compaction-archive` / `--no-compaction-archive` | with `--orphans --apply` over a compacted log | `archive.db` beside `--db`, if it exists; under `--config` the app's `storage.archiveStore` | the compaction archive ([ADR 0138](adr/0138-compaction-archives-what-it-removes.md)): compaction MOVES events there, so a blob only an archived event cites is an orphan without it. An erasing pass over a compacted log refuses without one; `--no-compaction-archive` asserts that none exists, which alone no longer passes a compacted log: the archive's headers must cover its removed range, or `--acknowledge-unarchived` states that the history is already gone (logs compacted before the archive; fork children) and erasing their orphan blobs is accepted - the executions are printed. An explicit path that does not exist is refused, not created. |
