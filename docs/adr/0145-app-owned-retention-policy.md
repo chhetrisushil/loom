@@ -197,13 +197,24 @@ storage, no event, no SPI method and nothing on a hot path.
   encrypting store read without its keys, a sealed checkpoint) warns once per parent, because the effect is that
   retention stops reclaiming orchestration children for that run. The one exception is a crypto-shredded log
   (unreadable by design and forever): nothing can be waiting on it, so it pins nothing.
-- **A continued CHILD keeps every generation.** A child that continues as new has generations `P::k`, `P::k~1`,
-  `P::k~2`, ...; each records the same parent (a verified successor must), so all stay while `P` lives. The
-  supervisor collects through `followToHead(P::k)`, which routes by existence of the deterministic generation ids
-  and otherwise steps verified `_continuedTo` links from the addressed id: it needs every generation present, so
-  releasing an intermediate one would break collection. The bound is therefore "the generations a child rotated
-  through while its parent was alive". Releasing intermediates would need `followToHead` to tolerate gaps and is
-  deliberately not changed here (open question for the owner).
+- **A continued CHILD keeps only the generations the head search can read.** A child that continues as new has
+  generations `P::k`, `P::k~1`, `P::k~2`, ...; each records the same parent (a verified successor must).
+  `followToHead` (ADR 0109 D4) finds the head with ONE exported search, `deepestGeneration`, which always starts at
+  generation 0 (gallop `1, 3, 7, ...`, then bisection) and answers the generations the caller already saw without a
+  read, so for a chain whose head is `H` it reads only `routeKeepSet(H)` = `{0}` plus the generations the search
+  probes plus `H-1` (the head is accepted only as the verified successor of `H-1`): about `2*log2(H)` of them.
+  `awaitedByParent` runs the SAME exported functions (no second copy of the rule): for a candidate generation `m` of
+  a live parent's child it finds the head `D` with `deepestGeneration`, verifies it the way the kernel does
+  (`isVerifiedSuccessor` from `D-1`, `sameLineage` with the original, nothing at `D+1`, newest lifecycle event not
+  a kernel `EXECUTION_CONTINUED`) and keeps `m` iff `m >= D-1` or `routeKeepSet(D).has(m)`. A generation is needed
+  over one contiguous run of heads and never again once released, so a decision made against an older, smaller head
+  is still safe when the chain rotates. A perpetual child under a parked parent therefore holds `O(log H)` logs,
+  not `H`. Any doubt keeps (and warns once per chain): the original id, a generation whose recorded number
+  disagrees with its id, a missing root, a search that crosses a deleted member (a pre-pin gap), a head that fails
+  verification or has a successor, a throwing probe read. Cost: `O(log D)` point reads per candidate generation,
+  at retention time only. The kernel side adds no storage and no resume cost: a `running` head still makes one
+  existence read (`g+1`), and one retry follows a failed head verification (a walk that read `H` and found `H-1`
+  released after a rotation). Verification is unchanged, so a squatter or forged log is never routed to.
 - **Where it is wired, on by default.** `defineConfig` ORs it into `app.lifecycle`'s `pinned` (after the app's
   own `durability.retention.pinned`, never replacing it) whether or not `app.supervise` was called, and
   `loom retention run` passes it to its `LogLifecycle`. `LogLifecycle.evaluate` reports such a child as

@@ -138,20 +138,31 @@ describe("P3-1 - the carry cannot be forged through a snapshot", () => {
   });
 });
 
-describe("P3-2 - a mid-chain gap is a stated residual", () => {
-  it("with c~1 deleted, the head is unreachable from c (clean refusal, nothing appended); a surviving id still works", async () => {
+describe("P3-2 - a gap on the verified path is a stated residual; one the search never reads is not", () => {
+  it("with c~3 (the head's predecessor, never releasable) deleted, the head is unreachable from c (clean refusal, nothing appended); a surviving id still works", async () => {
+    const h = build(on);
+    const f = deep(4);
+    h.rt.registerFlow(f.definition, f.runner);
+    await settle(await h.rt.start(f, {}, { executionId: "c" }));
+    await parked(h, "c~4");
+    await h.eventStore.deleteExecution?.("c~3");
+    const before = await kinds(h.eventStore, "c");
+    // c~4 cannot be verified (its predecessor is gone) and the verified links out of c end at c~2
+    expect((await h.rt.followToHead("c"))?.executionId).not.toBe("c~4");
+    await expect(h.rt.resume("c", { eventType: "end", payload: 1 })).rejects.toThrow();
+    expect(await kinds(h.eventStore, "c")).toEqual(before);
+    expect(await kinds(h.eventStore, "c~4")).not.toContain("EXECUTION_RESUMED");
+  });
+
+  it("with c~1 deleted the head IS reachable from c: the search answers 1 from the continued tip and never reads it (followToHeadKeepSet.test.ts)", async () => {
     const h = build(on);
     const f = deep(4);
     h.rt.registerFlow(f.definition, f.runner);
     await settle(await h.rt.start(f, {}, { executionId: "c" }));
     await parked(h, "c~4");
     await h.eventStore.deleteExecution?.("c~1");
-    const before = await kinds(h.eventStore, "c");
-    expect((await h.rt.followToHead("c"))?.executionId).toBe("c"); // no verified link out of c
-    await expect(h.rt.resume("c", { eventType: "end", payload: 1 })).rejects.toThrow();
-    expect(await kinds(h.eventStore, "c")).toEqual(before);
-    expect(await kinds(h.eventStore, "c~4")).not.toContain("EXECUTION_RESUMED");
-    expect((await h.rt.followToHead("c~2"))?.executionId).toBe("c~4"); // addressing a survivor works
+    expect((await h.rt.followToHead("c"))?.executionId).toBe("c~4");
+    expect((await h.rt.followToHead("c~2"))?.executionId).toBe("c~4");
   });
 });
 

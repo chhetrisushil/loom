@@ -63,6 +63,71 @@ export function successorIdOf(chainId: string, generation: number): string {
   return `${chainId}~${generation + 1}`;
 }
 
+/**
+ * The ONE generation search (ADR 0109 D4 / ADR 0145), as a generator of PROBES so the async kernel
+ * walk ({@link deepestGeneration}) and the synchronous retention keep-set ({@link routeKeepSet})
+ * drive the same code and cannot drift. Starts at generation 0: gallop `1, 3, 7, ..., 2^j - 1`,
+ * then bisect the last gap. Yields the generation to test, receives whether its log exists, returns
+ * the deepest generation found.
+ */
+function* generationProbes(): Generator<number, number, boolean> {
+  let lo = 0;
+  let step = 1;
+  while (step < 2 ** 30 && (yield lo + step)) {
+    lo += step;
+    step *= 2;
+  }
+  let hi = lo + step;
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (yield mid) lo = mid;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/**
+ * The highest generation of a chain whose log exists, found by galloping + bisection over the
+ * deterministic ids `<chainId>~<n>` (O(log n) point reads). Every probe at or below `known` (a
+ * generation the caller has already seen exist) is answered `true` WITHOUT calling `exists`; the
+ * answers steer the search, they are not trusted as reads, and the caller VERIFIES the result
+ * (`isVerifiedSuccessor`). Because the search always starts from generation 0 it reads only the
+ * generations in {@link routeKeepSet}, which is what lets retention release the rest.
+ */
+export async function deepestGeneration(
+  known: number,
+  exists: (generation: number) => Promise<boolean>
+): Promise<number> {
+  const probes = generationProbes();
+  let step = probes.next();
+  while (step.done !== true) {
+    const q = step.value;
+    step = probes.next(q <= known ? true : await exists(q));
+  }
+  return step.value;
+}
+
+/**
+ * The generations of a chain whose head is `head` that {@link deepestGeneration} may READ or
+ * VERIFY against: `{0} U {every generation the search probes at or below head} U {head - 1}`
+ * (`head` itself is among the probes). About `2 * log2(head)` entries. Retention may release every
+ * other intermediate generation: with only these present the search still returns `head`. A
+ * generation is needed over one contiguous run of heads and never again once released, so a keep
+ * decision made against an older, smaller head is still safe (ADR 0145).
+ */
+export function routeKeepSet(head: number): ReadonlySet<number> {
+  const keep = new Set<number>([0, head]);
+  if (head >= 1) keep.add(head - 1);
+  const probes = generationProbes();
+  let step = probes.next();
+  while (step.done !== true) {
+    const yes = step.value <= head;
+    if (yes) keep.add(step.value);
+    step = probes.next(yes);
+  }
+  return keep;
+}
+
 /** What the fold knows of an execution's place in a chain (`_chain`, read through the fold). */
 export interface ChainIdentity {
   readonly chainId: string;

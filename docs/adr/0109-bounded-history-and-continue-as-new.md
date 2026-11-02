@@ -495,10 +495,13 @@ cancel now owns the outcome.
 Per-turn cost and folded state are bounded by the rotation interval, whatever the turn number; the runner
 re-runs once per turn in both cases (the re-run is over one generation).
 
-**Residuals.** (0) **A mid-chain gap.** Routing finds the deepest id by galloping over ids that must exist; if a MIDDLE log is
-deleted out of order (retention deletes oldest-first, so this is not the normal case), the head can be unreachable from
-older ids, depending on which ids the gallop probes: the walk then ends at the last verified member (a clean refusal,
-nothing appended), and addressing any surviving `<chainId>~k` still reaches the head. Pinned by a test. (1) If the deepest log fails verification AND the chain is longer than `maxChainHops` beyond the
+**Residuals.** (0) **A mid-chain gap.** Routing finds the deepest id with the shared `deepestGeneration` (gallop + bisection from
+generation 0, answering the generations it already knows without a read), then verifies the head against generation
+`head-1`. It reads only `routeKeepSet(head)` (about `2*log2(head)` generations), so retention may release every other
+intermediate generation (ADR 0145) and the head stays reachable from any surviving id. Only a gap INSIDE that set
+matters now (a deleted `head-1` or probe, out of order, or a pre-existing hole): the head then fails verification
+(after one retry, for a rotation racing the walk), the walk falls back to the last verified member (a clean refusal,
+nothing appended, or `ChainHopLimitError`), and addressing a surviving id still works. Pinned by tests. (1) If the deepest log fails verification AND the chain is longer than `maxChainHops` beyond the
 addressed id, the fallback verified walk refuses with `ChainHopLimitError` (it never routes to an unverified log). (2) The kernel has
 no rate limit on rotation: a flow that calls `continueAsNew` without ever consuming anything is a runaway chain
 (one successor per call, immediately); a flow rotates on a count or a size. (3) A parked successor is not

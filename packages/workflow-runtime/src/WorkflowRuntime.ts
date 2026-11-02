@@ -74,6 +74,7 @@ import {
   chainDeadlineOf,
   chainOfFirstEnvelope,
   chainOfState,
+  deepestGeneration,
   derivedParentOf,
   isVerifiedSuccessor,
   sameLineage,
@@ -4359,7 +4360,7 @@ export class WorkflowRuntime {
         if (next !== undefined) {
           // ROUTE to the newest verified generation (O(log n) probe); the verified single step
           // below is the fallback when the deepest log cannot be verified.
-          const routed = await this.routeToDeepest(id, first);
+          const routed = await this.routeVerified(id, first, true);
           if (routed !== undefined && routed.id !== id) {
             id = routed.id;
             continue;
@@ -4394,7 +4395,7 @@ export class WorkflowRuntime {
       if (this.continueAsNewEnabled) {
         const next = await this.probeSuccessor(id, chainOfFirstEnvelope(first, id), first);
         if (next !== undefined) {
-          const routed = await this.routeToDeepest(id, first);
+          const routed = await this.routeVerified(id, first, true);
           if (routed !== undefined && routed.id !== id) {
             id = routed.id;
             continue;
@@ -8346,7 +8347,10 @@ export class WorkflowRuntime {
     let hops = 0;
     if (state.status === "continued" || (state.status === "running" && this.continueAsNewEnabled)) {
       const first = (await readRangeOf(this.eventStore, id, 0, 0))[0];
-      const routed = first === undefined ? undefined : await this.routeToDeepest(id, first);
+      const routed =
+        first === undefined
+          ? undefined
+          : await this.routeVerified(id, first, state.status === "continued");
       const at = routed === undefined ? null : await this.foldState(routed.id);
       if (routed !== undefined && at !== null) {
         id = routed.id;
@@ -8375,60 +8379,75 @@ export class WorkflowRuntime {
   }
 
   /**
-   * The highest generation of `chain` whose log exists, found by galloping + bisection over the
-   * deterministic ids `<chainId>~<n>` (O(log n) point reads). Existence only: the caller verifies
-   * (see {@link routeToDeepest}). Best effort (a retention-deleted prefix may stop it early).
-   */
-  private async deepestGenerationOf(chain: ChainIdentity): Promise<number> {
-    const exists = async (g: number): Promise<boolean> =>
-      (await readRangeOf(this.eventStore, `${chain.chainId}~${g}`, 0, 0)).length > 0;
-    let lo = chain.generation;
-    let step = 1;
-    try {
-      while (step < 2 ** 30 && (await exists(lo + step))) {
-        lo += step;
-        step *= 2;
-      }
-      let hi = lo + step;
-      while (hi - lo > 1) {
-        const mid = lo + Math.floor((hi - lo) / 2);
-        if (await exists(mid)) lo = mid;
-        else hi = mid;
-      }
-    } catch {
-      /* routing is best effort: the verified walk is the fallback */
-    }
-    return lo;
-  }
-
-  /**
-   * ADR 0109 D4 — route from `id` (whose sequence 0 is `first`) to the newest generation of its
-   * chain, or `undefined` when there is none beyond it or it cannot be VERIFIED. The deepest id
-   * found by {@link deepestGenerationOf} is accepted only if its sequence 0 is the verified
-   * successor of generation n-1 (`isVerifiedSuccessor`: deterministic id, names its predecessor,
-   * next generation, same parent and principal) AND records the same lineage and owner as `first`:
-   * a squatted log at the deterministic id is never routed to (the caller falls back to stepping
-   * verified links). `hops` is the generation distance.
+   * ADR 0109 D4 - route from `id` (whose sequence 0 is `first`) to the newest generation of its
+   * chain. The search is the shared {@link deepestGeneration} (from generation 0, so it reads only
+   * the generations retention keeps, see {@link routeKeepSet}). `successorKnown`: the caller has
+   * already seen `<chainId>~<generation+1>` exist (a `continued` tip, or a successful probe); a
+   * `running` head reads it FIRST (one point read, the resume hot path) and stops there when absent.
+   * The deepest id found is accepted only if its sequence 0 is the verified successor of
+   * generation n-1 (`isVerifiedSuccessor`: deterministic id, names its predecessor, next
+   * generation, same parent and principal) AND records the same lineage and owner as `first`: a
+   * squatted log at the deterministic id is never routed to. `none` = nothing beyond `id`;
+   * `unverified` = a candidate head failed verification. `hops` is the generation distance.
    */
   private async routeToDeepest(
     id: string,
-    first: EventEnvelope
-  ): Promise<{ id: string; first: EventEnvelope; hops: number } | undefined> {
+    first: EventEnvelope,
+    successorKnown: boolean
+  ): Promise<
+    | { kind: "routed"; id: string; first: EventEnvelope; hops: number }
+    | { kind: "none" }
+    | { kind: "unverified" }
+  > {
     const chain = chainOfFirstEnvelope(first, id);
-    const deepest = await this.deepestGenerationOf(chain);
-    if (deepest <= chain.generation) return undefined;
+    const existsAt = async (g: number): Promise<boolean> =>
+      (await readRangeOf(this.eventStore, `${chain.chainId}~${g}`, 0, 0)).length > 0;
+    let threw = false;
+    const exists = async (g: number): Promise<boolean> => {
+      if (threw) return false;
+      try {
+        return await existsAt(g);
+      } catch {
+        threw = true; // routing is best effort: the verified walk is the fallback
+        return false;
+      }
+    };
+    if (!successorKnown && !(await exists(chain.generation + 1))) return { kind: "none" };
+    const deepest = await deepestGeneration(chain.generation + 1, exists);
+    if (deepest <= chain.generation) return { kind: "none" };
     const headId = `${chain.chainId}~${deepest}`;
     const headFirst = (await readRangeOf(this.eventStore, headId, 0, 0))[0];
-    if (headFirst === undefined) return undefined;
+    if (headFirst === undefined) return { kind: "unverified" };
     const prevGen = deepest - 1;
-    const prevId = prevGen === chain.generation ? id : `${chain.chainId}~${prevGen}`;
+    const prevId =
+      prevGen === chain.generation
+        ? id
+        : prevGen === 0
+          ? chain.chainId
+          : `${chain.chainId}~${prevGen}`;
     const prevFirst =
       prevGen === chain.generation ? first : (await readRangeOf(this.eventStore, prevId, 0, 0))[0];
     if (prevFirst === undefined || !isVerifiedSuccessor(prevFirst, prevId, headFirst, headId)) {
-      return undefined;
+      return { kind: "unverified" };
     }
-    if (!sameLineage(first, headFirst)) return undefined;
-    return { id: headId, first: headFirst, hops: deepest - chain.generation };
+    if (!sameLineage(first, headFirst)) return { kind: "unverified" };
+    return { kind: "routed", id: headId, first: headFirst, hops: deepest - chain.generation };
+  }
+
+  /**
+   * {@link routeToDeepest} with ONE retry after a verification failure: a walk that read head H
+   * can find H-1 gone once the chain rotated and retention released it, and the second pass reads
+   * the new head. Only a failure pays for it, so the hot path costs nothing. `undefined` = no
+   * verified head beyond `id` (the caller falls back to stepping verified links).
+   */
+  private async routeVerified(
+    id: string,
+    first: EventEnvelope,
+    successorKnown: boolean
+  ): Promise<{ id: string; first: EventEnvelope; hops: number } | undefined> {
+    let r = await this.routeToDeepest(id, first, successorKnown);
+    if (r.kind === "unverified") r = await this.routeToDeepest(id, first, successorKnown);
+    return r.kind === "routed" ? r : undefined;
   }
 
   /**
@@ -8730,7 +8749,7 @@ export class WorkflowRuntime {
         // cancel), else only a VERIFIED single link is cancelled into: a pointer at a foreign id
         // stops the cascade.
         const first = (await readRangeOf(this.eventStore, id, 0, 0))[0];
-        const routed = first === undefined ? undefined : await this.routeToDeepest(id, first);
+        const routed = first === undefined ? undefined : await this.routeVerified(id, first, true);
         if (routed !== undefined) next = routed.id;
         else {
           next =

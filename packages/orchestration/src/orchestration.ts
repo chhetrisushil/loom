@@ -18,7 +18,13 @@ import {
   ChainHopLimitError,
   ResumeContendedError,
   ResumeRefusedError,
+  chainOfFirstEnvelope,
+  deepestGeneration,
+  isVerifiedSuccessor,
+  routeKeepSet,
+  sameLineage,
   scheduleRedrive,
+  successorIdOf,
 } from "@loom/workflow-runtime";
 import type {
   ExecutionContext,
@@ -829,8 +835,13 @@ function lifeOf(e: EventEnvelope): "live" | "ended" | undefined {
  * no `::` is a root without a read. The recorded parent is a logical id in the same id space as the
  * store this predicate is given (a tenant-scoped view un-prefixes both), so it is looked up as is.
  * A continued child's generations (`P::k~1`, ...) each record the same parent (a verified successor
- * must), so while P lives EVERY generation stays: `followToHead` from the original id needs each
- * link (see ADR 0145), so releasing an intermediate is not safe.
+ * must), so while P lives they stay - EXCEPT the intermediates the kernel's head search never reads:
+ * `followToHead` from any surviving id needs only {@link routeKeepSet}(head) (generation 0, the
+ * generations its gallop and bisection probe, and head-1; about 2*log2(head) of them), because it
+ * runs the same exported {@link deepestGeneration}. A perpetual child therefore does not grow
+ * without bound under a parked parent. The release decision re-runs that search from generation 0
+ * and VERIFIES the head it finds the way the kernel does (`isVerifiedSuccessor` from head-1,
+ * `sameLineage`, nothing beyond it, newest lifecycle event not a kernel CONTINUED); any doubt keeps.
  *
  * Parent state: scanned NEWEST-first from the tip with the re-open rule (a RESUMED / SUSPENDED /
  * STARTED before any terminal event means LIVE, e.g. a failed parent re-opened by `resumeAs`),
@@ -872,11 +883,87 @@ export function awaitedByParent(
   const isShredded = (err: unknown): boolean =>
     isPayloadShredded(rootCause(err)) || isPayloadShredded(err);
 
+  /** The newest lifecycle event of `id` within the bounded tip scan; `capped` = none found in range. */
+  const newestLife = async (
+    id: string,
+    head: number
+  ): Promise<{ event?: EventEnvelope; capped: boolean }> => {
+    let hi = head;
+    for (let page = 0; page < AWAITED_MAX_PAGES && hi >= 0; page++) {
+      const lo = Math.max(0, hi - AWAITED_PAGE + 1);
+      const events = await readRangeOf(store, id, lo, hi);
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (lifeOf(events[i] as EventEnvelope) !== undefined) {
+          return { event: events[i] as EventEnvelope, capped: false };
+        }
+      }
+      hi = lo - 1;
+    }
+    return { capped: hi >= 0 };
+  };
+
+  /**
+   * Is generation `m` (>= 1, id `childId`, sequence 0 `first`) of a continued chain releasable
+   * while its parent lives? Only when the kernel's head search can never read it (see the doc
+   * comment). Every doubt answers `false` (keep), with a once-per-chain warning.
+   */
+  const intermediateReleasable = async (
+    childId: string,
+    first: EventEnvelope
+  ): Promise<boolean> => {
+    const chain = chainOfFirstEnvelope(first, childId);
+    const m = chain.generation;
+    if (m === 0) return false; // the original id is addressable forever: always kept
+    const C = chain.chainId;
+    const doubt = (why: string): false => {
+      warnOnce(
+        `chain:${C}`,
+        `awaitedByParent: cannot confirm the head of chain "${C}" (${why}); keeping "${childId}" and its other generations.`
+      );
+      return false;
+    };
+    if (childId !== successorIdOf(C, m - 1))
+      return doubt(`"${childId}" is not the id of generation ${m}`);
+    try {
+      const idOf = (g: number): string => (g === 0 ? C : `${C}~${g}`);
+      const seq0 = async (g: number): Promise<EventEnvelope | undefined> =>
+        (await readRangeOf(store, idOf(g), 0, 0))[0];
+      const root = await seq0(0);
+      if (root === undefined) return false; // pre-pin gap or a squatter: nothing to reason about
+      const D = await deepestGeneration(
+        0,
+        async (g) => (await readRangeOf(store, idOf(g), 0, 0)).length > 0
+      );
+      if (m >= D - 1) return false; // the head and its predecessor are always kept
+      const head = await seq0(D);
+      const prev = await seq0(D - 1);
+      if (head === undefined || prev === undefined)
+        return doubt(`generation ${D} or ${D - 1} is unreadable`);
+      if (!isVerifiedSuccessor(prev, idOf(D - 1), head, idOf(D)) || !sameLineage(root, head)) {
+        return doubt(`generation ${D} fails the kernel's successor verification`);
+      }
+      if ((await seq0(D + 1)) !== undefined)
+        return doubt(`generation ${D + 1} exists beyond the found head`);
+      const tip = await headOf(store, idOf(D));
+      if (tip === null) return doubt(`generation ${D} has no events`);
+      const life = await newestLife(idOf(D), tip);
+      if (life.event === undefined || life.event.eventType === "EXECUTION_CONTINUED") {
+        return doubt(`generation ${D} is not a live or completed head`);
+      }
+      return !routeKeepSet(D).has(m);
+    } catch (err) {
+      if (isShredded(err)) return false;
+      return doubt(`a read failed: ${(err as Error)?.message ?? String(err)}`);
+    }
+  };
+
   return async (childId) => {
     if (parentOf(childId) === undefined) return false; // a root: no parent can be waiting
     let parentId: string | undefined;
+    let childFirst: EventEnvelope | undefined;
     try {
       const first = (await readRangeOf(store, childId, 0, 0))[0];
+      childFirst = first;
       const recorded = (first?.payload as { parent?: unknown } | null | undefined)?.parent;
       parentId = typeof recorded === "string" && recorded.length > 0 ? recorded : undefined;
     } catch (err) {
@@ -887,42 +974,38 @@ export function awaitedByParent(
       );
       return true;
     }
-    if (parentId === undefined) return false; // not an orchestration child
+    if (parentId === undefined || childFirst === undefined) return false; // not an orchestration child
+    let live: boolean;
     try {
       const head = await headOf(store, parentId);
       if (head === null) return false;
-      let hi = head;
-      for (let page = 0; page < AWAITED_MAX_PAGES && hi >= 0; page++) {
-        const lo = Math.max(0, hi - AWAITED_PAGE + 1);
-        const events = await readRangeOf(store, parentId, lo, hi);
-        for (let i = events.length - 1; i >= 0; i--) {
-          const life = lifeOf(events[i] as EventEnvelope);
-          if (life !== undefined) return life === "live";
-        }
-        hi = lo - 1;
-      }
-      // No lifecycle event in the pages read: a compacted log, or a tail of post-terminal facts.
-      if (options?.snapshots !== undefined) {
-        const snap = await options.snapshots.loadLatest(parentId);
-        const status = (snap?.state as { status?: unknown } | null | undefined)?.status;
-        if (snap !== null && snap.sequence >= head) {
-          if (
-            status === "completed" ||
-            status === "failed" ||
-            status === "cancelled" ||
-            status === "continued"
-          ) {
-            return false;
+      const scan = await newestLife(parentId, head);
+      if (scan.event !== undefined) {
+        live = lifeOf(scan.event) === "live";
+      } else {
+        // No lifecycle event in the pages read: a compacted log, or a tail of post-terminal facts.
+        if (options?.snapshots !== undefined) {
+          const snap = await options.snapshots.loadLatest(parentId);
+          const status = (snap?.state as { status?: unknown } | null | undefined)?.status;
+          if (snap !== null && snap.sequence >= head) {
+            if (
+              status === "completed" ||
+              status === "failed" ||
+              status === "cancelled" ||
+              status === "continued"
+            ) {
+              return false;
+            }
           }
         }
+        if (scan.capped) {
+          warnOnce(
+            `cap:${parentId}`,
+            `awaitedByParent: "${parentId}" has no lifecycle event in its newest ${AWAITED_PAGE * AWAITED_MAX_PAGES} events, so its children (e.g. "${childId}") are kept. Compaction normally removes such a tail; if it persists, the parent's log is growing with post-terminal appends.`
+          );
+        }
+        return true;
       }
-      if (hi >= 0) {
-        warnOnce(
-          `cap:${parentId}`,
-          `awaitedByParent: "${parentId}" has no lifecycle event in its newest ${AWAITED_PAGE * AWAITED_MAX_PAGES} events, so its children (e.g. "${childId}") are kept. Compaction normally removes such a tail; if it persists, the parent's log is growing with post-terminal appends.`
-        );
-      }
-      return true;
     } catch (err) {
       if (isShredded(err)) return false;
       warnOnce(
@@ -931,6 +1014,8 @@ export function awaitedByParent(
       );
       return true;
     }
+    if (!live) return false;
+    return !(await intermediateReleasable(childId, childFirst));
   };
 }
 
