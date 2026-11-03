@@ -127,6 +127,10 @@ export interface BudgetConfig {
    * instruction position (system prompt, assistant role); pass it to a model only as fenced
    * `tainted()` user content. The returned `summary` is cut to `maxSummaryTokens` and re-injected
    * as a fenced `user` message with origin `conversation:summary` (`SUMMARY_ORIGIN`).
+   *
+   * A summarizer that THROWS (anything but control flow: park, authority/safety stop, cancel,
+   * divergence) degrades like an output with no `summary`: the previous summary is kept and the turn
+   * runs. The outcome is recorded (`conv#o<ord>:summarize:outcome`), so replay never re-runs it.
    */
   summarizerToolId?: string;
   /** The rolling summary is cut to this many tokens (by the counter) so it can never crowd out the prompt. Default `floor(contextWindow / 4)`. */

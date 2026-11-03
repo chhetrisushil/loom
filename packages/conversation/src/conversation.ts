@@ -437,15 +437,35 @@ export function conversationRunner(
           ...(t.assistant ? [{ role: "assistant", content: t.assistant }] : []),
         ]),
       ];
-      const out = (await ctx.execute(
-        {
-          _tag: "TaskDefinition",
-          kind: "memory",
-          id: `conv#o${ord}:summarize`,
-          toolId: budget.summarizerToolId,
+      const task = {
+        _tag: "TaskDefinition",
+        kind: "memory",
+        id: `conv#o${ord}:summarize`,
+        toolId: budget.summarizerToolId,
+      } as const;
+      // A failed summarizer DEGRADES, as an output with no `summary` does: the previous summary is kept
+      // and the evicted turns are just dropped from the prompt. Summarizing is housekeeping, so its
+      // failure must not end the conversation (the turn has not even started). The OUTCOME is a recorded
+      // decision wrapping the step: the kernel re-runs a failed step live on replay (at-least-once), so
+      // without it a replay whose summarizer now succeeds would rebuild a different prompt history.
+      // Control flow (a park, an authority/safety stop, a cancel, a replay divergence) is the runtime's:
+      // not recorded, it propagates. (Same pattern as `agentLoop$`'s `:outcome` for a failing tool.)
+      const outcome = await ctx.decide<{ ok: true } | { failed: true }>(
+        `conv#o${ord}:summarize:outcome`,
+        async () => {
+          try {
+            await ctx.execute(task, { messages });
+            return { ok: true as const };
+          } catch (e) {
+            if (classifyModelCallFailure(e) === "terminal") throw e;
+            return { failed: true as const };
+          }
         },
-        { messages }
-      )) as { summary?: unknown };
+        { source: "conversation-summarizer" }
+      );
+      if ("failed" in outcome) return;
+      // Served from the completed frame (no second run).
+      const out = (await ctx.execute(task, { messages })) as { summary?: unknown };
       if (typeof out?.summary === "string") {
         const raw = clip(out.summary, DEFAULTS.maxSummaryChars);
         summary = await ctx.decide<string>(

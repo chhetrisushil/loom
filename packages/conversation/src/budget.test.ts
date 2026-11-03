@@ -140,6 +140,68 @@ describe("conversation budgeting", () => {
     expect(last).not.toContain("question-1");
   });
 
+  it("a FAILING summarizer degrades: the summary is kept, the turn and the conversation go on, replay agrees", async () => {
+    let calls = 0;
+    let failing = true;
+    const b = boot({
+      config: cfg({ summarizerToolId: "flaky-summarize" }),
+      reply: () => ({ content: "r".repeat(60), stopReason: "end_turn" }),
+      extraEffects: (e) =>
+        e.register(
+          "flaky-summarize",
+          new ToolEffect(async () => {
+            calls++;
+            if (failing) throw new Error("provider HTTP 500");
+            return { summary: "late digest" };
+          })
+        ),
+    });
+    const { conversationId: id } = await b.conv.start();
+    for (let i = 1; i <= 6; i++) {
+      await b.conv.sendTurn(id, `question-${i}-${"q".repeat(40)}`);
+      await messages(b, id, i * 2);
+    }
+    expect(calls).toBeGreaterThan(0); // turns WERE evicted and the summarizer was asked
+    const all = (await b.conv.history(id, { limit: 100 })).entries;
+    expect(all).toHaveLength(12);
+    expect(all.every((m) => m.status === "complete")).toBe(true);
+    expect(JSON.stringify(b.requests.at(-1)?.messages)).not.toContain(
+      "Summary of the earlier conversation"
+    );
+    expect((await b.runtime.loadState(id))?.status).toBe("suspended"); // alive, parked for the next turn
+
+    // A new process whose summarizer now SUCCEEDS: the recorded failures replay as failures (no
+    // summarizer call for an old eviction), and only the next turn's eviction calls it.
+    await until(async () => (await b.runtime.loadState(id))?.status === "suspended");
+    failing = false;
+    const before = calls;
+    const rt2 = b.mk();
+    const flow2 = conversation$({
+      key: TEST_KEY,
+      agent: { definition: agent$({ id: "chat", name: "Chat", tools: [] }), modelToolId: "model" },
+      ...cfg({ summarizerToolId: "flaky-summarize" }),
+    });
+    rt2.registerFlow(flow2.definition, flow2.runner);
+    await rt2.send(id, {
+      topic: "conversation:turn",
+      payload: signRaw(id, { kind: "user", text: `question-7-${"q".repeat(40)}`, id: "x7" }),
+    });
+    await until(async () => (await b.conv.history(id, { limit: 100 })).entries.length >= 14);
+    const after = (await b.conv.history(id, { limit: 100 })).entries;
+    expect(after.slice(12).map((m) => [m.turn, m.role, m.status])).toEqual([
+      [7, "user", "complete"],
+      [7, "assistant", "complete"],
+    ]);
+    // the earlier evictions' recorded FAILURES replay as failures (never re-run): only turn 7's new
+    // eviction calls the summarizer, and its digest is what the turn-7 prompt carries
+    expect(calls - before).toBe(1);
+    expect(JSON.stringify(b.requests.at(-1)?.messages)).toContain("late digest");
+    const outcomes = (await b.eventStore.read(id)).filter(
+      (e) => (e.payload as { source?: string } | null)?.source === "conversation-summarizer"
+    );
+    expect(outcomes.length).toBeGreaterThanOrEqual(2); // one per eviction, failures included
+  });
+
   it("a summarizer reading its input through summarizerText survives rotation; the summary is fenced", async () => {
     const seen: string[] = [];
     const b = boot({

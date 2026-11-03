@@ -1008,7 +1008,11 @@ const latest = await conversations.history(conversationId, { principal, directio
   purpose). The verdict is recorded, so replay never re-decides it. With `summarizerToolId`, dropped
   turns fold into a rolling summary (the same effect contract as `agentLoop$` `compaction.toolId`;
   both inputs may carry `tainted()` wrappers, so read each message with `summarizerText` from
-  `@loom/conversation`), delivered fenced in a user message, never the system prompt. In-run growth
+  `@loom/conversation`), delivered fenced in a user message, never the system prompt. A summarizer
+  that FAILS (anything but a park, authority/safety stop, cancel or divergence) degrades: the previous
+  summary is kept, the evicted turns just leave the prompt, and the turn runs. That outcome is a
+  recorded decision (`conv#o<ord>:summarize:outcome`), so replay never re-runs a failed summarizer.
+  Retries are the effect's own retry policy. In-run growth
   is still `agent.compaction`'s job.
 - **Trust.** The turn runs as the conversation's owner, and **only the owner may talk to it**: the
   identity that started it (tenant, actor and `onBehalfOf` all equal; a delegate is a different
