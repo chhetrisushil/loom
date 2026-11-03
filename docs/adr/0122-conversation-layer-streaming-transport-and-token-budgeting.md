@@ -174,6 +174,10 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
   are folded into a rolling summary through `ctx.execute` against that effect, **using the same `{ messages } → { summary }`
   contract as `agentLoop$` `compaction.toolId`, so one summarizer effect serves both**. *(Note: both inputs may carry `tainted()` wrappers - here the user's words and the previous summary, in `compaction.toolId` failed tool calls, MCP results and origin-bearing history, nested in text parts and `tool_result` content; `textOf` on one throws `TaintedContentError`, and `summarizerText` from `@loom/conversation` is the sanctioned reader. It returns untrusted data that must stay out of instruction positions; the summary is re-injected fenced with origin `conversation:summary`.)* The summary is model output over
   untrusted text, so it rides in a *fenced* `user` message (origin `conversation:summary`), never the system prompt.
+  *(Amended 2026-11-03: a summarizer step that fails with anything but control flow (park, authority/safety stop,
+  cancel, divergence) DEGRADES - the previous summary is kept, the evicted turns leave the prompt, the turn and the
+  conversation go on - instead of ending the execution. The outcome is a recorded decision `conv#o<ord>:summarize:outcome`
+  wrapping the step, because the kernel re-runs a failed step live on replay; retries stay the effect's retry policy.)*
   `maxWindowTurns` (default 64) bounds the carried window whether or not a budget is configured. **The summary can never
   wedge the conversation** (P3-1): it is cut to `maxSummaryTokens` (default a quarter of the window) by a recorded decision
   that counts with the counter, and a fit that fails only because the summary is too big retries without it
