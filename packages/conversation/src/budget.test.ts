@@ -168,11 +168,11 @@ describe("conversation budgeting", () => {
     expect(JSON.stringify(b.requests.at(-1)?.messages)).not.toContain(
       "Summary of the earlier conversation"
     );
-    expect((await b.runtime.loadState(id))?.status).toBe("suspended"); // alive, parked for the next turn
+    // alive: it parks for the next turn (a failed execution never would)
+    await until(async () => (await b.runtime.loadState(id))?.status === "suspended", "parked");
 
     // A new process whose summarizer now SUCCEEDS: the recorded failures replay as failures (no
     // summarizer call for an old eviction), and only the next turn's eviction calls it.
-    await until(async () => (await b.runtime.loadState(id))?.status === "suspended");
     failing = false;
     const before = calls;
     const rt2 = b.mk();
