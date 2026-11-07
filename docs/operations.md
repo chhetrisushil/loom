@@ -48,8 +48,8 @@ await app.stores.eventStore.close?.();
   store keeps writing instead: it frees the queue if the listener has gone, and otherwise writes without
   cross-node wake-ups and warns at most once a minute (`postgresStorage({ onWarn })`;
   `observability.onWarn` does not reach the store). The log stays complete, but **a skipped wake-up is not
-  sent later**. A subscriber on another node catches up only on that execution's next event, so a
-  `liveQuery` waiting for a completion written during this time can wait indefinitely. The Postgres server
+  sent later**. A raw `subscribe` on another node catches up only on that execution's next event; `liveQuery`
+  also re-reads the log every 5 s by default, and `followConversation` every 2 s. The Postgres server
   log names the backend's PID in its `NOTIFY queue is N% full` warning; terminate that backend. Watch
   `pg_notification_queue_usage()` if you want warning before this happens.
 - A Postgres store is **fail-closed on lost writes**: a write that cannot be made durable fails the

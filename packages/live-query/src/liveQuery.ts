@@ -46,6 +46,12 @@ import { foldEvents } from "@loom/replay-vm";
 // optional, O(1) `head` — a store without it is tolerated (no fallback full read; the very
 // next non-empty delta still self-heals via the gap check), so this can never turn an
 // empty wake-up into an unbounded read and break the O(N) bound above.
+//
+// A WAKE-UP CAN BE LOST. Cross-node delivery is not guaranteed: a dropped listener or a full
+// Postgres NOTIFY queue costs a wake-up, and a lost one is not sent later. An execution whose last
+// event was the lost one would otherwise never pump again, so a caller waiting to see `completed`
+// would wait forever. So each subscription also pumps on a timer, until its state is terminal. A
+// quiet pump reads only the empty tail past `tip` (the O(N) bound above holds) and emits nothing.
 
 /** The runtime capability a live query needs — just the folding read. */
 export interface StateReader {
@@ -76,7 +82,22 @@ export interface LiveQueryDeps {
    * there is no caller left to catch them.
    */
   onError?: (err: unknown) => void;
+  /**
+   * How often each subscription re-reads the log, in case a wake-up was lost. It stops once the
+   * state is terminal, and each quiet pass costs one or two indexed reads, so a live subscription
+   * costs at most two reads per interval. `0` turns it off, which means a lost wake-up is only
+   * recovered by that execution's next event. Default 5000.
+   */
+  pollMs?: number;
 }
+
+const DEFAULT_POLL_MS = 5_000;
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "continued",
+]);
 
 /** Build a {@link LiveQuery} over a store + a state reader (typically the runtime). */
 export function liveQuery(deps: LiveQueryDeps): LiveQuery {
@@ -158,7 +179,21 @@ export function liveQuery(deps: LiveQueryDeps): LiveQuery {
       });
       // Emit the current state immediately so a subscriber isn't blind until the next event.
       await pump();
-      return unsubscribe;
+      const pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
+      if (!(pollMs > 0)) return unsubscribe;
+      const poll = setInterval(() => {
+        if (state !== null && TERMINAL_STATUSES.has(state.status)) {
+          clearInterval(poll);
+          return;
+        }
+        if (refolding) return; // the pass in flight already reads the log
+        void pump().catch((err: unknown) => deps.onError?.(err));
+      }, pollMs);
+      poll.unref?.();
+      return () => {
+        clearInterval(poll);
+        unsubscribe();
+      };
     },
   };
 }
