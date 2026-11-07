@@ -69,12 +69,12 @@ paged store enumeration (EventStore SPI 1.2.0), streaming content ingestion (`pu
 stream-typed claim-check), the `loom sweep content` operator CLI with the first durable content
 backend, and `sentinelPreset()`/`loom new sentinel`.
 
-The arcs since have all landed **outside** the kernel — `KERNEL_ABI` moved once, additively, to
-`1.2.0` (L30: `ctx.decide`'s decider receives a transient-invoker scope), and only two of them
-touched the event schema at all (typed failure channels took it to `1.17.0`, the learning
-substrate's decision context to `1.18.0`). One kernel bug fix has touched it since:
-[ADR 0102](adr/0102-flow-emits-append-once.md) made flow-level `ctx.emit`/`stream`/`ui` append once
-per execution instead of once per re-run (`1.19.0`, no ABI change):
+Most of the arcs since landed **outside** the kernel, though not all. `KERNEL_ABI` moved additively to
+`1.2.0` (L30: `ctx.decide`'s decider receives a transient-invoker scope) and then `1.3.0`, which reserves
+`continueAsNew`, `receive` and `select`. `EVENT_SCHEMA` moved through typed failure channels (`1.17.0`), the
+learning substrate's decision context (`1.18.0`) and [ADR 0102](adr/0102-flow-emits-append-once.md)'s
+append-once flow emits (`1.19.0`), then on to `1.26.0` ([ADR 0138](adr/0138-compaction-archives-what-it-removes.md)). See the
+[compatibility matrix](spec/compatibility-matrix.md) for what is current:
 
 - **GenUI dynamic execution** ([ADRs 0060–0066](adr/)) — the one that *did* change the kernel, and
   minimally: **typed failure channels** (`STEP_FAILED.channel/payload`,

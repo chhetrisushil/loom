@@ -649,12 +649,13 @@ const app = defineConfig({
     strict: true,                                   // or { defaultDeadlineMs: 3_600_000 }
     authorizer: new GrantTable({ investigate: ["lookup-metrics", "triage-llm"] }),
     executionAuthorizer,                            // who may start / resume / cancel
+    resumeAuthenticator,                            // who may answer a gate, e.g. signedResumeAuthenticator()
   },
   // execution: { envelope: { spawn: { maxDepth: 3 }, rateLimit: { capacity: 50, refillPerSecond: 20 } } },
 });
 ```
 
-Under `strict`, `defineConfig` **throws** (listing every problem at once) unless you supply the two authorizers — only you can write them, so loom refuses their absence rather than guessing — and unless pre-flight verification stays on (`checks.verify` defaults to `"error"`; `"off"` is refused). It then applies, each overridable or `false` to disable:
+Under `strict`, `defineConfig` **throws** (listing every problem at once) unless you supply the two authorizers and a `resumeAuthenticator` (`strict: { requireResumeAuthenticator: false }` declares an app with no approval gates) — only you can write them, so loom refuses their absence rather than guessing — and unless pre-flight verification stays on (`checks.verify` defaults to `"error"`; `"off"` is refused). It then applies, each overridable or `false` to disable: It also refuses if every spend bound is switched off.
 
 | Bound | Strict default | Why this value |
 |---|---|---|
