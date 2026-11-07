@@ -702,6 +702,32 @@ describe("R10 — memory write-back", () => {
     expect(b.modelCalls.n).toBe(0);
   });
 
+  it("NEGATIVE: a bare `true` or `{}` does not compile, and an untyped caller is refused at run time", async () => {
+    // The type requires toolId, unless or allowDirect: true. `typecheck:tests` proves each
+    // expected error below is one; the runtime refusal stays for a caller without types.
+    // @ts-expect-error a bare `true` names no destination and no fork guard
+    const bare: AgentLoopConfig["writeBack"] = true;
+    // @ts-expect-error `{}` is just as bare
+    const empty: AgentLoopConfig["writeBack"] = {};
+    // @ts-expect-error `allowDirect: false` is not an opt-in
+    const declined: AgentLoopConfig["writeBack"] = { allowDirect: false };
+    for (const writeBack of [bare, empty, declined]) {
+      const b = boot({
+        config: { memory: memory(), ...(writeBack !== undefined && { writeBack }) },
+      });
+      const state = await runToEnd(b).catch(() => settled(b));
+      expect(state?.status).toBe("failed");
+      expect(b.modelCalls.n).toBe(0);
+    }
+    const ok: AgentLoopConfig["writeBack"][] = [
+      { toolId: "memwrite" },
+      { unless: () => false },
+      { allowDirect: true, scope: "s" },
+      false,
+    ];
+    expect(ok).toHaveLength(4);
+  });
+
   it("NEGATIVE: without writeBack, memory is read-only (as before)", async () => {
     const mem = memory();
     const b = boot({ config: { memory: mem } });

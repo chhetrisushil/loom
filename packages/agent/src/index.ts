@@ -29,6 +29,8 @@ export {
 } from "./toolFailure";
 export type {
   AgentLoopConfig,
+  AgentLoopWriteBack,
+  AgentLoopWriteBackFields,
   AgentModelCall,
   ApprovalPolicy,
   EffectRegistry,
