@@ -366,7 +366,11 @@ export interface SecurityOptions {
 export interface ObservabilityOptions {
   /** Telemetry adapters, composed and wired to the event stream. */
   telemetry?: TelemetryAdapter[];
-  /** Extra event observer, fired after projection + telemetry. */
+  /**
+   * Extra event observer, fired after projection + telemetry. It is a live tail: it can fire BEFORE
+   * the event's durable write, so after a crash or a failed write it can report an event the log
+   * never recorded. Use it for dashboards. Do not page, bill or audit from it; read the log for those.
+   */
   onEvent?: (event: EventEnvelope) => void;
   /** Sink for boot-time warnings (manifest cross-check + validation). Default `console.warn`. */
   onWarn?: (message: string) => void;
