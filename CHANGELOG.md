@@ -1708,6 +1708,8 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
 
 ### Fixed
 
+- **BREAKING under `taintResults`: A2A `raw` no longer holds the peer's text unmarked (`@loom/plugin-a2a`).** `A2APeerClient` tainted `content` only, while `raw.artifacts` and `raw.error` held the same words, so code reading `raw` got unmarked text. Both are now tainted; `raw.id` and `raw.status` stay plain for control flow. `TaintedA2APeerOutput` reflects it, so a caller who opted in gets a compile error at each read. Nothing changes without the option.
+
 - **Real READMEs for the remaining generated packages (docs only).** 42 packages replace generated stubs with hand-written READMEs, with examples type-checked against the built packages where they are TypeScript. `docs/compliance.md`'s first examples now include the `principalCodec` that composing compliance requires, because they threw as written.
 
 - **BREAKING BEHAVIOUR CHANGE: a tainted value in an agent's `input.context` is refused (`@loom/agent`).** `context` is flattened with `JSON.stringify` into plain text in the user message, so a tainted value (a natural way to use `mcpTool$`) reached the model unfenced, with its closing tags unescaped. `agentLoop$`, `AgentRunner` and the skill selectors now throw `UntrustedContextError`, naming the origin, before any model call. Taint is found at any depth, and a value too big to scan is refused. Pass it as `prompt` with `promptOrigin` or in `history`, or call `unwrapTainted()` to trust it visibly.

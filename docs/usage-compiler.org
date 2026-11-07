@@ -284,7 +284,7 @@ directly keeps the plain "analyze the region you give me" contract.
 
 * Feature 3 — Resumability
 
-The compiler package exports serialization utilities for the server → client state hand-off. This enables a React app to mount with fully-hydrated projection state and resume a suspended workflow without any EventStore round-trip.
+The runtime package (~@loom/workflow-runtime~) exports serialization utilities (~serializeExecution~, ~serializeProjections~) for the server → client state hand-off. This enables a React app to mount with fully-hydrated projection state and resume a suspended workflow without any EventStore round-trip.
 
 ** Server side (e.g., Express route, Next.js getServerSideProps)
 

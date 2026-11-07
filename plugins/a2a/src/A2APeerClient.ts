@@ -40,12 +40,11 @@ export interface A2APeerConfig<TTaint extends boolean = false> {
    * trustworthy as whoever operates it. This is the switch that makes that fact
    * travel with the value.
    *
-   * Only `content` is tainted, not the whole output — unlike `mcpInvoke$`,
-   * whose result is opaque. `raw` carries task state and artifact metadata that
-   * feeds control flow, and forcing an `unwrapTainted()` on code that never
-   * touches a prompt would be friction in the wrong place. `content` is the
-   * flattened text, so `peer.content` drops straight into an `LlmMessage` slot
-   * where the guard sees it.
+   * Everything the peer wrote as text is tainted: `content`, and `raw.artifacts` and `raw.error`,
+   * which hold the same words. Not the whole output, unlike `mcpInvoke$`: `raw.id` and `raw.status`
+   * feed control flow, and forcing an `unwrapTainted()` on code that never touches a prompt would be
+   * friction in the wrong place. `content` is the flattened text, so `peer.content` drops straight
+   * into an `LlmMessage` slot where the guard sees it.
    *
    * Typed, not just documented: the flag's literal type selects the output
    * type, so a caller that does not opt in sees `A2APeerOutput` exactly as
@@ -77,7 +76,10 @@ export interface A2APeerOutput {
 /** {@link A2APeerOutput} under `taintResults` — the text carries its provenance. */
 export interface TaintedA2APeerOutput {
   content: TaintedValue<string>;
-  raw: A2ATaskResult;
+  raw: Omit<A2ATaskResult, "artifacts" | "error"> & {
+    artifacts?: TaintedValue<NonNullable<A2ATaskResult["artifacts"]>>;
+    error?: TaintedValue<string>;
+  };
 }
 
 /**
@@ -233,9 +235,18 @@ export class A2APeerClient<TTaint extends boolean = false> {
         // Taint at INGRESS — the wrapper IS the step output, so it is what
         // STEP_COMPLETED records and what a replay hands back. The cast is the
         // one place the conditional return type cannot be proved structurally.
+        if (this.config.taintResults !== true) {
+          return { content, raw: result } as A2APeerOutputFor<TTaint>;
+        }
+        const origin = `a2a:${toolId}`;
+        const { artifacts, error, ...state } = result;
         return {
-          content: this.config.taintResults === true ? tainted(content, `a2a:${toolId}`) : content,
-          raw: result,
+          content: tainted(content, origin),
+          raw: {
+            ...state,
+            ...(artifacts !== undefined && { artifacts: tainted(artifacts, origin) }),
+            ...(error !== undefined && { error: tainted(error, origin) }),
+          },
         } as A2APeerOutputFor<TTaint>;
       }
     );

@@ -241,7 +241,7 @@ These producers ship, all opt-in:
 |---|---|---|
 | `client.registerInto(effects, { taintResults: true })`, `mcpTool$(client, name, { taintResults: true })` | `mcp:<serverHost>/<toolName>` | the whole result |
 | `registerMcpInvoke(client, runtime, { taintResults: true })` | `mcp:<server>/<toolName>` | the whole result — `mcpInvoke$` yields `unknown`, so there is no field to single out |
-| `new A2APeerClient({ url, taintResults: true })` | `a2a:<toolId>` | `content` only — `raw` carries task state that feeds control flow |
+| `new A2APeerClient({ url, taintResults: true })` | `a2a:<toolId>` | `content`, `raw.artifacts` and `raw.error` — `raw.id` and `raw.status` stay plain, because they feed control flow |
 
 They differ deliberately. Tainting the *whole* value means consumers call `unwrapTainted()` to
 compute with it, and that friction is the point — every unwrap is a visible place where provenance
@@ -260,7 +260,6 @@ An agent's `input.context` is flattened into plain text in the user message, whe
 What `taintResults` does not cover, so these stay your code's responsibility:
 
 - **A thrown tool error.** An MCP tool's failure text is carried in the thrown error. `agentLoop$` and `AgentRunner` fence it, but a flow that catches the error and uses `e.message` in a prompt gets unmarked text.
-- **A2A `raw`.** `A2APeerClient` taints `content` only, and `raw` holds the same artifact text unmarked. When the whole output reaches an agent it is fenced, because taint is found at any depth, but code that reads `raw` itself gets unmarked text.
 - **Direct client calls.** `client.callTool`, `callToolResult` and `readResource` return the server's content unmarked.
 - **Whether a model obeys the fence.** The fence is a label: it stops content reaching instruction positions, and it cannot stop a model being persuaded.
 
