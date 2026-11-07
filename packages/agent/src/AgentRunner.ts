@@ -34,6 +34,7 @@ import { isTerminalToolError } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
+import { assertContextIsClean } from "./untrustedContext";
 
 export interface AgentConfig {
   definition: AgentDefinition;
@@ -191,6 +192,8 @@ export class AgentRunner {
   }
 
   async run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput> {
+    // Before skill selection or any model call: `context` would reach them flattened and unfenced.
+    assertContextIsClean(input.context);
     const { definition, effectRuntime, systemPrompt, memory, skills } = this.config;
 
     // Resolve skills first: choose the relevant ones, record the choice for

@@ -255,11 +255,13 @@ For the A2A peer the flag's *literal type* selects the output type
 before rather than being handed a union to narrow.
 
 
+An agent's `input.context` is flattened into plain text in the user message, where the fence could not see a mark. So `agentLoop$`, `AgentRunner` and the skill selectors refuse a tainted value there, at any depth, with `UntrustedContextError`, before any model call. Pass untrusted text as `prompt` with `promptOrigin` on `agentLoop$` or as a tainted message in `history`. Call `unwrapTainted()` on it first if you have checked it and mean to trust it.
+
 What `taintResults` does not cover, so these stay your code's responsibility:
 
 - **A thrown tool error.** An MCP tool's failure text is carried in the thrown error. `agentLoop$` and `AgentRunner` fence it, but a flow that catches the error and uses `e.message` in a prompt gets unmarked text.
+- **A2A `raw`.** `A2APeerClient` taints `content` only, and `raw` holds the same artifact text unmarked. When the whole output reaches an agent it is fenced, because taint is found at any depth, but code that reads `raw` itself gets unmarked text.
 - **Direct client calls.** `client.callTool`, `callToolResult` and `readResource` return the server's content unmarked.
-- **`input.context` on an agent.** A tainted value placed in `context` is flattened with `JSON.stringify` into the user message, so it reaches the model unfenced. Pass it as a tainted message, or as `prompt` with `promptOrigin` on `agentLoop$`, instead.
 - **Whether a model obeys the fence.** The fence is a label: it stops content reaching instruction positions, and it cannot stop a model being persuaded.
 
 ### Model reasoning ([ADR 0133](adr/0133-model-reasoning-audit-capture.md))

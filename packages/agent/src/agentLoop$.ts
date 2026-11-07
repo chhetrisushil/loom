@@ -44,6 +44,7 @@ import { inlineBytesIn, toolResultPart, toolResultPartOrigin } from "./toolResul
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import { type ToolSearchConfig, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
 import type { AgentInput, AgentOutput, AgentStep, LeanAgentStep } from "./types";
+import { assertContextIsClean } from "./untrustedContext";
 
 // ── R1 — the agent loop as a RUNNER BODY, not a step handler ─────────────────
 //
@@ -872,6 +873,8 @@ export async function agentLoop$(
   config: AgentLoopConfig,
   input: AgentInput
 ): Promise<AgentOutput> {
+  // Before skill selection or any model call: `context` would reach them flattened and unfenced.
+  assertContextIsClean(input.context);
   if (config.needsApproval !== undefined && config.requireApproval !== undefined) {
     throw new AgentLoopConfigError(
       "agentLoop$: supply `needsApproval` OR the deprecated `requireApproval`, not both (they have opposite polarity)"

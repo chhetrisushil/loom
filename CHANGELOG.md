@@ -1708,6 +1708,12 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
 
 ### Fixed
 
+- **Real READMEs for the remaining generated packages (docs only).** 42 packages replace generated stubs with hand-written READMEs, with examples type-checked against the built packages where they are TypeScript. `docs/compliance.md`'s first examples now include the `principalCodec` that composing compliance requires, because they threw as written.
+
+- **BREAKING BEHAVIOUR CHANGE: a tainted value in an agent's `input.context` is refused (`@loom/agent`).** `context` is flattened with `JSON.stringify` into plain text in the user message, so a tainted value (a natural way to use `mcpTool$`) reached the model unfenced, with its closing tags unescaped. `agentLoop$`, `AgentRunner` and the skill selectors now throw `UntrustedContextError`, naming the origin, before any model call. Taint is found at any depth, and a value too big to scan is refused. Pass it as `prompt` with `promptOrigin` or in `history`, or call `unwrapTainted()` to trust it visibly.
+
+- **An MCP malformed-input refusal is marked under `taintResults` (`@loom/plugin-mcp`).** It can echo a schema property name the server chose.
+
 - **BREAKING BEHAVIOUR CHANGE: `AgentRunner` fences tool error text (`@loom/agent`).** A failing tool's error text reached the model unmarked, so a malicious MCP server could bypass `taintResults` by setting `isError`. It is now tainted with origin `tool-error:<tool>`, as `agentLoop$` already did, and `toolCallLog[].toolOutput` for a failed call holds the tainted wrapper.
 
 - **A server cannot choose the origin of its own taint (`@loom/plugin-mcp`, `@loom/llm`).** `tainted()` keeps an existing wrapper, and a server's JSON text is parsed, so a server could send a wrapper naming any origin. `registerMcpInvoke`, `registerInto` and `mcpTool$` now discard it and stamp their own. The fence also strips line breaks and control characters from an origin, so an origin cannot lay out text of its own outside the fence body.

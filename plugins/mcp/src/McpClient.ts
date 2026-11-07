@@ -302,6 +302,10 @@ export class McpClient {
     return mapped.map((m) => m.definition);
   }
 
+  private taintOriginOf(toolName: string): string {
+    return `mcp:${this.serverHost ?? "server"}/${toolName}`;
+  }
+
   /**
    * One tool call in the shape a static binding returns (`registerInto`, `mcpTool$`). Taint goes on
    * at INGRESS: the wrapper is the step output, so the log records it and a replay hands it back.
@@ -321,9 +325,7 @@ export class McpClient {
       value = result;
     }
     // Unwrapped first: the server writes this value, so a wrapper it sent must not choose the origin.
-    return taintResults
-      ? tainted(unwrapTainted(value), `mcp:${this.serverHost ?? "server"}/${name}`)
-      : value;
+    return taintResults ? tainted(unwrapTainted(value), this.taintOriginOf(name)) : value;
   }
 
   /**
@@ -439,9 +441,10 @@ export class McpClient {
     const effect = new ToolEffect(async (input: unknown) => {
       // R4b — the shape verdict is journaled WITH the step (see inputShape.ts).
       const refusal = refuseMalformedInput(mcpTool.inputSchema, input);
-      // Unmarked: our own words, plus at most schema property names limited to an identifier charset
-      // (see inputShape.ts), which the sanitised tool menu could show the model anyway.
-      if (refusal !== undefined) return refusal;
+      // It can echo the server's schema property names (see inputShape.ts), so it is marked too.
+      if (refusal !== undefined) {
+        return taintResults ? tainted(refusal, this.taintOriginOf(mcpTool.name)) : refusal;
+      }
       return this.callAs(mcpTool.name, input, fidelity, taintResults);
     });
     const ui = uiMetaOf(mcpTool._meta);

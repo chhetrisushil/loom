@@ -2,6 +2,7 @@ import { guardRequest } from "@loom/llm";
 import type { LlmProvider, LlmResponse } from "@loom/llm";
 import type { SkillRegistry } from "./SkillRegistry";
 import type { AgentInput } from "./types";
+import { assertContextIsClean } from "./untrustedContext";
 
 // Chooses which skills are relevant to an agent turn. Returns skill ids (order
 // is not significant — AgentRunner composes them in registry order).
@@ -37,6 +38,7 @@ export interface SkillSelectionRequest {
 }
 
 function queryOf(input: AgentInput): string {
+  assertContextIsClean(input.context);
   return input.context != null ? `${input.prompt}\n${JSON.stringify(input.context)}` : input.prompt;
 }
 
