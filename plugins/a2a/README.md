@@ -51,9 +51,9 @@ await server.start();
 
 ## Behaviour that surprises people
 
-- **`taintResults` covers `content` only.** With it, `content` is a tainted value that the prompt
-  boundary refuses in instruction positions. `raw` is returned as is, and it carries the same artifact
-  text and any error string. If you put `raw` into a prompt, nothing marks it untrusted
+- **`taintResults` marks the peer's text, not its task state.** `content`, `raw.artifacts` and `raw.error`
+  become tainted values the prompt boundary refuses in instruction positions, so `unwrapTainted()` them to
+  compute with. `raw.id` and `raw.status` stay plain for control flow. If you put those into a prompt, nothing marks them
   ([docs/data-classification.md](../../docs/data-classification.md)). It is off by default.
 - **A peer's description is withheld from the model.** An agent loop shows a neutral placeholder for the
   peer unless you set `trustDescriptions: true`, because the card is written by the peer's operator.

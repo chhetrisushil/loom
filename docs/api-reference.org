@@ -1276,7 +1276,6 @@ interface SnapshotStore {
   close(): Promise<void>;
 }
 class InMemoryAsyncSnapshotStore { constructor(options?: { latencyMs?: number }) }
-class SqliteSnapshotStore        { constructor(dbPath: string) }
 // Snapshot-size metric (#708): a decorator, zero cost when unwired, never fails or alters a save.
 // Outside EncryptingSnapshotStore it measures plaintext state; around the raw store, ciphertext.
 class ProfilingSnapshotStore implements SnapshotStore {
@@ -1437,7 +1436,7 @@ interface DurableStateStore {
   put(key: string, value: unknown, expectedRevision: number | null): Promise<DurableStateRecord>
   clear(input: ClearInput): Promise<ClearResult>
 }
-function registerDurableState(effects: EffectRegistry, config: DurableStateConfig): void
+function durableState<T>(config: DurableStateConfig<T>): DurableStateHandle<T>   // { id, version, schema, migrations?, store }; handle.register(effects) registers the load/save/clear effects
 class RevisionConflictError extends Error {}   // optimistic concurrency: two wakes cannot interleave
 class InMemoryDurableStateStore implements DurableStateStore {}
 // durable: SqliteDurableStateStore / PostgresDurableStateStore. ADR 0053; the sentinel preset wires it.
@@ -1781,7 +1780,8 @@ Confidentiality is a property of a FIELD and static; integrity is a property of 
 #+begin_src typescript
 // confidentiality — marks on a schema, read by the kernel's egress/crypto paths
 function sensitive<T>(schema: T): T; function secret<T>(schema: T): T; function internal<T>(schema: T): T
-function classify(schema: unknown): ClassifiedPath[]      // paths + DataClass, wildcards expanded
+function classify<T extends z.ZodTypeAny>(schema: T, dataClass: DataClass): T   // marks the schema (the sugar above calls it); returns the same schema
+function collectClassifiedPaths(schema: z.ZodTypeAny, prefix?: string): ClassifiedPath[]   // { path, dataClass } per marked field
 function maskPaths<T>(value: T, paths: readonly string[]): T   // REDACTED at each path
 function expandPaths(paths: readonly string[], value: unknown): string[]   // `[]` crossings (ADR 0076)
 
@@ -1818,9 +1818,9 @@ const WIRE_ABI: WireAbi;                             // { version, methods, carr
 const WIRE_METHODS: readonly WireMethod[];           // JSON-RPC projection of the syscalls
 const CARRIER_METHODS: readonly CarrierMethod[];     // start / resume / poll transport methods
 function deriveWireMethods(syscalls: typeof KERNEL_SYSCALLS): WireMethod[];
-function handleRpc(req: JsonRpcRequest, options: CarrierOptions): Promise<JsonRpcResponse>;   // server side
+function handleRpc(runtime: WorkflowRuntime, request: JsonRpcRequest, options?: CarrierOptions): Promise<JsonRpcResponse>;   // server side
 const FOLD_VECTORS: readonly FoldVector[];           // shared conformance corpus
-function runFoldVectors(fold: (events: unknown[]) => unknown): { passed: number; failures: FoldVector[] };
+function runFoldVectors(vectors?: readonly FoldVector[]): Array<{ name: string; passed: boolean; detail?: string }>;   // runs the reference fold; defaults to FOLD_VECTORS
 #+end_src
 
 -----
@@ -1836,8 +1836,11 @@ Read models folded from events, decoupled from durability.
 
 #+begin_src typescript
 interface Projection<TState> {
-  id: string; initialState: TState;
-  handlers: { [eventType: string]: (state: TState, event: EventEnvelope) => TState };
+  id: string;
+  version?: string;                              // ADR 0095: declared semantics of the fold, pinned by checkVersionPins
+  initialState: TState;
+  handlers?: { [eventType: string]: (state: TState, event: EventEnvelope) => TState };
+  lazy?: { eventTypes: string[]; load: () => Promise<ProjectionFoldMap<TState>> };   // fold code import()-ed on the first matching event; exactly one of handlers / lazy
 }
 interface ProjectionRuntime {
   register<TState>(projection: Projection<TState>): void;
@@ -1854,9 +1857,10 @@ interface ProjectionRuntime {
   ): () => void;
   handleEvent(event: EventEnvelope): void;
   seedState(projectionId: string, executionId: string, state: unknown): void;
+  pins?(): Readonly<Record<string, string>>;   // optional: declared version per registered projection (ADR 0095)
 }
 class InMemoryProjectionRuntime {
-  constructor(config?: { coalesceNotifications?: boolean })   // true = flush once per microtask with latest state
+  constructor(config?: { coalesceNotifications?: boolean; maxExecutions?: number })   // coalesce: flush once per microtask with latest state; maxExecutions: LRU bound on retained executions, default 10_000
 }
 #+end_src
 
@@ -1978,7 +1982,7 @@ class A2UISurfaceBridge {
   // `${executionId}:getLocale#1` (mirrors step identity, ADR 0061). Grain B uses
   // ctx.idempotencyKey (= executionId:stepId), unique per ctx.execute, for free.
   callFunction(name: string, args: unknown, opts: { callId: string; callableFrom?: string }): A2UIServerMessage;
-  ingestFunctionResponse(msg: A2UIClientMessage): FunctionResponsePayload | null;  // inbound: normalize a reply
+  ingestFunctionResponse(msg: A2UIClientMessage, expectedCallId?: string): FunctionResponsePayload | null;  // inbound: normalize a reply; pass expectedCallId to reject an unsolicited callId
 }
 
 // Catalog (mandatory in A2UI — createSurface names a catalogId)
@@ -2353,7 +2357,7 @@ type WidgetValueCheck = (widget: Widget, value: unknown) => { code: string; mess
 function useWidgetSlice(pr: ProjectionRuntime, widget: Widget, executionId: string): { value: unknown; status?: BindingStatus }
 #+end_src
 
-Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~, ~ProgressBarRenderer~, ~DataTableRenderer~, ~AlertCardRenderer~.
+Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~. (~ProgressBarRenderer~, ~DataTableRenderer~ and ~AlertCardRenderer~ exist only inside ~defaultRegistry~, not as exports.)
 
 ** ~@loom/plugin-renderer-terminal~
 
@@ -2855,7 +2859,9 @@ function createA2AClientEffect(agentUrl: string, options?: { timeoutMs?; headers
 // ^ a terminal task (completed/failed) in the /tasks/send answer is returned as-is; an { id } answer is polled at /tasks/:id
 
 // Inbound: expose a Loom flow as an A2A agent
-function createA2AServer(workflowRuntime: WorkflowRuntime, flow: RegisteredFlow, agentCard: Omit<AgentCard, "url">, options?: { port?: number }): A2AServer
+function createA2AServer(workflowRuntime: WorkflowRuntime, flow: RegisteredFlow, agentCard: Omit<AgentCard, "url">, options?: A2AServerOptions): A2AServer
+// A2AServerOptions: { port?, authenticate?(req): PrincipalChain | undefined, authorize?(req): boolean, insecure?, strict?, ... }
+// Refuses to create an unauthenticated server: supply `authenticate` (or `authorize`), or pass `insecure: true` (refused under security.strict).
 function toAgentCard(agent: AgentDefinition, opts?: { url?; version?; capabilities? }): AgentCard
 class LoomAgentExecutor { constructor(runtime: WorkflowRuntime, flow: RegisteredFlow) /* submit / get / provideInput */ }
 
@@ -3163,7 +3169,7 @@ class TieredMemory {
 There is no ~knowledge$~ construct and no embedding SPI (ADR 0090). This package owns exactly one thing the store cannot: the mapping from a DOCUMENT — the unit a corpus is edited in — to the PASSAGES it is searched in, so a revision supersedes its predecessor instead of being indexed twice (ADR 0091).
 
 #+begin_src typescript
-function openKnowledgeBase(config: KnowledgeBaseConfig): KnowledgeBase   // memory + scope + chunker
+function openKnowledgeBase(store: MemoryStore, options: Omit<KnowledgeBaseConfig, "memory">): KnowledgeBase   // builds the TieredMemory over `store`; options: scope, tier?, chunker?, ...
 class KnowledgeBase {
   putDoc(doc: KnowledgeDoc, opts?: SourceOptions): Promise<Passage[]>    // UPSERT, not append
   sync(docs: readonly KnowledgeDoc[], opts?: SourceOptions): Promise<SyncResult>  // write/remove a set
@@ -3239,11 +3245,14 @@ class QuickJsSandboxBackend implements SandboxBackend { constructor(o?: { interr
 ** ~@loom/plugin-sentinel~ — the perpetual-agent preset
 
 #+begin_src typescript
-function sentinelPreset(options: {
-  cron: string; flowId: string;                 // when it wakes, and what it runs
+function sentinelPreset<TState>(config: {
+  id: string; cron: string; timeZone?: string;  // schedule id (stable identity), and when it wakes
+  flowId?: string;                              // default `<id>-flow`
+  state: { schema: ZodSchema<TState>; version?: number; migrations? };   // carry-state contract
   stateStore: DurableStateStore;                // carry state ACROSS wakes (ADR 0053)
-  contentStore?: ContentStore;                  // over-cap observations go by reference
-}): Partial<LoomConfig>                          // spread into defineConfig
+  contentStore: ClaimCheckStore;                // over-cap observations go by reference
+  inlineCapBytes?; digests?; onOffload?; pinnedEventTypes?;
+}): SentinelPreset<TState>   // { schedule, state, middleware, pinnedEventTypes, register(effects), pinPredicate, occurrenceId, occurrenceOf }
 #+end_src
 
 ** ~@loom/learning~ — off-policy evaluation over the decision log
@@ -3371,7 +3380,7 @@ interface ExecutionDispatcher {
   cancel(executionId: string): Promise<void>;
   health(): Promise<DispatcherHealth>;
 }
-const DISPATCHER_SPI_VERSION = "1.1.0";
+const DISPATCHER_SPI_VERSION = "1.2.0";
 interface DispatchMetadata { lane?: string; priority?: number; estimatedCpu?: number; estimatedMemory?: number; estimatedDuration?: number; target?: string; }  // (2.0) target
 class LocalDispatcher { constructor(worker: WorkerRuntime, options?: { maxAttempts?: number; executeTimeoutMs?: number }) }
 #+end_src
@@ -3607,7 +3616,7 @@ stubProvider(fn); flowSubject({ start }); reportDigest(report); compareReports(b
 #+begin_src typescript
 function simulateDeploy(logs: EventEnvelope[][], next: FlowResolver): CompatibilityReport
 interface FlowResolver { getFlow(flowId: string): { definition: { version: string; steps: Array<{ id: string }> } } | undefined; }  // a booted WorkflowRuntime satisfies this
-interface CompatibilityIssue { executionId: string; workflowId: string; severity: "breaking" | "warning" | "info"; kind: "flow-missing" | "step-removed" | "suspended-carryover"; detail: string; }
+interface CompatibilityIssue { executionId: string; workflowId: string; severity: "breaking" | "warning" | "info"; kind: "flow-missing" | "step-removed" | "suspended-carryover" | "flow-code-drift"; detail: string; }
 interface CompatibilityReport { checked: number; issues: CompatibilityIssue[]; ok: boolean; }
 #+end_src
 
@@ -3615,10 +3624,10 @@ interface CompatibilityReport { checked: number; issues: CompatibilityIssue[]; o
 
 #+begin_src typescript
 function pascal(name: string): string
-function generateRegistration(importPaths: string[]): string    // → the text of loom.gen.ts (static flowModules)
-function newFile(kind: "flow" | "agent" | "tool", name: string): { path: string; content: string }
+function generateRegistration(flowPaths: string[], agentPaths?: string[], toolPaths?: string[], skillPaths?: string[], schedulePaths?: string[], memoryPaths?: string[], projectionPaths?: string[]): string    // → the text of loom.gen.ts (static modules)
+function newFile(kind: "flow" | "agent" | "tool" | "skill" | "schedule" | "memory" | "projection" | "sentinel", name: string, template?: FlowTemplate): { path: string; content: string }
 function appFiles(appName: string): Record<string, string>      // used by create-loom-app
-// plus flowFile / toolFile / agentFile
+// plus flowFile / toolFile / agentFile / newFiles / sentinelFile
 #+end_src
 
 ** ~@loom/compiler~ — build-time enhancement (optional)
@@ -3712,8 +3721,8 @@ function checkCompatibility(deployment: DeploymentVersions): CompatReport
 function majorCompatible(a: string, b: string): boolean
 const CAPABILITIES: readonly Capability[]        // evidence-derived L0–L5 maturity registry
 function renderMaturityTable(): string; function renderCompatibilityMatrix(): string
-function readWorkspaceGraph(root: string): WorkspaceGraph
-function findLayeringViolations(graph: WorkspaceGraph): LayeringViolation[]   // kernel ↛ plugins
+function readWorkspaceGraph(root?: string): Map<string, PackageNode>
+function findLayeringViolations(root?: string): LayeringViolation[]   // kernel ↛ plugins; reads the graph itself
 const KERNEL_PACKAGES: readonly string[]; const SPI_PACKAGES: readonly string[]
 #+end_src
 
@@ -3723,7 +3732,7 @@ Read-only; nothing here touches execution semantics. The generated `docs/spec/` 
 
 #+begin_src typescript
 interface CustomStorage { kind: "custom"; eventStore: EventStore; snapshotStore: SnapshotStore;
-                          branchRegistry?: BranchRegistry }
+                          branchRegistry?: BranchRegistry; archiveStore?: ArchiveStore }
 type StoragePreset<Options = void> = (options: Options) => CustomStorage
 function defineStoragePreset<Options = void>(build: (options: Options) => CustomStorage): StoragePreset<Options>
 // spread the result into defineConfig({ storage }) — the shape a plugin returns, so a preset
