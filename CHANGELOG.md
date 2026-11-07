@@ -1708,6 +1708,8 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
 
 ### Fixed
 
+- **`CloudRunPlatform.identity` is now used (`@loom/plugin-cloudrun`).** The deploy guide told people to set it, but nothing read it, so a private Cloud Run service answered 403. `CloudRunWorkerRuntime` now sends `Authorization: Bearer <token>` on every request, with the service URL's origin as the audience, and a failing provider fails the dispatch. `secrets` is documented as a slot for your own adapter, because the runtime has no secret to fetch.
+
 - **BREAKING under `taintResults`: A2A `raw` no longer holds the peer's text unmarked (`@loom/plugin-a2a`).** `A2APeerClient` tainted `content` only, while `raw.artifacts` and `raw.error` held the same words, so code reading `raw` got unmarked text. Both are now tainted; `raw.id` and `raw.status` stay plain for control flow. `TaintedA2APeerOutput` reflects it, so a caller who opted in gets a compile error at each read. Nothing changes without the option.
 
 - **Real READMEs for the remaining generated packages (docs only).** 42 packages replace generated stubs with hand-written READMEs, with examples type-checked against the built packages where they are TypeScript. `docs/compliance.md`'s first examples now include the `principalCodec` that composing compliance requires, because they threw as written.

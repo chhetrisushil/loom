@@ -23,8 +23,8 @@ import { CloudRunWorkerRuntime, StaticCloudRunPlatform } from "@loom/plugin-clou
 
 const platform = new StaticCloudRunPlatform(process.env.WORKER_URL!, {
   // optional capability adapters
-  secrets: mySecretManagerAdapter,
-  identity: myWorkloadIdentityAdapter,
+  identity: myWorkloadIdentityAdapter, // sends an ID token on every request, for a private service
+  secrets: mySecretManagerAdapter,     // for your own adapter and effects; the runtime does not read it
   logs: myLogAdapter,
   metrics: myMetricAdapter,
 });

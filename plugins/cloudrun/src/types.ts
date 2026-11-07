@@ -11,12 +11,19 @@ export interface CloudRunConfig {
 /** Maps advisory dispatch hints to a concrete Cloud Run sizing. */
 export type SizingPolicy = (meta?: DispatchMetadata) => CloudRunConfig;
 
-/** Fetch a secret value by name (e.g. Secret Manager). */
+/**
+ * Fetch a secret value by name (e.g. Secret Manager). A slot for your own adapter and effects:
+ * {@link CloudRunWorkerRuntime} has no secret of its own to fetch and does not call it.
+ */
 export interface SecretProvider {
   getSecret(name: string): Promise<string>;
 }
 
-/** Mint / propagate a workload identity token for outbound calls. */
+/**
+ * Mint a workload identity token for `audience`, the service URL. {@link CloudRunWorkerRuntime} calls it
+ * for every request and sends the result as `Authorization: Bearer`, as a private service requires.
+ * It is called per request, so cache inside the provider.
+ */
 export interface IdentityProvider {
   getIdentityToken(audience: string): Promise<string>;
 }
