@@ -7,16 +7,21 @@ import { InMemoryKeyStore } from "./keystore";
 // K10-R7 / ADR-0022 A4 — the append-path benchmark the ADR promised. Three shapes on the
 // SAME payload so the cost of field-level encryption is visible and G2 is provable:
 //   1. unwired      — a plain store.append (no wrapper at all).
-//   2. marked-empty — the EncryptingEventStore with an EMPTY sensitive map: a single
-//                     per-event-type map lookup then a straight pass-through, no crypto (G2 —
-//                     within noise of unwired, ~1.3x, not the 20x+ of the encrypted path).
+//   2. marked-empty — the EncryptingEventStore with an EMPTY sensitive map: a per-event-type
+//                     map lookup then a straight pass-through, no crypto (G2).
 //   3. marked       — one field encrypted per append (the actual opt-in cost).
+//
+// Each store is built ONCE, outside the measured function. Building one per iteration times the
+// wrapper's constructor, which an app pays once at boot, and read as ~7x for the empty map when
+// the append itself costs ~1.1x. Sequences roll onto a new execution so no log grows long.
 
-function ev(sequence: number): EventEnvelope {
+function ev(prefix: string, n: number): EventEnvelope {
+  const executionId = `${prefix}-${Math.floor(n / 256)}`;
+  const sequence = n % 256;
   return {
-    id: `e-${sequence}`,
+    id: `${executionId}-${sequence}`,
     workflowId: "wf",
-    executionId: "x",
+    executionId,
     eventType: "STEP_COMPLETED",
     sequence,
     timestamp: sequence,
@@ -27,22 +32,25 @@ function ev(sequence: number): EventEnvelope {
 const SENSITIVE = { STEP_COMPLETED: ["output.ssn"] };
 
 describe("EncryptingEventStore.append — marked vs unmarked vs unwired", () => {
+  const unwired = new InMemoryAsyncEventStore();
+  let unwiredCount = 0;
   bench("unwired (plain store.append)", async () => {
-    const store = new InMemoryAsyncEventStore();
-    await store.append(ev(0));
+    await unwired.append(ev("unwired", unwiredCount++));
   });
 
+  const empty = new EncryptingEventStore(new InMemoryAsyncEventStore(), new InMemoryKeyStore(), {
+    sensitive: {},
+  });
+  let emptyCount = 0;
   bench("wrapped, empty sensitive map (G2 — must match unwired)", async () => {
-    const store = new EncryptingEventStore(new InMemoryAsyncEventStore(), new InMemoryKeyStore(), {
-      sensitive: {},
-    });
-    await store.append(ev(0));
+    await empty.append(ev("empty", emptyCount++));
   });
 
+  const marked = new EncryptingEventStore(new InMemoryAsyncEventStore(), new InMemoryKeyStore(), {
+    sensitive: SENSITIVE,
+  });
+  let markedCount = 0;
   bench("wrapped, one field encrypted (opt-in cost)", async () => {
-    const store = new EncryptingEventStore(new InMemoryAsyncEventStore(), new InMemoryKeyStore(), {
-      sensitive: SENSITIVE,
-    });
-    await store.append(ev(0));
+    await marked.append(ev("marked", markedCount++));
   });
 });

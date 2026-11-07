@@ -1704,6 +1704,8 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
 
 ### Fixed
 
+- **`@loom/plugin-crypto` append benchmark measures the append (`append.bench.ts`; bench only, no runtime change).** It built a new store on every iteration, so it mostly timed the wrapper's constructor and read as ~7× for an empty sensitive map. With stores reused, the empty map costs ~1.1× and one encrypted field ~22×; `docs/benchmarks.md` is updated.
+
 - **BREAKING BEHAVIOUR CHANGE: `defineConfig` refuses an unknown `storage.kind` (`@loom/app`; no kernel, `KERNEL_ABI`, `EVENT_SCHEMA` or SPI change).** Anything other than `"memory"` or `"custom"` used to fall through to the in-memory stores, so a config using `{ kind: "sqlite" }`, which the API reference taught, ran normally, wrote nothing and lost every event on restart. It now throws, naming the `sqliteStorage()` or `postgresStorage()` preset to use. A config that was silently in-memory must choose a real backend.
 
 - **Documentation audit.** `docs/api-reference.org`'s `defineConfig` block listed flat keys that throw and storage kinds that do not exist, and its orchestration and `createFairScheduler` signatures were wrong. `docs/usage.md`'s strict-mode example threw at boot for lack of a `resumeAuthenticator`. `docs/scaling.md` listed `appendBatch`, coalescing and sharding as unavailable. `docs/README.md`'s kernel versions, `docs/codebase-guide.md`'s line references and `docs/security-overview.md`'s claim about verdicts are corrected, the last now listing verdict provenance as a known residual risk. `@loom/plugin-crypto` gains the `bench` script its docs named.
