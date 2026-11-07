@@ -2606,28 +2606,28 @@ class SkillRegistry { register(skill): this; get(id); all(); ids(); find(query):
 function deterministicSkillSelector(maxSkills?: number): SkillSelector
 function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelector      // calls the provider DIRECTLY (outside authz/metering/kill switch; guardRequest runs)
 function llmSkillSelector(options: { toolId: string; maxSkills?: number }): SkillSelector // (R9) effect-backed: agentLoop$ only; a journaled frame `<agent>#skills:select`
-function agentLoop$(ctx: ExecutionContext, config: AgentLoopConfig, input: AgentInput): Promise<AgentOutput>   // THE canonical loop; throws AgentLoopConfigError for a config it refuses
+function agentLoop$(ctx: ExecutionContext, config: AgentLoopConfig, input: AgentInput): Promise<AgentOutput>   // THE canonical loop; throws AgentLoopConfigError for the config conflicts it names; other invalid options throw Error / RangeError
 //   AgentLoopConfig base keys: definition: AgentDefinition (required); modelToolId?; reasoning?: ReasoningRuntime; reasoningToolId?; systemPrompt?; maxIterations?;
 //     memory?: TieredMemory (+ memoryTier?, memoryScope?, recallLimit?); skills?: SkillRegistry; skillSelector?; approvalGate?; bindApproval?; versions?; cacheScope?; onWarn?
 // agentLoop$ config (R10, ADR 0121 — THE canonical loop; AgentRunner and agentStep$ are @deprecated):
 //   needsApproval?: (toolCall, turn, onMenu?) => boolean — `true` PARKS the call on `approvalGate` for a human before it runs, `false` runs it (a policy that returns nothing parks). Composes with `kind: "human"` tools exactly as requireApproval did
 //   requireApproval?: (toolCall, turn, onMenu?) => boolean — @deprecated alias of needsApproval with the INVERTED polarity (auto-approve: `true` = proceed, `false` = park); same recorded log; one LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED warning per process; both given = AgentLoopConfigError
 //   toolErrors?: "feedback" | "fail"   — default feedback: a failing tool is an isError tool_result (authority/safety/quota/cancel/park never are)
-//   parallelTools?: boolean | number   — one turn's calls through ctx.parallel; ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
+//   parallelTools?: boolean | number   — one turn's calls through ctx.parallel (sequential when the turn holds a `kind: "human"` tool); ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
 //   compaction?: { toolId: string; afterMessages?: number; afterBytes?: number; keepRecent?: 4 } — fold older turns into one summary through the journaled effect `toolId` ({ messages } -> { summary }); at least one threshold; OPT-IN
 //   warnTranscriptBytes?: number | false — with NO compaction, ONE warning per run (onWarn, else LOOM_AGENT_STATE_GROWTH) when the transcript passes this many bytes; default DEFAULT_STATE_GROWTH_WARN_BYTES (256 KiB); report-only (ADR 0137)
 //   createSummarizerEffect(provider, { instruction?, maxTokens? = 1024 }) — a ready-made compaction effect (SummarizerEmptyError on an empty summary); register it, it is journaled once
 //   toolCallLog?: "full" | "lean"   — (ADR 0142) default full = today's shape; lean = status/bytes/digest/stepId instead of toolOutput (also in the agentInterrupted payload). An explicit value is journaled and a resume with the other value throws AgentLoopConfigError; unset is not checked
 //   loopId?: string                    — (R17) the id prefix of this loop's frames/decisions/gates; default definition.id. Two loops in one execution must not share it
 //   signal?: AbortSignal               — stop THIS run: no further model/tool call; fails on AGENT_INTERRUPTED with InterruptedAgentRun
-//   turnTimeoutMs?, toolTimeoutMs?     — frame `timeoutMs` (model failure fails the run; a tool timeout is an isError result)
+//   turnTimeoutMs?, toolTimeoutMs?     — frame `timeoutMs` (model failure fails the run; a tool timeout is an isError result under toolErrors "feedback", fails the run under "fail")
 //   input.context must not hold taint at any depth: UntrustedContextError, before any model call
 //   writeBack?: false | AgentLoopWriteBack — { tier?, scope? } plus one of toolId / unless / allowDirect: true (the type requires it; an untyped `true` or `{}` throws AgentLoopConfigError) — with `memory`: remember prompt + answer on finish; keyed idempotent; toolId = journaled effect (memoryWriteBackEffect); tainted answer if the run saw taint
-//   (with `signal`, each abort checkpoint is a recorded decision `<agent>#abort:<site>`; each tool outcome `<agent>#turn:<i>:tool:<j>:outcome`; both stamped, excluded from @loom/learning trajectories)
+//   (with `signal`, each abort checkpoint is a recorded decision `<agent>#abort:<site>`; under toolErrors "feedback", with or without `signal`, each non-human tool outcome is one too, `<agent>#turn:<i>:tool:<j>:outcome`; both stamped, excluded from @loom/learning trajectories)
 //   `reasoning` without reasoningToolId: the response is a recorded decision `<agent>#turn:<i>:response:<n>` (no re-ask on resume)
 // agentLoop$ config (R9): reasoningToolId?: string | ((routeId) => string)   — each `reasoning` model call becomes a journaled
 //   ctx.execute frame `<agent>#turn:<i>:call:<n>` (authz, metering, kill switch, guardRequest, recorded on replay);
-//   requireEffectRing?: boolean — refuse `reasoning` without reasoningToolId and a non-effect-backed skillSelector.
+//   requireEffectRing?: boolean — refuse `reasoning` without reasoningToolId, a non-effect-backed skillSelector, and a `writeBack` without `toolId`.
 // agentLoop$ config (R22, ADR 0125): toolSearch?: ToolSearchConfig — an opt-in `search_tools` meta-tool; default OFF, not worth it below ~30 tools
 //   interface ToolSearchConfig { catalog?: ToolDefinition[]       // the searchable set the HOST offers; definition.tools + selected skills' tools are ALREADY on the menu
 //                                alwaysLoaded?: string[]           // on the menu from turn 0

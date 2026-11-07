@@ -474,7 +474,7 @@ Composed from existing primitives, so it stays outside the kernel (P10). See the
 
 ## 5. Branching: fork / simulate / promote
 
-Branching is nearly free because state is `fold(events)` — a fork copies the event prefix into a new execution and resumes it differently. Enable it with `storage: { branching: true }` (or pass a `BranchRegistry`).
+Branching is nearly free because state is `fold(events)` — a fork copies the event prefix into a new execution and resumes it differently. Enable it with `sqliteStorage({ dir, branching: true })` or `postgresStorage({ url, branching: true })` (or a `custom` storage with your own `branchRegistry`); the in-memory storage has no branch registry.
 
 ```ts
 // Fork the prefix [0..sequence] into a new branch.
@@ -717,9 +717,14 @@ agentLoop$(ctx, {
   signal: turn.signal,           // stop THIS run (barge-in): no further model or tool call, AGENT_INTERRUPTED
   turnTimeoutMs: 60_000,         // the model frame's kernel deadline
   toolTimeoutMs: 15_000,         // a tool that exceeds it is an isError result
-  memory, writeBack: { toolId: "memwrite" },  // persist prompt + answer; or { unless } / { allowDirect: true }
+  memory, writeBack: { toolId: "memwrite" },  // persist prompt + answer; or { unless } / { allowDirect: true } (a bare `true` does not compile)
 }, input);
 ```
+
+`input.context` must hold no tainted value at any depth: `agentLoop$` refuses it with `UntrustedContextError`
+before any model call, because the context is flattened into a plain string where the taint mark is lost and
+the text would reach the model unfenced. Pass untrusted text as `prompt` with a `promptOrigin`, or as a tainted
+message in `history`, where it is fenced; or `unwrapTainted()` it first if you have checked it.
 
 Step ids do not change with `parallelTools` (`<loop>#turn:<i>:tool:<j>`), results reach the model in
 its order, and approvals are collected, in order, before any call of the turn starts. An untyped
