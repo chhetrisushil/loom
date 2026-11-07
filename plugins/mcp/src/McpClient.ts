@@ -1,3 +1,4 @@
+import { tainted } from "@loom/classify";
 import { jsonSchemaHash, tool$ } from "@loom/core";
 import type { ToolDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
@@ -111,6 +112,12 @@ export interface ListToolsOptions {
   onSkippedTool?: (name: string, reason: string) => void;
   /** Throw {@link McpToolNamesSkippedError} (listing every skipped name) instead of skipping. */
   strictToolNames?: true;
+  /**
+   * Wrap every result as untrusted (`@loom/classify`'s `tainted`), stamped with origin
+   * `mcp:<serverHost>/<toolName>`, as `registerMcpInvoke` does (see its option for what that buys).
+   * Off by default because it changes the step's output shape: consumers must `unwrapTainted()`.
+   */
+  taintResults?: boolean;
 }
 
 export class McpClient {
@@ -263,7 +270,14 @@ export class McpClient {
         }
         continue;
       }
-      mapped.push(this.mapTool(mcpTool, fidelity, options.trustDescriptions === true));
+      mapped.push(
+        this.mapTool(
+          mcpTool,
+          fidelity,
+          options.trustDescriptions === true,
+          options.taintResults === true
+        )
+      );
     }
     if (skipped.length > 0) {
       if (options.strictToolNames === true) throw new McpToolNamesSkippedError(skipped);
@@ -286,6 +300,27 @@ export class McpClient {
       effectRuntime.register(definition.id, effect);
     }
     return mapped.map((m) => m.definition);
+  }
+
+  /**
+   * One tool call in the shape a static binding returns (`registerInto`, `mcpTool$`). Taint goes on
+   * at INGRESS: the wrapper is the step output, so the log records it and a replay hands it back.
+   * @internal
+   */
+  async callAs(
+    name: string,
+    input: unknown,
+    fidelity: McpResultFidelity,
+    taintResults: boolean
+  ): Promise<unknown> {
+    let value: unknown;
+    if (fidelity === "value") value = await this.callTool(name, input);
+    else {
+      const result = await this.callToolResult(name, input);
+      throwIfToolError(name, result);
+      value = result;
+    }
+    return taintResults ? tainted(value, `mcp:${this.serverHost ?? "server"}/${name}`) : value;
   }
 
   /**
@@ -380,7 +415,8 @@ export class McpClient {
   private mapTool(
     mcpTool: McpTool,
     fidelity: McpResultFidelity,
-    trustDescriptions = false
+    trustDescriptions = false,
+    taintResults = false
   ): MappedMcpTool {
     const definition = tool$({
       id: mcpTool.name,
@@ -400,11 +436,8 @@ export class McpClient {
     const effect = new ToolEffect(async (input: unknown) => {
       // R4b — the shape verdict is journaled WITH the step (see inputShape.ts).
       const refusal = refuseMalformedInput(mcpTool.inputSchema, input);
-      if (refusal !== undefined) return refusal;
-      if (fidelity === "value") return this.callTool(mcpTool.name, input);
-      const result = await this.callToolResult(mcpTool.name, input);
-      throwIfToolError(mcpTool.name, result);
-      return result;
+      if (refusal !== undefined) return refusal; // our own words: nothing from the server to mark
+      return this.callAs(mcpTool.name, input, fidelity, taintResults);
     });
     const ui = uiMetaOf(mcpTool._meta);
 

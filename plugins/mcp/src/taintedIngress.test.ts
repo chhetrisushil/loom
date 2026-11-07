@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { McpClient } from "./McpClient";
 import { mcpInvoke$, registerMcpInvoke } from "./mcpInvoke$";
+import { mcpTool$ } from "./mcpTool$";
 
 // ── Third-party content reaching a prompt, end to end ────────────────────────
 //
@@ -202,6 +203,110 @@ describe("third-party MCP content on the path to a prompt", () => {
     fake = await startFakeMcpServer(INJECTION);
     const { status, seen } = await run(fake.url, "system", "taint-off", false);
 
+    expect(status).toBe("completed");
+    expect(seen[0]?.system).toBe(INJECTION);
+  });
+});
+
+// The same property through the two static bindings, which had no way to ask for it.
+describe.each(["registerInto", "mcpTool$"] as const)("taintResults through %s", (path) => {
+  async function runBound(url: string, position: "system" | "user", taintResults: boolean) {
+    const seen: LlmRequest[] = [];
+    const provider: LlmProvider = {
+      complete: async (request: LlmRequest): Promise<LlmResponse> => {
+        seen.push(request);
+        return { content: "summary", stopReason: "end_turn" };
+      },
+    };
+    const eventStore = new InMemoryAsyncEventStore();
+    const effectRuntime = new EffectRuntime();
+    const client = new McpClient({ transport: "http", url });
+    effectRuntime.register(
+      "llm.summarize",
+      createLlmEffect<unknown, string>({
+        provider,
+        buildRequest: (doc) =>
+          position === "system"
+            ? { messages: [{ role: "user", content: "summarize" }], system: doc as string }
+            : { messages: [{ role: "user", content: doc as never }] },
+      })
+    );
+    let fetchStep: unknown = mcpTool$(client, "fetch_doc", { taintResults });
+    if (path === "registerInto") {
+      await client.registerInto(effectRuntime, { taintResults });
+      fetchStep = {
+        _tag: "StepDefinition",
+        id: "fetch_doc",
+        name: "fetch_doc",
+        toolId: "fetch_doc",
+        inputSchema: z.unknown(),
+        outputSchema: z.unknown(),
+      };
+    }
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime,
+    });
+    const runner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {
+      const doc = await ctx.run(fetchStep as never, {} as never);
+      const summary = await ctx.run(
+        {
+          _tag: "StepDefinition",
+          id: "summarize",
+          name: "summarize",
+          toolId: "llm.summarize",
+          inputSchema: z.unknown(),
+          outputSchema: z.unknown(),
+        } as never,
+        doc as never
+      );
+      return { summary: summary as string };
+    };
+    const definition: FlowDefinition<Record<string, unknown>, Record<string, unknown>> = {
+      _tag: "FlowDefinition",
+      id: "bound-flow",
+      name: "bound-flow",
+      version: "1.0.0",
+      inputSchema: io,
+      outputSchema: io,
+      steps: [fetchStep as never],
+    };
+    runtime.registerFlow(definition, runner);
+    const handle = await runtime.start({ definition, runner }, {}, { executionId: "x" });
+    const status = await handle
+      .waitForCompletion()
+      .then((s) => s.status)
+      .catch(() => "failed" as const);
+    return { status, seen, events: await eventStore.read("x") };
+  }
+
+  it("cannot become a system prompt", async () => {
+    fake = await startFakeMcpServer(INJECTION);
+    const { status, seen } = await runBound(fake.url, "system", true);
+    expect(status).toBe("failed");
+    expect(seen).toHaveLength(0);
+  });
+
+  it("is fenced in a user message, and the taint is in the log", async () => {
+    fake = await startFakeMcpServer(INJECTION);
+    const { status, seen, events } = await runBound(fake.url, "user", true);
+    expect(status).toBe("completed");
+    const origin = `mcp:${new URL(fake.url).hostname}_${new URL(fake.url).port}/fetch_doc`;
+    expect(seen[0]?.messages[0]?.content).toContain(`<untrusted-input origin="${origin}">`);
+    const completed = events.find(
+      (e) =>
+        e.eventType === "STEP_COMPLETED" &&
+        (e.payload as { stepId?: string }).stepId === "fetch_doc"
+    );
+    const output = (completed?.payload as { output?: unknown }).output;
+    expect(isTainted(output)).toBe(true);
+    expect(unwrapTainted(output)).toBe(INJECTION);
+  });
+
+  it("is off by default: the same injection reaches the system prompt", async () => {
+    fake = await startFakeMcpServer(INJECTION);
+    const { status, seen } = await runBound(fake.url, "system", false);
     expect(status).toBe("completed");
     expect(seen[0]?.system).toBe(INJECTION);
   });
