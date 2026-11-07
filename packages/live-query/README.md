@@ -19,3 +19,7 @@ const unsubscribe = await lq.subscribe(executionId, (state) => {
 
 Updates are **coalesced**: only one re-fold runs at a time, and a burst of events triggers exactly
 one more (latest-wins), so a subscriber never sees stale-then-newer out of order.
+
+Delivery is live, not guaranteed. A wake-up lost across nodes, for example to a full Postgres NOTIFY queue,
+is not sent later, so `lq.subscribe` catches up only on that execution's next event. Do not rely on it alone
+to learn that a run finished; also re-read `loadState` on a timer.

@@ -98,7 +98,7 @@ export interface PostgresEventStoreOptions {
   deliveryLookupTimeoutMs?: number;
   /** ADR 0129 — minimum ms between re-probes for a missing `events.incarnation`. Default 30000. */
   incarnationRecheckMs?: number;
-  /** Injectable clock (ms) for the re-probe backoff. Default `Date.now`. */
+  /** Injectable clock (ms) for the re-probe backoff and the NOTIFY pause. Default `Date.now`. */
   clock?: () => number;
 }
 
@@ -136,6 +136,20 @@ function isDuplicateSequenceViolation(err: unknown): boolean {
   const constraint = uniqueViolationConstraint(err);
   return constraint?.includes("execution_id") === true && constraint.includes("sequence");
 }
+
+/**
+ * A full NOTIFY queue fails the commit with SQLSTATE 54000 (program_limit_exceeded). Other limits
+ * share the code, and the message may be translated, so this only says "try without the NOTIFY": a
+ * different limit fails again on that retry and reaches the caller unchanged.
+ */
+function isProgramLimitExceeded(err: unknown): boolean {
+  return err instanceof Error && (err as { code?: unknown }).code === "54000";
+}
+
+/** How long writes skip NOTIFY after finding the queue stuck, before one tries it again. */
+const NOTIFY_PAUSE_MS = 5_000;
+/** The minimum gap between warnings about a stuck queue: one hung listener must not flood `onWarn`. */
+const NOTIFY_WARN_INTERVAL_MS = 60_000;
 
 /**
  * #309 — the table's OTHER key: `id TEXT NOT NULL PRIMARY KEY`, which Postgres names
@@ -245,6 +259,9 @@ export class PostgresEventStore implements EventStore {
 
   private readonly incarnationRecheckMs: number;
   private readonly clock: () => number;
+  /** Until this time writes skip NOTIFY, because the queue was stuck. See {@link withNotifyFallback}. */
+  private notifyPausedUntil = 0;
+  private notifyWarnedAt: number | undefined;
 
   constructor(config: PgConfig, options: PostgresEventStoreOptions = {}) {
     this.connConfig = config;
@@ -309,40 +326,41 @@ export class PostgresEventStore implements EventStore {
          INSERT INTO fences (execution_id, fence) VALUES ($3, 0) ON CONFLICT (execution_id) DO NOTHING
        ), `
         : "";
-    const result = await this.pool
-      .query(
-        `WITH ${ensureFence}ins AS (
+    const result = await this.withNotifyFallback((notify) =>
+      this.pool
+        .query(
+          `WITH ${ensureFence}ins AS (
          INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
          SELECT $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb
          WHERE COALESCE(${fenceRead}, $9::bigint) <= $9::bigint
          RETURNING execution_id
        )
-       SELECT pg_notify($10, $11) FROM ins`,
-        [
-          envelope.id,
-          envelope.workflowId,
-          envelope.executionId,
-          envelope.eventType,
-          envelope.sequence,
-          envelope.timestamp,
-          JSON.stringify(envelope.payload),
-          envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null,
-          fence,
-          this.channelFor(envelope.executionId),
-          notifyTag,
-        ]
-      )
-      .catch((err: unknown) => {
-        // #306 — the slot was taken. Distinct from the fence rejection below, which is a
-        // zero-row insert rather than a constraint violation.
-        if (isDuplicateSequenceViolation(err)) {
-          throw new DuplicateSequenceError(envelope.executionId, envelope.sequence, err);
-        }
-        if (isDuplicateIdViolation(err)) {
-          throw new DuplicateEnvelopeIdError(envelope.id, envelope.executionId, err);
-        }
-        throw err;
-      });
+       SELECT ${notify ? "pg_notify($10, $11)" : "1"} FROM ins`,
+          [
+            envelope.id,
+            envelope.workflowId,
+            envelope.executionId,
+            envelope.eventType,
+            envelope.sequence,
+            envelope.timestamp,
+            JSON.stringify(envelope.payload),
+            envelope.metadata !== undefined ? JSON.stringify(envelope.metadata) : null,
+            fence,
+            ...(notify ? [this.channelFor(envelope.executionId), notifyTag] : []),
+          ]
+        )
+        .catch((err: unknown) => {
+          // #306 — the slot was taken. Distinct from the fence rejection below, which is a
+          // zero-row insert rather than a constraint violation.
+          if (isDuplicateSequenceViolation(err)) {
+            throw new DuplicateSequenceError(envelope.executionId, envelope.sequence, err);
+          }
+          if (isDuplicateIdViolation(err)) {
+            throw new DuplicateEnvelopeIdError(envelope.id, envelope.executionId, err);
+          }
+          throw err;
+        })
+    );
     if (result.rowCount === 0) {
       const { rows } = await this.pool.query<{ fence: string }>(
         "SELECT fence FROM fences WHERE execution_id = $1",
@@ -453,9 +471,10 @@ export class PostgresEventStore implements EventStore {
          WHERE COALESCE(f.fence, b.fence) > b.fence
          LIMIT 1
        )`;
-    const { rows: notified } = await this.pool
-      .query<{ inserted: number }>(
-        `WITH batch AS (
+    const { rows: notified } = await this.withNotifyFallback((notify) =>
+      this.pool
+        .query<{ inserted: number }>(
+          `WITH batch AS (
          SELECT x.id, x.workflow_id, x.execution_id, x.event_type, x."sequence", x."timestamp",
                 e->'payload' AS payload, x.metadata, x.fence, x.channel, x.answering
          FROM jsonb_array_elements($1::jsonb) AS e,
@@ -472,21 +491,26 @@ export class PostgresEventStore implements EventStore {
          WHERE NOT EXISTS (SELECT 1 FROM rejected)
          RETURNING execution_id
        )
-       SELECT (SELECT count(*)::int FROM ins) AS inserted,
-              pg_notify(b.channel, json_build_array($2::text, b.execution_id, b."sequence", $3::text)::text)
+       SELECT (SELECT count(*)::int FROM ins) AS inserted${
+         notify
+           ? `,
+              pg_notify(b.channel, json_build_array($2::text, b.execution_id, b."sequence", $3::text)::text)`
+           : ""
+       }
        FROM batch b
        WHERE NOT EXISTS (SELECT 1 FROM rejected)`,
-        [JSON.stringify(rows), this.senderId, this.namespace ?? null]
-      )
-      .catch(async (err: unknown) => {
-        // #306 — a taken slot, in the batch or already in the log. The statement is atomic,
-        // so nothing landed; locate the offender for an error that names the actual conflict
-        // rather than the constraint. Failure path only, so the extra round-trip is free.
-        if (isDuplicateSequenceViolation(err) || isDuplicateIdViolation(err)) {
-          throw await this.duplicateIn(envelopes, err);
-        }
-        throw err;
-      });
+          [JSON.stringify(rows), ...(notify ? [this.senderId, this.namespace ?? null] : [])]
+        )
+        .catch(async (err: unknown) => {
+          // #306 — a taken slot, in the batch or already in the log. The statement is atomic,
+          // so nothing landed; locate the offender for an error that names the actual conflict
+          // rather than the constraint. Failure path only, so the extra round-trip is free.
+          if (isDuplicateSequenceViolation(err) || isDuplicateIdViolation(err)) {
+            throw await this.duplicateIn(envelopes, err);
+          }
+          throw err;
+        })
+    );
     if (notified.length !== envelopes.length || notified[0]?.inserted !== envelopes.length) {
       // Nothing landed. Identify the offending envelope for a useful error — this is the
       // failure path, so an extra round-trip is fine.
@@ -812,69 +836,122 @@ export class PostgresEventStore implements EventStore {
       return { appended: false, reason: "observed", head: tip.head, fence, anchor: tip.anchor };
     }
     const want = expect as TipObservation;
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
-      await client.query(
-        "INSERT INTO fences (execution_id, fence) VALUES ($1, 0) ON CONFLICT (execution_id) DO NOTHING",
-        [executionId]
-      );
-      const locked = await client.query<{ fence: string }>(
-        "SELECT fence FROM fences WHERE execution_id = $1 FOR UPDATE",
-        [executionId]
-      );
-      const fence = Number(locked.rows[0]?.fence ?? 0);
-      const t = await client.query<Tip>(tipSql, [executionId]);
-      const tip = tipOf(t.rows[0]);
-      if (tip === null) {
-        await client.query("DELETE FROM fences WHERE execution_id = $1 AND fence = 0", [
-          executionId,
-        ]);
-        await client.query("COMMIT");
-        return { appended: false, reason: "gone", head: null, fence, anchor: null };
+    const refused = await this.withNotifyFallback<AppendIfUnchangedResult | null>(
+      async (notify) => {
+        const client = await this.pool.connect();
+        try {
+          await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+          await client.query(
+            "INSERT INTO fences (execution_id, fence) VALUES ($1, 0) ON CONFLICT (execution_id) DO NOTHING",
+            [executionId]
+          );
+          const locked = await client.query<{ fence: string }>(
+            "SELECT fence FROM fences WHERE execution_id = $1 FOR UPDATE",
+            [executionId]
+          );
+          const fence = Number(locked.rows[0]?.fence ?? 0);
+          const t = await client.query<Tip>(tipSql, [executionId]);
+          const tip = tipOf(t.rows[0]);
+          if (tip === null) {
+            await client.query("DELETE FROM fences WHERE execution_id = $1 AND fence = 0", [
+              executionId,
+            ]);
+            await client.query("COMMIT");
+            return { appended: false, reason: "gone", head: null, fence, anchor: null };
+          }
+          if (
+            tip.head !== want.head ||
+            fence !== want.fence ||
+            tip.anchor !== want.anchor ||
+            event.sequence !== tip.head + 1
+          ) {
+            await client.query("COMMIT");
+            return { appended: false, reason: "moved", head: tip.head, fence, anchor: tip.anchor };
+          }
+          await client.query(
+            `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+            [
+              event.id,
+              event.workflowId,
+              event.executionId,
+              event.eventType,
+              event.sequence,
+              event.timestamp,
+              JSON.stringify(event.payload),
+              event.metadata !== undefined ? JSON.stringify(event.metadata) : null,
+            ]
+          );
+          if (notify) {
+            await client.query("SELECT pg_notify($1, $2)", [
+              this.channelFor(executionId),
+              this.notifyTag(executionId, event.sequence),
+            ]);
+          }
+          await client.query("COMMIT");
+          return null;
+        } catch (err) {
+          await client.query("ROLLBACK").catch(() => undefined);
+          if (isDuplicateSequenceViolation(err)) {
+            throw new DuplicateSequenceError(executionId, event.sequence, err);
+          }
+          if (isDuplicateIdViolation(err)) {
+            throw new DuplicateEnvelopeIdError(event.id, executionId, err);
+          }
+          throw err;
+        } finally {
+          client.release();
+        }
       }
-      if (
-        tip.head !== want.head ||
-        fence !== want.fence ||
-        tip.anchor !== want.anchor ||
-        event.sequence !== tip.head + 1
-      ) {
-        await client.query("COMMIT");
-        return { appended: false, reason: "moved", head: tip.head, fence, anchor: tip.anchor };
-      }
-      await client.query(
-        `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
-        [
-          event.id,
-          event.workflowId,
-          event.executionId,
-          event.eventType,
-          event.sequence,
-          event.timestamp,
-          JSON.stringify(event.payload),
-          event.metadata !== undefined ? JSON.stringify(event.metadata) : null,
-        ]
-      );
-      await client.query("SELECT pg_notify($1, $2)", [
-        this.channelFor(executionId),
-        this.notifyTag(executionId, event.sequence),
-      ]);
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      if (isDuplicateSequenceViolation(err)) {
-        throw new DuplicateSequenceError(executionId, event.sequence, err);
-      }
-      if (isDuplicateIdViolation(err)) {
-        throw new DuplicateEnvelopeIdError(event.id, executionId, err);
-      }
-      throw err;
-    } finally {
-      client.release();
-    }
+    );
+    if (refused !== null) return refused;
     this.notifyLocal(executionId, event);
     return { appended: true };
+  }
+
+  /**
+   * Run a write that carries a NOTIFY, keeping the write when the NOTIFY cannot be queued. A wake-up
+   * must not cost a durable event: the log is authoritative, and a dropped notification costs a
+   * cross-node subscriber its live wake-up, not correctness (see {@link onNotify}).
+   *
+   * A full NOTIFY queue fails the whole commit, so `write` can safely run again: nothing landed. A
+   * listener that stops reading fills the queue, and two cases follow, measured on Postgres 17:
+   *
+   * - **The listener has gone.** The queue stays full anyway, because only a successful NOTIFY or
+   *   `pg_notification_queue_usage()` advances its tail, and failing NOTIFYs never do. So that call
+   *   is made first, and the retry succeeds.
+   * - **The listener is still hung.** Its position holds the queue full. The write lands without
+   *   its NOTIFY, and later writes skip NOTIFY for {@link NOTIFY_PAUSE_MS} so each one does not pay
+   *   for three attempts. The first write after the pause tries again.
+   */
+  private async withNotifyFallback<T>(write: (notify: boolean) => Promise<T>): Promise<T> {
+    if (this.clock() < this.notifyPausedUntil) return write(false);
+    try {
+      return await write(true);
+    } catch (err) {
+      if (!isProgramLimitExceeded(err)) throw err;
+    }
+    await this.pool.query("SELECT pg_notification_queue_usage()").catch(() => undefined);
+    try {
+      return await write(true);
+    } catch (err) {
+      if (!isProgramLimitExceeded(err)) throw err;
+    }
+    const result = await write(false);
+    const now = this.clock();
+    this.notifyPausedUntil = now + NOTIFY_PAUSE_MS;
+    if (this.notifyWarnedAt === undefined || now - this.notifyWarnedAt >= NOTIFY_WARN_INTERVAL_MS) {
+      this.notifyWarnedAt = now;
+      // The write has landed: a throwing sink must not report it as failed.
+      try {
+        this.warn(
+          "PostgresEventStore: the NOTIFY queue is full, so events are being written without cross-node wake-ups, and a subscriber on another node does not get a skipped wake-up later. A connection that holds LISTEN and has stopped reading is the likely cause: the Postgres server log names its PID in the 'NOTIFY queue is N% full' warning, so terminate that backend. The log is unaffected."
+        );
+      } catch {
+        // A warning sink's fault, not a storage fault.
+      }
+    }
+    return result;
   }
 
   async subscribe(

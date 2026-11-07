@@ -36,6 +36,11 @@ export interface PostgresStorageOptions {
    * are never rewritten; see `PostgresSnapshotStoreOptions.codec`.
    */
   snapshotCodec?: SnapshotCodecName;
+  /**
+   * Receives the event store's warnings, such as a full NOTIFY queue. `observability.onWarn` does not
+   * reach the store, because the store is built before `defineConfig` runs. Default `console.warn`.
+   */
+  onWarn?: (message: string) => void;
 }
 
 /**
@@ -74,6 +79,7 @@ export function postgresStorage(
     ...(options.snapshotCompression !== undefined && {
       snapshotCompression: options.snapshotCompression,
     }),
+    ...(options.onWarn !== undefined && { onWarn: options.onWarn }),
   });
   const snapshotStore = new PostgresSnapshotStore(pool, {
     ...(options.snapshotCodec !== undefined && { codec: options.snapshotCodec }),

@@ -43,6 +43,15 @@ await app.stores.eventStore.close?.();
   ([scaling.md](scaling.md), section 1). Scaling past one log is a separate topic (same document,
   section 3.4).
 - **`notifyBuckets`** (default 16) must be identical on every node of the database.
+- **A connection that holds `LISTEN` and stops reading fills the NOTIFY queue** (8 GB by default on
+  Postgres 17, shared by the whole cluster), which would otherwise fail every commit that notifies. The
+  store keeps writing instead: it frees the queue if the listener has gone, and otherwise writes without
+  cross-node wake-ups and warns at most once a minute (`postgresStorage({ onWarn })`;
+  `observability.onWarn` does not reach the store). The log stays complete, but **a skipped wake-up is not
+  sent later**. A subscriber on another node catches up only on that execution's next event, so a
+  `liveQuery` waiting for a completion written during this time can wait indefinitely. The Postgres server
+  log names the backend's PID in its `NOTIFY queue is N% full` warning; terminate that backend. Watch
+  `pg_notification_queue_usage()` if you want warning before this happens.
 - A Postgres store is **fail-closed on lost writes**: a write that cannot be made durable fails the
   run rather than continuing (`StorageWriteError`; observe it with `observability.onStorageError`).
 - Timer rows (`PostgresTimerStore`) belong in the **same database** as the log, so one backup
@@ -115,6 +124,11 @@ Three layers, from automatic to manual:
 2. **Supervisor died** (the process that was driving is gone, so the execution sits `running` with
    no owner): the timer poll and the recovery sweep re-drive it, on the evidence below.
 3. **Operator action**: `loom recover`, `loom census`, and the sealed-payload verbs.
+
+**Do not page, bill or audit from `observability.onEvent`.** It can fire before an event's durable write, so
+after a crash or a failed write it can report an event the log never recorded, including a completion for a
+run that did not complete. A process that dies may also never send the page. Alert from the log, for example
+`loom ls --status suspended`, and treat `onEvent` as a fast hint.
 
 **What the poll and the sweep use as evidence.**
 

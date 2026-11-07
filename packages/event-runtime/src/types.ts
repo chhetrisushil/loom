@@ -481,6 +481,10 @@ export interface EventStore {
    * behind its predecessor's rather than emitting on lookup-completion order). A LOCAL append is
    * emitted synchronously and may overtake a cross-node event still in flight, so a subscriber that
    * needs total order should order by `sequence` (or read the log).
+   *
+   * Cross-node delivery can lose a wake-up, and a lost one is not sent later: a dropped listener or
+   * a full Postgres NOTIFY queue costs it. The log stays complete. A subscriber that must see a
+   * final event needs its own bounded re-read of the log.
    */
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
   /**
