@@ -2677,9 +2677,10 @@ class McpClient {
   })
   readonly protocolVersion: string   // server's negotiated choice once known, else ours
   connect(): Promise<void>           // handshake; advertises the `io.modelcontextprotocol/ui` extension
-  listTools(options?: { resultFidelity?: "value" | "full" }): Promise<MappedMcpTool[]>
-  registerInto(effectRuntime: EffectRuntime,
-               options?: { resultFidelity?: "value" | "full" }): Promise<ToolDefinition[]>
+  listTools(options?: ListToolsOptions): Promise<MappedMcpTool[]>
+  registerInto(effectRuntime: EffectRuntime, options?: ListToolsOptions): Promise<ToolDefinition[]>
+  // ListToolsOptions: resultFidelity?: "value" | "full"; trustDescriptions?; anyToolName?; onSkippedTool?;
+  // strictToolNames?; taintResults?: wrap each result as untrusted, origin mcp:<serverHost>/<tool>
 
   // FULL result — every content block, structuredContent, isError, _meta.
   callToolResult(name, input, extraHeaders?): Promise<McpCallToolResult>
@@ -2694,7 +2695,7 @@ class McpClient {
   disconnect(): Promise<void>
 }
 function mcpTool$(client: McpClient, toolName: string,
-                  options?: { resultFidelity?: "value" | "full" }): StepDefinition<unknown, unknown>
+                  options?: { resultFidelity?: "value" | "full"; taintResults?: boolean }): StepDefinition<unknown, unknown>
 
 // The ONE result→value projection, and the ONE place an in-band isError throws.
 // `callTool` is `projectToolResult(name, await callToolResult(...))`; a caller that

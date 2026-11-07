@@ -53,10 +53,10 @@ export async function main() {
 - **Results are plain values unless you say otherwise.** `resultFidelity` defaults to `"value"`, since
   a step's output is a durable contract. Only `"full"` keeps `_meta` (where a UI declaration lives)
   and non-text content blocks.
-- **Third-party text is not marked untrusted by default.** `registerMcpInvoke({ taintResults: true })`
-  wraps results with an origin of `mcp:<server>/<tool>`, so `@loom/llm` refuses them in instruction
-  positions and fences them in a user message. Off by default because the output becomes
-  `{ __loomTainted, value }`. The effects from `McpClient.registerInto` and `mcpTool$` have no such option.
+- **Third-party text is not marked untrusted by default.** `taintResults: true` on `registerMcpInvoke`,
+  `McpClient.registerInto` or `mcpTool$` wraps results with an origin of `mcp:<server>/<tool>`, so `@loom/llm`
+  refuses them in instruction positions and fences them in a user message. Off by default because the output
+  becomes `{ __loomTainted, value }`. The two static bindings use the client's `serverHost` as `<server>`.
 - **Server descriptions are withheld from the model** unless `listTools` is given `trustDescriptions`.
   Tool names outside `^[A-Za-z0-9_-]{1,64}$` are skipped with a warning (or `McpToolNamesSkippedError`
   with `strictToolNames`) unless `anyToolName: true`.

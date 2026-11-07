@@ -63,9 +63,9 @@ unconditionally: tainted content may appear only in a `user` message, and only f
 `<untrusted-input origin="…">`. A system message, an assistant turn, or a tool name/description
 throws `UntrustedContentError`.
 
-Two producers ship, both opt-in: `registerMcpInvoke(client, runtime, { taintResults: true })` and
-`new A2APeerClient({ url, taintResults: true })`. `McpClient.registerInto` and `mcpTool$` have no such option, so
-their results are not tainted unless your code wraps them with `tainted()`. The **refusal is structural**; the **fence is only
+The producers ship opt-in: `registerMcpInvoke(client, runtime, { taintResults: true })`,
+`client.registerInto(effects, { taintResults: true })`, `mcpTool$(client, name, { taintResults: true })` and
+`new A2APeerClient({ url, taintResults: true })`. The **refusal is structural**; the **fence is only
 a label** — put `UNTRUSTED_CONTENT_SYSTEM_NOTE` in your system prompt so the model knows what the tag
 means. Full treatment in [data classification](../data-classification.md#the-integrity-axis--untrusted-content-adr-0085).
 
