@@ -25,11 +25,14 @@ opt-in cost. Three shapes on the same payload:
 | Shape | Relative | What it shows |
 |---|---|---|
 | unwired (plain `store.append`) | 1× (baseline) | no wrapper at all |
-| wrapped, **empty** sensitive map | ~1.3× | one per-event-type map lookup, no crypto — within noise (**G2**) |
-| wrapped, one field encrypted | ~20× | the actual per-marked-field AES cost (paid only for marked fields) |
+| wrapped, **empty** sensitive map | ~1.1× | one per-event-type map lookup, no crypto (**G2**) |
+| wrapped, one field encrypted | ~22× | the actual per-marked-field AES cost (paid only for marked fields) |
 
-The empty-map wrapper being ~1.3× (a single lookup) — not the 20×+ of the encrypted path — is the
-provable "byte-identical when unmarked" claim. Run: `pnpm --filter @loom/plugin-crypto bench`.
+The empty-map wrapper being ~1.1× (a single lookup) — not the ~22× of the encrypted path — is the
+provable "byte-identical when unmarked" claim. Each store is built once, outside the measured function:
+constructing the wrapper costs about 1.3 µs more, which an app pays once at boot and which earlier versions
+of this benchmark timed on every iteration. Against a real database these ratios are far smaller, because the
+write dominates. Run: `pnpm --filter @loom/plugin-crypto bench`.
 
 ## traverseBlueprint — render fast path (regression gate)
 
