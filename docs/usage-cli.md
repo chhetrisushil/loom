@@ -13,7 +13,7 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 1. [The command set](#the-command-set)
 2. [Scaffold & wire: `new`, `gen`, `appgen`](#scaffold--wire-new-gen-appgen)
 3. [Validate before you run: `doctor`, `check`, `verify`, `lint`](#validate-before-you-run-doctor-check-verify-lint)
-4. [Observe a run: `logs`, `debug`, `inspect`](#observe-a-run-logs-debug-inspect)
+4. [Observe a run: `ls`, `logs`, `debug`, `inspect`](#observe-a-run-ls-logs-debug-inspect)
    - [Act on a run: `resume`, `cancel`, `start`](#act-on-a-run-resume-cancel-start)
    - [Keep it healthy: `census`, `recover`, `branches`](#keep-it-healthy-census-recover-branches)
 5. [Analyze a run: `profile`, `introspect`, `optimize`](#analyze-a-run-profile-introspect-optimize)
@@ -238,7 +238,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 Several commands are **two words** — the first positional selects the subcommand: `deploy check`, `lint claim-check`, `repair blank-stream`, `retention run`, `sweep content`, `compliance report`, `learn report|eval`, and `plugin new|check|try|search|seams`.
 
-> **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: { kind: "sqlite", dir: ".data" }` in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.data/events.db`. In-memory apps leave nothing to inspect.
+> **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: sqliteStorage({ dir: ".data" })` (from `@loom/plugin-sqlite`) in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.data/events.db`. In-memory apps leave nothing to inspect.
 
 ---
 

@@ -44,9 +44,9 @@ import { decoratedInnerOf } from "@loom/event-runtime";
 // them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
 // barrel also re-exports the SQLite stores (which `import "better-sqlite3"`), and
 // these packages compile to CommonJS — which bundlers cannot tree-shake. The subpath
-// keeps better-sqlite3 / node:fs out of browser bundles. The SQLite stores +
-// node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
-// `loadNodeModule`), so a browser app using in-memory storage stays clean.
+// keeps better-sqlite3 / node:fs out of browser bundles: SQLite arrives only through the
+// `sqliteStorage()` preset from @loom/plugin-sqlite, so a browser app using in-memory storage
+// stays clean.
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
@@ -1711,6 +1711,16 @@ function buildStores(
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
       ...defaultArchive(storage, warn),
     };
+  }
+  // Refused, not defaulted: anything else here used to get the in-memory stores below, so a stale
+  // `{ kind: "sqlite" }` ran happily, wrote nothing and lost every event on restart.
+  const kind = (storage as { kind?: unknown }).kind;
+  if (kind !== "memory") {
+    throw new TypeError(
+      kind === "sqlite" || kind === "postgres"
+        ? `defineConfig: storage kind "${kind}" does not exist. Use the preset: storage: ${kind}Storage({ ... }) from @loom/plugin-${kind}.`
+        : `defineConfig: unknown storage kind ${JSON.stringify(kind)}. Use { kind: "memory" }, { kind: "custom", ... } or a store plugin's preset.`
+    );
   }
   // storage.kind === "memory" — the only backend the composition root itself knows.
   return {

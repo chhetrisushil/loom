@@ -395,7 +395,7 @@ Import and use the compiler transforms directly in your own build scripts:
 import { transformFile, buildManifest, printWarnings, loomPlugin } from "@loom/compiler";
 import type { PluginState } from "@loom/compiler";
 
-// A fresh, mutable state the transform accumulates into (all six maps required).
+// A fresh, mutable state the transform accumulates into (all seven maps required).
 const state: PluginState = {
   chunks: new Map(),           // "\0loom:chunk:<id>_<hash>" → ExtractedChunk (step + skill bodies)
   steps: new Map(),            // stepId → StepEntry
@@ -403,6 +403,7 @@ const state: PluginState = {
   flows: new Map(),            // flowId → FlowEntry
   skills: new Map(),           // skillId → SkillEntry
   skillsByVarName: new Map(),  // local var name → skillId
+  projections: new Map(),      // projection id → ProjectionEntry
 };
 
 const sourceCode = fs.readFileSync("src/flows/MyFlow.ts", "utf-8");
@@ -420,7 +421,7 @@ printWarnings(manifest);      // logs every flow's advisory warnings to the cons
 console.log(JSON.stringify(manifest, null, 2));
 #+end_src
 
-Everything exported from ~@loom/compiler~: functions ~loomPlugin~, ~transformFile~, ~buildManifest~, ~printWarnings~, ~shortHash~, ~fnv1a32~; and types ~LoomManifest~, ~ManifestFlow~, ~ExtractedChunk~, ~FlowEntry~, ~StepEntry~, ~PluginState~.
+The main exports of ~@loom/compiler~: functions ~loomPlugin~, ~transformFile~, ~buildManifest~, ~printWarnings~, ~shortHash~, ~fnv1a32~; and types ~LoomManifest~, ~ManifestFlow~, ~ExtractedChunk~, ~FlowEntry~, ~StepEntry~, ~PluginState~.
 
 * How the AST Transform Works
 

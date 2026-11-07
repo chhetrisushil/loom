@@ -73,7 +73,7 @@ verified** rather than passing clean. See [`loom verify`](../usage-cli.md#loom-v
 
 The kernel's defaults are permissive — a missing authorizer allows every effect, nothing bounds a run's duration, spawn depth or spend. `defineConfig({ security: { strict: true } })` is the baseline for agents that act unattended; the full table of defaults and the reasoning behind each is in [usage.md, Step 11](../usage.md#step-11--harden-it-grants-quotas-safety-secrets--isolation).
 
-- **What strict refuses.** `defineConfig` throws, listing every problem, without `security.authorizer` and `security.executionAuthorizer`, and if `checks.verify` is `"off"`. Not strict, you get one advisory via `observability.onWarn`; `strict: false` silences it.
+- **What strict refuses.** `defineConfig` throws, listing every problem, without `security.authorizer`, `security.executionAuthorizer` and `security.resumeAuthenticator` (`strict: { requireResumeAuthenticator: false }` declares an app with no approval gates), if `checks.verify` is `"off"`, and if every spend bound is switched off. Not strict, you get one advisory via `observability.onWarn`; `strict: false` silences it.
 - **Fail-closed execution authz (R3).** Under strict a principal-less
   `start`/`resume`/`cancel`/`loadState` is handed to `security.executionAuthorizer` with
   `principal: undefined` instead of skipping it; `executionAccessPolicy` (`@loom/workflow-runtime`)

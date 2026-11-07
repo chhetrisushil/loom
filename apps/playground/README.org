@@ -55,7 +55,7 @@ const state  = await handle.waitForCompletion();
 #+end_src
 
 To persist instead (so the ~loom~ CLI can inspect the log), swap one line:
-~storage: { kind: "sqlite", dir: ".loom" }~ — then ~loom logs/debug/inspect --db .loom/events.db <id>~.
+~storage: sqliteStorage({ dir: ".loom" })~ (from ~@loom/plugin-sqlite~) — then ~loom logs/debug/inspect --db .loom/events.db <id>~.
 
 * Project layout
 

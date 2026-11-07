@@ -251,34 +251,49 @@ The composition root: turns one static config into the same runtime + transport 
 function defineConfig(config: LoomConfig): LoomApp
 
 type StorageConfig =
-  | { kind: "memory" }                                            // ephemeral (tests / browser)
-  | { kind: "sqlite"; dir?: string; branching?: boolean }         // embedded, lazily loaded (Node)
-  | { kind: "postgres"; url: string; branching?: boolean }        // (2.0) horizontal-scale backend
-  | { kind: "custom";                                             // BRING YOUR OWN backend
-      eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
+  | { kind: "memory" }                           // ephemeral (tests / browser)
+  | { kind: "custom";                            // BRING YOUR OWN backend
+      eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry;
+      archiveStore?: ArchiveStore; memoryStore?: MemoryStore; timerStore?: TimerStore; leaseStore?: LeaseStore };
+// SQLite and Postgres are presets that return the custom shape, so @loom/app names no vendor:
+//   storage: sqliteStorage({ dir })      from @loom/plugin-sqlite
+//   storage: postgresStorage({ url })    from @loom/plugin-postgres
+// Any other `kind` throws.
 
 interface LoomConfig {
   storage: StorageConfig;                       // required
   projectionRuntime?: ProjectionRuntime;        // default in-memory
-  surfaces?: string[];                          // agent surfaces to register
+  surfaces?: (string | { id: string; redact?: readonly string[] })[];   // agent surfaces to register
   flows?: RegisteredFlow[];
-  flowModules?: FlowModule[];                    // every RegisteredFlow-shaped export is registered
-  manifest?: ManifestView;                       // cross-check vs compiler manifest
-  onWarn?: (message: string) => void;            // default console.warn
-  validate?: boolean | "warn" | "error";         // boot-time flow-graph validation
-  catalog?: CatalogLike;                         // capability catalog
-  agents?: AgentCard[];                          // advertised on the A2A bus
-  capabilityAgents?: Record<string, string>;     // capabilityId → agentId
-  effectMiddleware?: EffectMiddleware[];         // ordered; retries/metering/safety/redaction (K3/K6/K10/K12)
-  authorizer?: CapabilityAuthorizer;             // (2.0, K2) capability protection ring — deny ungranted effects
-  // grouped (R9):  security: { strict?: boolean | { defaultDeadlineMs?: number | false }; killSwitch?: KillSwitchRegistry }
-  //                execution: { envelope?: AutonomyEnvelopeOptions }   — see "Strict mode" in usage.md
-  timers?: {                                     // (2.0, T1) durable timers & cron
+  flowModules?: FlowModule[];                   // every RegisteredFlow-shaped export is registered
+  agentModules?: AgentModule[]; toolModules?: ToolModule[]; skillModules?: SkillModule[];
+  scheduleModules?: ScheduleModule[]; memoryModules?: MemoryModule[]; projectionModules?: ProjectionModule[];
+  skills?: SkillDefinition[]; memories?: MemoryDefinition[]; memoryStore?: MemoryStore;
+  projections?: AnyProjectionDefinition[];
+  catalog?: CatalogLike;                        // capability catalog
+  agents?: (AgentCard | AgentDefinition)[];     // advertised on the A2A bus
+  capabilityAgents?: Record<string, string>;    // capabilityId → agentId
+  agentSurface?: boolean;
+  autostart?: boolean;
+  kernel?: { /* opt-in syscalls: features, continuation, divergence, meterCeilings, … */ };
+  timers?: {                                    // (2.0, T1) durable timers & cron
     store: TimerStore; pollMs?: number; schedules?: ScheduleDefinition[]; fenced?: boolean };
-  telemetry?: TelemetryAdapter[];
-  dispatcher?: ExecutionDispatcher;              // placement (default: in-process)
-  onEvent?: (event: EventEnvelope) => void;      // fired after projection + telemetry
-  onDurableEvent?: (event: EventEnvelope) => void; // after the durable write, at most once (ADR 0147)
+  // Cross-cutting options are grouped. A flat key such as `onEvent` throws, naming its group, and
+  // `loom migrate-config --apply` rewrites an old config.
+  security?: {      // authorizer, policies, secrets, resumeAuthenticator, executionAuthorizer,
+                    // onExecutionDenied, compliance, strict, killSwitch, principalCodec,
+                    // principalResolver, crypto
+  };
+  observability?: { // telemetry, onEvent (can fire before the durable write), onDurableEvent (after
+                    // it, at most once, ADR 0147), onWarn, onStorageError, reasoning
+  };
+  durability?: {    // snapshotEvery, retention, heartbeat, snapshots
+  };
+  execution?: {     // dispatcher, effectMiddleware, claimCheck, registerEffects, now, validateInput,
+                    // envelope, errorClasses
+  };
+  checks?: {        // validate, verify, manifest
+  };
 }
 
 // Every option that moved into a group, paired with its group — the single table the flat-key
@@ -897,11 +912,15 @@ Also exported (resumability, for server→client handoff): ~serializeExecution~ 
 Built from ~ctx.decide~ + ~ctx.suspend~ — no syscall and no new event type. A spawn intent is a recorded DECISION, which is what makes recovery never start a second child.
 
 #+begin_src typescript
-function awaitChild<T>(ctx, flowId: string, input: unknown, opts?): Promise<ChildResult<T>>
-function awaitChildren<T>(ctx, specs: readonly { flowId: string; input: unknown }[], opts?: FanoutOptions): Promise<ChildResult<T>[]>  // SETTLED
-function awaitAll<T>(ctx, specs, opts?): Promise<T[]>          // all-or-nothing: throws childFailed
+function awaitChild<T>(ctx, spec: { key: string; flowId: string; input: unknown; maxDepth?: number;
+  grants?: readonly string[]; expiresAt?: number; detached?: boolean }): Promise<T>
+function awaitChildren<T>(ctx, group: { key: string; maxDepth?: number; children: readonly { flowId: string; input: unknown;
+  grants?: readonly string[]; expiresAt?: number; detached?: boolean }[] }): Promise<ChildResult<T>[]>
+function awaitAll<T>(ctx, group: { key: string; maxDepth?: number;
+  children: readonly { flowId: string; input: unknown }[] }): Promise<T[]>   // all-or-nothing: throws childFailed
 function superviseChildren(deps: SupervisorDeps): ChildSupervisor  // wire into onEvent
-function fanout$(options: FanoutOptions)                        // bounded concurrency
+function fanout$<TIn, TOut>(ctx, baseStep: StepDefinition<TIn, TOut>, items: readonly TIn[],
+  options?: { limit?: number }): Promise<TOut[]>                  // one step per item, bounded concurrency
 const CHILD_DONE: string; const CHILD_FAILED: string            // userspace events the fold skips
 function childIdFor(parentId: string, label: string, index?: number): string
 function parentOf(executionId: string): string | undefined; function depthOf(executionId: string): number
@@ -935,10 +954,12 @@ class SagaCompensationError extends Error {   // a compensator failed; the rest 
 ** ~@loom/fair-scheduler~ — per-tenant fairness
 
 #+begin_src typescript
-function createFairScheduler(options: {
-  weights?: Record<string, number>;        // per-tenant share
-  concurrency: number;                     // total in-flight budget
-}): { submit<T>(tenant: string, task: () => Promise<T>): Promise<T> }
+function createFairScheduler(config?: { concurrency?: number; onEvent?: (event: SchedulerEvent) => void }): FairScheduler
+// `concurrency` defaults to Infinity: gating disabled, zero overhead.
+interface FairScheduler extends Scheduler {
+  schedule<T>(task: (signal: AbortSignal) => Promise<T>,
+    opts?: { tenant?: string; weight?: number; priority?: Priority; signal?: AbortSignal; label?: string }): Promise<T>
+}   // a tenant's weight is set by its first queued task
 // deficit round-robin: one noisy tenant cannot starve the others (ADR 0038)
 #+end_src
 
@@ -1112,7 +1133,7 @@ class PostgresBranchRegistry implements BranchRegistry { constructor(config: PgC
 function migratePostgresStores(pool: Pool): Promise<void>;   // idempotent DDL for all tables
 #+end_src
 
-Drop-in via ~defineConfig({ storage: { kind: "postgres", url, branching? } })~ (lazy-loaded, so ~pg~ never reaches browser bundles), or the ~custom~ storage kind. Single-writer-per-execution (D3) stays the lock-free shard model. See [[file:loom-2.0/03-compute-scheduling-storage.md][compute/scheduling/storage]].
+Drop-in via ~defineConfig({ storage: postgresStorage({ url }) })~ (imported from ~@loom/plugin-postgres~ only by apps that use it, so ~pg~ never reaches browser bundles), or the ~custom~ storage kind. Single-writer-per-execution (D3) stays the lock-free shard model. See [[file:loom-2.0/03-compute-scheduling-storage.md][compute/scheduling/storage]].
 
 -----
 
@@ -1222,7 +1243,7 @@ class SqliteReadModelStore implements ReadModelStore {}
 class SqliteDurableStateStore implements DurableStateStore {}
 class SqliteContentStore implements ContentStore { constructor(path: string, opts?: { now?: () => number }) }   // SPI 1.4.0 (touch); 1.5.0 owner argument is accepted and ignored
 class SqliteTimerStore implements TimerStore {}
-function sqliteStorage(path: string): CustomStorage      // the preset for defineConfig({ storage })
+function sqliteStorage(options?: { dir?: string; branching?: boolean; snapshotCodec?: SnapshotCodecName }): CustomStorage   // the preset for defineConfig({ storage })
 #+end_src
 
 ** ~@loom/plugin-read-model~ — durable cross-execution indexes
@@ -3412,7 +3433,8 @@ class InspectorBudgetError extends Error {}          // a reconstruction that wo
 Re-exports the surface most apps import (~200 symbols) so an application depends on one package rather than a dozen. It adds nothing of its own: every entry is documented under its owning package above, and a symbol absent here is absent from the barrel.
 
 #+begin_src typescript
-import { defineConfig, flow$, step$, ctx /* … */ } from "@loom/sdk";
+import { flow$, step$ /* … */ } from "@loom/sdk";
+import { defineConfig } from "@loom/app";   // the composition root is its own package
 #+end_src
 
 ** ~@loom/conformance~ — the portable SPI kits
