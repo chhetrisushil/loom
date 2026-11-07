@@ -4,7 +4,7 @@
 
 ## 1. Scope and how to read this document
 
-Loom is a durable execution kernel for long-running and agentic workloads: every step, decision and approval is an append-only event, and state is rebuilt by folding the log. Its security model rests on three ideas. The log is the evidence. Every guardrail verdict (deny, block, approve) is itself a durable fact. Enforcement sits at named seams, not in conventions.
+Loom is a durable execution kernel for long-running and agentic workloads: every step, decision and approval is an append-only event, and state is rebuilt by folding the log. Its security model rests on three ideas. The log is the evidence. Every verdict a guardrail reaches (deny, block, approve) is recorded as a durable fact. Enforcement sits at named seams, not in conventions.
 
 This document lists the guardrails loom ships, what each one guarantees, and where it stops. It is written for a security reviewer. Every claim names the ADR (`docs/adr/NNNN-*.md`), the package, and where possible the test that pins it, so you can check the claim against code.
 
@@ -66,7 +66,7 @@ The capability authorizer runs before any middleware, and isolation is innermost
 
 - **G1: no silent third behaviour.** A replay reconstructs the same state or fails loudly with a named fact (`PAYLOAD_SHREDDED`, `EFFECT_INDOUBT`). It never quietly diverges.
 - **G2: opt-in, byte-identical when unwired.** See section 1. `security.strict` (section 4) is the switch that flips the baseline to fail-closed.
-- **P9: every verdict is a fact.** `EFFECT_DENIED`, `EXECUTION_DENIED`, `SAFETY_BLOCKED`, `EGRESS_DENIED`, `QUOTA_EXCEEDED`, `APPROVAL_GRANTED` are durable events. On replay the verdict is read back from the log, not recomputed.
+- **P9: every verdict is a fact.** `EFFECT_DENIED`, `EXECUTION_DENIED`, `SAFETY_BLOCKED`, `EGRESS_DENIED`, `QUOTA_EXCEEDED`, `APPROVAL_GRANTED` are durable events. On replay the verdict is read back from the log, not recomputed. The reverse does not hold: an event of one of these kinds does not prove a guard wrote it (see [Known residual risks](#known-residual-risks)).
 - **P10: minimal kernel.** The kernel carries identity opaquely and never interprets it. Policies, authorizers and schemes are plugged in at the seams.
 
 ## 3. Integrity of the durable log
@@ -331,6 +331,7 @@ Loom's guardrails are pinned by tests that include the negative case (the attack
 | Area | Residual | Source |
 | --- | --- | --- |
 | Defaults | Every guardrail is opt-in. A non-strict app with nothing wired lets any runtime caller start, resume, approve and cancel any execution, and every effect is allowed. | G2; section 4 |
+| Verdict provenance | In-process flow and tool code can append `EFFECT_DENIED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED` and `EGRESS_DENIED` through `ctx.emit`, so a false denial is possible from trusted app code. Flow emits carry `metadata.flowEmit`; a tool's emit cannot be told apart from middleware's. `EFFECT_INDOUBT` is refused, and isolated tools are killed for trying. | `packages/workflow-runtime/src/userspaceEmit.ts` |
 | Tool isolation | Child-process hardening, not OS confinement. No private-IP recheck after DNS resolution, so an allowlisted name resolving to a metadata address is reachable. | ADR 0019, 0045 S7 |
 | Prompt injection | The fence is a label a model can be talked across; taint is lost through string concatenation; data ingested before taint was enabled is untainted. K6 validators are pattern-based. | ADR 0085, 0017 |
 | Symmetric keys | Delegation tokens and approval proofs are HMAC; the verifier can mint. No delegation revocation (`jti`). An approval proof is a bearer artefact until answered or expired. | ADR 0024, 0045, 0117 |

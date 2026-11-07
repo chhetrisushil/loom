@@ -433,7 +433,7 @@ import {
 const holder: { supervisor?: ReturnType<typeof superviseChildren> } = {};
 const runtime = new WorkflowRuntime({
   eventStore, snapshotStore, effectRuntime,
-  observability: { onEvent: (e) => holder.supervisor?.onEvent(e) },
+  onEvent: (e) => holder.supervisor?.onEvent(e), // `observability.onEvent` under defineConfig
 });
 holder.supervisor = superviseChildren({ runtime, flows: { build: buildFlow, smoke: smokeFlow } });
 ```
@@ -1553,7 +1553,7 @@ interface LoomConfig {
     now?: () => number;                  // injectable clock for envelope timestamps (DST/simulation)
     validateInput?: boolean;             // parse inputSchema at start() (ADR 0051 D7)
     claimCheck?: { store: ContentStore; toolIds: string[]; inlineCapBytes?: number; digests?: Record<string, Digest>;
-                   preview?: number | false; onOffload?: (info) => void; reclaimable?: boolean | string[] };  // ADR 0140: opt-in; with security.crypto the store must seal (EncryptingContentStore, ADR 0143)
+                   preview?: number | false; onOffload?: (info) => void; reclaimable?: true | readonly string[] };  // ADR 0140: opt-in; with security.crypto the store must seal (EncryptingContentStore, ADR 0143)
   };
   checks?: {
     validate?: boolean | "warn" | "error";  // boot-time flow-graph check
@@ -2064,7 +2064,7 @@ bundler (Vite/Rollup) prints `Module "node:..." has been externalized for browse
 they enter a browser bundle. Know which, and why:
 
 - **Browser-safe (no `node:` imports in `src`):** `@loom/core` (pure `sha256Hex`, `canonicalJson`),
-  `@loom/agent`, `@loom/memory`, `@loom/app` (the SQLite stores load lazily on `kind: "sqlite"` only),
+  `@loom/agent`, `@loom/memory`, `@loom/app` (SQLite arrives only through the `sqliteStorage()` preset from `@loom/plugin-sqlite`),
   and the in-memory subpaths `@loom/event-runtime/memory` and `@loom/snapshot-runtime/memory`. Import
   those subpaths, never the package barrels, which re-export the SQLite stores.
   Since ADR 0130 D8 `@loom/app` also depends on `@loom/plugin-crypto` (it builds the sealed default snapshot

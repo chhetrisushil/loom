@@ -79,14 +79,9 @@ Little's Law (4,025 exec/sec), then plateaus at ~4–5K exec/sec — the write c
 further concurrency converting to latency (p50 105 → 381 ms). Do not read the write-path
 result as a reason to cap execution concurrency at 8.
 
-**Reads do not benefit from snapshots today. [code]** `WorkflowRuntime.foldState`
-(`packages/workflow-runtime/src/WorkflowRuntime.ts:843`) unconditionally calls
-`eventStore.read(executionId)` — the *entire* log — then, if a snapshot exists, throws that
-result away and issues a second `readFrom(snapshot.sequence + 1)`. Snapshots bound the fold
-CPU but not the I/O. This compounds badly: `liveQuery` re-folds via `loadState` on every
-event **[code]**, so a live subscriber on an N-event execution reads O(N) rows per event —
-O(N²) over its lifetime. Not benchmarked, but it is a plain read of the code, and it is
-almost certainly a bug rather than a design choice.
+**Reads use snapshots. [code]** `WorkflowRuntime.foldState` loads the snapshot first and reads only
+the tail after it, and `liveQuery` folds each delta onto the state it already holds, so a live
+subscriber's reads are O(N) over its lifetime. Section 3.2 has the measurements.
 
 ---
 
@@ -128,11 +123,12 @@ Loom's own triage discipline (P10, bias outward) demands.
 | **Payload externalization** | Large payloads move out of the hot `events` table into a content store; `getMany` batches resolution (~44× over serialized reads) | `plugins/content` (ADR 0062) |
 | **Snapshot cadence** | `snapshotEvery` bounds replay tail length; pair it with `onStorageError`, the only channel a failed checkpoint has | `defineConfig` or `WorkflowRuntime` |
 | **Log compaction** | `truncatePrefix` drops the pre-snapshot prefix (keeps seq 0 as anchor); `truncatePrefixKeeping` also keeps the app's pinned event kinds (ADR 0106) | `EventStore` SPI |
-| **Retention sweeps** | `deleteExecution` + keyset-paged `listExecutionsPage` for bounded-memory maintenance at year scale | SPI 1.2.0 |
+| **Retention sweeps** | `deleteExecution` + keyset-paged `listExecutionsPage` for bounded-memory maintenance at year scale | EventStore SPI, since 1.2.0 |
 | **Read models** | Durable cross-execution index so queries stop scanning logs; idempotent rows + per-execution watermarks | `plugins/read-model` (ADR 0058) |
 | **Compute placement** | Route executions to local / remote-HTTP / Cloud Run targets by policy | `PlacementDispatcher` (ADR 0001/0003) |
 | **Fair scheduling** | Per-tenant concurrency fairness; zero-overhead `Infinity` fast path | `packages/fair-scheduler` (ADR 0038) |
 | **Tenant isolation** | Key-prefix scoping, unaddressable across tenants by construction | `TenantScopedEventStore` (K12.5) |
+| **Snapshot pruning and codecs** | Prune old snapshots, and opt in to lz4 (Postgres) or a zstd frame to shrink them | `LogLifecycle.pruneSnapshots` (ADR 0134), ADR 0136, ADR 0141 |
 | **Selector subscriptions** | Wake a surface only when its bound slice changes | `ProjectionRuntime` (ADR 0068) |
 
 **Payload externalization and read models are the two most under-used.** Neither needs a
@@ -141,16 +137,13 @@ and log scans on the read path.
 
 ### Not available today
 
-- **`appendBatch` / group commit** — designed and frozen, deferred behind an evidence gate
-  (ADR 0065). Not implemented.
 - **Writer-side NOTIFY fan-out** — `PostgresEventStore` now buckets delivery (section 3.1),
   which fixes client-side filtering and the per-notification `SELECT`. It does **not** fix
   the cost landing on the writer: that scales with the number of LISTENing backends,
   independent of channel, and is unsolved **[measured]**. `CoalescingEventStore` is the
   available mitigation (section 3.3).
-- **Log partitioning / sharding** — nothing. One `events` table, one primary. No
-  consistent-hash routing, no multi-primary support, nowhere in the codebase **[code]**.
-- **Cross-execution append coalescing** — nothing, and not in any ADR.
+- **Multi-primary writes to one log** — nothing **[code]**. `ShardedEventStore` (section 3.4)
+  splits executions across separate logs, and each log still has one primary.
 
 ---
 
@@ -457,12 +450,14 @@ sharding need a read model and interest-filtered delivery.
 3. **Move read traffic off the durable path** — `invokeTransient` for anything that does
    not need to be recorded. This is the largest single lever in the document, and it is a
    design choice, not an optimisation.
-4. **Fix interest-filtered delivery (3.1)** before adding nodes. It is the change that
-   makes horizontal scale-out stop fighting itself.
-5. **Fix the read path (3.2)** if you have long-running executions or live subscribers.
+4. **Measure NOTIFY cost before adding nodes (3.1).** Client-side filtering ships by default, but the
+   cost each LISTENing backend adds to the writer does not go away.
+5. **Set `snapshotEvery`** if you have long-running executions or live subscribers. The read path is
+   fixed (3.2), and snapshots are what keep the tail short.
 6. **Scale vertically**, and re-measure on your own hardware — every number here is
    loopback Postgres on a laptop, which flatters the store.
-7. Only then consider batching (3.3) or partitioning (3.4), each behind its own evidence.
+7. Only then compose `CoalescingEventStore` (3.3) or `ShardedEventStore` (3.4), each behind your own
+   evidence.
 
 ## 5. Agent state growth (`agentLoop$` without compaction)
 

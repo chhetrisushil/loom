@@ -41,12 +41,13 @@ bus — and returns them. It never builds your conductor logic.
 
 #+begin_src ts
 import { defineConfig } from "@loom/app";
+import { sqliteStorage } from "@loom/plugin-sqlite";
 import { retryMiddleware } from "@loom/middleware";
 import { ResolveTicketFlow } from "./flow";
 import { catalog } from "./agent";
 
 export const app = defineConfig({
-  storage: { kind: "sqlite", dir: ".data", branching: true },
+  storage: sqliteStorage({ dir: ".data", branching: true }),
   surfaces: ["ticket", "form"],
   flows: [ResolveTicketFlow],
   catalog,

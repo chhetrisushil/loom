@@ -70,8 +70,8 @@ defineConfig({
 })
 ```
 
-> `security.strict` makes `defineConfig` throw unless an `authorizer` and `executionAuthorizer`
-> are supplied and `checks.verify` stays on; it also installs a default deadline, the autonomy
+> `security.strict` makes `defineConfig` throw unless an `authorizer`, `executionAuthorizer` and
+> `resumeAuthenticator` are supplied, `checks.verify` stays on and a spend bound is in effect; it also installs a default deadline, the autonomy
 > `envelope` (spawn/spend caps) and `app.killSwitch`. Unset, it logs one advisory.
 >
 > **Heartbeat leases are on by default** (`durability.heartbeat`, ADR 0130 D11): the lease store
