@@ -1461,7 +1461,7 @@ defineConfig({
 
   security:      { authorizer, policies, secrets, resumeAuthenticator,
                    executionAuthorizer, onExecutionDenied, compliance },
-  observability: { telemetry, onEvent, onWarn, onStorageError },
+  observability: { telemetry, onEvent, onDurableEvent, onWarn, onStorageError },
   durability:    { snapshotEvery, retention, snapshots, heartbeat },
   execution:     { dispatcher, effectMiddleware, registerEffects, now, validateInput, envelope, errorClasses, claimCheck },
   checks:        { validate, verify, manifest },
@@ -1534,6 +1534,7 @@ interface LoomConfig {
   observability?: {
     telemetry?: TelemetryAdapter[];      // auto-scrubbed for sensitive()/internal() fields (K10-R6)
     onEvent?: (event: EventEnvelope) => void;
+    onDurableEvent?: (event: EventEnvelope) => void; // after the durable write (ADR 0147)
     onWarn?: (message: string) => void;
     onStorageError?: (executionId: string, err: unknown) => void; // the ONLY channel a failed snapshot has
   };

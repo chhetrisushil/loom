@@ -125,10 +125,12 @@ Three layers, from automatic to manual:
    no owner): the timer poll and the recovery sweep re-drive it, on the evidence below.
 3. **Operator action**: `loom recover`, `loom census`, and the sealed-payload verbs.
 
-**Do not page, bill or audit from `observability.onEvent`.** It can fire before an event's durable write, so
-after a crash or a failed write it can report an event the log never recorded, including a completion for a
-run that did not complete. A process that dies may also never send the page. Alert from the log, for example
-`loom ls --status suspended`, and treat `onEvent` as a fast hint.
+**Do not page, bill or audit from `observability.onEvent`.** It can fire before an event's durable write, so after a
+crash or a failed write it can report an event the log never recorded, including a completion for a run that did not
+complete. `observability.onDurableEvent` fires after the write, so everything it reports is in the log (as far as the store's write
+is durable: SQLite with `synchronous = NORMAL` can lose its last commits on power loss), but it is at most once: a process that dies just after a write never delivers that event, and the process that would have sent a page may be
+the one that died. Use it as a fast, truthful hint, and alert from the log as the guarantee, for example
+`loom ls --status suspended`.
 
 **What the poll and the sweep use as evidence.**
 

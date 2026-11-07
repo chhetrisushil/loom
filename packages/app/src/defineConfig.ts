@@ -369,9 +369,18 @@ export interface ObservabilityOptions {
   /**
    * Extra event observer, fired after projection + telemetry. It is a live tail: it can fire BEFORE
    * the event's durable write, so after a crash or a failed write it can report an event the log
-   * never recorded. Use it for dashboards. Do not page, bill or audit from it; read the log for those.
+   * never recorded. Use it for dashboards. For facts that must be true, use `onDurableEvent`.
    */
   onEvent?: (event: EventEnvelope) => void;
+  /**
+   * Fired after an event's durable write (ADR 0147), so it never reports an event the log does not
+   * hold. It is at most once, in order per writer rather than per execution (order by `sequence` if
+   * that matters), lags by the write, and only sees this runtime's writes. A throw or rejection is
+   * reported through `onWarn`, at most once a minute, and never reaches the run; an async consumer is
+   * not awaited. Unset, the write path does no extra work. To page, bill or audit on every event, read
+   * the log.
+   */
+  onDurableEvent?: (event: EventEnvelope) => void;
   /** Sink for boot-time warnings (manifest cross-check + validation). Default `console.warn`. */
   onWarn?: (message: string) => void;
   /**
@@ -1792,7 +1801,10 @@ export const GROUPED_OPTIONS = [
       "crypto",
     ],
   ],
-  ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError", "reasoning"]],
+  [
+    "observability",
+    ["telemetry", "onEvent", "onDurableEvent", "onWarn", "onStorageError", "reasoning"],
+  ],
   ["durability", ["snapshotEvery", "retention", "heartbeat", "snapshots"]],
   [
     "execution",
@@ -2242,6 +2254,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     snapshotStore: stores.snapshotStore,
     effectRuntime,
     onEvent,
+    ...(config.onDurableEvent !== undefined && { onDurableEvent: config.onDurableEvent }),
     // ADR 0114: the kernel names no UI vocabulary, so the composed app injects the `ctx.ui` accessor.
     surface: createSurfaceEmitter,
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),

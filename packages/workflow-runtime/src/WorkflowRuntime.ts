@@ -294,14 +294,33 @@ export interface WorkflowRuntimeDeps {
    * journal keeps the in-memory fold independent of store latency, and a failed durable
    * write aborts the run and fails it at the next drain barrier), so an event seen here can,
    * on a storage failure, never become durable. A consumer that must act only on DURABLE
-   * facts reads them back (a catch-up read over the store, the read-model plugin's shape,
-   * ADR 0058) rather than acting on this callback.
+   * facts uses {@link onDurableEvent}, or reads them back (a catch-up read over the store, the
+   * read-model plugin's shape, ADR 0058) when it needs every event.
    *
    * One exception (ADR 0103): a start with a caller-chosen `executionId` writes its
    * `EXECUTION_STARTED` before this fires for it, so a duplicate start — refused with
    * `ExecutionAlreadyExistsError` — is never seen here at all.
    */
   onEvent?: (event: EventEnvelope) => void;
+  /**
+   * Called with an event after its durable write has resolved (ADR 0147), so it never reports an
+   * event the log does not hold: a lost, rejected or fenced write is not delivered.
+   *
+   * - **At most once.** A process that dies just after a write, or a write whose acknowledgement is
+   *   lost, never delivers that event. Read the log when you need every event.
+   * - **In order per writer, not per execution.** A later journal or direct append only needs the
+   *   previous event to be visible in the log, so under a delayed acknowledgement a later sequence
+   *   can arrive first. Order by `sequence` if that matters.
+   * - **Asynchronous.** It lags the fold by the write, and a store slower than the event rate builds
+   *   a backlog. Its synchronous work runs on the write chain, so keep it small; an async consumer is
+   *   not awaited, so it gets no backpressure or ordering.
+   * - **Only this runtime's writes.** Events written by another process or by a maintenance path
+   *   (such as `LogLifecycle` or crypto-shredding) are not reported here.
+   *
+   * A throw or rejection is reported through `onWarn`, at most once a minute, and never reaches the
+   * run. Unset, the write path does no extra work.
+   */
+  onDurableEvent?: (event: EventEnvelope) => void;
   /**
    * Optional branch registry. When provided, `fork()` records fork lineage and
    * (if a branchName is given) a movable ref. Without it, `fork()` still copies
@@ -1011,6 +1030,7 @@ export class WorkflowRuntime {
   private readonly snapshotStore: SnapshotStore;
   private readonly effectRuntime: EffectRuntime;
   private readonly onEvent: ((event: EventEnvelope) => void) | undefined;
+  private readonly onDurableEvent: ((event: EventEnvelope) => void) | undefined;
   private readonly branchRegistry: BranchRegistry | undefined;
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
   private readonly onWarn: (message: string) => void;
@@ -1188,6 +1208,8 @@ export class WorkflowRuntime {
     this.snapshotStore = guardedSnapshots;
     this.effectRuntime = deps.effectRuntime;
     this.onEvent = deps.onEvent;
+    this.onDurableEvent =
+      deps.onDurableEvent === undefined ? undefined : this.isolated(deps.onDurableEvent);
     this.branchRegistry = deps.branchRegistry;
     this.onStorageError = deps.onStorageError;
     this.onWarn = deps.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
@@ -2016,10 +2038,55 @@ export class WorkflowRuntime {
     };
     try {
       await this.eventStore.append(envelope);
-      this.onEvent?.(envelope);
+      this.reportWritten(envelope);
     } catch {
       // Fencing store with an active fence, or a sequence race — skip the record.
       // Enforcement already happened via the thrown ExecutionDeniedError.
+    }
+  }
+
+  /**
+   * ADR 0147 — a post-write consumer's fault must not reach the run, or read as a lost write. It is
+   * reported, because silence would leave a broken consumer behind with no signal, at most once a
+   * minute, because it would otherwise fire on every event. A throwing `onWarn` is contained too.
+   */
+  private isolated(consumer: (event: EventEnvelope) => void): (event: EventEnvelope) => void {
+    let warnedAt: number | undefined;
+    const report = (event: EventEnvelope, err: unknown): void => {
+      try {
+        const at = Date.now();
+        if (warnedAt === undefined || at - warnedAt >= 60_000) {
+          warnedAt = at;
+          this.onWarn(
+            `onDurableEvent failed for ${event.eventType} of "${event.executionId}": ${String(err)}`
+          );
+        }
+      } catch {
+        // Nowhere left to report it.
+      }
+    };
+    return (event) => {
+      try {
+        // An async consumer type-checks against a void return, and its rejection would otherwise
+        // be unhandled, which ends the process. It is not awaited: nothing here waits for it.
+        const result = consumer(event) as unknown;
+        if (result instanceof Promise) result.catch((err: unknown) => report(event, err));
+        else if (typeof (result as { then?: unknown } | null | undefined)?.then === "function") {
+          (result as PromiseLike<unknown>).then(undefined, (err: unknown) => report(event, err));
+        }
+      } catch (err) {
+        report(event, err);
+      }
+    };
+  }
+
+  /** An event a direct path has just written, outside any journal. */
+  private reportWritten(envelope: EventEnvelope): void {
+    try {
+      this.onEvent?.(envelope);
+    } finally {
+      // The event is in the log: a throwing `onEvent` still propagates, but must not hide it here.
+      this.onDurableEvent?.(envelope);
     }
   }
 
@@ -3257,7 +3324,7 @@ export class WorkflowRuntime {
         }
         throw err;
       }
-      this.onEvent?.(envelope);
+      this.reportWritten(envelope);
       return { performed: true, state };
     }
     throw lost;
@@ -6056,7 +6123,7 @@ export class WorkflowRuntime {
         throw err;
       }
       if (result.appended) {
-        this.onEvent?.(envelope);
+        this.reportWritten(envelope);
         return { appended: true, sequence };
       }
       // `moved` (a writer, a delete-and-recreate or a fence acquire since the observation):
@@ -6836,7 +6903,7 @@ export class WorkflowRuntime {
       throw err;
     }
     if (!result.appended) return false;
-    this.onEvent?.(envelope);
+    this.reportWritten(envelope);
     return true;
   }
 
@@ -7132,7 +7199,8 @@ export class WorkflowRuntime {
           () => undefined,
           undefined,
           got.fence,
-          this.now
+          this.now,
+          this.onDurableEvent
         );
         journal.commitAtomic(
           pre.map((e) => ({ eventType: e.eventType, payload: e.payload })),
@@ -7885,7 +7953,10 @@ export class WorkflowRuntime {
     // copied prefix. Read the WIDER of those windows once, never the whole log, and never
     // anything above the fork point.
     const needsPrefix =
-      leavesChain || this.eventStore.copyPrefix === undefined || this.onEvent !== undefined;
+      leavesChain ||
+      this.eventStore.copyPrefix === undefined ||
+      this.onEvent !== undefined ||
+      this.onDurableEvent !== undefined;
     const from = needsPrefix || base === null ? 0 : base.sequence + 1;
     const window = await readRangeOf(this.eventStore, parentExecutionId, from, atSequence);
     if (!leavesChain && from === 0 && window[0]?.sequence === 0) {
@@ -8004,10 +8075,10 @@ export class WorkflowRuntime {
         // Fast path: bulk-copy the prefix in the store (no per-event JS re-serialize).
         await this.eventStore.copyPrefix(parentExecutionId, childId, atSequence, forkMeta);
         // Fire live projections from the in-memory prefix we already read.
-        if (this.onEvent) {
+        if (this.onEvent !== undefined || this.onDurableEvent !== undefined) {
           for (const e of parentEvents) {
             if (e.sequence > atSequence) break;
-            this.onEvent(restamp(e));
+            this.reportWritten(restamp(e));
           }
         }
       } else {
@@ -8015,7 +8086,7 @@ export class WorkflowRuntime {
           if (e.sequence > atSequence) break;
           const copy = restamp(e);
           await this.eventStore.append(copy);
-          this.onEvent?.(copy);
+          this.reportWritten(copy);
         }
       }
     } catch (err) {
@@ -8986,7 +9057,8 @@ export class WorkflowRuntime {
       },
       maybeSnapshot,
       fence,
-      this.now
+      this.now,
+      this.onDurableEvent
     );
 
     // ADR 0130 D11 (S7c) - the run's lease. Lost (taken over, or past the local self-fencing deadline;

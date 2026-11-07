@@ -203,7 +203,7 @@ The same code path handles a first run, a resume and a crash recovery; only what
 4. The private `execute` (~L8602) builds a `WorkflowContextImpl` and calls your runner `(ctx, input)`; it also arms the deadline (K8) and cancellation.
 5. Each `ctx.run(step, input)` follows the diagram above. The effect runs through `EffectRuntime.execute` (`effect-runtime/src/EffectRuntime.ts` L60): authorizer first, then middleware with `middleware[0]` outermost, then the registered effect.
 6. When the runner returns, the journal commits `EXECUTION_COMPLETED`, drains its async write tail (a durability barrier) and the `ExecutionHandle` resolves `waitForCompletion()` with the folded state; the flow's result is at `state.variables._output`.
-7. Throughout, every committed envelope is also delivered to `onEvent` subscribers in sequence order, which is how `ProjectionRuntime.handleEvent` keeps read models and surfaces current. Delivery usually happens before the durable write, so after a crash or a failed write `onEvent` can have reported an event the log does not hold ([operations](operations.md), section 3).
+7. Throughout, every committed envelope is also delivered to `onEvent` subscribers in sequence order, which is how `ProjectionRuntime.handleEvent` keeps read models and surfaces current. Delivery usually happens before the durable write, so after a crash or a failed write `onEvent` can have reported an event the log does not hold. `onDurableEvent` fires after the write instead ([ADR 0147](adr/0147-on-durable-event.md)).
 
 ### Walkthrough 2: suspend and resume
 
