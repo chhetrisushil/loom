@@ -154,13 +154,12 @@ function evt(executionId: string, sequence: number, eventType = "STEP_COMPLETED"
  */
 export interface EventStoreConformanceOptions {
   /**
-   * The EventStore SPI level the store CLAIMS (default `"2.3.0"`). A store whose `appendIfUnchanged`
+   * The EventStore SPI level the store CLAIMS (default `"2.6.0"`, the current version). A store whose `appendIfUnchanged`
    * cannot assign a per-incarnation `anchor` (ADR 0129) stays at `"2.2.0"` and passes
    * `{ eventStoreSpi: "2.2.0" }`: the three SPI 2.3.0 cases are then skipped, everything else
    * still runs. Declaring `"2.3.0"` (or nothing) while not meeting the MUST fails the kit, which
    * is the point: the claim is the thing under test. A store that claims `"2.4.0"` (it predates
-   * `sealingCapability`, SPI 2.5.0, ADR 0130 residuals D7) skips the 2.5.0 case; the default claim
-   * is the current version, `"2.6.0"`. A store that claims `"2.5.0"` predates `deleteThrough` (SPI 2.6.0,
+   * `sealingCapability`, SPI 2.5.0, ADR 0130 residuals D7) skips the 2.5.0 case. A store that claims `"2.5.0"` predates `deleteThrough` (SPI 2.6.0,
    * ADR 0139 D8) and skips its cases; a store that implements `deleteThrough` while claiming less is still
    * checked (the method is optional, so presence is what is tested).
    */
