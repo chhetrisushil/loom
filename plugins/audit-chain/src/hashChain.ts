@@ -21,8 +21,8 @@ import {
 // forge the HMAC). `verifyChain` recomputes the whole chain out-of-band.
 //
 // Crucially the chain lives ENTIRELY in `metadata`, which the ReplayVM fold ignores —
-// so replay is byte-identical whether or not chaining is wired (G1/G2). The wrapper
-// composes below tenant-scoping and above the base store:
+// so replay is byte-identical whether or not chaining is wired (G1/G2). The chain is outermost: it
+// wraps tenant-scoping, which wraps fencing, which wraps the base store:
 //   hashChainedEventStore(tenantScopedEventStore(fencingStore(base)))
 
 /** Namespaced chain fields stamped into each event's metadata. */

@@ -18,7 +18,7 @@ TypeScript; Loom provides the durable spine that makes it trustworthy in product
 #+end_quote
 
 #+begin_quote
-🧵 *Loom 2.0* evolves the runtime into the *execution kernel for intelligent software* — a stable syscall ABI, an enforced authority boundary, metered resources, model routing/elevation, tiered memory, and horizontal scale-out — all additive and opt-in. See [[file:docs/loom-2.0/00-overview.md][docs/loom-2.0/]] and [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][ADR 0016]].
+🧵 *Loom 2.0* evolves the runtime into the *execution kernel for intelligent software* — a stable syscall ABI, an enforced authority boundary, metered resources, model routing/elevation, tiered memory, and horizontal scale-out — additive, with the guardrails opt-in. See [[file:docs/loom-2.0/00-overview.md][docs/loom-2.0/]] and [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][ADR 0016]].
 #+end_quote
 
 - ⏸️  *Durable suspend / resume* — a flow can wait days for a human, survive a restart, and continue from exactly where it left off. Completed steps are never re-run.
@@ -31,8 +31,11 @@ TypeScript; Loom provides the durable spine that makes it trustworthy in product
   are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit
   breakers). Hardened end to end (K1–K12, T1–T2): behavioral safety, data-plane isolation + brokered
   egress, idempotency/fencing, encryption-at-rest + crypto-shredding, flow-code versioning,
-  identity/tenancy + delegation, durable timers, and a language-neutral wire ABI — every ring opt-in
-  and byte-identical when unwired.
+  identity/tenancy + delegation, durable timers, and a language-neutral wire ABI. The guardrails
+  (protection ring, quotas, supervision, encryption, isolation) are opt-in and inert until wired; a
+  few durability defaults are on without configuration: heartbeat leases (lazy acquire), the
+  principal recorded on ~EXECUTION_STARTED~, the inbox archive, and sender sealing on a sealing
+  deployment.
 - 📈  *Scale out* — the same interfaces on single-node SQLite or a network Postgres store with cross-node live subscribe (~LISTEN/NOTIFY~).
 - 🎨  *Bring your own renderer* — the same backend renders in React, Angular, Web Components, or the terminal.
 - 🧩  *One composition root* — ~defineConfig~ wires an app from a static config; the ~loom~ CLI, testing kit, evals, deploy-simulation, and a pluggable-compute seam surround it.
@@ -126,7 +129,7 @@ convention, effect middleware, testing, evals, and deploy-simulation.
 - *Static, replay-safe wiring* — flows and effects are registered statically (the folder convention is honored by build-time codegen, not runtime globbing), so a remote worker or a replay reconstructs an identical graph.
 - *Isomorphic core, pluggable edges* — storage, compute placement, LLM providers, and renderers are all interfaces. The same flow runs in a test, a browser tab, a Node server, or on Cloud Run.
 - *Non-determinism only when logged* (P9, 2.0) — a runtime may route models, elevate, learn, or optimize, but every such choice becomes a durable ~DECISION_RECORDED~ event. Replay stays a pure fold; outcomes improve run-to-run.
-- *Minimal kernel, advisory plane* (P10, 2.0) — the durable core stays small; all "intelligence" is an optional module that shapes latency (off-log) or outcomes (logged), never a hidden input to the fold. You never pay for a runtime you didn't opt into.
+- *Minimal kernel, advisory plane* (P10, 2.0) — the durable core stays small; all "intelligence" is an optional module that shapes latency (off-log) or outcomes (logged), never a hidden input to the fold. You don't pay for an advisory module you didn't opt into.
 
 ** How it works
 
@@ -174,7 +177,7 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 
 *The kernel-hardening rings* — what makes it genuinely a kernel:
 
-- *K1 — Syscall ABI.* ~ctx.*~ is a versioned, conformance-pinned surface (~execute~ / ~run~ / ~decide~ / ~parallel~ / ~suspend~ / ~emit~ / ~stream~ / ~ui~).
+- *K1 — Syscall ABI.* ~ctx.*~ is a versioned, conformance-pinned surface (~execute~ / ~run~ / ~decide~ / ~parallel~ / ~suspend~ / ~sleep~ / ~sleepUntil~ / ~emit~ / ~stream~ / ~receive~ / ~select~ / ~continueAsNew~ / ~negotiateBudget~; ~ui~ is deprecated, ADR 0114).
 - *K2 — Protection ring.* The ~EffectRuntime~ authorizes every effect against a least-privilege ~GrantTable~; ungranted effects are *denied* and the denial is logged.
 - *K3 — Resource accounting.* ~meteringMiddleware~ meters tokens/$/latency onto the log and enforces *budgets* by admission control.
 - *K4 — Fault supervision.* ~SupervisingDispatcher~ adds restart/backoff + a *circuit breaker* for flaky models/tools.
@@ -192,8 +195,8 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 |------+----------+------|
 | *Kernel* | ~packages/~ | mechanism + ABI: ~core~, ~event-runtime~, ~snapshot-runtime~, ~replay-vm~, ~effect-runtime~, ~workflow-runtime~, ~scheduler~, ~wire-abi~ |
 | *SPI contracts* | ~packages/~ | the seams adapters implement: ~worker-runtime~, ~projection-runtime~, ~llm~, ~blueprint-runtime~, ~registry~, ~telemetry~, ~dispatcher~, ~sandbox~ |
-| *Advisory* | ~packages/~ | optional modules: ~reasoning~, ~memory~, ~agent~, ~planner~, ~intent~, ~capability~, ~saga~, ~orchestration~, ~analytics~, ~middleware~, ~app~, ~classify~ (data-sensitivity markers), ~compliance~ (GDPR subject rights), ~isolate~, ~verify~, ~spec~, ~conformance~, … |
-| *Plugins (1P adapters)* | ~plugins/~ | ~@loom/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (client + server, incl. ~mcpInvoke$~ dynamic dispatch), ~mcp-app~ (MCP Apps egress), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~a2a~, ~a2ui~, ~renderer-react~, ~renderer-terminal~, ~renderer-dom~ |
+| *Advisory* | ~packages/~ | optional modules: ~reasoning~, ~memory~, ~agent~, ~planner~, ~intent~, ~capability~, ~saga~, ~orchestration~, ~analytics~, ~middleware~, ~app~, ~classify~ (data-sensitivity markers), ~compliance~ (GDPR subject rights), ~knowledge~ (corpus lifecycle over the memory tier), ~isolate~, ~verify~, ~spec~, ~conformance~, … |
+| *Plugins (1P adapters)* | ~plugins/~ | ~@loom/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (client + server, incl. ~mcpInvoke$~ dynamic dispatch), ~mcp-app~ (MCP Apps egress), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~conversation-sse~ (SSE transport for conversations), ~a2a~, ~a2ui~, ~renderer-react~, ~renderer-terminal~, ~renderer-dom~ |
 | *Plugin authoring* | ~packages/~ | ~@loom/plugin-kit~ (typed presets), ~@loom/conformance~ (SPI conformance kits) |
 | *Tooling* | ~tools/~ | first-party dev-tooling (leaf, build/test/authoring only): ~cli~, ~compiler~, ~appgen~, ~appgen-model~, ~deploy-sim~, ~scaffold~, ~eval~, ~testing~, ~dst~, ~bench-throughput~, ~create-loom-app~ |
 
@@ -268,8 +271,9 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 | ~@loom/plugin-sentinel~    | The perpetual-agent pattern as one composition-time preset |
 | ~@loom/plugin-crypto~      | K10 encryption-at-rest + crypto-shredding (~PAYLOAD_SHREDDED~) |
 | ~@loom/plugin-audit-chain~ | Tamper-evident hash-chained ~EventStore~ wrapper |
-| ~@loom/isolate~            | K7 data-plane isolation — untrusted tools in a scrubbed child process with brokered egress |
+| ~@loom/isolate~            | K7 data-plane isolation — your own (trusted, not model-written) tool code in a scrubbed child process with brokered egress; hardening, not OS confinement. Model-written code goes through ~@loom/sandbox~ |
 | ~@loom/classify~ · ~@loom/compliance~ | Field-sensitivity markers (~secret()~/~sensitive()~) · GDPR subject export/erasure |
+| ~@loom/knowledge~         | Corpus lifecycle over the semantic memory tier (ADR 0090/0091) — retrieval, not a separate store |
 | ~@loom/verify~ · ~@loom/spec~ · ~@loom/conformance~ | Pre-flight verification (determinism/replay/capability rules incl. the ADR 0061 loop-identity lint) · evidence-derived capability manifest (ADR 0035) · SPI conformance kits |
 | ~@loom/replay-inspector~   | Read-only replay inspector (ADR 0071) — state at any point, transition diffs, projection slices, under the execution's *pinned* version; no write path, by type |
 | ~@loom/wire-abi~           | T2 wire-level kernel ABI — language-neutral JSON-RPC projection of the K1 syscalls |
@@ -384,7 +388,7 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 - [[file:docs/operations.md][Operations]] — the operator runbook: Postgres store, heartbeat leases, failure recovery, erasure, backups, and the pre-flight ~loom doctor~ checklist
 - [[file:docs/scaling.md][Scaling]] — measured capacity, which regime a workload is in, and what each further change is waiting on
 - [[file:docs/spec/loom-kernel-specification.md][Kernel specification]] — the normative spec (syscall ABI, event model incl. typed failure channels, SPI contracts) + the [[file:docs/spec/compatibility-matrix.md][compatibility matrix]]
-- [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API, including [[file:docs/api-reference.org][Kernel hardening & security]]
+- [[file:docs/api-reference.org][API Reference]] — per-package API (each package's main public surface), including [[file:docs/api-reference.org][Kernel hardening & security]]
 - [[file:docs/adr/][ADRs]] — the decision history (0001–0147;
   [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 ·
   [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging ·

@@ -1,7 +1,7 @@
 #+title: Loom — API Reference
 #+author: Sushil Chhetri
 
-Exhaustive per-package reference — every workspace package with published typings has a section here, and `packages/spec/src/apiReferenceDocs.test.ts` fails the build if one does not. Signatures are quoted from source; types owned by another package are cross-referenced, not repeated. Most apps import everything from ~@loom/sdk~ (the public barrel) or the individual ~@loom/*~ packages shown here.
+Per-package reference — every workspace package that ships typings, apart from three test and scaffolding tools, has a section here (`packages/spec/src/apiReferenceDocs.test.ts` fails the build if one does not), each covers its main public surface, and the package's own `index.ts` or `.d.ts` is authoritative for anything not listed. Signatures are quoted from source; types owned by another package are cross-referenced, not repeated. Most apps import everything from ~@loom/sdk~ (the public barrel) or the individual ~@loom/*~ packages shown here.
 
 New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[file:user-guide.md][User Guide]]; this document is the lookup reference.
 
@@ -212,6 +212,14 @@ function executionFromState(state: ExecutionState, opts?: { parent?: string; chi
 #+end_src
 
 *State is a pure fold of the event log* — see [[#replay-storage][~foldEvents~]].
+
+#+begin_src typescript
+type VersionPins = Readonly<Record<string, string>>;
+function checkVersionPins(recorded: VersionPins | undefined, current: VersionPins | undefined): PinReport   // compares recorded vs registered versions; REPORTS, never throws; O(|recorded| + |current|)
+interface PinReport { readonly ok: boolean; readonly findings: readonly PinFinding[]; /* …plus `compared`: ids where BOTH sides declared a version (ok over compared 0 is not a pass) */ }
+type PinFindingCode = "drift" | "unpinned";                                  // drift: both declare, differ; unpinned: one side declares nothing (a warning, ok stays true)
+function legacyFlowContentHash<TIn, TOut>(definition: FlowDefinition<TIn, TOut>): string   // the pre-ADR-0113 "fnv1a:" hash, kept only so an execution that recorded one is not stranded; new starts never record it
+#+end_src
 
 -----
 
@@ -480,6 +488,15 @@ class KillSwitchEngagedError extends SafetyViolationError { scope; key?; readonl
 #+end_src
 
 The kill switch refuses the NEXT effect. It does not interrupt an in-flight effect or cancel an execution's children (kernel cancel cascade, separate).
+
+#+begin_src typescript
+function effectTimingMiddleware(): EffectProfiler      // measures what effects cost; the counterpart to ProfilingEventStore (ADR 0065 gate 1)
+interface EffectProfiler { middleware: EffectMiddleware; profile(): EffectProfile; reset(): void }
+interface EffectProfile { calls: number; totalEffectMs: number; maxEffectMs: number; peakConcurrentEffects: number; byTool: Record<string, { calls: number; totalMs: number }> }
+function streamTokenBudget(budget: Budget, options?: StreamTokenBudgetOptions): (ctx: EffectContext) => (progress: { text: string; deltas: number }) => void
+                                                       // the collectStream `guard` that enforces a token Budget mid-flight: on breach emits QUOTA_EXCEEDED and throws QuotaExceededError
+interface StreamTokenBudgetOptions { estimate?: TokenEstimator /* default estimateTokensByChars */; checkEvery?: number /* default 8 */ }
+#+end_src
 
 ** ~@loom/registry~ — agent registry
 
@@ -884,6 +901,84 @@ const KERNEL_ABI: { version: string; syscalls: typeof KERNEL_SYSCALLS };
 // syscalls: execute · run · decide · parallel · suspend · sleep · sleepUntil · emit · stream · ui
 #+end_src
 
+*Retention policy (ADR 0145).* A plain, frozen, validated value the app owns and hands to the retention passes; it carries no behaviour and schedules nothing.
+~retentionPolicy()~ and ~assertRetentionPolicy()~ throw ~RetentionPolicyError~ (a ~RangeError~) for an unknown key, ~terminalTtlMs~ that is not an integer >= 0,
+~snapshots.keepLatest~ below 1, ~content.unpinnedAfterMs~ not an integer > 0, or ~content.unpinnedAfterMs < terminalTtlMs~.
+
+#+begin_src typescript
+interface RetentionPolicy { terminalTtlMs: number; snapshots?: { keepLatest: number }; content?: { unpinnedAfterMs: number } }
+function retentionPolicy(spec: RetentionPolicy): Readonly<RetentionPolicy>            // validates, then freezes
+function assertRetentionPolicy(p: unknown): asserts p is RetentionPolicy
+class RetentionPolicyError extends RangeError
+
+// LogLifecycle (a policy is re-validated on every call)
+evaluate(executionId: string, policy: RetentionPolicy, now: number): Promise<RetentionVerdict>        // judges, writes nothing
+applyRetention(executionId: string, policy: RetentionPolicy, now: number): Promise<RetentionOutcome>  // archive (if configured), then delete
+pruneSnapshots(executionId: string, options?: PruneSnapshotsOptions): Promise<number>                 // the count deleted (or, with dryRun, that would be)
+interface PruneSnapshotsOptions { keepLatest?: number; policy?: RetentionPolicy; keepSequences?: readonly number[]; acceptUnattributedBlankStream?: boolean; dryRun?: boolean }
+type RetentionOutcome = "reclaimed" | "kept" | "not-terminal" | "blocked-by-branch" | "pinned" | "unknown" | "unsupported" | "unsafe-archive";
+type RetentionVerdict = Exclude<RetentionOutcome, "reclaimed"> | "reclaimable";
+#+end_src
+
+*Signed approvals (ADR 0117).* ~answerApproval~ builds the resume event that answers the gate an execution is parked on, echoing the gate's ~viewDigest~; ~signResume~
+signs it for ONE park; ~signedResumeAuthenticator~ verifies it (HMAC-SHA-256, secrets >= ~MIN_SECRET_BYTES~ = 16, ~exp~ required). It covers the whole event, the execution id and the
+parking sequence, so a signature cannot be replayed at another execution, a fork of it, or a later park of the same gate. ~viewDigest~ is ~v2:~ + SHA-256 over canonical JSON and
+detects staleness; it is not a MAC and does not say WHO approved.
+
+#+begin_src typescript
+function answerApproval(state: Pick<ExecutionState, "suspendedOn" | "executionId">, decision: Record<string, unknown>): ResumeEvent   // throws when the execution is not parked at a gate
+function viewDigest(view: unknown): string                                              // "v2:<sha256 hex>"; TypeError for a value canonicalJson refuses
+function approvalViewDigest(gateKey: string, toolId: string, input: unknown): string    // the digest a tool-call approval gate declares
+function signResume(event: ResumeEvent, signer: { actor: string; secret: string; exp: number; executionId: string; parkedAtSequence: number; waitRegisteredAtSequence?: number }): ResumeEvent
+function signedResumeAuthenticator(options: SignedResumeOptions): ResumeAuthenticator
+interface SignedResumeOptions {
+  gates: readonly string[];   // gate names with approval semantics; every other event is `not-applicable`
+  keys: Readonly<Record<string, string | readonly string[]>> | ((actor: string) => string | readonly string[] | undefined);   // several secrets = rotation
+  authorize?: (actor: string, event: ResumeEvent) => boolean;                                  // runs after the signature verifies
+  requireActor?: (actor: string, principal: PrincipalChain | undefined) => boolean;            // default: must equal the call's principal actor, when it has one
+  now?: () => number;                                                                          // clock for `exp`; default Date.now
+}
+const SIGNED_RESUME_VERIFIED_BY = "hmac-sha256";
+const MIN_SECRET_BYTES = 16;
+#+end_src
+
+*~onDurableEvent~ (ADR 0147).* ~WorkflowRuntimeDeps.onDurableEvent~ is called with an event after its durable write has resolved, so it NEVER reports an event the log does not hold
+(a lost, rejected or fenced write is not delivered). At most once: a process that dies after a write, or a lost acknowledgement, never delivers it, so read the log when you need every event.
+In order per writer, not per execution: under a delayed acknowledgement a later sequence can arrive first, so order by ~sequence~. Asynchronous: it lags the fold and a slow store builds a backlog;
+an async consumer is not awaited. Only this runtime's writes: another process, ~LogLifecycle~ and crypto-shredding are not reported. A throw or rejection goes to ~onWarn~ (at most once a minute) and
+never reaches the run. Unset, the write path does no extra work. ~onEvent~, by contrast, fires BEFORE the durable write.
+
+*Inbox, cron, re-drive, in-doubt.*
+
+#+begin_src typescript
+type InboxSource = (chainId: string, topic: string, afterSeq: number, limit: number) => Promise<InboxMessage[]>;   // messages with inboxSeq > afterSeq, oldest first
+function createInboxSource(store: EventStore): InboxSource                  // the default reader: bounded range reads over the runtime's own EventStore
+
+interface CronSpec { minutes: Set<number>; hours: Set<number>; daysOfMonth: Set<number>; months: Set<number>; daysOfWeek: Set<number>; timeZone?: string }   // timeZone absent = UTC
+function parseCron(expr: string, timeZone?: string): CronSpec               // 5 fields (min hour dom mon dow); throws on a bad expression or unknown IANA zone
+function nextOccurrence(spec: CronSpec, afterMs: number): number            // pure and deterministic; DST gaps shift forward, a repeated hour runs once (first occurrence)
+
+function scheduleRedrive(store: TimerStore, executionId: string, attempt: number, now: number, backoff?: RedriveBackoff, minWakeAt?: number): Promise<TimerRecord>   // writes the due-later row that re-drives a contended resume
+interface RedriveBackoff { baseMs?: number; capMs?: number; random?: () => number }   // defaults 200 / 30 000 / Math.random; full jitter
+function redriveDelayMs(attempt: number, backoff?: RedriveBackoff): number
+const DEFAULT_MAX_REDRIVE_ATTEMPTS = 8;
+class RedriveExhaustedError extends Error { executionId: string; attempts: number }   // still contended after the attempts; left to recover()
+
+function inDoubtDecisionId(stepId: string, attempts: number): string       // the reserved "__loom_indoubt__:<stepId>:<attempts>" decision id of an in-doubt verdict
+#+end_src
+
+*Continue-as-new errors (ADR 0109).* All carry ~retryable = false~; ~ctx.continueAsNew~ needs ~kernel.features.continueAsNew~.
+
+#+begin_src typescript
+class ContinueAsNewUnavailableError extends Error                                                       // the feature is off
+class ContinueAsNewRefusedError extends Error { executionId: string; reason: string }                   // precondition fails or the carry is unusable; nothing appended
+class CarryTooLargeError extends ContinueAsNewRefusedError { bytes: number; maxCarryBytes: number }    // DEFAULT_MAX_CARRY_BYTES = 1_048_576
+class ContinuationConflictError extends Error { predecessorId: string; successorId: string; foundContinuedFrom: string | undefined }   // a squatter at the successor id
+class ForkPastContinuationError extends Error { executionId: string; atSequence: number; continuedAtSequence: number | undefined; successorId: string | undefined }   // fork the successor instead
+class ChainHopLimitError extends Error { executionId: string; hops: number; reached: string }           // head walk ran out of maxChainHops (DEFAULT_MAX_CHAIN_HOPS = 8)
+class ReservedSuccessorIdError extends Error { executionId: string }                                    // a caller-chosen id of the reserved "<x>~<digits>" shape
+#+end_src
+
 ** ~ExecutionHandle~ & related types
 
 #+begin_src typescript
@@ -931,6 +1026,14 @@ function boundOrchestration(limits: SpawnLimits): { awaitChild; awaitChildren; a
 // SupervisorDeps.limits?: SpawnLimits — the backstop: a refused spawn starts NO child, reports via onError, and
 // resumes the parent with a failed child (awaitChild throws childFailed; awaitChildren returns failed entries).
 class SpawnLimitExceededError extends Error { limit: "maxDepth" | "maxFanOut"; max; actual; readonly retryable: false }
+
+// ADR 0118 D3 — retention pin predicates (PinPredicate = (executionId) => boolean | Promise<boolean>); compose with an app predicate by ||, never replace it
+function pinParkedChildren(supervisor: Pick<ChildSupervisor, "parkedOnChild"> | (() => Pick<ChildSupervisor, "parkedOnChild"> | undefined)): PinPredicate
+                                            // pins a finished child whose parent is still parked on it; pass a function when the supervisor is created after the config
+function awaitedByParent(store: Pick<EventStore, "read" | "head" | "readFrom" | "readRange">, options?: {
+  snapshots?: { loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null> };   // only for a compacted parent whose lifecycle events are gone
+  onWarn?: (message: string) => void;       // "cannot decide, keeping the child"; default console.warn
+}): PinPredicate                            // pins a child whose recorded parent (sequence 0) is still live; FAILS SAFE: any doubt pins, and onWarn says why
 #+end_src
 
 ** ~@loom/saga~ — compensation without a syscall
@@ -996,17 +1099,90 @@ function knownEventTypes(): string[];    // the sorted set the fold understands 
 
 #+begin_src typescript
 interface EventStore {
-  append(envelope: EventEnvelope): Promise<void>;
+  append(envelope: EventEnvelope): Promise<void>;   // rejects DuplicateSequenceError / DuplicateEnvelopeIdError (id uniqueness is per execution)
   read(executionId: string): Promise<EventEnvelope[]>;
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]>;
-  subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
-  head?(executionId: string): Promise<number | null>;   // the tip, without reading the log — use headOf(store, id) (optional)
-  copyPrefix?(from: string, to: string, throughSequence: number, metadata: Record<string, unknown>): Promise<void>; // fork fast-path (optional)
+  subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;   // cross-node delivery can lose a wake-up; the log stays complete
   close(): Promise<void>;
+
+  // Optional — a decorator must forward, override or refuse each (see installOptional below)
+  appendBatch?(envelopes: readonly EventEnvelope[]): Promise<void>;   // SPI 1.3.0: ≡ append per envelope, atomic PER EXECUTION, one round-trip; use appendBatchOf(store, envs)
+  readRange?(executionId: string, fromSequence: number, toSequence: number): Promise<EventEnvelope[]>;   // [from..to] inclusive; use readRangeOf(store, id, from, to)
+  head?(executionId: string): Promise<number | null>;   // the tip, without reading the log — use headOf(store, id)
+  acquireFence?(executionId: string): Promise<number>;   // K9.4: bump + return the monotonic token; later appends with a missing/lower metadata.fence throw StaleFenceError
+  acquireFenceIf?(executionId: string, expect: { fence: number; parkSeq: number }): Promise<AcquireFenceIfResult>;   // SPI 2.1.0, ADR 0118: acquire only if the park is still unanswered
+  appendIfUnchanged?(executionId: string, event: EventEnvelope | null, expect?: TipObservation): Promise<AppendIfUnchangedResult>;   // SPI 2.2.0: append iff head + fence are as observed; event === null only observes
+  storeNow?(): Promise<number>;   // SPI 2.4.0: the store's own clock, epoch ms (Postgres: database time)
+  sealingCapability?(): SealingCapability | undefined;   // SPI 2.5.0 (RESERVED, no caller yet): what this store seals and therefore opens
+  readAtRest?(): AtRestEventReader;   // SPI 2.5.0, ADR 0130 D9: read-only view of envelopes AS STORED, never decrypted
+  copyPrefix?(fromExecutionId: string, toExecutionId: string, throughSequence: number, metadata: Record<string, unknown>): Promise<void>;   // fork fast-path
+  deleteExecution?(executionId: string): Promise<void>;   // K10.1 retention: all events of an execution
+  deleteThrough?(executionId: string, through: number): Promise<void>;   // SPI 2.6.0, ADR 0139 D8: one atomic delete of sequence <= through, INCLUDING 0
+  truncatePrefix?(executionId: string, throughSequence: number): Promise<void>;   // K10.4 compaction: delete (0..through]; sequence 0 is preserved
+  truncatePrefixKeeping?(executionId: string, throughSequence: number, keepEventTypes: readonly string[]): Promise<void>;   // SPI 1.5.0: as truncatePrefix, but events of a kept type survive
+  listExecutions?(): Promise<string[]>;   // every executionId, unordered, reserved `__loom_*` streams included (filter with isReservedStream)
+  listExecutionsPage?(opts?: { cursor?: string; limit?: number }): Promise<ExecutionPage>;   // SPI 1.2.0: keyset-paged, Unicode code point order (compareExecutionIds)
 }
 
+interface TipObservation { head: number; fence: number; anchor: string }
+type AppendIfUnchangedResult = { appended: true } | { appended: false; reason: "moved" | "gone" | "observed"; head: number | null; fence: number; anchor: string | null };
+type AcquireFenceIfResult    = { fence: number } | { stale: true; fence: number };
+interface ExecutionPage      { executionIds: string[]; nextCursor?: string }
+interface SealMarker         { readonly v: 1; readonly cipher: string; readonly covers: readonly string[] }
+interface SealingCapability  { readonly cipher: string; readonly covers: readonly string[]; opens(marker: SealMarker): boolean }
+type AtRestEventReader       = Pick<EventStore, "read" | "readFrom" | "readRange" | "head">;
+
+// Caller helpers — fall back when the store omits the optional method
+function appendBatchOf(store: EventStore, envelopes: readonly EventEnvelope[]): Promise<void>;   // appendBatch, else a sequential append loop (not atomic); empty input is a no-op
+function readRangeOf(store: Pick<EventStore, "read" | "readFrom" | "readRange">, executionId: string, fromSequence: number, toSequence: number): Promise<EventEnvelope[]>;
+function headOf(store: Pick<EventStore, "read" | "head">, executionId: string): Promise<number | null>;
+interface ExecutionEnumerable { listExecutions?(): Promise<string[]>; listExecutionsPage?(opts?: { cursor?: string; limit?: number }): Promise<ExecutionPage> }
+function iterateExecutionIds(source: ExecutionEnumerable, pageSize = 1000): AsyncGenerator<string, void, void>;   // pages when listExecutionsPage exists, else listExecutions
+
 class InMemoryAsyncEventStore { constructor(options?: { latencyMs?: number; failAppendWhen?: (e: EventEnvelope) => boolean | string | Error }) }
-class SqliteEventStore       { constructor(dbPath: string) }
+#+end_src
+
+~SqliteEventStore~ / ~SqliteBranchRegistry~ are not exported here — they live in ~@loom/plugin-sqlite~.
+
+Decorators over the SPI:
+
+#+begin_src typescript
+// Merges concurrent appends ACROSS executions into one appendBatch; an append resolves only once its batch committed
+class CoalescingEventStore implements EventStore { constructor(inner: EventStore, options?: CoalescingEventStoreOptions) ; drain(): Promise<void> }
+interface CoalescingEventStoreOptions { maxBatch?: number /* default 16 */; maxLingerMs?: number /* default 0: next microtask */ }
+
+// Routes each execution to one of N inner stores; a batch is atomic per execution, not across shards
+class ShardedEventStore implements EventStore {
+  constructor(shards: readonly EventStore[], options?: ShardedEventStoreOptions)
+  setPlan(plan: ShardPlan): void
+  migrateExecution(executionId: string): Promise<MigrationResult>   // copy to the destination shard, then remove from the source; fence state does not move
+  isBucketDrained(bucket: number): Promise<boolean>                // true when nothing is left on the source (needs enumerable shards)
+}
+interface ShardedEventStoreOptions { shardOf?: (executionId: string, shards: number) => number /* default FNV-1a; must be stable */; plan?: ShardPlan; placementCacheSize?: number /* default 10,000 */ }
+interface MigrationResult { executionId: string; outcome: "moved" | "already-there" | "not-migrating"; events: number }
+class ShardSealingMismatchError extends Error
+
+// Explicit bucket -> shard map (ADR 0075); required to change the shard count without re-routing everything
+class ShardPlan {
+  static uniform(shardCount: number, buckets: number = DEFAULT_BUCKETS): ShardPlan   // DEFAULT_BUCKETS = 4096
+  static fromJSON(json: ShardPlanJSON): ShardPlan
+  toJSON(): ShardPlanJSON
+  get buckets(): number
+  get isStable(): boolean
+  bucketFor(executionId: string): number
+  placementAt(bucket: number): ShardPlacement
+  placementFor(executionId: string): ShardPlacement
+  migratingBuckets(): number[]
+  rebalanced(shardCount: number, options?: { allowShrink?: boolean }): ShardPlan   // marks changed buckets migrating(old -> new); copies nothing
+  settled(bucket: number): ShardPlan
+  settledAll(): ShardPlan
+}
+type ShardPlacement = { kind: "settled"; shard: number } | { kind: "migrating"; from: number; to: number };
+interface ShardPlanJSON { version: 1; shardCount: number; placements: ({ shard: number } | { from: number; to: number })[] }
+
+// Write-side timing decorator; forwards every optional method the inner store has
+class ProfilingEventStore implements EventStore { constructor(inner: EventStore); writeProfile(): WriteProfile; resetProfile(): void }
+interface WriteProfile { envelopes: number; roundTrips: number; totalWriteMs: number; maxWriteMs: number; peakConcurrentWrites: number; spanMs: number; envelopesPerSec: number }
 #+end_src
 
 *Git-style branching* — the ~BranchRegistry~:
@@ -1032,7 +1208,6 @@ interface BranchRegistry {
   close(): Promise<void>;
 }
 class BranchPromotionConflictError extends Error { toName; expected: string | null; actual: string | null }  // a CAS promote lost — nothing moved
-class SqliteBranchRegistry { constructor(dbPath: string) }
 #+end_src
 
 *Browser-safe subpath:* ~import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory"~ imports only the in-memory store — no ~better-sqlite3~.
@@ -1060,9 +1235,8 @@ still see an encrypting store below. ~runEventStoreDecoratorConformance~ (~@loom
 the check.
 
 #+begin_src typescript
-type OptionalEventStoreMethod = "appendBatch" | "readRange" | "head" | "acquireFence" | "copyPrefix"
-  | "deleteExecution" | "deleteThrough" | "truncatePrefix" | "truncatePrefixKeeping" | "listExecutions"
-  | "listExecutionsPage";                                                          // derived from EventStore
+type OptionalEventStoreMethod = { [K in keyof EventStore]-?: {} extends Pick<EventStore, K> ? K : never }[keyof EventStore];
+                                                                                   // derived: every optional key — 16 as of SPI 2.6.0 (see the EventStore listing)
 const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]            // compile-time exhaustive
 type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
 function installOptional<S extends object, M extends keyof S>(target: S, inner: S, plan: DecoratorPlan<S, M>, bindTo?: object): void
@@ -1072,7 +1246,7 @@ function refusalsOf(store: object): ReadonlyMap<string, string>                 
 class Tenant implements EventStore {
   readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;   // …one field per optional method
   constructor(private readonly inner: EventStore) {
-    const plan = { appendBatch: (envs) => inner.appendBatch!(envs.map(scope)), head: "forward", /* …all nine */ }
+    const plan = { appendBatch: (envs) => inner.appendBatch!(envs.map(scope)), head: "forward", /* …every optional method */ }
       satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
     installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
   }
@@ -1119,6 +1293,8 @@ compresses BEFORE sealing and so needs the acknowledgment. Needs Node 22.15 or l
 ~loom snapshot show~ prints a decoded snapshot. Postgres only: ~migratePostgresStores(pool, { snapshotCompression: "lz4" })~ (ADR 0136; fail-soft, a speed trade, not a size one).
 ~ProfilingSnapshotStore~ measures stored (compressed) bytes for a zstd store and plaintext state otherwise.
 
+Frame helpers: ~FRAME_ZSTD~ (~0x02~, the format byte of a zstd-compressed frame) and ~isFramedState(bytes: Uint8Array): boolean~ (whether ~bytes~ starts with a known frame byte, ~0x01~ or ~0x02~).
+
 Browser-safe subpath: ~@loom/snapshot-runtime/memory~.
 
 ** ~@loom/plugin-postgres~ — scale-out storage *(2.0)*
@@ -1126,11 +1302,42 @@ Browser-safe subpath: ~@loom/snapshot-runtime/memory~.
 Postgres implementations of the three store interfaces above — the horizontal-scale backend. Same contracts as the SQLite stores (JSONB payloads, server-side ~copyPrefix~), plus *cross-node live subscribe* via ~LISTEN/NOTIFY~.
 
 #+begin_src typescript
-type PgConfig = string | PoolConfig | Pool;   // connection string, pg config, or a shared Pool
-class PostgresEventStore    implements EventStore     { constructor(config: PgConfig) }   // subscribe() fans across nodes
-class PostgresSnapshotStore implements SnapshotStore  { constructor(config: PgConfig) }
-class PostgresBranchRegistry implements BranchRegistry { constructor(config: PgConfig, opts?: { now?: () => number }) }
-function migratePostgresStores(pool: Pool): Promise<void>;   // idempotent DDL for all tables
+type PgConfig = string | PoolConfig | Pool | PoolLike;   // connection string, pg config, or a shared pool (PoolLike: any structurally compatible pool)
+class PostgresEventStore    implements EventStore     { constructor(config: PgConfig, options?: PostgresEventStoreOptions) }   // subscribe() fans across nodes; the options type is not exported by name (fields below)
+class PostgresSnapshotStore implements SnapshotStore  { constructor(config: PgConfig, options?: PostgresSnapshotStoreOptions) }   // PostgresSnapshotStoreOptions: { codec?: SnapshotCodecName; migrationLockTimeoutMs?: number; onWarn?: (message: string) => void }
+class PostgresBranchRegistry implements BranchRegistry { constructor(config: PgConfig, opts?: { now?: () => number; migrationLockTimeoutMs?: number }) }
+class PostgresTimerStore    implements TimerStore     { constructor(config: PgConfig) }   // timers live beside the log; INSERT ... ON CONFLICT DO NOTHING keeps scheduling idempotent per (executionId, wakeAt)
+function migratePostgresStores(pool: PoolLike, options?: MigrateOptions): Promise<void>;   // idempotent DDL for all tables
+interface MigrateOptions { lockTimeoutMs?: number; onWarn?: (message: string) => void; backfillParkFences?: boolean; snapshotCompression?: "lz4" | "default"; snapshotCodec?: "zstd" | "none" }
+function ensureSnapshotZstd(pool: PoolLike, options?: { lockTimeoutMs?: number; onWarn?: (message: string) => void }): Promise<boolean>;   // provisions snapshots.state_z; migrate(pool) must have completed first; memoized per pool
+function postgresPool(config: string | PoolConfig): Pool;   // a real pg.Pool from this package (totalCount / idleCount, which PoolLike omits)
+
+const MAX_EXECUTION_ID_BYTES = 1024;   // UTF-8 bytes; the cross-node NOTIFY payload is capped at 8000. Derived streams (inbox, continueAsNew successor) are slightly longer, so keep ids well below it
+class ExecutionIdTooLongError extends RangeError { executionId: string; bytes: number }   // nothing written; start() wraps it, so check err.cause
+
+interface PostgresEventStoreOptions {
+  notifyBuckets?: number;              // NOTIFY channels for interest-filtered cross-node delivery; every node must agree. Default 16
+  migrationLockTimeoutMs?: number;     // wait for the one-time collation conversion's table lock. Default 2000
+  backfillParkFences?: boolean;        // ADR 0118 D1: one-time park-fence backfill at boot. Default true
+  snapshotCompression?: "lz4" | "default";
+  onWarn?: (message: string) => void;
+  deliveryLookupTimeoutMs?: number;    // bound on a cross-node delivery's lookup. Default 30000
+  incarnationRecheckMs?: number;       // ADR 0129: min ms between re-probes for a missing events.incarnation. Default 30000
+  clock?: () => number;                // default Date.now
+}
+
+// The preset for defineConfig({ storage }) — one pool shared by every store, which also builds a co-located leaseStore and an archiveStore
+function postgresStorage(options: PostgresStorageOptions): CustomStorage & { leaseStore: LeaseStore }
+interface PostgresStorageOptions {
+  url: PgConfig;                       // connection string or pool spec
+  branching?: boolean;                 // also provision a branch registry for fork/branch
+  notifyBuckets?: number;              // as above. Default 16
+  migrationLockTimeoutMs?: number;     // as above. Default 2000 ms; the first store to migrate the pool (the event store) wins
+  backfillParkFences?: boolean;        // as above. Default true
+  snapshotCompression?: "lz4" | "default";   // ADR 0136. Default "default"
+  snapshotCodec?: SnapshotCodecName;   // ADR 0141: zstd in snapshots.state_z. Default "none"; needs Node >= 22.15
+  onWarn?: (message: string) => void;  // the event store's warnings (a full NOTIFY queue); observability.onWarn does not reach it. Default console.warn
+}
 #+end_src
 
 Drop-in via ~defineConfig({ storage: postgresStorage({ url }) })~ (imported from ~@loom/plugin-postgres~ only by apps that use it, so ~pg~ never reaches browser bundles), or the ~custom~ storage kind. Single-writer-per-execution (D3) stays the lock-free shard model. See [[file:loom-2.0/03-compute-scheduling-storage.md][compute/scheduling/storage]].
@@ -1235,15 +1442,18 @@ class InMemoryDurableStateStore implements DurableStateStore {}
 ** ~@loom/plugin-sqlite~ — single-node durability
 
 #+begin_src typescript
-class SqliteEventStore implements EventStore {}          // + fencing (K9.4)
-class SqliteSnapshotStore implements SnapshotStore {}
-class SqliteBranchRegistry implements BranchRegistry {}
+class SqliteEventStore implements EventStore { constructor(dbPath: string) }          // no fencing: it has no acquireFence (the process is the failure domain); appendIfUnchanged always reports fence 0
+class SqliteSnapshotStore implements SnapshotStore { constructor(dbPath: string, options?: SqliteSnapshotStoreOptions) }   // SqliteSnapshotStoreOptions: { codec?: SnapshotCodecName }
+class SqliteBranchRegistry implements BranchRegistry { constructor(dbPath: string) }
+class SqliteArchiveStore implements ArchiveStore { constructor(dbPath: string) }
+class SqliteLeaseStore implements LeaseStore { constructor(dbPath: string) }              // heartbeat leases; the preset opens it on the events.db file, lazily
 class SqliteMemoryStore implements MemoryStore {}        // FTS5 external-content index for `search`
 class SqliteReadModelStore implements ReadModelStore {}
 class SqliteDurableStateStore implements DurableStateStore {}
-class SqliteContentStore implements ContentStore { constructor(path: string, opts?: { now?: () => number }) }   // SPI 1.4.0 (touch); 1.5.0 owner argument is accepted and ignored
+class SqliteContentStore implements ContentStore { constructor(dbPath: string, options?: SqliteContentStoreOptions) }   // SqliteContentStoreOptions: { now?: () => number }; SPI 1.4.0 (touch); 1.5.0 owner argument is accepted and ignored
 class SqliteTimerStore implements TimerStore {}
-function sqliteStorage(options?: { dir?: string; branching?: boolean; snapshotCodec?: SnapshotCodecName }): CustomStorage   // the preset for defineConfig({ storage })
+function sqliteStorage(options?: SqliteStorageOptions): CustomStorage & { leaseStore: LeaseStore }   // the preset for defineConfig({ storage }); files events.db, snapshots.db, archive.db (+ branches.db)
+interface SqliteStorageOptions { dir?: string /* default ".loom" */; branching?: boolean; snapshotCodec?: SnapshotCodecName /* default "none" */ }
 #+end_src
 
 ** ~@loom/plugin-read-model~ — durable cross-execution indexes
@@ -1290,6 +1500,9 @@ class InMemoryReadModelStore implements ReadModelStore {}
 // durable: SqliteReadModelStore (@loom/plugin-sqlite), PostgresReadModelStore (@loom/plugin-postgres)
 // SPI 1.2.0 adds five OPTIONAL methods: beginFold?, applyFolded?, getFolded?, getFoldedByKey?, purgeFolded?
 // PostgresReadModelStore(pool, { schema?, tables?: { state?, folds? }, manageSchema? }); foldedStateDdl(opts) is the pure DDL for an app migration
+function foldedStates(records: readonly FoldedRecord[]): FoldedState<unknown>[]   // the records a read-only reader may show: erased and "no handled event yet" rows are omitted (the getMany rule)
+class FoldedStateValueError extends Error { modelId: string; path: string; reason: "nul" | "lone-surrogate" }   // a folded string the durable backends cannot store identically; never carries the value (ADR 0132 D14)
+class PurgeUnsupportedError extends Error { modelId: string }   // purge asked of a backend without it; fall back to clear + rebuild deliberately (O(log))
 #+end_src
 
 Folded models: ~version~ is required and a changed ~version~ (or sensitive map) rebuilds: ~registerFolded~ swaps the header and drops the model's state, and ~catchUp~ re-folds it. Handlers receive a masked copy of each event (declared and sealed-marked paths become ~"[redacted]"~); a state that holds a cipher envelope or a value lifted from a sensitive path is refused with ~SensitiveStateError~ and the watermark does not advance. ~getMany*~ and ~refresh~ always read the store; the cache serves only the live write path. ~getManyByKey(…, { refreshFrom })~ refreshes only executions that already have a row for the key. ~purgeFolded~ tombstones; ~rebuild~ un-tombstones. See [[file:plugins.md][plugins]] and ADR 0132.
@@ -1420,7 +1633,7 @@ new LazyEffect(spec: HandlerSpec)                // kind "tool" — resolves an 
 :END:
 
 The kernel-hardening rings (K1–K12) and kernel services (T1–T2) turn Loom into something that
-*earns* the word "kernel." Every ring is opt-in and byte-identical to Loom 1.x when unwired (P10);
+*earns* the word "kernel." Every guardrail ring is opt-in and inert until wired (P10);
 each new verdict folds like any other event (P9). Most rings surface through packages already
 documented above — this section is the index, plus the three packages that exist only for hardening.
 See the architecture narrative in [[file:architecture.md][§5.7]] and the ring-by-ring detail in
@@ -1445,7 +1658,7 @@ See the architecture narrative in [[file:architecture.md][§5.7]] and the ring-b
 
 ** ~@loom/isolate~ — data-plane isolation & brokered egress (K7)
 
-Runs an untrusted tool in a separate child process — its own authority domain. The tool's code is a
+Runs your own tool code in a separate child process (hardening, not OS confinement; model-written code goes through ~@loom/sandbox~) — its own authority domain. The tool's code is a
 *module the child loads*, never a closure over parent state; the child's env is scrubbed to exactly
 the credentials declared for that one tool; all network I/O is brokered kernel-side against a static
 allowlist (resolve-and-pin, so a DNS rebind can't redirect it), and ~ctx.signal~/~timeoutMs~
@@ -1652,6 +1865,7 @@ function liveQuery(deps: {
   eventStore: EventStore;
   reader: StateReader;                       // typically the WorkflowRuntime
   onError?: (err: unknown) => void;          // background re-folds have no caller to catch them
+  pollMs?: number;                           // re-read the log this often in case a wake-up was lost; stops at a terminal state; 0 = off (a lost wake-up then waits for the next event). Default 5000
 }): LiveQuery
 
 interface LiveQuery {
@@ -2442,6 +2656,11 @@ interface LoopSkills { upfront: string[]; activated: string[] }   // upfront: se
 interface SelectedSkills extends LoopSkills { byLoop: Record<string, LoopSkills> }   // top level = deduped union over the loops considered
 #+end_src
 
+#+begin_src typescript
+function classifyModelCallError(err: unknown): "terminal" | "provider" | "other"   // compatibility form of classifyModelCallFailure
+function resetAgentLoopDefaults(): void                                             // @internal, TEST-ONLY: clears the process-wide agentLoop$ defaults, including a fail-closed requireReasoningContinuation
+#+end_src
+
 ** ~@loom/plugin-mcp~ — Model Context Protocol (client + server)
 
 *** Client
@@ -3045,6 +3264,9 @@ class PolicyRegistry { constructor(o: { kv: PolicyKvStore; scope: string; thresh
   promote({ id, version, report, thresholds?, mode: "full" | "canary" | "shadow", canaryFraction?, now });  // the registry runs promotionGate itself; a supplied verdict is refused
   ramp({ id, canaryFraction, now }); rollback({ id, to?, now, note? });  // `to` must be a version that was once the incumbent
   resolve(id): RolloutState | undefined; version(id, v); versions(id); history(id) }
+class InMemoryPolicyKv implements PolicyKvStore   // a CAS store in memory with DurableStateStore's semantics — tests and single-process use
+// Registry errors, all extending PolicyRegistryError: PolicyAccessDeniedError (the stored document belongs to another scope), PolicyVersionConflictError (a version re-registered with different content),
+//   PromotionRefusedError (reasons: readonly string[]), PolicyNotFoundError, PolicyConflictError
 decideWithRollout(ctx, decisionId, { source, policyId, resolve }, unitKey, context, actions, { refs?, bucketSecret? }): Promise<A>
 //   records policy: { id, version, propensity?, refs?, rollout: { registry, mode, bucket?, armProbability?, acted, shadow? } }
 rolloutBucket(salt, unitKey, secret?): number  // [0,1)
@@ -3310,6 +3532,10 @@ copy of the command table is a second thing to forget. Broad strokes:
 | ship safely              | ~eval~, ~deploy check~, ~compat~, ~kernel-manifest~              |
 | data protection          | ~retention run~, ~sweep content~, ~compliance report~            |
 | author a plugin          | ~plugin seams~ / ~new~ / ~check~ / ~try~ / ~search~              |
+| list / triage executions | ~ls~ (~--waiting-on <event>~ filters suspended runs by the gate they wait on), ~census~ (what is stuck, and is anything watching it), ~snapshot show~ (a stored snapshot, decoded) |
+| act through your runtime (dry run unless ~--apply~) | ~start~, ~resume~, ~cancel~, ~recover~, ~branches retire~ / ~branches prune~, ~repair blank-stream~ / ~repair terminal-event~ |
+| knowledge corpus         | ~knowledge sync~ / ~list~ / ~search~                            |
+| dev loop & config        | ~dev~ (gen --watch + run the app + the inspector), ~migrate-config~ (flat ~defineConfig~ options into their groups) |
 
 Every command has a pure, testable core exported from ~@loom/cli~: ~foldAt(events, sequence?)~, ~formatLog(events)~, ~describeState(state)~, ~evaluateGoldens(goldens)~, ~buildTrace(events)~, ~checkManifest(manifest)~, ~discoverFlows(dir)~ / ~cmdGen(dir)~ / ~cmdNew(kind, name, dir)~, ~loadLogs(dir)~ / ~runDeployCheck(logs, resolver)~, ~serveInspector(eventStore, { port? })~, ~parseArgs(argv)~.
 
@@ -3332,6 +3558,13 @@ function getSurfaceState<T>(pr: ProjectionRuntime, surface: string, executionId:
 function driveToSuspend(handle: ExecutionHandle): Promise<unknown>
 function resumeWith(runtime: WorkflowRuntime, executionId: string, event?: ResumeEvent): Promise<ExecutionHandle>
 function captureGolden(eventStore: EventStore, executionId: string): Promise<EventEnvelope[]>
+
+// K9.5 crash injection — wrap a store so a test can kill an execution between an effect completing and its event reaching the log
+function crashingEventStore(inner: EventStore, options: CrashingEventStoreOptions): CrashingEventStore
+interface CrashingEventStoreOptions { dropFrom: (envelope: EventEnvelope) => boolean }   // that envelope AND every later append are swallowed
+interface CrashingEventStore { store: EventStore; crashed: boolean; dropped: EventEnvelope[]; restore(): void }   // restore() = "reboot": stop swallowing before the recovery runtime is built
+// A swallowed write RESOLVES, so the journal treats it as durable and onDurableEvent reports it: this harness cannot test that onDurableEvent only reports
+// what the log holds (ADR 0147). Use a write that rejects, or one that never resolves.
 
 // VCR LLM provider — record once, replay deterministically (no live calls)
 interface LlmCassette { entries: Array<{ key: string; response: LlmResponse }>; }

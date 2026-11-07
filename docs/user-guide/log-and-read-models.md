@@ -95,6 +95,13 @@ costs that update, and the next event folds from the log again.
 > and before it existed, it was an unhandled rejection, which terminates the process by
 > default.
 
+**A lost wake-up costs a delay, not a hang.** Cross-node delivery is not guaranteed: a dropped listener
+or a full Postgres NOTIFY queue loses a wake-up, and a lost one is not sent later. So each subscription
+also re-reads the log every `pollMs` (default 5000) until its state is terminal. A quiet pass emits
+nothing and costs at most two indexed reads. `pollMs: 0` turns this off, and a lost wake-up is then
+only recovered by that execution's next event. A terminal subscription stops polling, so a later
+re-open is only seen through a wake-up.
+
 `reader` is typed as `StateReader` — just `loadState` — so a live query works over the
 runtime, a remote read façade, or a test double, without depending on the whole runtime.
 
@@ -191,6 +198,39 @@ await life.compact(executionId);
 const moved = await life.readArchived(executionId);
 const original = await life.readWithArchive(executionId);
 ```
+
+**An app-owned retention policy (ADR 0145, ADR 0146).** Nothing is reclaimed by default, and nothing runs on a
+timer: a policy states what you intend, and your app or an operator runs the passes. One validated policy drives
+all three, so the windows cannot drift apart, and a `content.unpinnedAfterMs` below `terminalTtlMs` throws
+`RetentionPolicyError` at construction.
+
+```ts
+import { retentionPolicy } from "@loom/workflow-runtime";
+import { sweepUnpinnedContent } from "@loom/plugin-content";
+
+const DAY = 86_400_000;
+const policy = retentionPolicy({
+  terminalTtlMs: 90 * DAY,
+  snapshots: { keepLatest: 3 },              // never by age: a compacted run's checkpoint IS its state
+  content: { unpinnedAfterMs: 120 * DAY },
+});
+
+// Preview first. `evaluate` applies every gate `applyRetention` does and changes nothing.
+if ((await life.evaluate(executionId, policy, Date.now())) === "reclaimable") {
+  await life.applyRetention(executionId, policy, Date.now());
+}
+await life.pruneSnapshots(executionId, { policy });
+
+// Content is swept across the whole store, not per execution, and only reclaims refs the app marked
+// `reclaimable`; a retained blob is never reclaimed by age.
+const report = await sweepUnpinnedContent({ eventStores: [eventStore], contentStore, policy });
+```
+
+A terminal execution's citations age from its **end**, not from when they were written, so a reclaimable blob cited
+on day 0 by a run that ended on day 60 is held until day 180 under this policy (`heldByEndClock` in the report). A
+running or re-opened execution keeps the citation clock. From the command line, `loom retention run --policy <module>`
+and `loom sweep content --policy <module>` run the same passes, dry by default and `--apply` to reclaim. The
+`retention-policy` example in `loom-examples` runs all of it on a simulated clock.
 
 **Compaction moves events, it never deletes them (ADR 0138).** `compact` appends the exact envelopes it
 removes to an `ArchiveStore` (`compactionArchive`; in-memory, SQLite and Postgres backends ship, and

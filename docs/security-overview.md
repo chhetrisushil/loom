@@ -52,7 +52,7 @@ The capability authorizer runs before any middleware, and isolation is innermost
 | Actor or input | Trusted? | What loom does about it |
 | --- | --- | --- |
 | Host process, Node runtime, loom packages | Trusted | Out of scope. A malicious host is an explicit non-goal (ADR 0019). |
-| App code: flows, registered tools, middleware, policies | Trusted by default | A tool bound to the isolated executor is *not* trusted: no store access, scrubbed env, egress allowlist (ADR 0019). |
+| App code: flows, registered tools, middleware, policies | Trusted by default | A tool bound to the isolated executor is given less trust: no store access, scrubbed env, egress allowlist (ADR 0019). This is hardening, not OS confinement. |
 | Callers at the edge | Untrusted once `authorize` and an `ExecutionAuthorizer` are wired | Unwired, any caller of the runtime may start, resume or cancel. `security.strict` refuses to boot without them. |
 | Approvers | Authenticated only with a `ResumeAuthenticator` | HMAC proof bound to one park of one execution, with expiry (ADR 0117). |
 | Model output (text, tool calls, reasoning) | Untrusted | Tool names checked against the menu, inputs schema-checked, approval gates, budgets (ADR 0121). |
@@ -207,7 +207,7 @@ Each model response and each tool outcome is a recorded decision, so a resume re
 
 ## 6. Isolation and code execution
 
-Loom has two isolation boundaries: a child process for untrusted tool code (`@loom/isolate`) and, for model-written code, a capability-empty WASM VM (`@loom/plugin-sandbox`) or a backend you bring (`@loom/sandbox`, ADR 0144). Both sit innermost in the effect chain, so authorization, metering and validation stay on the trusted side.
+Loom has two isolation boundaries: a child process for your own tool code (`@loom/isolate`: trusted code, not model-written, kept off ambient authority; hardening, not OS confinement, ADR 0144) and, for model-written code, a capability-empty WASM VM (`@loom/plugin-sandbox`) or a backend you bring (`@loom/sandbox`, ADR 0144). Both sit innermost in the effect chain, so authorization, metering and validation stay on the trusted side.
 
 ### Isolated tool executor (ADR 0019, K7)
 
@@ -353,7 +353,7 @@ Loom's guardrails are pinned by tests that include the negative case (the attack
 4. Classify schemas with `secret()`, `sensitive()` and `externalized()`; wire `security.secrets.resolver` to a vault; compose `@loom/plugin-crypto` with a KMS-backed `KeyStore` declared `durable`.
 5. Wrap stores per tenant (`TenantScopedEventStore`) and add `@loom/plugin-audit-chain` with an Ed25519 signer; verify chains before archiving.
 6. Enable `taintResults` on MCP and A2A producers; paste `UNTRUSTED_CONTENT_SYSTEM_NOTE` into system prompts; set `needsApproval` for destructive tools and declare `idempotent: false` on non-idempotent ones.
-7. Run untrusted tool code under `@loom/isolate` with an egress allowlist inside an OS sandbox or container with egress rules; run model-written code only in `@loom/plugin-sandbox` with `workers` set, or in a backend whose declared capabilities (`network: "none"`, `freshPerRun: true`, hard wall clock, memory and CPU caps) pass `runSandboxBackendConformance` against the deployed backend: a declaration is earned by the kit, not by reading it.
+7. Run tool code that should not hold ambient authority (yours, not model-written) under `@loom/isolate` with an egress allowlist inside an OS sandbox or container with egress rules; run model-written code only in `@loom/plugin-sandbox` with `workers` set, or in a backend whose declared capabilities (`network: "none"`, `freshPerRun: true`, hard wall clock, memory and CPU caps) pass `runSandboxBackendConformance` against the deployed backend: a declaration is earned by the kit, not by reading it.
 8. Configure budgets, rate limits, spawn limits and a kill switch; declare per-flow deadlines.
 9. Run `loom doctor` and `@loom/verify` in CI, and treat their warnings as findings.
 
