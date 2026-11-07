@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore, isKeyUnavailable } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, isKeyUnavailable, isPayloadShredded } from "@loom/event-runtime";
 import { InMemoryContentStore } from "@loom/plugin-content";
 import { describe, expect, it } from "vitest";
 import { EncryptingContentStore } from "./EncryptingContentStore";
@@ -84,7 +84,9 @@ describe("a reserved extension stream sealed through the host's subjectOf", () =
       () => undefined,
       (e: unknown) => e
     );
-    expect(blobErr).toBeInstanceOf(Error);
+    // InMemoryKeyStore records the destruction, so the blob read can say "erased"; the stream
+    // has no tombstone, so its read cannot (KeyUnavailableError above).
+    expect(isPayloadShredded(blobErr)).toBe(true);
     // The ciphertext is still in the raw store, but nothing in it is the plaintext.
     expect(JSON.stringify((await raw.read(STREAM))[0]?.payload)).not.toContain(SECRET);
   });
