@@ -1710,6 +1710,8 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
 
 ### Fixed
 
+- **`shredSubject` with `executionIds: []` no longer needs a snapshot store (`@loom/plugin-crypto`).** Its own refusal of a reserved stream says to pass `[]` to destroy a key without tombstoning, but on a compactable store the same call was refused for lack of `snapshotStore` / `tombstoneSequenceOf`, which only matter for placing a tombstone. With no executions there is none, so the key is destroyed. The crypto README (A6) and docs/compliance.md now describe erasing a package's own reserved stream (such as a loom-ui lineage line) through `subjectOf`, with a test.
+
 - **`CloudRunPlatform.identity` is now used (`@loom/plugin-cloudrun`).** The deploy guide told people to set it, but nothing read it, so a private Cloud Run service answered 403. `CloudRunWorkerRuntime` now sends `Authorization: Bearer <token>` on every request, with the service URL's origin as the audience, and a failing provider fails the dispatch. `secrets` is documented as a slot for your own adapter, because the runtime has no secret to fetch.
 
 - **BREAKING under `taintResults`: A2A `raw` no longer holds the peer's text unmarked (`@loom/plugin-a2a`).** `A2APeerClient` tainted `content` only, while `raw.artifacts` and `raw.error` held the same words, so code reading `raw` got unmarked text. Both are now tainted; `raw.id` and `raw.status` stay plain for control flow. `TaintedA2APeerOutput` reflects it, so a caller who opted in gets a compile error at each read. Nothing changes without the option.

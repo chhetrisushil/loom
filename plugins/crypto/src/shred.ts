@@ -323,8 +323,10 @@ export async function shredSubject(
     );
   }
   // Refused BEFORE the key is destroyed: nothing irreversible happens on a call that cannot
-  // place its tombstone safely.
+  // place its tombstone safely. With no executions there is no tombstone to place (the key-only
+  // erasure the reserved-stream refusal above points at), so there is nothing to refuse.
   if (
+    executionIds.length > 0 &&
     options.tombstoneSequenceOf === undefined &&
     options.snapshotStore === undefined &&
     rawEventStore.truncatePrefix !== undefined
