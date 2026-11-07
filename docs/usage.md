@@ -131,7 +131,7 @@ const app = defineConfig({
 
 | Field | What it does |
 |---|---|
-| `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loom/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loom/plugin-postgres`, or your own (ADR 0043) |
+| `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loom/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loom/plugin-postgres`, or your own (ADR 0043). Any other `kind` throws a `TypeError` (a stale `{ kind: "sqlite" }` or `{ kind: "postgres" }` names the preset to use) rather than silently running in memory |
 | `surfaces` | agent surface ids to project — a bare id, or `{ id, redact: [...] }` to mask surface paths from egress (K10-R6) |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen`'s `flowModules`) |
 | `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`agentSurface`), tools are exposed on `app.tools`, skills register into `app.skills` |
@@ -591,7 +591,7 @@ version lives in the `retention-policy` example in `loom-examples` (see [example
 
 ## Step 10 — Branch: fork / simulate / promote
 
-Explore alternative decisions from a suspension gate, compare projected outcomes, and promote a winner — git-style, no merge. Requires `storage: { branching: true }` (or a `BranchRegistry`).
+Explore alternative decisions from a suspension gate, compare projected outcomes, and promote a winner — git-style, no merge. Requires `sqliteStorage({ dir, branching: true })` or `postgresStorage({ url, branching: true })` (or a `custom` storage with your own `branchRegistry`); the in-memory storage has no branch registry.
 
 ```ts
 import { parallelLimit } from "@loom/scheduler";

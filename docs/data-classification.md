@@ -239,7 +239,7 @@ These producers ship, all opt-in:
 
 | Producer | Origin | What it taints |
 |---|---|---|
-| `client.registerInto(effects, { taintResults: true })`, `mcpTool$(client, name, { taintResults: true })` | `mcp:<serverHost>/<toolName>` | the whole result |
+| `client.registerInto(effects, { taintResults: true })`, `mcpTool$(client, name, { taintResults: true })` | `mcp:<serverHost>/<toolName>` | the whole result; a malformed-input refusal (no `callTool` made) is tainted too |
 | `registerMcpInvoke(client, runtime, { taintResults: true })` | `mcp:<server>/<toolName>` | the whole result — `mcpInvoke$` yields `unknown`, so there is no field to single out |
 | `new A2APeerClient({ url, taintResults: true })` | `a2a:<toolId>` | `content`, `raw.artifacts` and `raw.error` — `raw.id` and `raw.status` stay plain, because they feed control flow |
 
