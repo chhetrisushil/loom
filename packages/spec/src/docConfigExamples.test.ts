@@ -102,14 +102,14 @@ function keysOf(object: ts.ObjectLiteralExpression): Array<[string, ts.ObjectLit
   return out;
 }
 
-const valueOf = (property: ts.ObjectLiteralElementLike): ts.Expression | undefined =>
+const initializerOf = (property: ts.ObjectLiteralElementLike): ts.Expression | undefined =>
   ts.isPropertyAssignment(property) ? property.initializer : undefined;
 
 function checkStorage(value: ts.Expression | undefined, report: (m: string) => void): void {
   if (value === undefined || !ts.isObjectLiteralExpression(value)) return;
   for (const [key, property] of keysOf(value)) {
     if (key !== "kind") continue;
-    const kind = valueOf(property);
+    const kind = initializerOf(property);
     if (kind !== undefined && ts.isStringLiteral(kind) && !STORAGE_KINDS.has(kind.text)) {
       report(`storage kind "${kind.text}" does not exist`);
     }
@@ -126,7 +126,7 @@ function checkConfig(config: ts.ObjectLiteralExpression, report: (m: string) => 
           : `flat "${key}" throws at boot: it is ${group}.${key}`
       );
     }
-    const value = valueOf(property);
+    const value = initializerOf(property);
     if (key === "storage") checkStorage(value, report);
     const options = GROUPS.get(key);
     if (options !== undefined && value !== undefined && ts.isObjectLiteralExpression(value)) {
