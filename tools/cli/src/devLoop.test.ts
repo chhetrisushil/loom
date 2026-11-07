@@ -626,8 +626,16 @@ describe("loom dev (runDev)", () => {
         command: `"${process.execPath}" ${join(root, "envdump.js")}`,
         inheritEnv,
       });
-      await until(() => existsSync(join(root, "env.json")));
-      const seen = read();
+      // Wait for the content, not the file: writeFileSync creates it before filling it.
+      let seen: ReturnType<typeof read> | undefined;
+      await until(() => {
+        try {
+          seen = read();
+          return true;
+        } catch {
+          return false;
+        }
+      });
       ac.abort();
       await done;
       return seen;
