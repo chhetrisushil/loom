@@ -65,7 +65,7 @@ throws `UntrustedContentError`.
 
 The producers ship opt-in: `registerMcpInvoke(client, runtime, { taintResults: true })`,
 `client.registerInto(effects, { taintResults: true })`, `mcpTool$(client, name, { taintResults: true })` and
-`new A2APeerClient({ url, taintResults: true })`. The **refusal is structural**; the **fence is only
+`new A2APeerClient({ url, taintResults: true })`. [Data classification](../data-classification.md) lists what they do not cover. The **refusal is structural**; the **fence is only
 a label** — put `UNTRUSTED_CONTENT_SYSTEM_NOTE` in your system prompt so the model knows what the tag
 means. Full treatment in [data classification](../data-classification.md#the-integrity-axis--untrusted-content-adr-0085).
 

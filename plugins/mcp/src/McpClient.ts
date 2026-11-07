@@ -1,4 +1,4 @@
-import { tainted } from "@loom/classify";
+import { tainted, unwrapTainted } from "@loom/classify";
 import { jsonSchemaHash, tool$ } from "@loom/core";
 import type { ToolDefinition } from "@loom/core";
 import type { EffectRuntime } from "@loom/effect-runtime";
@@ -320,7 +320,10 @@ export class McpClient {
       throwIfToolError(name, result);
       value = result;
     }
-    return taintResults ? tainted(value, `mcp:${this.serverHost ?? "server"}/${name}`) : value;
+    // Unwrapped first: the server writes this value, so a wrapper it sent must not choose the origin.
+    return taintResults
+      ? tainted(unwrapTainted(value), `mcp:${this.serverHost ?? "server"}/${name}`)
+      : value;
   }
 
   /**
@@ -436,7 +439,9 @@ export class McpClient {
     const effect = new ToolEffect(async (input: unknown) => {
       // R4b — the shape verdict is journaled WITH the step (see inputShape.ts).
       const refusal = refuseMalformedInput(mcpTool.inputSchema, input);
-      if (refusal !== undefined) return refusal; // our own words: nothing from the server to mark
+      // Unmarked: our own words, plus at most schema property names limited to an identifier charset
+      // (see inputShape.ts), which the sanitised tool menu could show the model anyway.
+      if (refusal !== undefined) return refusal;
       return this.callAs(mcpTool.name, input, fidelity, taintResults);
     });
     const ui = uiMetaOf(mcpTool._meta);

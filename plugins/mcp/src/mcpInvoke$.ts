@@ -1,4 +1,4 @@
-import { tainted } from "@loom/classify";
+import { tainted, unwrapTainted } from "@loom/classify";
 import { fail, projection$, step$ } from "@loom/core";
 import type { EventEnvelope, ProjectionDefinition, StepDefinition } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
@@ -295,8 +295,9 @@ export function registerMcpInvoke(
       // Taint at INGRESS — the moment third-party content crosses in. The
       // wrapper IS the step output, so it is what STEP_COMPLETED records and
       // what a replay hands back; tainting anywhere later would be a guess.
+      // Unwrapped first: the server writes this value, so a wrapper it sent must not choose the origin.
       return options.taintResults === true
-        ? tainted(value, `mcp:${serverId ?? "server"}/${call.toolName}`)
+        ? tainted(unwrapTainted(value), `mcp:${serverId ?? "server"}/${call.toolName}`)
         : value;
     },
     {
