@@ -1,7 +1,7 @@
 # Examples moved to `loom-examples`
 
 The runnable examples now live in the sibling repository **`loom-examples`**
-(`git@github.com:chhetrisushil/loom-examples.git`), mirroring how third-party
+(`https://github.com/chhetrisushil/loom-examples.git`), mirroring how third-party
 plugins live in `loom-plugins`. This keeps the framework/kernel repo focused on
 the packages themselves.
 
@@ -21,7 +21,7 @@ workspace/
 ```
 
 ```bash
-git clone git@github.com:chhetrisushil/loom-examples.git
+git clone https://github.com/chhetrisushil/loom-examples.git
 cd loom-examples && pnpm install
 pnpm --filter @loom/db-observability start
 ```

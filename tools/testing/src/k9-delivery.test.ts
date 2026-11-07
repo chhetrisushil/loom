@@ -280,3 +280,87 @@ describe("crashingEventStore — appendBatch honours the crash (a coalesced writ
     expect((await inner.read("d")).length).toBe(1);
   });
 });
+
+describe("K9 — two tools in doubt at once", () => {
+  const steps = ["refund", "cancel-sub"].map((id) =>
+    step$({
+      id,
+      name: id,
+      toolId: `${id}-tool`,
+      inputSchema: z.object({}),
+      outputSchema: z.object({ ok: z.boolean() }),
+    })
+  );
+  const [refund, cancelSub] = steps as [(typeof steps)[0], (typeof steps)[0]];
+  const parallelFlow = {
+    definition: {
+      _tag: "FlowDefinition",
+      id: "two-tools",
+      name: "two-tools",
+      version: "1.0.0",
+      inputSchema: z.object({}),
+      outputSchema: z.any(),
+      steps,
+    },
+    runner: async (ctx) => ({
+      results: await ctx.parallel([() => ctx.run(refund, {}), () => ctx.run(cancelSub, {})]),
+    }),
+  } as RegisteredFlow<Record<string, never>, unknown>;
+
+  it("parks on each in turn, runs neither tool again, then completes", async () => {
+    const calls = { refund: 0, "cancel-sub": 0 };
+    const crash = crashingEventStore(new InMemoryAsyncEventStore(), {
+      dropFrom: (e) => e.eventType === "STEP_COMPLETED",
+    });
+    const snapshots = new InMemoryAsyncSnapshotStore();
+    const bootRuntime = () => {
+      const effects = new EffectRuntime();
+      for (const id of ["refund", "cancel-sub"] as const) {
+        effects.register(
+          `${id}-tool`,
+          new ToolEffect(
+            async () => {
+              calls[id]++;
+              return { ok: true };
+            },
+            { idempotent: false }
+          )
+        );
+      }
+      const runtime = new WorkflowRuntime({
+        eventStore: crash.store,
+        snapshotStore: snapshots,
+        effectRuntime: effects,
+      });
+      runtime.registerFlow(
+        parallelFlow.definition,
+        parallelFlow.runner as FlowRunner<unknown, unknown>
+      );
+      return runtime;
+    };
+    const first = await bootRuntime().start(parallelFlow, {}, { executionId: "two" });
+    await first.waitForCompletion().catch(() => {});
+    crash.restore();
+    const before = { ...calls };
+
+    const recovered = await bootRuntime().resume("two", {
+      eventType: "EXECUTION_RECOVERED",
+      payload: {},
+    });
+    const parked = await recovered.waitForSuspend();
+    expect(parked.suspendedOn?.correlationKey).toBe("refund");
+    expect(parked.variables._indoubt).toHaveLength(2);
+
+    const verdict = (stepId: string) => ({
+      eventType: EFFECT_INDOUBT_RESOLVED,
+      payload: { stepId, resolution: "completed-with-result", output: { ok: true } },
+    });
+    const afterFirst = await bootRuntime().resume("two", verdict("refund"));
+    const parkedAgain = await afterFirst.waitForSuspend();
+    expect(parkedAgain.suspendedOn?.correlationKey).toBe("cancel-sub");
+
+    const afterSecond = await bootRuntime().resume("two", verdict("cancel-sub"));
+    expect((await afterSecond.waitForCompletion()).status).toBe("completed");
+    expect(calls).toEqual(before);
+  });
+});

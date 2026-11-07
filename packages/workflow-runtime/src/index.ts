@@ -269,3 +269,4 @@ export {
 export type { ProjectionSnapshot } from "./resumability";
 
 export { AsyncContextUnavailableError } from "./contextStore";
+export { inDoubtDecisionId } from "./inDoubt";

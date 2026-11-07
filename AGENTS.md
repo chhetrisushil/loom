@@ -9,7 +9,7 @@ example apps are **not** here — see below.
 ## Examples live in the sibling `loom-examples` repo
 
 To keep this repo focused on the framework, the example apps were extracted to
-**`loom-examples`** (`git@github.com:chhetrisushil/loom-examples.git`), the same
+**`loom-examples`** (`https://github.com/chhetrisushil/loom-examples.git`), the same
 sibling-repo pattern used for `loom-plugins` (3P plugins) and `loom-demo`.
 
 They consume this repo's **unpublished** `@loom/*` packages from a sibling

@@ -20,7 +20,7 @@ checkout once and point `create-loom-app` at it. An app anywhere on disk links t
 with `--loom-path`:
 
 ```bash
-git clone git@github.com:chhetrisushil/loom.git
+git clone https://github.com/chhetrisushil/loom.git
 cd loom
 pnpm install && pnpm build          # `pnpm build:fast` is quicker for the edit-rebuild loop
 node tools/create-loom-app/dist/index.js ~/code/my-app --loom-path "$PWD"

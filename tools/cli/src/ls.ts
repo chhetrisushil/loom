@@ -5,6 +5,7 @@ import {
   isReservedStream,
   iterateExecutionIds,
 } from "@loom/event-runtime";
+import { EFFECT_INDOUBT_RESOLVED, inDoubtDecisionId } from "@loom/workflow-runtime";
 import { UsageError } from "./args";
 import { foldAt } from "./core";
 import { humanizeDuration } from "./duration";
@@ -41,7 +42,17 @@ export interface ExecutionRow {
   /** Epoch ms of the last event. */
   lastActivityAt: number;
   /** What a suspended execution waits on. */
-  waiting?: { on: string; wakeAt?: number; timeoutMs?: number; correlationKey?: string };
+  waiting?: {
+    on: string;
+    wakeAt?: number;
+    timeoutMs?: number;
+    correlationKey?: string;
+    /**
+     * Every step of a run parked in doubt that still needs a verdict. The park itself names only
+     * one, and the run parks again on the next after each verdict, so this is the whole list.
+     */
+    inDoubtSteps?: string[];
+  };
   /** Present only when a lease store was given and the execution holds an unexpired lease. */
   lease?: { owner: string; expiresAt: number; expired: boolean };
 }
@@ -49,6 +60,11 @@ export interface ExecutionRow {
 export interface LsOptions {
   status?: ExecutionStatus;
   workflow?: string;
+  /**
+   * Only suspended executions waiting on this: a gate's event name, an inbox topic of a multi-wait
+   * park, or `timer` for any park with a timer. Applied during the scan, before `limit`.
+   */
+  waitingOn?: string;
   /** Only executions with activity within this many ms of `now`. */
   sinceMs?: number;
   limit?: number;
@@ -100,6 +116,40 @@ export function wakeAtOf(s: SuspendCondition | undefined): number | undefined {
   return min;
 }
 
+/** Whether a parked execution is waiting on `name`. See {@link LsOptions.waitingOn}. */
+export function isWaitingOn(s: SuspendCondition | undefined, name: string): boolean {
+  if (s === undefined) return false;
+  if (s.on === name) return true;
+  if (name === "timer" && wakeAtOf(s) !== undefined) return true;
+  return (s.waits ?? []).some((w) => w.on === name || w.topic === name);
+}
+
+/**
+ * The steps of a run parked in doubt that still need a verdict, in the order they went into doubt.
+ * A step is resolved once its latest in-doubt attempt has a verdict or the step has settled.
+ */
+export function unresolvedInDoubtSteps(state: ExecutionState): string[] {
+  const entries = state.variables._indoubt as
+    | ReadonlyArray<{ stepId?: string; attempts?: number }>
+    | undefined;
+  if (!Array.isArray(entries)) return [];
+  const decisions = (state.variables._decisions ?? {}) as Record<string, unknown>;
+  const latest = new Map<string, number | undefined>();
+  for (const entry of entries as ReadonlyArray<{ stepId?: string; attempts?: number }>) {
+    if (typeof entry.stepId === "string") latest.set(entry.stepId, entry.attempts);
+  }
+  const unresolved: string[] = [];
+  for (const [stepId, attempts] of latest) {
+    const status = Object.hasOwn(state.frames, stepId) ? state.frames[stepId]?.status : undefined;
+    if (status === "completed" || status === "failed" || status === "skipped") continue;
+    if (attempts !== undefined && Object.hasOwn(decisions, inDoubtDecisionId(stepId, attempts))) {
+      continue;
+    }
+    unresolved.push(stepId);
+  }
+  return unresolved;
+}
+
 export function rowOf(
   executionId: string,
   state: ExecutionState,
@@ -107,6 +157,10 @@ export function rowOf(
 ): ExecutionRow {
   const s = state.suspendedOn;
   const wakeAt = wakeAtOf(s);
+  const inDoubtSteps =
+    state.status === "suspended" && s?.on === EFFECT_INDOUBT_RESOLVED
+      ? unresolvedInDoubtSteps(state)
+      : [];
   return {
     executionId,
     workflowId: state.workflowId,
@@ -120,6 +174,7 @@ export function rowOf(
           ...(wakeAt !== undefined && { wakeAt }),
           ...(s.timeout !== undefined && { timeoutMs: s.timeout }),
           ...(s.correlationKey !== undefined && { correlationKey: s.correlationKey }),
+          ...(inDoubtSteps.length > 0 && { inDoubtSteps }),
         },
       }),
   };
@@ -166,6 +221,12 @@ export async function scanExecutions(
     const row = rowOf(executionId, state, tip);
     if (options.status !== undefined && row.status !== options.status) continue;
     if (options.workflow !== undefined && row.workflowId !== options.workflow) continue;
+    if (
+      options.waitingOn !== undefined &&
+      (state.status !== "suspended" || !isWaitingOn(state.suspendedOn, options.waitingOn))
+    ) {
+      continue;
+    }
     if (options.sinceMs !== undefined && now - row.lastActivityAt > options.sinceMs) continue;
     matched.push(row);
   }
@@ -227,6 +288,7 @@ export function describeWaiting(row: ExecutionRow, now: number, keys = false): s
     );
     if (w.on !== "" && w.on !== "timer") parts.push(`or event ${w.on}`);
   } else parts.push(`event ${w.on}`);
+  if (w.inDoubtSteps !== undefined) parts.push(`in doubt: ${w.inDoubtSteps.join(", ")}`);
   if (keys && w.correlationKey !== undefined) parts.push(`key ${w.correlationKey}`);
   return parts.join(" ");
 }
@@ -296,6 +358,7 @@ export interface LsFlags extends StoreFlags {
   keys?: boolean;
   status?: ExecutionStatus;
   workflow?: string;
+  waitingOn?: string;
   sinceMs?: number;
   limit?: number;
 }
@@ -312,6 +375,7 @@ export async function lsReport(
       ...(flags.keys === true && { includeKeys: true }),
       ...(flags.status !== undefined && { status: flags.status }),
       ...(flags.workflow !== undefined && { workflow: flags.workflow }),
+      ...(flags.waitingOn !== undefined && { waitingOn: flags.waitingOn }),
       ...(flags.sinceMs !== undefined && { sinceMs: flags.sinceMs }),
       ...(stores.leaseStore !== undefined && { leases: stores.leaseStore }),
     });

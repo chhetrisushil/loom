@@ -212,7 +212,7 @@ all just *lenses on it*.
 ## Runnable examples
 
 The runnable example apps live in the sibling **`loom-examples`** repo
-(`git@github.com:chhetrisushil/loom-examples.git`); this repo keeps the framework
+(`https://github.com/chhetrisushil/loom-examples.git`); this repo keeps the framework
 packages. See the **[examples catalogue](examples.md)** for what each teaches and
 the APIs/ADRs it exercises, then read the source in `../loom-examples/examples/<name>/`
 (check `loom-examples` out beside `loom`; run one with `pnpm --filter @loom/<name> start`).
