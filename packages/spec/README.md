@@ -4,7 +4,8 @@ Two things live here. The library is a read-only manifest of the kernel and SPI 
 compatibility validator, a maturity registry (`CAPABILITIES`) and a layering checker. It builds the
 manifest by importing the real exported constants from their home packages, so it cannot be hand-edited
 out of sync with them. Second, `src/*.test.ts` is the repository's governance suite: the guards that fail
-the build when docs, READMEs, exports, test conventions or package layering drift from the code. Nothing
+the build when docs, READMEs, exports, test conventions or package layering drift from the code. One of them, `kernelBudget.test.ts`, holds the kernel package to a
+per-file budget of code lines (`kernel-budget.json`), so the kernel grows only by a recorded decision. Nothing
 here touches execution semantics, and it is not something an app imports. You read it to see what a
 version means, and you run it (`pnpm --filter @loom/spec test`) to find out which convention you broke.
 

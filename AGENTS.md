@@ -97,6 +97,12 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
     `listen(0)`. On macOS a wildcard bind can share a port with another process's 127.0.0.1 listener,
     and the client then talks to that stranger (enforced by `packages/spec/src/testServerBinding.test.ts`).
 
+- **The kernel has a size budget** (`packages/spec/kernel-budget.json`, enforced by
+  `packages/spec/src/kernelBudget.test.ts`): every source file of `packages/workflow-runtime/src` has a
+  budget in CODE lines (comments and blank lines are free). A file over its budget, a new kernel file
+  without one, or a budget left looser than the file fails. Shrinking: rerun with
+  `LOOM_KERNEL_BUDGET_UPDATE=1`. Growing or adding a file also needs `LOOM_KERNEL_BUDGET_ADR=<NNNN>`, the
+  ADR that decided the code belongs in the kernel rather than behind a seam in a 1P package.
 - **`pnpm typecheck` does NOT see tests** (every package tsconfig excludes `*.test.ts`); **`pnpm typecheck:tests`**
   runs each package's `tsconfig.test.json` (`noEmit`, tests included, siblings resolved from built `dist`, so
   build first). A new package with tests needs a `tsconfig.test.json` + the script
