@@ -107,6 +107,44 @@ export type ApprovalPolicy = (
   onMenu?: boolean
 ) => boolean;
 
+/**
+ * {@link AgentLoopConfig.writeBack}: where the run's prompt and answer are written. One of `toolId`,
+ * `unless` or `allowDirect: true` is required; see each field.
+ */
+export type AgentLoopWriteBack = AgentLoopWriteBackFields &
+  ({ toolId: string } | { unless: () => boolean } | { allowDirect: true });
+
+/** The fields of {@link AgentLoopWriteBack}; the union above says which of them is required. */
+export interface AgentLoopWriteBackFields {
+  /** The memory tier to write; defaults to {@link AgentLoopConfig.memoryTier}, then `"working"`. */
+  tier?: string;
+  /** The memory scope to write; defaults to {@link AgentLoopConfig.memoryScope}, then the execution id. */
+  scope?: string;
+  /**
+   * Make the write a journaled `ctx.execute` against this effect (register
+   * {@link memoryWriteBackEffect} under it): K2 authorization, tenant / authority checks and
+   * the kill switch apply, and a replay serves the recorded write. Without it the write is a
+   * direct call on the `TieredMemory` you passed (outside the ring); `requireEffectRing`
+   * refuses that.
+   */
+  toolId?: string;
+  /**
+   * Skip the write while this returns `true` (evaluated live, never journaled): the hook for a
+   * forked or simulated execution, which must not write the real memory. The kernel gives a
+   * body no way to tell it is a fork (a fork replays the prefix of a real execution), so the
+   * host that forks passes it. The answer is journaled (`<loop>#writeback:skip`), so a resume in
+   * another process reaches the same verdict. Adding a fork marker to the kernel is a separate
+   * decision, noted in ADR 0121 as a follow-up.
+   */
+  unless?: () => boolean;
+  /**
+   * Accept a direct, unconditional, un-journaled write (no `toolId`, no `unless`). Required
+   * to say so: the type needs one of the three, and an untyped caller with none gets
+   * {@link AgentLoopConfigError} before the first model call.
+   */
+  allowDirect?: boolean;
+}
+
 export interface AgentLoopConfig {
   definition: AgentDefinition;
   /**
@@ -354,8 +392,13 @@ export interface AgentLoopConfig {
    * R10 — persist the run's outcome to {@link memory} when it finishes: the user's prompt and the
    * final answer, as `user` / `assistant` entries in the same tier and scope the next run recalls
    * from, so a conversation carried across executions (or across `continueAsNew` generations)
-   * remembers itself. `true` uses {@link memoryTier} / {@link memoryScope}; the object form
-   * overrides either. Requires {@link memory}.
+   * remembers itself. `tier` / `scope` default to {@link memoryTier} / {@link memoryScope}.
+   * Requires {@link memory}.
+   *
+   * The config must say where the write goes (`toolId`), when it must not happen (`unless`), or that
+   * it accepts a direct, unconditional write (`allowDirect: true`): the type requires one of the
+   * three, so a bare `true` or `{}` does not compile. Both used to be accepted by the type and
+   * always threw; an untyped caller still gets that {@link AgentLoopConfigError} at run time.
    *
    * The write is a side effect in a body that re-runs on resume, so it is IDEMPOTENT: each entry
    * carries a deterministic id (execution, loop and a hash of the prompt / of prompt + answer) and
@@ -366,34 +409,7 @@ export interface AgentLoopConfig {
    * is stored tainted with that origin, so a later recall puts it in a fenced `user` message, never
    * an instruction (assistant / system) position.
    */
-  writeBack?:
-    | boolean
-    | {
-        tier?: string;
-        scope?: string;
-        /**
-         * Make the write a journaled `ctx.execute` against this effect (register
-         * {@link memoryWriteBackEffect} under it): K2 authorization, tenant / authority checks and
-         * the kill switch apply, and a replay serves the recorded write. Without it the write is a
-         * direct call on the `TieredMemory` you passed (outside the ring); `requireEffectRing`
-         * refuses that.
-         */
-        toolId?: string;
-        /**
-         * Skip the write while this returns `true` (evaluated live, never journaled): the hook for a
-         * forked or simulated execution, which must not write the real memory. The kernel gives a
-         * body no way to tell it is a fork (a fork replays the prefix of a real execution), so the
-         * host that forks passes it. The answer is journaled (`<loop>#writeback:skip`), so a resume in
-         * another process reaches the same verdict. Adding a fork marker to the kernel is a separate
-         * decision, noted in ADR 0121 as a follow-up.
-         */
-        unless?: () => boolean;
-        /**
-         * Accept a direct, unconditional, un-journaled write (no `toolId`, no `unless`). Required
-         * to say so: without any of the three, construction throws {@link AgentLoopConfigError}.
-         */
-        allowDirect?: boolean;
-      };
+  writeBack?: false | AgentLoopWriteBack;
   /**
    * R22 (ADR 0125) — opt-in tool search. Instead of putting every tool on the menu, offer the model
    * a `search_tools` meta-tool: it searches the host's {@link ToolSearchConfig.catalog} (the agent's
@@ -927,9 +943,12 @@ export async function agentLoop$(
     throw new Error("agentLoop$ compaction requires `afterMessages` or `afterBytes`");
   }
   if (config.writeBack !== undefined && config.writeBack !== false) {
-    const w = config.writeBack;
+    // The type requires one of the three; an untyped caller (JavaScript, a config parsed at run time)
+    // can still pass `true` or `{}`.
+    const w = config.writeBack as unknown as true | AgentLoopWriteBackFields;
     if (
       w === true ||
+      typeof w !== "object" ||
       (w.toolId === undefined && w.unless === undefined && w.allowDirect !== true)
     ) {
       // A fork or a simulation replays the prefix of a real execution; an unconditional direct write
@@ -1942,7 +1961,7 @@ export async function agentLoop$(
 
   const wb = config.writeBack;
   if (wb !== undefined && wb !== false && config.memory !== undefined) {
-    const o = typeof wb === "object" ? wb : {};
+    const o = wb;
     // The verdict is a recorded decision, so a resume in another process (where the host's flag may
     // read differently) does not flip a write that was, or was not, skipped.
     const skip =

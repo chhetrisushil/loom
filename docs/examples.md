@@ -99,7 +99,7 @@ pnpm --filter @loom/db-observability start
   re-run on replay (a negative test pins ADR 0121's crash window), a refund parked on approval and
   resumed in a fresh runtime with no tool re-run, `writeBack` through `memoryWriteBackEffect`
   recalled by the next ticket (tainted, inside the untrusted fence), a fork guard, and the config
-  errors (bare `writeBack: true`; a response cache without `cacheScope` on the direct path).
+  errors (a bare `writeBack: true` from an untyped caller, which the type refuses; a response cache without `cacheScope` on the direct path).
 - **`chat-agent`** — the conversation layer (ADR 0122) for one owner: multi-turn chat, barge-in
   (a new turn aborts the in-flight answer; the partial is kept as interrupted), a tiny token
   window (rotation plus a rolling summary; the prompt plateaus), a process restart then an SSE
