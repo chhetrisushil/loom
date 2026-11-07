@@ -637,7 +637,7 @@ The parent and losing branches remain immutable — a full audit trail of what w
 
 ## Step 11 — Harden it: grants, quotas, safety, secrets & isolation
 
-Everything so far is the happy path. The **kernel-hardening rings (K1–K12, T1–T2)** add the guardrails that make a flow safe to run against real systems and real tenants. Every ring is **opt-in and byte-identical to the un-hardened path when unwired** — you add exactly the ones you need, and each verdict lands on the log as a durable, replayable fact (audit for free). Full API in the [reference](api-reference.org#kernel-hardening); the reasoning is in [Kernel Hardening](loom-2.0/04-kernel-hardening.md).
+Everything so far is the happy path. The **kernel-hardening rings (K1–K12, T1–T2)** add the guardrails that make a flow safe to run against real systems and real tenants. Every guardrail ring is **opt-in and inert when unwired** (a few durability defaults, such as heartbeat leases and the principal recorded on `EXECUTION_STARTED`, are on without configuration) — you add exactly the ones you need, and each verdict lands on the log as a durable, replayable fact (audit for free). Full API in the [reference](api-reference.org#kernel-hardening); the reasoning is in [Kernel Hardening](loom-2.0/04-kernel-hardening.md).
 
 **Strict mode (R9)** — every default above is permissive: no authorizer means every effect is allowed, no deadline means an execution may run forever, a child may spawn children without bound, and nothing meters spend. `security.strict` flips the baseline for an app whose agents act on their own:
 
@@ -786,7 +786,7 @@ losing one is indistinguishable from shredding the subject, and nothing fails at
 happens. `InMemoryKeyStore` declares `durable: false` and `loom doctor` refuses it; back it
 with a KMS (`loom-plugin-kms`) or your own store.
 
-**Data-plane isolation & egress (K7)** — run an untrusted tool in a scrubbed child process whose network is restricted to a static allowlist (a target off the list is denied kernel-side with `EGRESS_DENIED`, before any connection):
+**Data-plane isolation & egress (K7)** — run a tool of your own (trusted, not model-written) in a scrubbed child process whose network is restricted to a static allowlist (a target off the list is denied kernel-side with `EGRESS_DENIED`, before any connection):
 
 ```ts
 import { IsolatedToolEffect } from "@loom/isolate";

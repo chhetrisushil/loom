@@ -10,7 +10,7 @@ Each event carries, in its metadata, `H(prevHash ‖ canonical(event))` and (opt
 ```ts
 import { hashChainedEventStore } from "@loom/plugin-audit-chain";
 
-// Compose below tenant-scoping, above the base store:
+// The chain is outermost: it wraps tenant-scoping, which wraps fencing, which wraps the base store:
 const store = hashChainedEventStore(tenantScopedEventStore(fencingStore(base)), {
   hmacSecret: process.env.AUDIT_SECRET, // optional: also HMAC-sign each hash
 });

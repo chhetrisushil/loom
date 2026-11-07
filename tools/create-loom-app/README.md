@@ -46,7 +46,7 @@ mapped too). The links are relative to the app: move both folders together, or r
 | `--name <pkg>` | npm package name; default is the folder name, which must itself be valid (`Bad Name!` is refused with a suggestion) |
 | `--force` | scaffold into a non-empty folder. It overwrites only the files it generates and never deletes anything else; it says how many it overwrote |
 
-Exit codes: `0` scaffolded, `2` refused (nothing written), `1` usage error.
+Exit codes: `0` scaffolded (or `--help`), `2` refused or a usage error (nothing written), `1` an unexpected crash.
 
 ## Entry points
 

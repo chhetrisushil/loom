@@ -21,7 +21,7 @@ top, *that* is the plugin (the `renderer-react` precedent).
 ## Quick start
 
 ```ts
-import { ReplayInspector } from "@loom/replay-inspector";
+import { ReplayInspector, describePin } from "@loom/replay-inspector";
 
 const inspector = new ReplayInspector({
   events: eventStore,        // read replica; scope it before it gets here
@@ -57,7 +57,7 @@ Three outcomes, all explicit:
 
 > **A finding worth knowing.** `ExecutionState.workflowVersion` is *not* durable. No event
 > handler writes it; `WorkflowRuntime.foldState` seeds it from the **currently registered**
-> flow (`WorkflowRuntime.ts:857-861`). So under skew the kernel reports the deployed
+> flow (see `foldState` in `WorkflowRuntime`). So under skew the kernel reports the deployed
 > version for an old execution. The inspector reports `""` ("not recorded") unless a
 > snapshot carries it — matching the kernel there would be the exact IX-5 violation this
 > requirement exists to prevent. `flowHash` is the durable pin; use it.

@@ -388,7 +388,7 @@ flowchart LR
   M2 --> M3["safetyMiddleware<br/>(K6 — validate in/out → SAFETY_BLOCKED)"]
   M3 --> M4["redactionMiddleware<br/>(K10 — resolve secretRefs)"]
   M4 --> M5["claimCheckMiddleware<br/>(ADR 0054 — over-cap result → ref+digest)"]
-  M5 --> Eff["Effect.execute<br/>tool · llm · human · a2a<br/>(K7 IsolatedToolEffect for untrusted tools)"]
+  M5 --> Eff["Effect.execute<br/>tool · llm · human · a2a<br/>(K7 IsolatedToolEffect for tools kept off ambient authority)"]
 ```
 
 Every middleware after `retryMiddleware` is opt-in; the authorizer, metering, safety, and redaction rings are each *omittable* and byte-identical to the permissive path when unwired (P10). The full ring set is catalogued in §5.7.
@@ -497,7 +497,7 @@ Every one of these is *a different lens on the durable log*:
 
 ### 5.7 Kernel-hardening rings (K1–K12, T1–T2)
 
-The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom *earn* the word "kernel." Each ring is opt-in and byte-identical to Loom 1.x when unwired (P10), and each new durable verdict is folded like any other event (P9). The full set is implemented:
+The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom *earn* the word "kernel." Each guardrail ring is opt-in and inert when unwired (P10; the durability defaults such as heartbeat leases and the recorded principal are on without configuration), and each new durable verdict is folded like any other event (P9). The full set is implemented:
 
 - **K1** — versioned syscall ABI (`KERNEL_ABI`, `packages/workflow-runtime/src/abi.ts`); **K2** —
   capability grants / authority ring (`EFFECT_DENIED`); **K3** — resource metering & quotas

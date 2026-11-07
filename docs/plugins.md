@@ -102,9 +102,16 @@ and compute.
   surface (`totalCount` and friends) that `PoolLike` deliberately omits. Without `options`,
   the dedicated `LISTEN` session cannot be opened and cross-node delivery degrades; the log
   stays authoritative and same-process subscribers are unaffected.
-- `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI.
+- `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI (the optional
+  `KeyStore.wasDestroyed` is the destruction proof erasure asks for). Also `EncryptingContentStore`, which seals
+  each claim-checked blob under its owning subject's key at a subject-scoped address
+  ([ADR 0143](adr/0143-encrypting-content-store.md)), and `EncryptingArchiveStore`, which seals the
+  compaction/inbox archive under the same `KeyStore`. `EncryptingEventStore` seals each message's sender under an
+  opaque handle by default (`senderSubjectOf: false` opts out, ADR 0139).
 - `@loom/plugin-content` — content-store seam: `ContentResolvingEventStore` externalizes marked
   payload fields to a content-addressed side store + `ContentStore` SPI ([ADR 0046](adr/0046-content-store-seam-thin-authoritative-log.md)).
+  SPI 1.5.0 adds an optional `ContentAccess` (`{ executionId, workflowId }`) argument to `put`/`putStream`/`get`/`getMany`, so a
+  store can seal per owner ([ADR 0143](adr/0143-encrypting-content-store.md)); a plain store ignores it.
 - `@loom/plugin-durable-state` — typed, versioned, contract-migratable keyed carry state as
   RECORDED effects (replay folds the recorded value, never the store) + CAS revisions and the
   `sentinelState()` schedule-driven convenience ([ADR 0053](adr/0053-durable-state-plugin.md)).
@@ -215,14 +222,14 @@ and compute.
   (ADR 0098); a layout's `role` or `id` changes nothing in the output (ADR 0099, ADR 0101).
   A widget whose `source.redacted` is `true` (IR 2.5.0, ADR 0097 amendment) is the single line `⊘ redacted` on
   this surface and the React and DOM ones: no title, kind or value, whatever the widget carries.
-
-**Compute**
-
 - `@loom/plugin-renderer-dom` — framework-free DOM renderer (`renderBlueprintToDom`, live `mountBlueprint`), the
   web surface for an app that wants neither React nor loom-ui. Covers the same eight kinds as the other two (asserted
   by a three-way parity test); builds every element through an allowlisting `h()` (no `innerHTML`, `href` through
   `safeUrl`), ships no CSS and no runtime dependency beyond blueprint-runtime and projection-runtime, and is not in
   the `@loom/sdk` barrel (ADR 0127).
+
+**Compute**
+
 - `@loom/plugin-worker-remote` — `RemoteWorkerRuntime`: dispatches an `ExecutionPackage` to a
   stateless worker's `POST /execute` and collects the `ExecutionResult`.
 - `@loom/plugin-worker-server` — `createWorkerServer`: the other half, and the container
@@ -344,7 +351,8 @@ loom plugin new sandbox my-box
 - A remote backend (Cloud Run, Firecracker, E2B): no service account or credentials, egress denied at
   the network layer, one request per instance, the request timeout as the hard kill, memory and CPU
   caps, no shared writable state. The scaffolded README carries this checklist.
-- `@loom/isolate` is a different thing: it runs TRUSTED tool code with brokered egress.
+- `@loom/isolate` is a different thing: it runs TRUSTED tool code (yours, not model-written) with brokered
+  egress, as hardening rather than OS confinement; model-written scripts belong behind this seam (ADR 0144).
 - A third-party example exists: `loom-plugin-cloudrun-sandbox` in the `loom-plugins` repo (a Python
   script on Cloud Run). It has not been verified on a real deployment and its memory cap is untested;
   treat it as a worked example of the checklist above, not a vouched backend.
@@ -397,6 +405,12 @@ export const app = defineConfig({ storage: myStorage({ url: process.env.DB_URL! 
 import { runEventStoreConformance } from "@loom/conformance";
 runEventStoreConformance(() => new MyEventStore(":memory:"));
 ```
+
+A storage plugin should also supply `CustomStorage.archiveStore` (an `ArchiveStore`, prove it with
+`runArchiveStoreConformance` from `@loom/conformance`). Without an archive, compaction REFUSES (it moves
+the events it removes there) and the inbox cannot trim ([ADR 0138](adr/0138-compaction-archives-what-it-removes.md),
+[ADR 0139 D5](adr/0139-reserved-streams-archive-before-removal.md)); `durability.retention.compactionArchive`
+supplies one from the app side.
 
 Presets that contribute middleware/telemetry/surfaces return a `Partial<LoomConfig>`;
 `defineConfig` concatenates arrays with the app's explicit entries (order = composition order).

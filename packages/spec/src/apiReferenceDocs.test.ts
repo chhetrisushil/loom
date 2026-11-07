@@ -2,11 +2,11 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// ── Fitness function: "exhaustive per-package reference" has to be exhaustive ──
+// ── Fitness function: every workspace package has a section in the API reference ──
 //
-// `docs/api-reference.org` opens with the words *"Exhaustive per-package reference"*, which is a
-// claim about the whole workspace and therefore wrong the moment a package ships without a
-// section. It had been wrong for a while: SIXTEEN of 61 packages had no section at all —
+// `docs/api-reference.org` opens by promising every workspace package a section, which is a claim
+// about the whole workspace and therefore wrong the moment a package ships without one. It had been
+// wrong for a while, when the document still called itself exhaustive: SIXTEEN of 61 packages had no section at all —
 // `@loom/knowledge` (a package, not a helper), `@loom/classify`, `@loom/compliance`,
 // `@loom/orchestration`, `@loom/saga`, `@loom/live-query`, `@loom/plugin-read-model`,
 // `@loom/plugin-sandbox` and eight more. A reader looking one of them up found nothing and had
@@ -70,7 +70,7 @@ describe("api-reference coverage (fitness)", () => {
       .map(({ name }) => name);
     expect(
       missing,
-      `add a section to ${DOC} (or an entry to NOT_IN_REFERENCE with its reason) — the document calls itself exhaustive`
+      `add a section to ${DOC} (or an entry to NOT_IN_REFERENCE with its reason) — the document promises every package a section`
     ).toEqual([]);
   });
 

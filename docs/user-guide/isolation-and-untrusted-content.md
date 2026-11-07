@@ -37,6 +37,11 @@ brokered `ctx.fetch`: the allowlist is enforced **before any connection** (durab
 (`require("http")` throws) as defense-in-depth — for hostile-code-grade confinement add
 OS-layer sandboxing (netns/seccomp/container egress) around the worker.
 
+This boundary is for tool code you ship, not for code a model wrote. Model-written scripts run through
+`sandboxEval$` in a capability-empty engine: QuickJS-in-WASM by default (`@loom/plugin-sandbox`) or an
+isolation boundary you bring behind the sandbox backend SPI (`@loom/sandbox`,
+[ADR 0144](../adr/0144-sandbox-backend-spi.md)).
+
 ## Untrusted content: the integrity axis (ADR 0085)
 
 K7 governs what leaves. The opposite direction — what may *enter an instruction position* — needs a
@@ -89,9 +94,14 @@ return mediaResult([
 effects.register(
   "model",
   createAgentModelEffect(new AnthropicProvider(), {
-    resolveContent: async (r, { executionId, principal, maxBytes }) => {
+    resolveContent: async (r, { executionId, workflowId, principal, maxBytes }) => {
       if (!(await mayRead(principal, executionId, r.address))) return null;
-      return contentStore.get({ __loomContent: r.address });
+      // Pass the asking execution on: a store that seals per subject (EncryptingContentStore, ADR 0143)
+      // needs it to pick the key.
+      return contentStore.get(
+        { __loomContent: r.address },
+        workflowId === undefined ? undefined : { executionId, workflowId }
+      );
     },
   })
 );

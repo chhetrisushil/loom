@@ -3,7 +3,8 @@
 The horizontal-scale storage backend for Loom. It implements the storage SPIs on Postgres
 (`pg`): `PostgresEventStore` with cross-node live subscribe over LISTEN/NOTIFY,
 `PostgresSnapshotStore`, `PostgresBranchRegistry`, `PostgresLeaseStore`, `PostgresTimerStore`,
-`PostgresDurableStateStore`, `PostgresReadModelStore` and `PostgresMemoryStore`, behind the same
+`PostgresArchiveStore` (the compaction and inbox archive, ADR 0138/0139), `PostgresDurableStateStore`,
+`PostgresReadModelStore` and `PostgresMemoryStore`, behind the same
 interfaces as the SQLite stores. Schema is created and migrated on first connect.
 
 ## When to use it
@@ -48,6 +49,11 @@ await app.stores.eventStore.close?.();
 - **`notifyBuckets`** (default 16) sets the NOTIFY buckets for interest-filtered cross-node delivery;
   it must be identical on every node of the database.
 - **`migrationLockTimeoutMs`** and **`backfillParkFences`** tune boot-time migrations.
+- **`snapshotCompression: "lz4"`** opts in to lz4 for `snapshots.state` (default `"default"`, ADR 0136).
+  **`snapshotCodec: "zstd"`** opts in to zstd-compressed snapshot states in a `state_z` column (default `"none"`,
+  JSONB; needs Node >= 22.15, ADR 0141). Old snapshots stay readable and are never rewritten.
+- **`onWarn`** receives the event store's warnings (a full NOTIFY queue, say). `observability.onWarn` does not
+  reach the store, because the store is built before `defineConfig` runs; the default is `console.warn`.
 - **Co-located leases.** The preset's `leaseStore` shares the pool and database, so `defineConfig`
   gives a multi-node deployment cluster-visible heartbeat leases with no extra config.
 - **Fail-closed writes.** A write that cannot be made durable fails the run (`StorageWriteError`).

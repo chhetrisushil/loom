@@ -108,7 +108,7 @@ fields never reach the log — both directions, no kernel change:
 
 ```ts
 const app = defineConfig({
-  storage: sqliteStorage({ path: "app.db" }),
+  storage: sqliteStorage({ dir: ".data" }),
   flows: [chargeFlow],
   security: { secrets: { resolver: myVaultResolver } }, // resolve(id) → value; store(id, value)
 });
@@ -133,7 +133,7 @@ wiring:
 
 ```ts
 const app = defineConfig({
-  storage: sqliteStorage({ path: "app.db" }),
+  storage: sqliteStorage({ dir: ".data" }),
   flows: [lookupFlow],
   observability: { telemetry: [datadogAdapter] }, // sees { ssn: "[redacted]" }, never the plaintext
 });
@@ -283,7 +283,7 @@ output.
 `@loom/classify` is a small **authoring-tier** package above the kernel. The taxonomy is
 policy *vocabulary*; the kernel supplies no data-protection semantics (G3). It is 1P shared
 authoring (not a vendor adapter, so not a `plugin-*`), consumed by the crypto plugin, the
-redaction middleware, and — when they land — egress scrubbing (K10-R6) and the subject
+redaction middleware, egress scrubbing (K10-R6) and the subject
 index (T3). See the [K10/T3 evaluation](requirements/2026-07-13-k10-t3-critical-evaluation.md).
 
 ## Not in scope (yet)
@@ -294,5 +294,6 @@ index (T3). See the [K10/T3 evaluation](requirements/2026-07-13-k10-t3-critical-
   arrays only. A mark inside a `z.record` value, a `z.union` branch, a `z.tuple` member or
   either side of a `z.intersection` collects no path and does nothing. Mark the container
   itself, or restructure it as an object or array. The
-  [`classification-reachability`](adr/0028-runtime-verification.md) check fails the build on this rather than
-  letting it fail silently.
+  [`classification-reachability`](adr/0028-runtime-verification.md) check reports this rather than
+  letting it fail silently, but it only fails the build when `checks.verify` is on (`"error"`) or you
+  run `loom verify`; the default is `"off"`.

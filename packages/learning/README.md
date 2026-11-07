@@ -14,6 +14,7 @@ replay determinism means the recorded choice *is* what ran.
 - [Why this is possible here](#why-this-is-possible-here)
 - [Using it](#using-it)
 - [The `Policy` SPI](#the-policy-spi)
+- [The learning lifecycle (ADR 0124)](#the-learning-lifecycle-adr-0124)
 - [What this package deliberately does not do](#what-this-package-deliberately-does-not-do)
 
 ---
@@ -180,6 +181,36 @@ of them, so a model-backed or side-effecting policy is not run for an answer tha
 thrown away, and a policy that later starts throwing on an old context will **not** break the
 replay of an old execution. On a first run a throwing policy surfaces as the error. `select`
 should still be cheap and free of side effects you cannot repeat: it runs once per live decision.
+
+---
+
+## The learning lifecycle (ADR 0124)
+
+Past "evaluate, then redeploy", [ADR 0124](../../docs/adr/0124-learning-lifecycle.md) adds the pieces to
+roll a candidate out and judge it on the traffic it actually saw:
+
+- **`PolicyRegistry`** keeps, per scope (a tenant or principal id from the authenticated caller), the
+  registered versions of a policy and its rollout (`register`, `bootstrap`, `promote`, `ramp`, `rollback`,
+  `resolve`, `history`). A rollout is `full`, `canary` (a fraction of units) or `shadow`. `promote` runs
+  `promotionGate` itself against the report you hand it (`thresholds` option) and refuses
+  (`PromotionRefusedError`) rather than trust a caller's verdict. State lives behind a small CAS
+  `PolicyKvStore`; `InMemoryPolicyKv` is the in-process one.
+- **`decideWithRollout`** is `decideWithPolicy` for a policy that has a registry: it reads who is live inside
+  the decider (so a replay reads nothing), lets that version act, and stamps the decision with who acted and
+  who watched. A shadow candidate never acts (its choice is recorded beside the incumbent's); a canary is a
+  deterministic split by `rolloutBucket(salt, unitKey, secret?)`, so pass a server-assigned `unitKey` and a
+  `bucketSecret`. A candidate the process has no code for acts as the incumbent and records why.
+- **Content-addressed versions.** `promptVersion(id, template)` and `modelVersion(...)` return a
+  `{ id, version }` whose version is the `sha256` of the canonical content (`contentHash`, `canonicalJson`),
+  so a one-character prompt edit cannot reuse an old version. Pass it as `refs` to `decideWithRollout` and
+  slice an evaluation with `sliceByVersion(trajs, "prompt" | "model" | "policy")`.
+- **Doubly-robust and bootstrap evaluation.** `evaluatePolicy(ts, candidate, { doublyRobust: true | { rewardModel },
+  bootstrap: { resamples, level, seed } })` adds `report.doublyRobust` and seeded percentile-bootstrap
+  `report.intervals` that resample whole units. SNIPS and `estimatedValue` are unchanged.
+- **Export.** `exportJsonl({ source, tenant, ... })` streams trajectories and (prompt, chosen, rejected)
+  preference pairs as canonical JSONL for fine-tuning or reward modelling. It is scoped to one tenant (an
+  execution with no tenant is never exported), drops tainted content unless `taint: "mark"`, and never
+  includes crypto-shredded steps.
 
 ---
 

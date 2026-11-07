@@ -128,6 +128,28 @@ single-host resource contention rather than a fan-out result — see `docs/scali
 **H3** a `CoalescingEventStore` writer under H1's shared interest, showing the shipped
 mitigation for the writer-side cost that bucketing alone does not fix.
 
+## Other scripts
+
+Each is a separate entry under `src/`, run with `pnpm --filter @loom/bench-throughput <script>`. Unlike the A-H
+suite they default to the in-memory backend when no Postgres URL is set.
+
+| script | file | what it measures |
+|---|---|---|
+| `bench:inbox` | `inbox.ts` | ADR 0110 acceptance: do `receive` / `send` / commit / resume stay linear? A send cost vs inbox length, B fold cost per `MESSAGE_CONSUMED`, C live delivery per message, D wake-per-message at turn n (the one `continueAsNew` bounds) |
+| `bench:fence` | `fenceIf.ts` | ADR 0118 (R8k): fenced vs unfenced executions and park -> resume under no fence, `acquireFence` and `fenceIfParkedAt`. Run it on the commit before and after a Postgres guard change, same database, and compare |
+| `bench:lease` | `leaseOverhead.ts` | ADR 0130 D11 gate: heartbeat leasing off vs eager vs lazy (the default), on the no-op ceiling and an I/O-bound shape; the cost should be <= 10% on the former and nothing on the latter |
+
+| env | used by | default | meaning |
+|---|---|---|---|
+| `LOOM_BENCH_BACKEND` | `inbox`, `fenceIf` | `postgres` if a URL is set, else `memory` | `memory` or `postgres` |
+| `LOOM_BENCH_BACKENDS` | `leaseOverhead` | `memory,sqlite` | comma list of `memory`, `sqlite`, `postgres` (`postgres` needs `LOOM_BENCH_PG_URL` or `LOOM_TEST_POSTGRES_URL`, a THROWAWAY database: rows are left behind) |
+| `LOOM_BENCH_ARCHIVE` | `inbox` | `memory` | `postgres` measures the inbox trim against a durable `PostgresArchiveStore` (ADR 0139: a trim moves envelopes into an archive) instead of the in-memory one |
+| `LOOM_BENCH_SQLITE_EXECS` | `leaseOverhead` | `1200` | executions per cell on the SQLite backend (`LOOM_BENCH_EXECS` is the in-memory count, `LOOM_BENCH_PG_EXECS` the Postgres one) |
+
+`leaseOverhead` also reads `LOOM_BENCH_CONC` / `LOOM_BENCH_CONCS`, `LOOM_BENCH_SHAPES`, `LOOM_BENCH_REPEATS` and
+`LOOM_BENCH_IDS`; `fenceIf` reads `LOOM_BENCH_CONC`, `LOOM_BENCH_EXECS`, `LOOM_BENCH_REPEATS` and
+`LOOM_BENCH_POOL_MAX`. `leaseOverhead.perf.test.ts` is the non-blocking perf test over the same library.
+
 ## Comparing hosts
 
 `pnpm --filter @loom/bench-throughput hardware` emits one self-describing markdown report —

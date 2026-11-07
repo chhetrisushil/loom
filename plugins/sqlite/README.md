@@ -2,8 +2,8 @@
 
 The zero-server durable backend for Loom. It implements the storage SPIs on embedded SQLite (via
 `better-sqlite3`): `SqliteEventStore`, `SqliteSnapshotStore`, `SqliteBranchRegistry`,
-`SqliteTimerStore`, `SqliteLeaseStore`, `SqliteDurableStateStore`, `SqliteReadModelStore`,
-`SqliteContentStore` and `SqliteMemoryStore`, behind the same interfaces as the in-memory
+`SqliteTimerStore`, `SqliteLeaseStore`, `SqliteArchiveStore` (the compaction and inbox archive, ADR 0138/0139),
+`SqliteDurableStateStore`, `SqliteReadModelStore`, `SqliteContentStore` and `SqliteMemoryStore`, behind the same interfaces as the in-memory
 reference. The native driver lives here so the kernel packages stay free of it.
 
 ## When to use it
@@ -23,7 +23,7 @@ module, so `pnpm install` must be allowed to build it.
 ## Entry points
 
 `@loom/plugin-sqlite` (single entry). The one most apps use is the preset
-`sqliteStorage({ dir?, branching? })`; the store classes are exported for hand-wiring and tests.
+`sqliteStorage({ dir?, branching?, snapshotCodec? })`; the store classes are exported for hand-wiring and tests.
 
 ## Example
 
@@ -42,8 +42,10 @@ await app.close();
 
 ## Key concepts
 
-- `dir` defaults to `.loom`; the preset creates `events.db`, `snapshots.db` and (with
-  `branching: true`) `branches.db`.
+- `dir` defaults to `.loom`; the preset creates `events.db`, `snapshots.db`, `archive.db` (the archive store
+  compaction and the inbox trim move events into) and (with `branching: true`) `branches.db`.
+- `snapshotCodec: "zstd"` opts in to zstd-compressed snapshot states (default `"none"`, JSON text; needs
+  Node >= 22.15). Old snapshots stay readable ([ADR 0141](../../docs/adr/0141-snapshot-zstd-codec.md)).
 - The preset also exposes a `leaseStore` over the same `events.db`, so heartbeat leases and the log
   share one failure domain. `defineConfig` picks it up automatically.
 - Point the CLI at the file: `npx loom logs --db .loom/events.db <executionId>`.

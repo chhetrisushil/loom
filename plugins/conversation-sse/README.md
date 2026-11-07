@@ -20,11 +20,14 @@ POST /conversations/:id/close
 GET  /conversations/:id              -> status
 GET  /conversations/:id/history      ?limit&cursor&direction=forward|backward  (default forward)
 GET  /conversations/:id/events       text/event-stream; Last-Event-ID or ?cursor resumes
+GET  /conversations/:id/reasoning    ?cursor=<the reply's history cursor>  a reply's durable model reasoning (opt-in, see below)
 ```
 
 **History direction.** `direction` defaults to `forward`: oldest first, starting at the beginning of the log (or after `cursor`), and `done` is true at the live tip. To load the newest messages first (the usual chat opening), request `?direction=backward&limit=N`: you get the latest N, newest first, and `nextCursor` continues toward older ones (`done` is true at the start). A cursor continues in the direction that produced it; any other value of `direction` is a `400`. A client that renders the page must order it to match (for example loom-ui `ChatFeed.applyHistory` takes a matching direction argument).
 
-SSE events: `status` (first), `partial` (the reply in progress), `message` (durable; its SSE `id` is the history cursor), `delta` / `reset` (live), `closed`, `reconnect`, `error`. Render user text as **text**: it is untrusted.
+SSE events: `status` (first), `partial` (the reply in progress), `message` (durable; its SSE `id` is the history cursor), `delta` / `reset` (live), `closed`, `reconnect`, `error`; with `reasoning` on, also `reasoning` and `reasoning-partial`. Render user text as **text**: it is untrusted.
+
+**Reasoning (opt-in).** `reasoning` is off by default. `reasoning: true` (or `{ live: true }`) streams the `reasoning` / `reasoning-partial` SSE events; `reasoning: { store }` also serves a reply's durable reasoning at `GET /conversations/:id/reasoning?cursor=` from the `ReasoningStore` the model effect captured into. Only the turn's asker and the conversation's owner receive it (in a shared conversation never another participant); anyone else gets the same `404` as a missing conversation. It is model-derived text, so render it as **text** too. See [ADR 0133 D6](../../docs/adr/0133-model-reasoning-audit-capture.md).
 
 ## Security model
 

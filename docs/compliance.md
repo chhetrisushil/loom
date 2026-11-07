@@ -23,7 +23,7 @@ event stream. `defineConfig` wires it live:
 
 ```ts
 const app = defineConfig({
-  storage: sqliteStorage({ path: "app.db" }),
+  storage: sqliteStorage({ dir: ".data" }),
   flows: [signupFlow],
   security: { compliance: { subjectOf } },
 });
@@ -44,7 +44,7 @@ aren't), so read it from input/metadata:
 
 ```ts
 const app = defineConfig({
-  storage: sqliteStorage({ path: "app.db" }),
+  storage: sqliteStorage({ dir: ".data" }),
   flows: [signupFlow],
   security: {
     compliance: {
@@ -70,6 +70,8 @@ folds each to its current state, and (by default) includes the raw log:
 ```ts
 const pkg = await app.exportSubject("user-42");
 // { subjectId, executions: [{ executionId, workflowId, status, state, events }] }
+// each execution may also carry claimChecked, reservedStreams, legacyCheckpoints, unarchived
+// and erasureWindow (see "Archived copies" under Erasure)
 
 // Access-only (no raw event log):
 await app.exportSubject("user-42", { includeEvents: false });
@@ -77,7 +79,7 @@ await app.exportSubject("user-42", { includeEvents: false });
 
 An execution whose log was deleted by retention is skipped. For a **partially-erased**
 subject (crypto-shredded fields), wire the crypto store in tolerant mode
-(`onShredded: "tolerate"`, [K10-R4](data-classification.md)) so shredded fields export as
+(`onShredded: "tolerate"` on the `EncryptingEventStore`; the strict default throws `PayloadShreddedError`, K10-R4) so shredded fields export as
 `{ $shredded }` rather than throwing — an honest export of what remains.
 
 ## Erasure (Art. 17 — right to be forgotten)
@@ -182,6 +184,31 @@ identical output), journals `ERASURE_CONTENT_DELETE_INTENDED` first, deletes the
 `ERASURE_CONTENT_DELETED` `{ deleted, retained }` (`result.contentDeleted`); it refuses before the shred
 (`ContentCopiesRemainError`) when blobs are cited and the store cannot delete or the event store cannot be
 enumerated. `app.exportSubject` returns the resolved blobs in each execution's `claimChecked`.
+
+### Archived copies (ADR 0138, ADR 0139)
+
+Compaction and an inbox trim or terminal delete MOVE events into an `ArchiveStore`, so a copy of the
+subject's data can outlive the log. Over an archive sealed under the event store's `KeyStore`
+(`EncryptingArchiveStore`) the shred erases it. Over a **plaintext** archive `eraseSubject` deletes the
+subject's compaction segments and the reserved-stream segments (inbox, topic, quarantine, late runs) of
+each erased chain, journals `ERASURE_ARCHIVE_DELETED` (intent first, ADR 0139 D17) and returns what it
+deleted as `result.archivedCopiesDeleted` (`{ executions, reservedStreams }`). It also redacts the
+subject's identity where it is the SENDER of an archived envelope in OTHER chains
+(`sender: { erased: true }`, through one atomic `ArchiveStore.replaceSegments` per key) and returns
+`result.senderRedactions` (`[{ streamId, envelopes }]`). A live, not yet archived envelope of a plaintext
+deployment keeps its sender until it is trimmed.
+
+Erasure fails closed, BEFORE the key is destroyed (nothing is shredded): `ArchivedCopiesRemainError`
+when a plaintext archive holds the subject's copies and has no `deleteExecution`, and
+`SenderRedactionUnsupportedError` when it holds the subject as a sender and has no `replaceSegments`
+(ArchiveStore SPI 1.1.0). The in-memory, SQLite and Postgres archives can do both.
+`app.recoverArchiveRedactions()` restores a redaction that an interrupted earlier build left staged (it
+also runs at boot).
+
+`app.exportSubject` reports the same archive: each execution can carry `reservedStreams` (the envelopes
+a trim or delete moved to the archive), `legacyCheckpoints` (checkpoints of a log compacted before the
+archive existed) and `unarchived` (every range of the original log the export could not return, `[]` for a
+complete log).
 
 ### A message still in flight in an inbox (ADR 0110)
 
@@ -338,8 +365,13 @@ or cache layer built with `Object.create(sealing)`) would pass; the guard is aga
 hostile host object.
 
 The sender recorded on a message (`tenant`, `actor`, `onBehalfOf`) is the SENDER's identity, not
-the owner's, and is not sealed by the inbox path: declare `INBOX_MESSAGE` / `MESSAGE_CONSUMED`
-`sender.*` paths sensitive yourself if the sender is a data subject.
+the owner's. On a sealing deployment it is sealed by default under an opaque handle derived from
+KeyStore material, so `eraseSubject` also erases the subject AS A SENDER (an erased sender reads
+`{ erased: true }`); `senderSubjectOf: false` on the `EncryptingEventStore` opts out (`defineConfig`
+warns), and the sender then sits in the clear unless you declare `INBOX_MESSAGE` / `MESSAGE_CONSUMED`
+`sender.*` paths sensitive yourself (ADR 0139 D12). An erased sender stays blocked
+(`SenderErasedError` on send) until `app.reinstateSender(actor, tenant?, { by })` journals a
+reinstatement; the sender's next message then gets a new handle and the old messages stay erased.
 
 ### Erasure does not reach a derived read model
 
@@ -442,7 +474,7 @@ stays decoupled from any specific crypto plugin.
 
 **Not in scope (yet):**
 
-- **`loom compliance report`** cold-storage inventory — needs a `listExecutions` store-SPI
-  enumerator (the live index already answers per-subject queries).
-- **RoPA / breach-scoping (T3-R6)** and **tenant-scoped index (T3-R2.4)** — deferred on
-  manifest-sensitivity (R1.3) and K12 tenancy respectively.
+- **RoPA / breach-scoping (T3-R6)** — deferred on manifest-sensitivity (R1.3).
+
+`loom compliance report` (a cold-storage subject inventory; the event store must support
+`listExecutions`) and the tenant-scoped index (`tenantOf`, above) have shipped.

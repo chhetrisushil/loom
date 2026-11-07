@@ -2,7 +2,7 @@
 
 # @loom/compliance
 
-Data-subject rights for Loom (T3, GDPR/CCPA-enabling) — a subject index (subjectId → executions) fed by the event stream, and exportSubject for Art. 15/20 access + portability. Event-sourcing makes these a fold; this productizes that. Not legal advice.
+Data-subject rights for Loom (T3, GDPR/CCPA-enabling) — a subject index (subjectId → executions) fed by the event stream, exportSubject for Art. 15/20 access + portability, and eraseSubject for Art. 17 erasure (crypto-shredding, plus deletion of archived copies). Event-sourcing makes these a fold; this productizes that. Not legal advice.
 
 ## Entry points
 
