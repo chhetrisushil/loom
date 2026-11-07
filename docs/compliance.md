@@ -220,13 +220,25 @@ complete log).
 
 A package built on loom can keep its own log in a stream under the reserved `__loom_` prefix (loom-ui's
 lineage writes `__loom_ui_lineage__:<experienceId>`). If that log holds personal data, map the stream to
-its owner in your `subjectOf`, which is called with the stream id on every append and read, and register
-the package's sensitive event paths with the encrypting store. An `EncryptingContentStore` resolves the
-package's blobs through the same `subjectOf`, from the `ContentAccess` the package passes. Erasing the
-owner then reaches the stream and its blobs: `shredSubject(keys, raw, id, { subjectId, executionIds })`
-destroys the key, with `executionIds` the owner's real executions or `[]` (a reserved stream is never
-tombstoned), and a read of the stream afterwards throws `KeyUnavailableError`. What the package's stream
-cannot hold is plaintext written before crypto was composed: it was never sealed, so no key reaches it.
+its owner in your `subjectOf` (it is called with the stream id whenever a field of the stream is sealed
+or opened) and register the package's sensitive event paths with the encrypting store. An
+`EncryptingContentStore` resolves the package's blobs through the same `subjectOf`, from the
+`ContentAccess` the package passes. Destroying the owner's key then makes the stream's sealed fields and
+its blobs unreadable: a read of the stream throws `KeyUnavailableError`, and a blob read
+`PayloadShreddedError` (or `KeyUnavailableError` from a `KeyStore` that does not record destruction).
+
+How to destroy the key:
+
+- **The owner also has executions.** `app.eraseSubject` reaches the stream through the shared key, as does
+  `shredSubject(keys, raw, id, { subjectId, executionIds })` with EVERY one of those executions, so each
+  gets its tombstone. A reserved stream is never tombstoned, so it is not in that list.
+- **The owner has no executions.** `app.eraseSubject` reports `outcome: "unknown"` and destroys nothing,
+  because the subject index has no execution for it. Call `shredSubject(keys, raw, id, { subjectId,
+  executionIds: [] })` directly. Use `[]` only in this case: a key destroyed with `[]` leaves any
+  execution sealed under it without a tombstone, and a later shred can no longer write one.
+
+What no key reaches: fields the package did not register, the stream id itself, and anything written
+before crypto was composed or before the paths were registered.
 
 ### A message still in flight in an inbox (ADR 0110)
 

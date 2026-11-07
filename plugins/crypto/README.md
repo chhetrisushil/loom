@@ -81,13 +81,21 @@ await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure", sna
 - **A6 — a reserved EXTENSION stream.** A package built on loom may keep its own log
   under the reserved `__loom_` prefix, so enumerators of real executions skip it (loom-ui's
   lineage writes `__loom_ui_lineage__:<experienceId>`). No default maps such a stream to a
-  person, so YOUR `subjectOf` does: it is called with the stream id on every append and read,
-  and an `EncryptingContentStore` calls it with the `ContentAccess` the package passes on each
-  `put` / `get`. Return the owner's subject for the stream and register the package's event
-  paths (`registerSensitive`), and the stream and its blobs are sealed under, and erased with,
-  the owner's key. `shredSubject` does not tombstone a reserved stream (it is not an
-  execution), so the stream is erased by the key alone: call it with the owner's real
-  `executionIds`, or `[]`, and a later read throws `KeyUnavailableError` (`isKeyUnavailable`).
+  person, so YOUR `subjectOf` does: it is called with the stream id on every append that seals
+  a field and every read of sealed data, and an `EncryptingContentStore` calls it with the
+  `ContentAccess` the package passes on each `put` / `get`. Return the owner's subject for the
+  stream and register the package's event paths (`registerSensitive`), and the stream and its
+  blobs are sealed under, and erased with, the owner's key. Unmarked fields, the stream id
+  itself and anything appended before the paths were registered stay plaintext.
+  `shredSubject` does not tombstone a reserved stream (it is not an execution), so the stream
+  is erased by the key alone. Pass EVERY execution the owner has as `executionIds` so each gets
+  its tombstone; pass `[]` only for an owner with none. A key destroyed with `[]` leaves any
+  execution sealed under it without a tombstone, and a later shred can no longer write one.
+  Afterwards a read of the stream throws `KeyUnavailableError` (`isKeyUnavailable`: with no
+  tombstone the store cannot tell an erasure from a node without the key, so check
+  `keys.wasDestroyed` if the difference matters), and a blob read throws
+  `PayloadShreddedError` when the `KeyStore` records destruction (`wasDestroyed`), else
+  `KeyUnavailableError`.
 - **Real encryption** — AES-256-GCM with a per-value random IV and an auth tag;
   a wrong key fails, not silently mis-decrypts.
 
