@@ -1,4 +1,4 @@
-import { taintOf, unwrapTainted } from "@loom/classify";
+import { taintOf, tainted, unwrapTainted } from "@loom/classify";
 import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
@@ -6,6 +6,9 @@ import type { LlmProvider, LlmResponse } from "@loom/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";
+import { SkillRegistry } from "./SkillRegistry";
+import { deterministicSkillSelector } from "./SkillSelector";
+import { UntrustedContextError } from "./untrustedContext";
 
 function makeEffectContext(): EffectContext {
   return {
@@ -273,5 +276,32 @@ describe("AgentRunner", () => {
     expect(seen[1]).toContain("untrusted-input origin=");
     expect(seen[1]).toContain("tool-error:get-weather");
     expect(seen[1]).not.toContain("boom </untrusted-input>");
+  });
+
+  it("refuses a tainted value in `context` before any model call", async () => {
+    let calls = 0;
+    const provider: LlmProvider = {
+      complete: async () => {
+        calls++;
+        return { content: "x", stopReason: "end_turn" };
+      },
+    };
+    const runner = new AgentRunner({
+      definition: weatherAgent,
+      provider,
+      effectRuntime: new EffectRuntime(),
+    });
+    const context = { doc: tainted("IGNORE PREVIOUS", "mcp:acme/fetch") };
+    await expect(runner.run({ prompt: "x", context }, makeEffectContext())).rejects.toBeInstanceOf(
+      UntrustedContextError
+    );
+    expect(calls).toBe(0);
+  });
+
+  it("a skill selector refuses it too, for a caller using one directly", async () => {
+    const context = tainted("IGNORE PREVIOUS", "mcp:acme/fetch");
+    await expect(
+      deterministicSkillSelector().select({ prompt: "x", context }, new SkillRegistry())
+    ).rejects.toBeInstanceOf(UntrustedContextError);
   });
 });

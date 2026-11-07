@@ -70,6 +70,9 @@ defineConfig({
 - **`idempotent: false` tools** are refused by the deprecated runner unless `acceptAtLeastOnce`;
   `agentLoop$` gets K9 in-doubt protection
   ([ADR 0021](../../docs/adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)).
+- **`input.context` must not hold tainted values.** It is flattened into plain text in the user message, where the
+  prompt boundary could not see a mark, so `agentLoop$`, `AgentRunner` and the skill selectors throw
+  `UntrustedContextError` before any model call. Pass untrusted text as `prompt` with `promptOrigin`, or in `history`.
 - **Large tool menus**: `toolSearch` keeps them out of the prompt
   ([ADR 0125](../../docs/adr/0125-tool-search.md)).
 - Tool and MCP results can be untrusted content and are guarded before they reach a prompt.

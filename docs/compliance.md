@@ -25,7 +25,12 @@ event stream. `defineConfig` wires it live:
 const app = defineConfig({
   storage: sqliteStorage({ dir: ".data" }),
   flows: [signupFlow],
-  security: { compliance: { subjectOf } },
+  security: {
+    compliance: { subjectOf },
+    // Compliance refuses to compose unless the principal is protected: `crypto`, or a codec
+    // that keeps identity out of the log (this one records none).
+    principalCodec: { toRef: () => undefined, fromRef: () => undefined },
+  },
 });
 
 app.subjectIndex?.executionsOf("user-42"); // ["exec-a", "exec-b"]
@@ -51,6 +56,7 @@ const app = defineConfig({
       subjectOf: (e) => e.payload.input?.userId,
       tenantOf: (e) => e.payload.input?.tenant, // partition key
     },
+    principalCodec: { toRef: () => undefined, fromRef: () => undefined }, // as above
   },
 });
 

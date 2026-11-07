@@ -1,5 +1,6 @@
 export { AGENT_INTERRUPTED, AgentRunner, IdempotentToolRefusedError } from "./AgentRunner";
 export type { AgentConfig, InterruptedAgentRun } from "./AgentRunner";
+export { UntrustedContextError } from "./untrustedContext";
 export { SkillRegistry } from "./SkillRegistry";
 export type { SkillMatch } from "./SkillRegistry";
 export { deterministicSkillSelector, llmSkillSelector } from "./SkillSelector";

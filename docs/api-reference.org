@@ -2570,6 +2570,7 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   loopId?: string                    — (R17) the id prefix of this loop's frames/decisions/gates; default definition.id. Two loops in one execution must not share it
 //   signal?: AbortSignal               — stop THIS run: no further model/tool call; fails on AGENT_INTERRUPTED with InterruptedAgentRun
 //   turnTimeoutMs?, toolTimeoutMs?     — frame `timeoutMs` (model failure fails the run; a tool timeout is an isError result)
+//   input.context must not hold taint at any depth: UntrustedContextError, before any model call
 //   writeBack?: false | { tier?, scope?, toolId?, unless?, allowDirect? } (needs one of toolId / unless / allowDirect: AgentLoopConfigError) — with `memory`: remember prompt + answer on finish; keyed idempotent; toolId = journaled effect (memoryWriteBackEffect); tainted answer if the run saw taint
 //   (with `signal`, each abort checkpoint is a recorded decision `<agent>#abort:<site>`; each tool outcome `<agent>#turn:<i>:tool:<j>:outcome`; both stamped, excluded from @loom/learning trajectories)
 //   `reasoning` without reasoningToolId: the response is a recorded decision `<agent>#turn:<i>:response:<n>` (no re-ask on resume)
