@@ -55,6 +55,7 @@ interface FlowConfig<TIn, TOut> {
   id: string; name: string; version: string; description?: string;
   inputSchema: z.ZodSchema<TIn>; outputSchema: z.ZodSchema<TOut>;
   steps: StepDefinition<any, any>[]; policies?: PolicyDefinition[];
+  deadlineMs?: number; resumeSchemas?: Readonly<Record<string, z.ZodTypeAny>>;   // see FlowDefinition; also effectClass?, codeFingerprint?, compatibleWith?, stepFamilies?
 }
 
 interface StepConfig<TIn, TOut> {
@@ -63,12 +64,14 @@ interface StepConfig<TIn, TOut> {
   handler?: HandlerSpec<TIn, TOut>; // … or carry a co-located handler (handler$)
   inputSchema: z.ZodSchema<TIn>; outputSchema: z.ZodSchema<TOut>;
   retry?: RetryPolicy; timeoutMs?: number;
+  errors?: Record<string, z.ZodSchema>;   // also effectClass?, reachableTools?
 }
 
 interface ToolConfig<TIn, TOut> {
   id: string; name: string; description: string;
   kind?: EffectKind;               // default "tool"
   inputSchema: z.ZodSchema<TIn>; outputSchema: z.ZodSchema<TOut>;
+  idempotent?: boolean; errors?: Record<string, z.ZodSchema>; mode?: EffectMode;   // as on ToolDefinition; also jsonInputSchema?, trustJsonSchemaText?, returnsMedia?, egress?, tags?, aliases?
 }
 
 interface AgentConfig {
@@ -81,13 +84,15 @@ interface AgentConfig {
 interface SkillConfig {
   id: string; name: string; description: string; tags?: string[];
   instructions: InstructionsSpec;  // instructions$("…") or a lazy loader
+  aliases?: string[];
   tools?: ToolDefinition[];
 }
 
 interface ProjectionConfig<TState> {
   id: string; name: string; sourceFlowId?: string;
   initialState: TState;
-  handlers: Record<string, (state: TState, payload: unknown) => TState>;
+  handlers: ProjectionHandlersSpec<TState>;  // Record<eventType, (state: TState, event: EventEnvelope) => TState> | a compiler-emitted ProjectionHandlersRef
+  version?: string;                // declared binding version (ADR 0095)
 }
 
 interface MemoryConfig { id: string; name: string; ttlMs?: number; maxEntries?: number; }
@@ -115,7 +120,7 @@ interface StepDefinition<TIn, TOut> {
   toolId?: string; handler?: HandlerSpec<TIn, TOut>;
   inputSchema: ZodSchema<TIn>; outputSchema: ZodSchema<TOut>; retry?: RetryPolicy;
   timeoutMs?: number;    // (2.0, K8) bounds a single effect
-  idempotent?: boolean;  // (2.0, K9) true ⇒ recovery may re-run safely; false ⇒ park at EFFECT_INDOUBT, never silent re-run
+  // K9 delivery semantics (`idempotent`) live on ToolDefinition / the registered Effect, not on the step
 }
 interface FlowDefinition<TIn, TOut> {
   readonly _tag: "FlowDefinition"; id: string; name: string; version: string; description?: string;
@@ -162,7 +167,7 @@ interface EventEnvelope {
   payload: unknown; metadata?: Record<string, unknown>;
 }
 
-type ExecutionStatus = "pending" | "running" | "suspended" | "completed" | "failed" | "cancelled";
+type ExecutionStatus = "pending" | "running" | "suspended" | "completed" | "failed" | "cancelled" | "continued";
 type FrameStatus     = "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
 
 interface ExecutionFrame {
@@ -191,7 +196,7 @@ audit, K6), ~_indoubt~ (parked ~EFFECT_INDOUBT~ deliveries, K9), and ~_shredded~
 *Tasks & the process-control-block (2.0).* A step generalizes to a *task*; the minimal ~Execution~ PCB and its out-of-core ~ExecutionPolicy~ sidecar carry scheduling/compute/memory intent without bloating the core.
 
 #+begin_src typescript
-type TaskKind = "step" | "llm" | "agent" | "tool" | "ui" | "memory" | "human" | "plan";
+type TaskKind = "step" | "llm" | "agent" | "tool" | "memory" | "human" | "plan" | (string & {});   // open (ADR 0115)
 interface TaskDefinition<TIn, TOut> {
   readonly _tag: "TaskDefinition"; kind: TaskKind; id: string; name?: string;
   toolId?: string; inputSchema?: ZodSchema<TIn>; outputSchema?: ZodSchema<TOut>;
@@ -242,11 +247,12 @@ function runAgentOnce(options: RunAgentOnceOptions): Promise<RunAgentOnceResult>
 interface RunAgentOnceOptions {
   agent: AgentDefinition;
   provider?: LlmProvider;                               // registered as the effect `loop.modelToolId` (default "model")
-  registerEffects?: (effects: EffectRuntime) => void;   // tool effects (or the model effect, when no provider)
+  registerEffects?: (effects: EffectRuntime) => void | Promise<void>;   // tool effects (or the model effect, when no provider)
   input: string | AgentInput;
   loop?: Omit<AgentLoopConfig, "definition">;
   config?: Omit<LoomConfig, "storage" | "flows" | "flowModules">;
   executionId?: string;
+  principal?: PrincipalChain;
 }
 interface RunAgentOnceResult { output?: AgentOutput; status: ExecutionStatus; executionId: string; events: EventEnvelope[] }   // output absent when suspended
 #+end_src
@@ -261,8 +267,8 @@ function defineConfig(config: LoomConfig): LoomApp
 type StorageConfig =
   | { kind: "memory" }                           // ephemeral (tests / browser)
   | { kind: "custom";                            // BRING YOUR OWN backend
-      eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry;
-      archiveStore?: ArchiveStore; memoryStore?: MemoryStore; timerStore?: TimerStore; leaseStore?: LeaseStore };
+      eventStore: EventStore; snapshotStore?: SnapshotStore;   // omitted ⇒ in-memory default (a boot warning for a non-in-memory event store)
+      branchRegistry?: BranchRegistry; archiveStore?: ArchiveStore; leaseStore?: LeaseStore };
 // SQLite and Postgres are presets that return the custom shape, so @loom/app names no vendor:
 //   storage: sqliteStorage({ dir })      from @loom/plugin-sqlite
 //   storage: postgresStorage({ url })    from @loom/plugin-postgres
@@ -317,6 +323,7 @@ interface LoomApp {
   envelope?: { spawn: SpawnLimits; ledger: BudgetLedger };   // (R9) pass spawn to superviseChildren({ limits })
   killSwitch?: KillSwitchRegistry;               // (R9) supplied, or the in-memory one strict creates
   stores: { eventStore: EventStore; snapshotStore: SnapshotStore; branchRegistry?: BranchRegistry };
+  // … also start(), heartbeat, tools, skills, schedules, memory, knowledge(), lifecycle, supervise(), verify(), exportSubject()/eraseSubject(); see LoomApp in the .d.ts
   close(): Promise<void>;
 }
 
@@ -326,7 +333,7 @@ interface AutonomyEnvelopeOptions {              // (R9) execution.envelope
                      perAgent?: Budget; perTenant?: Budget; pricing?: Pricing };   // cumulative; no default
   rateLimit?: false | RateLimitOptions;                                   // no default
 }
-const STRICT_DEFAULTS: { defaultDeadlineMs: 86_400_000; spawnMaxDepth: 5; spawnMaxFanOut: 32; perExecutionMaxTokens: 1_000_000 }
+const STRICT_DEFAULTS: { defaultDeadlineMs: 86_400_000; spawnMaxDepth: 5; spawnMaxFanOut: 32; perExecutionMaxTokens: 1_000_000; divergence: "fail" }
 #+end_src
 
 *Bring your own storage:* ~kind: "custom"~ uses any async-first ~EventStore~/~SnapshotStore~ (+ optional ~BranchRegistry~) verbatim — Postgres/Redis/DynamoDB (see [[file:examples/postgres-backend/README.md][the Postgres reference]]). The SQLite stores are lazily loaded, so ~kind: "memory"~ never pulls ~better-sqlite3~/~node:fs~ into a browser bundle.
@@ -353,24 +360,27 @@ The in-process transport ~defineConfig~ builds (~app.bus~); dispatches a capabil
 
 #+begin_src typescript
 class InProcessA2ABus {
-  constructor(runtime: WorkflowRuntime, dispatcher?: ExecutionDispatcher)
+  constructor(runtime: WorkflowRuntime, dispatcher?: ExecutionDispatcher, options?: { maxTasks?: number; principal?: Record<string, unknown> })
   registerAgent(card: AgentCard): this
   registerCapability(capabilityId: string, agentId: string, flow: RegisteredFlow): this
   agentCards(): AgentCard[]
   getTask(taskId: string): A2ATaskResult | undefined
   dispatch(capabilityId: string, input: unknown, prompt: string, options?: DispatchOptions): Promise<DispatchResult>
+  resolveApproval(taskId: string, decision: ApprovalDecision, options?: Pick<DispatchOptions, "principal" | "onApproval" | "onStatus">): Promise<DispatchResult>   // answer a parked gate later
 }
 interface DispatchOptions {
   onProgress?: (line: string) => void;
   onStatus?: (status: A2ATaskStatus) => void;
-  onApproval?: () => Promise<ApprovalDecision>;   // absent ⇒ auto-approve
+  onApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>;   // absent ⇒ the gate STAYS parked (R13): result.suspended is set; unsafeAutoApprove is the explicit demo opt-in
   executionId?: string;
+  principal?: Record<string, unknown>;
 }
-interface DispatchResult { taskId: string; status: A2ATaskStatus; artifact: unknown; }
-interface ApprovalDecision { approved: boolean; approvedBy: string; }
+interface DispatchResult { taskId: string; status: A2ATaskStatus; artifact: unknown; suspended?: ApprovalRequest; }
+interface ApprovalDecision { approved: boolean; approvedBy: string; proof?: ApprovalProof }   // ApprovalProof = { actor, sig, exp }
+interface ApprovalRequest { executionId: string; gate: string; viewDigest?: string; parkedAtSequence?: number }
 #+end_src
 
-Also exported: ~BroadcastingProjectionRuntime~ (a ~ProjectionRuntime~ decorator that emits each ~SURFACE_PATCH~ to an SSE sink, with ~snapshot()~), and ~progressHub~.
+Also exported: ~BroadcastingProjectionRuntime~ (a ~ProjectionRuntime~ decorator that emits each ~SURFACE_PATCH~ to an SSE sink, with ~snapshot()~), ~progressHub~, ~approvalPayload(request, decision)~ (the resume payload for an approval) and ~unsafeAutoApprove~ (an ~onApproval~ that approves everything, for demos).
 
 ** ~@loom/middleware~ — effect middleware
 
@@ -426,7 +436,7 @@ Emits ~RESOURCE_METERED~ (folds into ~variables._resources~); replay-safe (meter
 *Behavioral safety (2.0, K6).* ~safetyMiddleware~ runs a chain of validators on each effect's input and output; a violation blocks the effect and records ~SAFETY_BLOCKED~ (folds into ~variables._blocked~).
 
 #+begin_src typescript
-function safetyMiddleware(options: { validators: readonly SafetyValidator[] }): EffectMiddleware
+function safetyMiddleware(options: { validators: readonly SafetyValidator[]; deltaWindow?: number }): EffectMiddleware
 type SafetyPhase = "input" | "output" | "delta";
 interface SafetyCheckInfo { phase: SafetyPhase; stepId: string; input: unknown;
   result?: unknown;    // "output" phase only
@@ -435,7 +445,7 @@ interface SafetyVerdict { ok: boolean; reason?: string }
 interface SafetyValidator { id: string; phase: SafetyPhase; category?: string;
   check(info: SafetyCheckInfo): SafetyVerdict;
   checkDelta?; }       // the delta form of an "output" validator; without one, streaming is refused
-class SafetyViolationError extends Error { readonly reason: string; readonly phase: SafetyPhase; }
+class SafetyViolationError extends Error { readonly validatorId: string; readonly category: string | undefined; readonly reason: string; readonly retryable: false }
 // bundled validators:
 function denyPatterns(patterns: readonly RegExp[], opts?: { id?: string; phase?: SafetyPhase; category?: string }): SafetyValidator;
 function piiValidator(opts?: { id?: string; phase?: SafetyPhase }): SafetyValidator;   // block emails/SSNs/… in payloads
@@ -544,13 +554,15 @@ class WorkflowRuntime {
   getFlowIds(): string[]
   invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) façade over EffectRuntime.invokeTransient — non-durable read-path effect, emits nothing
 
-  start<TIn, TOut>(flow: RegisteredFlow<TIn, TOut>, input: TIn, options?: RunOptions): Promise<ExecutionHandle>
-  resume(executionId: string, resumeEvent: ResumeEvent): Promise<ExecutionHandle>
-  restoreFromState(preloadedState: ExecutionState, resumeEvent?: ResumeEvent): Promise<ExecutionHandle>
-  loadState(executionId: string): Promise<ExecutionState | null>   // fold durable state WITHOUT running
+  start<TIn, TOut>(flow: RegisteredFlow<TIn, TOut> | FlowDefinition<TIn, TOut> | string, input: TIn, options?: RunOptions): Promise<ExecutionHandle>   // string = a registered flow id
+  resume(executionId: string, resumeEvent: ResumeEvent, options?: RunOptions): Promise<ExecutionHandle>
+  restoreFromState(preloadedState: ExecutionState, resumeEvent?: ResumeEvent, options?: RunOptions): Promise<ExecutionHandle>
+  cancel(executionId: string, reason?: unknown, options?: { principal?: PrincipalChain; system?: SystemGrant }): Promise<boolean>
+  loadState(executionId: string, options?: { principal?: PrincipalChain; system?: SystemGrant }): Promise<ExecutionState | null>   // fold durable state WITHOUT running
   fork(parentExecutionId: string, atSequence: number, opts?: ForkOptions): Promise<ForkResult>
   resumeAs(executionId: string, newFlowId: string, resumeEvent: ResumeEvent,   // (2.0, K11.3) migrate an in-flight run to new flow code
-           options: { strategy: "replay-check" | "operator-ack" } & Omit<RunOptions, "executionId">): Promise<ExecutionHandle>
+           options: { strategy: "replay-check" | "operator-ack"; transformState?: (input: unknown) => unknown }
+                    & Omit<RunOptions, "executionId" | "allowFlowCodeMismatch">): Promise<ExecutionHandle>
 }
 #+end_src
 
@@ -589,12 +601,16 @@ interface ExecutionContext {
   execute<TIn, TOut>(task: ExecutableTask<TIn, TOut>, input: TIn): Promise<TOut>;      // (2.0) generalized primitive
   run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;          // thin alias; memoized on replay
   decide<T>(id: string, decider: (scope: DecideScope) => T | Promise<T>,
-            opts?: { rationale?: unknown; source?: string }): Promise<T>;              // (2.0, P9) log an optimizer choice; scope.invokeTransient runs AS this execution (L30)
+            opts?: DecideOptions): Promise<T>;                                           // DecideOptions: { rationale?, source?, alternatives?, estimatedCostUsd?, estimatedCost?, estimatedLatencyMs?, confidence?, context?, policy? }
+                                                                                       // (2.0, P9) log an optimizer choice; scope.invokeTransient runs AS this execution (L30)
   parallel<const B extends readonly ParallelBranch[]>(
     branches: B & { readonly [K in keyof B]: CheckedBranch<B[K]> },   // [step, input] pairs: input must match the step
-    options?: { limit?: number }
+    options?: ParallelOptions                                          // { limit?: number; failFast?: boolean; onPark?: "drain" | "abort" }
   ): Promise<ParallelResults<B>>;                                       // a tuple of each branch's output, in input order
-  suspend(config: { on: string; timeout?: number; correlationKey?: string }): Promise<never>;
+  suspend<T = never>(config: SuspendConfig): Promise<T>;                               // SuspendConfig: { on; timeout?; correlationKey?; wakeAt?; viewDigest? }
+  receive<T = unknown>(topic: string): Promise<T>;                                     // (ADR 0110) next inbox message; needs kernel.features.inbox
+  select<T = unknown>(arms: readonly SelectArm[]): Promise<SelectResult<T>>;           // (ADR 0110) first of gates / inbox topics / timers; SelectArm = { gate; viewDigest?; correlationKey? } | { inbox } | { timer: { afterMs } | { at } }
+  continueAsNew(carry?: unknown): Promise<never>;                                       // (ADR 0109) needs kernel.features.continueAsNew
   sleep(ms: number): Promise<void>;                                                    // (2.0, T1) durable timer
   sleepUntil(wakeAt: number): Promise<void>;                                           // (2.0, T1) wake at absolute ms
   emit(eventType: string, payload: unknown): void;                                     // durable domain event
@@ -714,7 +730,7 @@ with ~HEURISTIC_OWNER_SUFFIX~ (~isHeuristicOwner(owner)~), so its expired leases
 on any node. *Lease consumers (S7d):* an unexpired lease vetoes ~isAbandoned~ on the poll and on
 ~recoverAbandoned~; with heartbeat on in stop mode over a cluster-visible store the ~TimerService~
 refusal re-drive runs by default on an expired lease (an absent lease is never evidence);
-~redriveAbandoned~ takes ~{ conditional: true }~ (the runtime's internal ~claimRecovery~ appends the
+the internal ~redriveAbandoned~ (not exported) takes ~{ conditional: true }~ (the runtime's internal ~claimRecovery~ appends the
 ~EXECUTION_RECOVERED~ marker with ~appendIfUnchanged~ before the fence; ~RunOptions.recoveryClaimed~
 stops the resume from writing a second); ~collectGhostLeases(runtime, { limit? })~ deletes expired
 leases that have no stream (the poll runs it, bounded, once per TTL); a lease-store read error fails
@@ -762,7 +778,7 @@ dispatched package acts as ~ExecutionPackage.principal~ (Dispatcher SPI 1.2.0);
 ~new LocalWorkerRuntime(runtime, { system })~ is the explicit opt-in for kernel re-drive targets
 (~runsAsSystem~; ~createWorkerServer~ then requires ~authorize~). ~InProcessA2ABus~
 (~options.principal~ / ~DispatchOptions.principal~), ~executeGraph~ (~options.principal~),
-~createLoomCarrier~/~handleRpc~ (~resolvePrincipal~ on every ~execution.*~ method) and
+~handleRpc~ (~CarrierOptions.resolvePrincipal~ on every ~execution.*~ method) and
 ~createA2AServer~ (~resolvePrincipal~) attach the caller; without one the call is anonymous and
 refused under strict.
 
@@ -899,10 +915,10 @@ kernel-driven ~EXECUTION_CANCELLED~.
 *The kernel ABI (2.0, K1).* The syscall surface is named and versioned; a conformance test pins it.
 
 #+begin_src typescript
-const KERNEL_ABI_VERSION: string;   // semver, e.g. "1.2.0" — MINOR bumps: 1.1.0 added sleep/sleepUntil (T1), 1.2.0 gave decide's decider a DecideScope (L30)
-const KERNEL_SYSCALLS: readonly { name: string; kind: "call" | "accessor"; since: string; summary: string }[];
+const KERNEL_ABI_VERSION: string;   // semver, currently "1.3.0" — MINOR bumps: 1.1.0 added sleep/sleepUntil (T1), 1.2.0 gave decide's decider a DecideScope (L30), 1.3.0 added receive/select/continueAsNew/negotiateBudget and deprecated ui (ADR 0114)
+const KERNEL_SYSCALLS: readonly { name: string; kind: "call" | "accessor"; since: string; summary: string; deprecated?: boolean }[];
 const KERNEL_ABI: { version: string; syscalls: typeof KERNEL_SYSCALLS };
-// syscalls: execute · run · decide · parallel · suspend · sleep · sleepUntil · emit · stream · ui
+// syscalls: execute · run · decide · parallel · suspend · sleep · sleepUntil · emit · stream · ui (deprecated) · receive · select · continueAsNew · negotiateBudget
 #+end_src
 
 *Retention policy (ADR 0145).* A plain, frozen, validated value the app owns and hands to the retention passes; it carries no behaviour and schedules nothing.
@@ -996,9 +1012,9 @@ interface ExecutionHandle {
 
 type FlowRunner<TIn, TOut> = (ctx: WorkflowContext, input: TIn) => Promise<TOut>;
 interface RegisteredFlow<TIn, TOut> { definition: FlowDefinition<TIn, TOut>; runner: FlowRunner<TIn, TOut>; }
-interface RunOptions   { executionId?: string; /* caller-chosen ⇒ start-once (ADR 0103) */ }
-interface ResumeEvent  { eventType: string; payload: unknown; }
-interface ForkOptions  { branchName?: string; executionId?: string; }
+interface RunOptions   { executionId?: string; /* caller-chosen ⇒ start-once (ADR 0103) */ computeTarget?: string; deadlineMs?: number; principal?: PrincipalChain; system?: SystemGrant; parentExecutionId?: string; /* …plus kernel-internal fence / recovery / lineage grants */ }
+interface ResumeEvent  { eventType: string; payload: unknown; waitId?: string; discardLegacyAnswers?: { stepId: string; count: number } }
+interface ForkOptions  { branchName?: string; executionId?: string; computeTarget?: string; actAs?: "owner"; principal?: PrincipalChain; system?: SystemGrant; }
 interface ForkResult   { executionId: string; parentExecutionId: string; forkSequence: number; branchName: string; state: ExecutionState; }
 #+end_src
 
@@ -1011,18 +1027,21 @@ Also exported (resumability, for server→client handoff): ~serializeExecution~ 
 Built from ~ctx.decide~ + ~ctx.suspend~ — no syscall and no new event type. A spawn intent is a recorded DECISION, which is what makes recovery never start a second child.
 
 #+begin_src typescript
-function awaitChild<T>(ctx, spec: { key: string; flowId: string; input: unknown; maxDepth?: number;
-  grants?: readonly string[]; expiresAt?: number; detached?: boolean }): Promise<T>
-function awaitChildren<T>(ctx, group: { key: string; maxDepth?: number; children: readonly { flowId: string; input: unknown;
-  grants?: readonly string[]; expiresAt?: number; detached?: boolean }[] }): Promise<ChildResult<T>[]>
-function awaitAll<T>(ctx, group: { key: string; maxDepth?: number;
-  children: readonly { flowId: string; input: unknown }[] }): Promise<T[]>   // all-or-nothing: throws childFailed
+function awaitChild<TOut>(ctx, spec: { key: string; flowId: string; input: unknown; maxDepth?: number;
+  grants?: readonly string[]; expiresAt?: number; detached?: boolean }): Promise<TOut>
+function awaitChildren<TOut>(ctx, group: { key: string; maxDepth?: number; children: readonly { flowId: string; input: unknown;
+  grants?: readonly string[]; expiresAt?: number; detached?: boolean }[] }): Promise<ChildResult<TOut>[]>
+function awaitAll<TOut>(ctx, group: { key: string; maxDepth?: number;
+  children: readonly { flowId: string; input: unknown }[] }): Promise<TOut[]>   // all-or-nothing: throws childFailed
+type ChildResult<TOut> = { status: "completed"; output: TOut } | { status: "failed"; error: string } | { status: "cancelled"; reason?: string }   // ctx is Pick<ExecutionContext, "executionId" | "decide" | "suspend">
 function superviseChildren(deps: SupervisorDeps): ChildSupervisor  // wire into onEvent
+interface SupervisorDeps { runtime: WorkflowRuntime; flows: Record<string, RegisteredFlow>; onError?; delegation?: { secret: string }; limits?: SpawnLimits; redrive?: RedriveWiring; tuning?: Partial<SupervisorTuning> }
+interface ChildSupervisor { onEvent(event: EventEnvelope): void; recover(options?: { source?: ExecutionEnumerable; pageSize?: number }): Promise<RecoverSummary>; parkedOnChild(executionId: string): Promise<boolean>; size() }
 function fanout$<TIn, TOut>(ctx, baseStep: StepDefinition<TIn, TOut>, items: readonly TIn[],
   options?: { limit?: number }): Promise<TOut[]>                  // one step per item, bounded concurrency
-const CHILD_DONE: string; const CHILD_FAILED: string            // userspace events the fold skips
-function childIdFor(parentId: string, label: string, index?: number): string
-function parentOf(executionId: string): string | undefined; function depthOf(executionId: string): number
+const CHILD_DONE = "CHILD_DONE"; const CHILD_FAILED = "childFailed"   // userspace events the fold skips
+function childIdFor(parentId: string, key: string): string
+function parentOf(childId: string): string | undefined; function depthOf(executionId: string): number
 
 // R9 — the autonomy envelope for spawning. Both bounds are off when unset.
 interface SpawnLimits { maxDepth?: number; maxFanOut?: number }    // deepest child (root 0, child 1); children per group
@@ -1401,7 +1420,9 @@ interface ContentSweepOptions {
   touchedBefore?: number                // STORE time: guard cutoff (default touchClock() − olderThanMs)
   snapshotStores?: readonly SnapshotLookup[]   // checkpoint + latest snapshot refs are pinned
   roots?: () => AsyncIterable<string>   // D7: addresses held in your own tables, pinned
-  reclaimOrphans?: { completeScan: true }  // D6: erasing REQUIRES the ack (bare `true` throws ReclaimOrphansAckError;
+  archiveStores?: readonly Pick<ArchiveStore, "read" | "listExecutions" | "headers">[]   // an ERASING pass over compacted logs needs these to cover every one (ArchiveStoresRequiredError)
+  acknowledgeUnarchivedLogs?: boolean   // opt-in for compacted logs whose history is already gone (reported in unarchivedAcknowledged)
+  reclaimOrphans?: { completeScan: true; snapshotsTouchContent?: true }  // D6: erasing REQUIRES the ack (bare `true` throws ReclaimOrphansAckError;
                                         // a dryRun may pass `true`); live stores BEFORE archives.
                                         // erasing also REQUIRES contentStore.touch (SPI 1.4.0) or it throws ReclaimOrphansTouchError (dryRun exempt)
                                         // The guarantee is D5's: touch-before protects a write shorter than the margin
@@ -1409,7 +1430,8 @@ interface ContentSweepOptions {
                                         // olderThanMs <= 0 or a margin < MIN_ORPHAN_ERASE_MARGIN_MS (60 s) with
                                         // ReclaimOrphansMarginError (dryRun exempt)
                                         // needs listPage + deleteIfUntouchedSince, and
-                                        // snapshotStores when a scanned store can truncatePrefix
+                                        // snapshotStores when a scanned store can truncatePrefix; an erasing pass given snapshotStores
+                                        // also REQUIRES snapshotsTouchContent: true (ReclaimOrphansSnapshotAckError)
 }
 interface SnapshotLookup {   // structurally a SnapshotStore; pass the live one AND each archive's
   loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>
@@ -1421,23 +1443,28 @@ interface ContentSweepReport {
   refsOfReopened: number; reclaimedWhileReopened?: string[]   // re-opened executions keep the citation clock (list: dry run only)
   keptByTouch: number; touchCutoff?: number   // eligible blobs the conditional erase refused (0 on a dry run), and the store-clock cutoff
   reclaimed: string[]; orphansReclaimed: string[]
+  snapshotStoresTouching: number; snapshotStoresUnbranded: number
+  sealedSnapshots: string[]; shreddedSnapshots: string[]; unarchivedAcknowledged: string[]
   raceSafe: boolean                     // D5: false = plain delete, a mid-sweep re-cite can be lost
 }
 function pinByEventKinds(store: Pick<EventStore, "read">, kinds: Iterable<string>): (executionId: string) => Promise<boolean>
 const CONTENT_STORE_SPI_VERSION: string   // "1.5.0"
-class InMemoryContentStore implements ContentStore { constructor(opts?: { now?: () => number }) }
+class InMemoryContentStore implements ContentStore { constructor(options?: { now?: () => number }) }
 #+end_src
 
 ** ~@loom/plugin-durable-state~ — carry state across wakes
 
 #+begin_src typescript
 interface DurableStateStore {
-  get(key: string): Promise<DurableStateRecord | null>
-  put(key: string, value: unknown, expectedRevision: number | null): Promise<DurableStateRecord>
-  clear(input: ClearInput): Promise<ClearResult>
+  load(key: string): Promise<DurableStateRecord | null>        // DurableStateRecord = { contractVersion: number; revision: number; payload: unknown }
+  save(key: string, value: { contractVersion: number; payload: unknown }, expectedRevision: number): Promise<DurableStateRecord>
+  clear(key: string): Promise<void>
+  close?(): Promise<void>
 }
-function durableState<T>(config: DurableStateConfig<T>): DurableStateHandle<T>   // { id, version, schema, migrations?, store }; handle.register(effects) registers the load/save/clear effects
-class RevisionConflictError extends Error {}   // optimistic concurrency: two wakes cannot interleave
+function durableState<T>(config: DurableStateConfig<T>): DurableStateHandle<T>   // config: { id, version: number, schema, migrations?, store }
+// DurableStateHandle<T>: register(runtime: EffectRegistry) registers the load/save/clear effects (toolIds, tasks, effects are also exposed);
+//   load(ctx, key, opts?: { stepId? }): Promise<LoadResult<T>>; save(ctx, key, value, expectedRevision: number, opts?): Promise<SaveResult>; clear(ctx, key, opts?): Promise<ClearResult>
+class RevisionConflictError extends Error {}   // optimistic concurrency: two wakes cannot interleave (also StateContractMismatchError)
 class InMemoryDurableStateStore implements DurableStateStore {}
 // durable: SqliteDurableStateStore / PostgresDurableStateStore. ADR 0053; the sentinel preset wires it.
 #+end_src
@@ -1526,11 +1553,12 @@ function hashChainedEventStore(inner: EventStore, options?: {
   hmacSecret?: string;        // tamper-evident to secret-holders
   signer?: ChainSigner;       // { keyId, sign(hash) } — mutually exclusive with hmacSecret
   verifier?: ChainVerifier;   // { verify(hash, sig, keyId) } — the auditor holds ONLY this
+  allowCompaction?: true;     // ADR 0138: lets LogLifecycle.compact run over the chain; verify with verifyChain(id, { archived })
 }): HashChainedEventStore
 function ed25519Signer(privateKey: KeyLike, keyId: string): ChainSigner
 function ed25519Verifier(publicKeys: Record<string, KeyLike>): ChainVerifier   // keyId → public key
 interface HashChainedEventStore extends EventStore {
-  verifyChain(executionId: string): Promise<ChainVerification>   // { ok, length, signaturesChecked, brokenAt?, reason? }
+  verifyChain(executionId: string, options?: { readonly archived?: readonly EventEnvelope[] }): Promise<ChainVerification>   // { ok, length, signaturesChecked, brokenAt?, reason? }
 }
 // compose BELOW tenant-scoping and ABOVE the base store, and OUTSIDE ContentResolvingEventStore —
 // inside it, the chain only ever sees a ref string and rewriting the blob is silent
@@ -1554,12 +1582,13 @@ interface EffectContext {
   readonly resources?: ResourceSnapshot;  // (2.0, K3) running totals BEFORE this effect
   readonly priority?: number;             // (2.0, M6) @loom/scheduler Priority when scheduled
   readonly callKey?: string;              // (L30) set only on execution-stamped TRANSIENT calls; id-minting sites append it to (executionId, stepId)
+  readonly toolId?: string; readonly taskKind?: string; readonly onDelta?: DeltaSink; readonly idempotencyKey?: string; readonly principal?: PrincipalChain;
 }
-interface ResourceSnapshot { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean; }
+interface ResourceSnapshot { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean; /* plus optional memBytes, wallMs, netBytes, custom */ }
 interface Effect<TIn, TOut> { kind: EffectKind; execute(input: TIn, ctx: EffectContext): Promise<TOut>; }
 
-type EffectNext = () => Promise<unknown>;
-type EffectMiddleware = (ctx: EffectContext, input: unknown, next: EffectNext) => Promise<unknown>; // middleware[0] outermost
+type EffectNext = (input?: unknown) => Promise<unknown>;
+interface EffectMiddleware { (ctx: EffectContext, input: unknown, next: EffectNext): Promise<unknown> }   // middleware[0] outermost; also optional `inspectsOutput?: boolean`, `deltaGuard?`
 
 class EffectRuntime {
   constructor(middleware?: readonly EffectMiddleware[], options?: EffectRuntimeOptions)  // (2.0) options
@@ -1568,9 +1597,9 @@ class EffectRuntime {
   invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: TransientInvokeOptions): Promise<TOut>  // (ADR 0066) non-durable invoke: authorize/meter/middleware still run, but NO events emitted; opts.as (L30) stamps an execution's workflowId/executionId/stepId
   has(toolId: string): boolean
 }
-interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; as?: TransientIdentity; resources?: ResourceSnapshot; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag; without `as` it is the synthetic executionId `transient:<label>`, so also an authz input); (L30) as = stamp an execution's identity (an AUTHZ INPUT: any memo/dedup wrapper MUST key on it, and on label — key on every option except signal), resources = running totals for budget admission (the charge is still dropped)
+interface TransientInvokeOptions { signal?: AbortSignal; principal?: PrincipalChain; label?: string; as?: TransientIdentity; resources?: ResourceSnapshot; onDelta?: DeltaSink; }  // (ADR 0066) — signal (deadline), principal (K2 still enforced), label (trace tag; without `as` it is the synthetic executionId `transient:<label>`, so also an authz input); (L30) as = stamp an execution's identity (an AUTHZ INPUT: any memo/dedup wrapper MUST key on it, and on label — key on every option except signal), resources = running totals for budget admission (the charge is still dropped)
 interface TransientIdentity { workflowId: string; executionId: string; stepId?: string /* default toolId */; callKey?: string /* -> EffectContext.callKey */ }
-interface DecideScope { invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: { signal?: AbortSignal }): Promise<TOut> }  // (L30) ctx.decide's decider argument; closed once the decider settles
+interface DecideScope { invokeTransient<TIn, TOut>(toolId: string, input: TIn, opts?: { readonly signal?: AbortSignal; readonly onDelta?: DeltaSink }): Promise<TOut> }  // (L30) ctx.decide's decider argument; closed once the decider settles
 #+end_src
 
 *The protection ring, accounting context & scheduling (2.0, K2/K3/M6).*
@@ -1580,9 +1609,10 @@ interface EffectRuntimeOptions {
   authorizer?: CapabilityAuthorizer;   // K2 — deny ungranted effects (least-privilege)
   scheduler?: Scheduler;               // M6 — route effects through it (bounded concurrency + priority)
   warmer?: Warmer;                     // M6 — advisory pre-warm, off-log (latency only)
+  onWarn?: (message: string) => void;
 }
 interface CapabilityAuthorizer { authorize(req: CapabilityRequest): CapabilityDecision; }
-interface CapabilityRequest  { toolId: string; executionId: string; workflowId: string; stepId: string; }
+interface CapabilityRequest  { toolId: string; resource?: string; executionId: string; workflowId: string; stepId: string; principal?: PrincipalChain; }
 interface CapabilityDecision { allowed: boolean; reason?: string; }
 class CapabilityDeniedError extends Error { readonly toolId: string; readonly reason: string; }
 class GrantTable implements CapabilityAuthorizer {   // least-privilege: principal → granted effect ids ("*" = all)
@@ -1621,8 +1651,8 @@ Tenant isolation is enforced *by construction* at the store — see ~TenantScope
 *Effect implementations* (each ~implements Effect~):
 
 #+begin_src typescript
-new ToolEffect((input, ctx) => Promise<TOut>)    // kind "tool" — any async work
-new LlmEffect((input, ctx) => Promise<TOut>)     // kind "llm"  — a model call
+new ToolEffect((input, ctx) => Promise<TOut>, options?: { idempotent?, errors?, mode? })   // kind "tool" — any async work
+new LlmEffect((input, ctx) => Promise<TOut>, options?: { warm?, reasoning? })              // kind "llm"  — a model call
 new A2AEffect((input, ctx) => Promise<TOut>)     // kind "a2a"  — delegate to a remote agent (defined in @loom/plugin-a2a only; the effect-runtime copy was removed, ADR 0115)
 new HumanEffect({ on: string; timeout?: number; correlationKey?: (input) => string })  // kind "human" — throws SuspendError
 new LazyEffect(spec: HandlerSpec)                // kind "tool" — resolves an inline/lazy handler on first execute
@@ -1652,7 +1682,7 @@ See the architecture narrative in [[file:architecture.md][§5.7]] and the ring-b
 | K6 | Behavioral safety | ~safetyMiddleware~ under [[#app][@loom/middleware]] | ~SAFETY_BLOCKED~ |
 | K7 | Data-plane isolation & egress | ~@loom/isolate~ (below) | ~EGRESS_DENIED~ |
 | K8 | Cancellation & deadlines | ~deadlineMs~/~signal~ under [[#workflow-runtime][ExecutionContext]] | ~EXECUTION_CANCELLED~ |
-| K9 | Delivery contract & fencing | ~idempotent~ (step) + ~WorkerLease.fence~ | ~EFFECT_INDOUBT~ |
+| K9 | Delivery contract & fencing | ~idempotent~ (tool / effect) + ~WorkerLease.fence~ | ~EFFECT_INDOUBT~ |
 | K10 | Log lifecycle & encryption | ~@loom/plugin-crypto~ (below) + ~redactionMiddleware~ | ~PAYLOAD_SHREDDED~ |
 | K11 | Flow-code versioning | ~resumeAs~/~flowContentHash~ under [[#workflow-runtime][WorkflowRuntime]] | ~EXECUTION_MIGRATED~ |
 | K12 | Identity, tenancy & delegation | ~DelegationAuthorizer~ + ~TenantScoped*~ stores | ~APPROVAL_GRANTED~ |
@@ -1682,6 +1712,7 @@ interface IsolatedToolSpec {
   timeoutMs?: number;     // exceed ⇒ non-cooperative SIGKILL
   idempotent?: boolean;   // K9.3 delivery semantic
   warm?: boolean;         // pre-warm the child at construction
+  maxConcurrentFetches?: number; coldStartMs?: number; fetchTimeoutMs?: number;   // optional bounds
 }
 // the marshaled context an isolated tool receives (a host-function subset of EffectContext):
 interface IsolatedToolContext {
@@ -1691,7 +1722,7 @@ interface IsolatedToolContext {
   fetch(url: string, init?: IsolatedFetchInit): Promise<IsolatedFetchResponse>;  // brokered — allowlist enforced parent-side
 }
 // the kernel-side egress broker (denies before any connection, emits EGRESS_DENIED):
-function brokeredFetch(toolId: string, allowlist: ReadonlySet<string>, url: string, init?: IsolatedFetchInit): Promise<BrokeredResponse>;
+function brokeredFetch(toolId: string, allowlist: ReadonlySet<string>, url: string, init?: IsolatedFetchInit, signal?: AbortSignal, hooks?: BrokeredFetchHooks): Promise<BrokeredResponse>;
 class EgressDeniedError extends Error { readonly toolId: string; readonly target: string; readonly reason: string; }
 #+end_src
 
@@ -1719,6 +1750,8 @@ interface EncryptingEventStoreOptions {
   sensitive: Record<string, readonly string[]>;   // event type → encrypted payload dot-paths
   subjectOf?: (e: { executionId: string; workflowId: string }) => string;  // erasure subject (default: executionId)
   ivSource?: IvSource;   // simulation only: a BRANDED value from @loom/plugin-crypto/testing (a plain function is refused); allowed only under NODE_ENV=test / VITEST
+  senderSubjectOf?: SenderSubjectOf | false;   // ADR 0139 D12 (see below)
+  onShredded?: "throw" | "tolerate";
 }
 interface EncryptingSnapshotStoreOptions {
   sealState?: true;                    // ADR 0130 D8: seal the WHOLE folded state as one envelope (covers dynamic _waitAnswers keys); exposes sealsWholeState: true
@@ -1726,6 +1759,7 @@ interface EncryptingSnapshotStoreOptions {
   legacySensitive?: readonly string[]; // sealState only; legacy opening restricted to these paths
   sensitive?: readonly string[];       // static dot-paths into the folded state; mutually exclusive with sealState
   subjectOf?: (s: { executionId: string; workflowId: string }) => string;
+  codec?: SnapshotCodecName; lengthLeak?: "accept"; ivSource?: IvSource; events?: EventStore;   // codec/lengthLeak: ADR 0141; events: see below
 }
 // ADR 0130 residuals D7: every envelope with a sealed field is stamped metadata.seal = { v: 1, cipher, covers }
 // (covers: exact, sorted "EVENT_TYPE.path" entries sealed in THAT envelope), and store.sealingCapability()
@@ -1779,15 +1813,15 @@ Confidentiality is a property of a FIELD and static; integrity is a property of 
 
 #+begin_src typescript
 // confidentiality — marks on a schema, read by the kernel's egress/crypto paths
-function sensitive<T>(schema: T): T; function secret<T>(schema: T): T; function internal<T>(schema: T): T
+const sensitive: <T extends z.ZodTypeAny>(schema: T) => T; const secret: <T extends z.ZodTypeAny>(schema: T) => T; const internal: <T extends z.ZodTypeAny>(schema: T) => T
 function classify<T extends z.ZodTypeAny>(schema: T, dataClass: DataClass): T   // marks the schema (the sugar above calls it); returns the same schema
 function collectClassifiedPaths(schema: z.ZodTypeAny, prefix?: string): ClassifiedPath[]   // { path, dataClass } per marked field
-function maskPaths<T>(value: T, paths: readonly string[]): T   // REDACTED at each path
-function expandPaths(paths: readonly string[], value: unknown): string[]   // `[]` crossings (ADR 0076)
+function maskPaths(root: unknown, paths: readonly string[], mask?: unknown): unknown   // a copy with `mask` (default REDACTED) at each path
+function expandPaths(root: unknown, paths: readonly string[]): string[]   // `[]` crossings (ADR 0076)
 
 // integrity — a wrapper around a value, not a mark on a field
 function tainted<T>(value: T, origin: string): TaintedValue<T>
-function isTainted(value: unknown): boolean; function taintOf(value: unknown): Taint | undefined
+function isTainted(value: unknown): value is TaintedValue; function taintOf(value: unknown): Taint | undefined
 function unwrapTainted<T>(value: TaintedValue<T> | T): T
 function scanTaint(value: unknown, options?: TaintScanOptions): TaintScan   // @loom/classify (ADR 0085 amendment): finds a wrapper NESTED anywhere in a value (iterative, cycle-safe, depth 64 / 100,000 nodes, fails CLOSED past the bound with origin "unknown:taint-scan-bound-exceeded")
 function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string | undefined   // the joined origin label (capped at 8 origins, then "+N more"); agentLoop$ fences the WHOLE tool_result when it is set
@@ -1797,12 +1831,17 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 ** ~@loom/compliance~ — subject export & erasure (T3)
 
 #+begin_src typescript
-class SubjectIndex {                              // subjectId → executions; fed live, rebuildable
-  static fromEvents(events: EventEnvelope[], subjectOf: (e: EventEnvelope) => string | undefined): SubjectIndex
+class SubjectIndex {                              // subjectId → executions; fed live (handleEvent), rebuildable
+  constructor(subjectOf: SubjectResolver, options?: { tenantOf?: TenantResolver })
+  static fromEvents(events: readonly EventEnvelope[], subjectOf: SubjectResolver, options?: SubjectIndexOptions): SubjectIndex
+  handleEvent(event: EventEnvelope): void
+  executionsOf(subjectId: string, tenant?: string): string[]
 }
-function exportSubject(subjectId: string, opts?: ExportSubjectOptions): Promise<SubjectExport>  // Art. 15/20
+function exportSubject(subjectId: string, options: ExportSubjectOptions): Promise<SubjectExport>  // Art. 15/20; options.index (SubjectIndex) and options.eventStore are REQUIRED
 class EraseCoordinator {                          // Art. 17 — shred now, or park until terminal
-  request(subjectId: string, tenant?: string): Promise<EraseSubjectResult>
+  constructor(options: EraseCoordinatorOptions)   // { index, eventStore, shred, archives?, content?, … }
+  eraseSubject(subjectId: string, tenant?: string, options?: EraseSubjectOptions): Promise<EraseSubjectResult>
+  handleEvent(event: EventEnvelope): Promise<void>   // wire into onEvent: executes a parked erasure at the terminal event
 }
 const ERASURE_STREAM: string                      // the reserved control stream erasure facts live on
 // reached through app.exportSubject / app.eraseSubject when `compliance` is configured
@@ -1813,11 +1852,11 @@ const ERASURE_STREAM: string                      // the reserved control stream
 A language-neutral JSON-RPC projection of the K1 syscalls: a non-TS worker can drive a Loom execution over the wire, and the same fold-conformance vectors pin its behavior byte-for-byte against the in-process kernel.
 
 #+begin_src typescript
-const WIRE_ABI_VERSION: string;                      // tracks KERNEL_ABI_VERSION
-const WIRE_ABI: WireAbi;                             // { version, methods, carrierMethods }
+const WIRE_ABI_VERSION: string;                      // "1.0.0" — the wire protocol's own version; independent of KERNEL_ABI_VERSION, tracks its major line
+const WIRE_ABI: WireAbi;                             // { wireVersion, kernelAbiVersion, syscalls, carrier }
 const WIRE_METHODS: readonly WireMethod[];           // JSON-RPC projection of the syscalls
-const CARRIER_METHODS: readonly CarrierMethod[];     // start / resume / poll transport methods
-function deriveWireMethods(syscalls: typeof KERNEL_SYSCALLS): WireMethod[];
+const CARRIER_METHODS: readonly CarrierMethod[];     // execution.start / execution.resume / execution.getState / execution.cancel
+function deriveWireMethods(syscalls?: readonly KernelSyscall[]): WireMethod[];   // default KERNEL_SYSCALLS
 function handleRpc(runtime: WorkflowRuntime, request: JsonRpcRequest, options?: CarrierOptions): Promise<JsonRpcResponse>;   // server side
 const FOLD_VECTORS: readonly FoldVector[];           // shared conformance corpus
 function runFoldVectors(vectors?: readonly FoldVector[]): Array<{ name: string; passed: boolean; detail?: string }>;   // runs the reference fold; defaults to FOLD_VECTORS
@@ -1909,9 +1948,10 @@ interface SurfaceEmitter {
   remove(path: string): void;
   increment(path: string, by?: number): void;
   patch(patches: SurfacePatch[]): void;
+  as(by: PatchProvenance): SurfaceEmitter;       // PatchProvenance = { by: string; note?: string }
 }
-function createSurfaceEmitter(emit: (eventType: string, payload: unknown) => void, surface?: string): SurfaceEmitter
-function agentSurfaceProjection(surfaceId?: string): Projection<SurfaceState>   // register on a ProjectionRuntime
+function createSurfaceEmitter(emit: (eventType: string, payload: unknown) => void, surface?: string, author?: PatchProvenance): SurfaceEmitter
+function agentSurfaceProjection(surfaceId?: string, options?: { redact?: readonly string[] }): Projection<SurfaceState>   // register on a ProjectionRuntime
 function applySurfacePatch(state: SurfaceState, patch: SurfacePatch): SurfaceState        // pure, total
 function applySurfacePatches(state: SurfaceState, patches: readonly SurfacePatch[]): SurfaceState
 // getSurfaceValue(state, parts: string[]): unknown ;  class AgentSurfaceRuntime { handleEvent/getSurface/seed/subscribe }
@@ -1996,7 +2036,7 @@ function defineFunction(fn: CatalogFunctionSchema): CatalogFunctionSchema; // a 
 // operator verdict, not a blind re-fire). Transport injected → plugin stays
 // transport-agnostic. Call via `ctx.execute({ id, toolId: A2UI_CALL_FUNCTION_TOOL_ID }, input)`.
 const A2UI_CALL_FUNCTION_TOOL_ID = "a2ui.callFunction";
-function registerA2UICallFunction(fx: EffectRuntime, transport: A2UICallFunctionTransport, opts?: { toolId?: string }): string;
+function registerA2UICallFunction(effectRuntime: EffectRuntime, transport: A2UICallFunctionTransport, opts?: { toolId?: string; requestTimeoutMs?: number }): string;
 
 // Component-tree builders (bindings are JSON Pointers into the surface data model)
 function bind(pointer: string): { path: string };
@@ -2214,7 +2254,7 @@ a DOM — is ~mcp-app-release-approval~ in the sibling [[file:examples.md][loom-
 ** ~@loom/blueprint-runtime~ — declarative UI
 
 #+begin_src typescript
-function blueprint$(config: { id: string; title: string; layout: Layout; projections: string[] }): Blueprint
+function blueprint$(config: { id: string; title: string; layout: Layout; projections: string[]; projectionVersions?: Readonly<Record<string, string>> }): Blueprint
 
 // Layout helpers — a grid child is a GridCell (IR 2.0.0); grid() and asCell() normalise a bare
 // Widget | Layout to { span: 1, node } so every existing call keeps compiling
@@ -2296,7 +2336,7 @@ function validateBlueprint(blueprint: Blueprint, catalog: WidgetCatalog): Bluepr
 //           + layout-id-invalid (warn; a present layout id that is not a non-empty string — IR 2.4.0, ADR 0101)
 //           duplicate-node-id spans widget AND layout ids (IR 2.4.0); a layout-level finding's
 //           nodeId is the layout's valid id, else "<layout>"
-function catalogCoverage(catalog: WidgetCatalog, kinds: Iterable<string>): CoverageReport
+function catalogCoverage(catalog: WidgetCatalog, registry: RendererRegistry<unknown>): CoverageReport   // { ok, missing, extra }
 
 // ADR 0094 — which node ids did this change DROP? (the failure one tree cannot show)
 function blueprintNodeIds(blueprint: Blueprint): string[]      // WIDGET ids only, pre-order
@@ -2354,7 +2394,7 @@ function WidgetFrame(props: { widget: Widget; value: unknown; status?: BindingSt
 type WidgetValueCheck = (widget: Widget, value: unknown) => { code: string; message: string } | undefined
 // Fiber selector over { value, status } together — sibling to useWidgetValue; a status-only
 // change re-renders without forcing an extra render on a value-only change, and vice versa
-function useWidgetSlice(pr: ProjectionRuntime, widget: Widget, executionId: string): { value: unknown; status?: BindingStatus }
+function useWidgetSlice(runtime: ProjectionRuntime, widget: Widget, executionId: string, enabled?: boolean): WidgetSlice   // WidgetSlice = { value: unknown; status?: BindingStatus }
 #+end_src
 
 Built-in React renderers: ~MetricCardRenderer~, ~TimelineRenderer~, ~ApprovalCardRenderer~, ~StatusBadgeRenderer~, ~StreamingTextRenderer~. (~ProgressBarRenderer~, ~DataTableRenderer~ and ~AlertCardRenderer~ exist only inside ~defaultRegistry~, not as exports.)
@@ -2396,7 +2436,7 @@ interface DomRenderOptions {
   document?: Document                              // default host.ownerDocument, else globalThis.document
 }
 interface MountOptions extends DomRenderOptions { projectionRuntime: ProjectionRuntime; executionId: string }
-interface DomUpdateReport { identity: IdentityReport; remounted: readonly string[] }   // remounted: present before AND after but rebuilt (kind change, moved container)
+interface DomUpdateReport { identity: IdentityReport; remounted: readonly string[]; outcome: "updated" | "recovered" | "failed" | "busy" | "disposed"; error?: string }   // remounted: present before AND after but rebuilt (kind change, moved container)
 interface DomHandle { element: HTMLElement; update(next: Blueprint): DomUpdateReport; dispose(): void }   // update never throws
 const defaultDomRegistry: RendererRegistry<DomWidgetRenderer>   // the eight built-in kinds (asserted by catalogCoverage and the three-way parity test)
 // one-shot, not live — the sibling of renderBlueprintToString
@@ -2434,12 +2474,15 @@ interface LlmProvider { readonly capabilities?: LlmCapabilities; complete(reques
 class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; headers?: Readonly<Record<string, string>>; thinking?: { type: "adaptive"; display?: "summarized" | "omitted" } }) }  // model default "claude-opus-4-8"; thinking -> the request's `thinking` (ADR 0133), unset = not sent
 class OpenAiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; headers?: Readonly<Record<string, string>> }) }  // model default "gpt-4o"
 class GeminiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; headers?: Readonly<Record<string, string>>; includeThoughts?: boolean }) }  // model default "gemini-2.0-flash"; includeThoughts -> generationConfig.thinkingConfig (ADR 0133)
+// also on the configs: maxResponseBytes? / maxStreamBytes? / maxLineBytes? (all three), GeminiProvider thinkingBudget?: number, OpenAiProvider reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high"
 // `headers` (all three providers): extra request headers sent on every complete/stream call, e.g. `{ "anthropic-workspace-id": "wrkspc_..." }` for an Anthropic key not scoped to a workspace. Validated at construction (strings, no CR/LF); a header the provider sets itself (x-api-key, authorization, anthropic-version, x-goog-api-key, content-type) cannot be overridden and throws (case-insensitive; the error names the header, never the value). Unset = requests unchanged.
 
 function createLlmEffect<TIn = string, TOut = string>(options: {
   provider: LlmProvider;
-  buildRequest: (input: TIn, ctx: EffectContext) => LlmRequest;
-  parseResponse?: (response: LlmResponse, input: TIn) => TOut;   // default: response.content
+  buildRequest: (input: TIn, ctx: EffectContext) => LlmRequestInput;   // LlmRequest whose text slots may also carry LlmContent (tainted values)
+  parseResponse?: (response: LlmCapturedResponse, input: TIn) => TOut;   // default: response.content; LlmCapturedResponse = LlmResponse with reasoning reduced to LlmReasoningPart[]
+  stream?: boolean; onDelta?: (delta: string, ctx: EffectContext) => void; onReset?: (attempt: number, ctx: EffectContext) => void;
+  guard?: (ctx: EffectContext) => (progress: StreamProgress) => void;   // e.g. streamTokenBudget
   resolveContent?: ContentResolver;   // R5 — (ref, { executionId, stepId, principal, origin, maxBytes, signal }) => bytes | null; MUST authorize; live calls only
   maxInlineBytes?: number; maxInlineTotalBytes?: number; maxResolvedBytes?: number;   // R5 — caps (default 64 KiB per part / 256 KiB inline per request / 32 MiB resolved)
   onToolDelta?: (d: { id: string; name?: string; inputDelta: string }, ctx: EffectContext) => void;   // R5 — transient
@@ -2509,18 +2552,18 @@ Routes across a registry of models and *elevates* to a stronger one when confide
 
 #+begin_src typescript
 interface ModelRoute { id: string; provider: LlmProvider; tier: number; tags?: string[]; }   // tier 0 = cheapest
-interface ReasoningRequest { messages: LlmMessage[]; system?: string; strategy?: string; tools?: LlmToolSpec[]; maxTokens?: number; temperature?: number; signal?: AbortSignal; maxTier?: number; }
+interface ReasoningRequest { messages: LlmMessageInput[]; system?: LlmContent; strategy?: string; tools?: LlmToolSpec[]; maxTokens?: number; temperature?: number; signal?: AbortSignal; maxTier?: number; }
 interface ReasoningResult  { content: string; toolCalls?: LlmToolCall[]; stopReason: LlmResponse["stopReason"]; usage?; modelId: string; confidence: number; elevated: boolean; trace: Array<{ modelId: string; tier: number; confidence: number; elevated: boolean }>; }
 type DecideFn = <T>(decisionId: string, decider: () => T | Promise<T>) => Promise<T>;          // pass ctx.decide
 
 interface ReasoningRuntimeConfig { routes: ModelRoute[]; router?: Router; confidence?: ConfidenceSignal; elevateThreshold?: number; cache?: ReasoningCache; }  // elevateThreshold default 0.5
 class ReasoningRuntime {
   constructor(config: ReasoningRuntimeConfig)
-  reason(req: ReasoningRequest, opts?: { decide?: DecideFn; signal?: AbortSignal; decisionKey?: string }): Promise<ReasoningResult>
+  reason(req: ReasoningRequest, opts?: ReasonOptions): Promise<ReasoningResult>   // ReasonOptions: { decide?, invoke?: ModelInvoker, cacheScope?, wrapCall?, signal?, decisionKey? } + (resolveContent AND resolveContext, together)
   get availableRoutes(): readonly ModelRoute[]
 }
 
-// Routers (pick a route): tagRouter (cheap-first, default) · fixedRouter(id) · rankedRouter(rankings)  // rankedRouter = M10 learned
+// Routers (pick a route): tagRouter (cheap-first, default) · fixedRouter(id) · rankedRouter(rankings)  // rankedRouter = M10 learned; also ucb1, epsilonGreedy
 // Confidence signals (pluggable, NOT a magic number): stopReasonConfidence (default) · validatorConfidence(fn) · constantConfidence(n)
 interface ConfidenceSignal { score(req: ReasoningRequest, res: LlmResponse): number | Promise<number>; }
 interface Router { select(req: ReasoningRequest, routes: ModelRoute[]): ModelRoute; }
@@ -2542,6 +2585,7 @@ class AgentRunner {
     systemPrompt?: string; memory?: MemoryRuntime;
     parallelTools?: boolean | number;  // default false; true = all, number = cap
     skills?: SkillRegistry; skillSelector?: SkillSelector;
+    resolveContent?: ContentResolver; stream?: boolean; onDelta?: (delta: string) => void;
     acceptAtLeastOnce?: boolean;    // K9.3 (ADR 0021): default false = REFUSE an idempotent:false tool (IdempotentToolRefusedError, terminal, checked for the WHOLE turn's batch before any call is dispatched); true = run it with at-least-once re-run on recovery
   })
   // each nested tool call gets ctx.idempotencyKey = `<outer>:t<turn>:c<position>:<first 16 hex of sha256(name + canonical input)>`
@@ -2562,6 +2606,9 @@ class SkillRegistry { register(skill): this; get(id); all(); ids(); find(query):
 function deterministicSkillSelector(maxSkills?: number): SkillSelector
 function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelector      // calls the provider DIRECTLY (outside authz/metering/kill switch; guardRequest runs)
 function llmSkillSelector(options: { toolId: string; maxSkills?: number }): SkillSelector // (R9) effect-backed: agentLoop$ only; a journaled frame `<agent>#skills:select`
+function agentLoop$(ctx: ExecutionContext, config: AgentLoopConfig, input: AgentInput): Promise<AgentOutput>   // THE canonical loop; throws AgentLoopConfigError for a config it refuses
+//   AgentLoopConfig base keys: definition: AgentDefinition (required); modelToolId?; reasoning?: ReasoningRuntime; reasoningToolId?; systemPrompt?; maxIterations?;
+//     memory?: TieredMemory (+ memoryTier?, memoryScope?, recallLimit?); skills?: SkillRegistry; skillSelector?; approvalGate?; bindApproval?; versions?; cacheScope?; onWarn?
 // agentLoop$ config (R10, ADR 0121 — THE canonical loop; AgentRunner and agentStep$ are @deprecated):
 //   needsApproval?: (toolCall, turn, onMenu?) => boolean — `true` PARKS the call on `approvalGate` for a human before it runs, `false` runs it (a policy that returns nothing parks). Composes with `kind: "human"` tools exactly as requireApproval did
 //   requireApproval?: (toolCall, turn, onMenu?) => boolean — @deprecated alias of needsApproval with the INVERTED polarity (auto-approve: `true` = proceed, `false` = park); same recorded log; one LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED warning per process; both given = AgentLoopConfigError
@@ -2606,12 +2653,12 @@ class SkillActivationError; const SOURCE_SKILL_ACTIVATION = "agent-skill-activat
 // R22e D15: toolSearch.ranker / skillActivation.skillRanker: ToolRanker | ToolRankerFactory; toolSearch.stopwords?: string[] (query-only, [] disables, <=256)
 type ToolRankerFactory = (docs: readonly ToolSearchDoc[]) => ToolRanker   // sync; once per run, first search; throw = search_unavailable (retried next search); replay never calls it
 interface ToolSearchDoc { id: string; description?: string; tags: readonly string[]; aliases: readonly string[] }   // what the built-in BM25F indexes (D7 trust applied)
-function toolSearchDocs(tools: ToolDefinition[], opts?: { annotations? }): ToolSearchDoc[]; function skillSearchDocs(skills: Iterable<SkillDefinition>): ToolSearchDoc[]; const DEFAULT_STOPWORDS, MAX_STOPWORDS = 256
-interface ToolRanker { kind: string; rank(query: string, limit: number): readonly { id: string; score: number }[] | Promise<...> }
+function toolSearchDocs(tools: readonly ToolDefinition[], opts?: { annotations? }): readonly ToolSearchDoc[]; function skillSearchDocs(skills: Iterable<SkillDefinition>): readonly ToolSearchDoc[]; const DEFAULT_STOPWORDS, MAX_STOPWORDS = 256
+interface ToolRanker { kind: string; rank(query: string, limit: number): readonly ToolHit[] | Promise<readonly ToolHit[]> }   // ToolHit = { id: string; score: number }
 class Bm25ToolRanker implements ToolRanker { constructor(tools: { id; description?; tags?; aliases? }[], opts?: { stopwords?: string[] }); size: number }   // BM25F: name 3, aliases 2, tags 2, description 1
-function tokenizeToolText(text, maxTokens): string[]; function toolQueryTerms(query, stopwords?: ReadonlySet<string>): string[]; function normalizeLabels(labels?, maxCount?, maxChars?): string[]
+function tokenizeToolText(text, maxTokens): string[]; function toolQueryTerms(query, stopwords?: ReadonlySet<string>): string[]
 class ToolSearchSession; const SOURCE_TOOL_SEARCH = "agent-tool-search"; class ToolSearchError
-function registerReasoningRoutes(effects: { register(id, effect) }, reasoning: ReasoningRuntime, o?: { prefix?: string; stream?: boolean }): (routeId: string) => string
+function registerReasoningRoutes(effects: { register(id, effect) }, reasoning: ReasoningRuntime, options?: { prefix?: string; stream?: boolean; reasoning?: LlmReasoningOptions }): (routeId: string) => string
 #+end_src
 
 Emits ~SKILLS_SELECTED~ / ~AGENT_TOOL_CALL~ / ~AGENT_COMPLETED~ events via ~ctx.emit~.
@@ -2733,15 +2780,15 @@ const MCP_UI_RESOURCE_URI_META_KEY = "ui/resourceUri";   // DEPRECATED flat form
 
 interface McpUiToolMeta { resourceUri: string; visibility?: ("model" | "app")[] }
 interface McpUiResource {
-  uri: string; mimeType?: string; text?: string; blob?: string;
+  uri: string; mimeType: string | undefined; text: string | undefined; blob: string | undefined;   // present keys, value may be undefined
   contentHash: string;            // `fnv1a64:<hex16>` — the pin
-  meta?: McpUiResourceMeta;       // csp / permissions / domain / prefersBorder
+  meta: McpUiResourceMeta | undefined;   // csp / permissions / domain / prefersBorder
 }
 
 function uiMetaOf(meta: unknown): McpUiToolMeta | undefined  // rejects a non-`ui://` resourceUri
-function uiFromResult(result: McpCallToolResult): { meta?: McpUiToolMeta; embedded: McpResourceContents[] }
-function isAppVisible(ui?: McpUiToolMeta): boolean   // undeclared visibility ⇒ BOTH audiences
-function isModelVisible(ui?: McpUiToolMeta): boolean
+function uiFromResult(result: McpCallToolResult): { meta: McpUiToolMeta | undefined; embedded: McpResourceContents[] }
+function isAppVisible(ui: McpUiToolMeta | undefined): boolean   // undeclared visibility ⇒ BOTH audiences
+function isModelVisible(ui: McpUiToolMeta | undefined): boolean
 function hashResourceBody(contents: McpResourceContents): string
 #+end_src
 
@@ -2795,7 +2842,8 @@ function createMcpServer(options?: {
   authenticate?; authorize?(req): boolean | Promise<boolean>;   // with neither, creating the server throws
   insecure?: boolean;                                  // explicitly allow no auth; refused under security.strict
   audienceOf?(req): "model" | "app";                  // default "model"
-  authorizeAppJournaledCall?(tool, req): boolean | Promise<boolean>;  // default DENY
+  authorizeAppJournaledCall?(tool, req, principal?): boolean | Promise<boolean>;  // default DENY
+  // also: authorizeTool?(tool, { request, principal }), strict?, runtime?, warn?, onError?(errorId, err)
 }): McpServer   // start() / stop() / url
 
 interface McpServedTool {
@@ -2850,10 +2898,10 @@ them it is unreachable no matter what it serves.
 #+begin_src typescript
 // Outbound: register a REMOTE agent as a Loom tool
 class A2APeerClient {
-  constructor(config: { url: string; headers?; timeoutMs?; pollIntervalMs?; toolId? })
+  constructor(config: { url: string; headers?; timeoutMs?; pollIntervalMs?; toolId?; taintResults?: boolean; trustDescriptions?: boolean })   // A2APeerClient<TTaint extends boolean = false>; taintResults: true wraps content/raw in tainted(...) (TaintedA2APeerOutput)
   discover(): Promise<AgentCard>
-  map(): Promise<MappedA2APeer>
-  registerInto(effectRuntime: EffectRuntime, registry?: PeerAgentRegistrar): Promise<ToolDefinition<A2APeerInput, A2APeerOutput>>
+  map(): Promise<MappedA2APeer<TTaint>>
+  registerInto(effectRuntime: EffectRuntime, registry?: PeerAgentRegistrar): Promise<ToolDefinition<A2APeerInput, A2APeerOutputFor<TTaint>>>   // A2APeerInput = { prompt: string; context?: unknown }; A2APeerOutput = { content: string; raw: A2ATaskResult }
 }
 function createA2AClientEffect(agentUrl: string, options?: { timeoutMs?; headers?; pollIntervalMs? }): A2AEffect<A2ATask, A2ATaskResult>
 // ^ a terminal task (completed/failed) in the /tasks/send answer is returned as-is; an { id } answer is polled at /tasks/:id
@@ -2863,7 +2911,7 @@ function createA2AServer(workflowRuntime: WorkflowRuntime, flow: RegisteredFlow,
 // A2AServerOptions: { port?, authenticate?(req): PrincipalChain | undefined, authorize?(req): boolean, insecure?, strict?, ... }
 // Refuses to create an unauthenticated server: supply `authenticate` (or `authorize`), or pass `insecure: true` (refused under security.strict).
 function toAgentCard(agent: AgentDefinition, opts?: { url?; version?; capabilities? }): AgentCard
-class LoomAgentExecutor { constructor(runtime: WorkflowRuntime, flow: RegisteredFlow) /* submit / get / provideInput */ }
+class LoomAgentExecutor { constructor(runtime: WorkflowRuntime, flow: RegisteredFlow, options?: { namespaceByPrincipal?: boolean }) /* submit / get / provideInput */ }
 
 interface AgentCard { name: string; description?: string; url: string; version: string; capabilities: { streaming?: boolean }; skills: AgentSkill[]; }
 type A2ATaskStatus = "submitted" | "working" | "completed" | "failed";
@@ -2879,6 +2927,7 @@ function capability$<TIn, TOut>(config: {
   id: string; name?: string; intent: string; tags?: string[];
   inputSchema: ZodSchema<TIn>; flow: RegisteredFlow<TIn, TOut>;
   version?: string; dependencies?: string[];       // (2.0) governance metadata
+  acceptsTainted?: boolean; aliases?: string[];
 }): CapabilityDefinition<TIn, TOut>
 
 class CapabilityCatalog {
@@ -2939,11 +2988,11 @@ class IdReusedError extends Error   // a planId (planGoal / executePlan) or goal
 // capability$({ ..., acceptsTainted: true }) lets a plan bind a tainted value (schema checked on the payload; the tool gets the wrapper); default: refused
 
 // Goals: principal-scoped, durable, a status machine. The owner is NEVER an input.
-interface Goal { id; owner; parentId?; title; status: "open" | "active" | "done" | "failed" | "abandoned"; revision; seq; note?; lastRun? }
-interface GoalStore { create(owner, { id, title, parentId? }); get(owner, id); list(owner, filter?); setStatus(owner, { id, status, note?, expectedRevision?, lastRun? }); rollup(owner, id) }
+interface Goal { id; owner; parentId?; title; status: "open" | "active" | "done" | "failed" | "abandoned"; revision; seq; note?; holder?; lastRun? }
+interface GoalStore { create(owner, { id, title, parentId? }, opts?: { idempotencyKey? }); get(owner, id); list(owner, filter?); setStatus(owner, { id, status, note?, expectedRevision?, lastRun?, holder? }, opts?); rollup(owner, id, opts?) }
 class InMemoryGoalStore implements GoalStore; class DurableGoalStore implements GoalStore { constructor(kv: GoalKvStore /* DurableStateStore satisfies it */) }
 function registerGoalEffects(registry, store): void; function goalsClient(ctx, { prefix? }): { create; get; list; setStatus; rollup }     // owner = ctx principal
-function runGoal(ctx, goals, goalId, { catalog, plan: { model, ... }, execute? }): Promise<{ run?: PlanRun; goal: Goal }>
+function runGoal(ctx: ExecutionContext, goals: GoalsClient /* from goalsClient(ctx), not a GoalStore */, goalId: string, config: { catalog; plan: { model, ... }; execute?; isExecutionLive? }): Promise<RunGoalResult>   // RunGoalResult = { run?: PlanRun; goal: Goal }
 #+end_src
 
 A failed step is recorded as a decision (~<step>:outcome~), so a resume serves it instead of re-running the capability; a replan replaces every node that has not completed, may reference completed outputs, and may not reuse any earlier id.
@@ -2954,9 +3003,9 @@ A conversation is ONE chained execution (ADR 0109): user turns arrive on the inb
 
 #+begin_src typescript
 // The flow: register it, then drive it with createConversations.
-function conversation$(config: ConversationConfig, options?: { id?: string; name?: string; version?: string }):
-  RegisteredFlow<ConversationCarry | Record<string, never>, ConversationResult>
-function conversationRunner(config: ConversationConfig): FlowRunner<...>   // the body, for your own flow
+function conversation$(config: ConversationConfig, options?: { id?: string; name?: string; version?: string }): ConversationFlow
+   // ConversationFlow = RegisteredFlow<ConversationCarry | Record<string, never>, ConversationResult> & { mode, config, sharedTurn? }
+function conversationRunner(config: ConversationConfig, shared?: { turnEffectId: string }): FlowRunner<ConversationCarry | Record<string, never>, ConversationResult>   // the body, for your own flow
 function summarizerText(content: unknown): string   // reads a summarizer/compaction message: unwraps tainted() at every level (top, text parts, tool_result content); result is UNTRUSTED data; re-wrap with tainted() before any LLM call; content nested > 16 levels becomes SUMMARIZER_TEXT_TRUNCATED (exported), never silently dropped
 
 // F4: build a host-signed inbox envelope (tests / trusted bridges). Needs the conversation's `key`; authorizes nothing by itself
@@ -2966,6 +3015,8 @@ interface InboxEnvelopeBody { conversationId: string; kind: "user" | "close"; id
 
 interface ConversationConfig {
   key: string;                                       // HMAC secret: every inbox envelope is host-signed, both modes
+  previousKeys?: readonly string[]; maxEnvelopeAgeMs?: number; maxInvalidRecords?: number;
+  shared?: SharedConfig; onError?: (errorId: string, err: unknown, info: { conversationId: string; turn: number }) => void;
   agent: Omit<AgentLoopConfig, "signal" | "loopId" | "requireApproval" | "needsApproval">;   // any agentLoop$ config
   budget?: {
     contextWindow: number;                 // tokens
@@ -2983,7 +3034,8 @@ interface ConversationConfig {
 }
 
 // The client. Every method is an existing authorized runtime call.
-function createConversations(deps: { runtime: WorkflowRuntime; eventStore: EventStore; flow: RegisteredFlow; maxTurnChars?: number }): Conversations
+function createConversations(deps: { runtime: WorkflowRuntime; eventStore: EventStore; flow: ConversationFlow /* what conversation$ returns */; maxTurnChars?: number;
+  effects?: EffectRuntime; bargeIn?: BargeInSource; principalFor?: (asker: Identity) => PrincipalChain | Promise<PrincipalChain>; policy?; runtimePolicyIsOwnerScoped?: boolean; maxQueuedPerAsker?: number; now?: () => number }): Conversations
 interface Conversations {
   start(o?: { principal?; conversationId? }): Promise<{ conversationId: string }>;        // runtime.start (owner = caller)
   sendTurn(id, text, o?: { principal?; messageId?; editOf? }): Promise<SendResult>;               // runtime.send; a retry with the same messageId is delivered once
@@ -3001,6 +3053,8 @@ interface Conversations {
   removeParticipant(id, who: Identity, o?): Promise<void>;   // the owner cannot be removed
   filterEntries(entries: HistoryEntry[], principal?): Promise<HistoryEntry[]>;   // restricted -> bare placeholder (status "restricted")
   viewerKey(principal?): string | undefined;
+  isParticipant(id, principal?): Promise<boolean>; isOwner(id, principal?): Promise<boolean>;
+  reasoningTarget(id, cursor: string, o?): Promise<{ executionId: string; stepPrefix?: string }>;
 }
 
 interface SharedConfig {
@@ -3180,7 +3234,7 @@ class KnowledgeBase {
 }
 function packParagraphs(maxChars?: number): Chunker      // the default; pass your own for structure
 // the prompt boundary and the one hallucination that is DECIDABLE rather than judged
-function groundedRequest(opts: GroundedRequestOptions): LlmRequest       // passages in a USER turn
+function groundedRequest(opts: GroundedRequestOptions): LlmRequestInput       // passages in a USER turn
 function checkCitations(claimed: readonly string[], passages: readonly Passage[]): CitationCheck
 function assertGrounded(claimed: readonly string[], passages: readonly Passage[]): string[]  // throws
 #+end_src
@@ -3258,13 +3312,13 @@ function sentinelPreset<TState>(config: {
 ** ~@loom/learning~ — off-policy evaluation over the decision log
 
 #+begin_src typescript
-function decideWithPolicy<T>(ctx, key: string, policy: Policy<T>, context: PolicyContext, actions: readonly T[]): Promise<T>
+function decideWithPolicy<A>(ctx: DecideCapable, decisionId: string, policy: Policy<A>, context: PolicyContext, actions: readonly A[], opts?: { rationale?; source?; refs? }): Promise<A>
 // records context + policy.propensity at DECISION time — a propensity cannot be reconstructed later
-function trajectories(events: readonly EventEnvelope[]): Trajectory[]
-function evaluatePolicy(trajectories: readonly Trajectory[], candidate: Policy<string>, opts?: EvaluateOptions): EvalReport
+function trajectories<A = unknown>(events: readonly EventEnvelope[], opts?: TrajectoryOptions): Trajectory<A>[]
+function evaluatePolicy<A>(trajectories: readonly Trajectory<A>[], policy: Policy<A>, opts?: EvaluateOptions): EvalReport
 // SNIPS with clipping + effective sample size; refuses a value estimate without propensities
 function promotionGate(report: EvalReport, thresholds?: PromotionThresholds): PromotionVerdict
-function policyManifest(policy: Policy<string>): PolicyManifest
+function policyManifest(report: EvalReport, verdict: PromotionVerdict, opts?: { promotedAt?: number; canary?: number }): PolicyManifest
 #+end_src
 
 *The learning lifecycle (R18, ADR 0124).*
@@ -3332,7 +3386,7 @@ interface WorkerRuntime {
 }
 interface ExecutionPackage {
   executionId: string; workflowId: string; flowId: string;
-  input?: unknown; resumeEvent?: { eventType: string; payload: unknown };
+  input?: unknown; resumeEvent?: { eventType: string; payload: unknown; waitId?: string };
   snapshotId?: string; fromSequence?: number; metadata?: Record<string, unknown>;
   principal?: Record<string, unknown>;  // (1.2.0, R3) the authenticated caller; a strict worker authorizes the dispatch as it
 }
@@ -3392,7 +3446,7 @@ type PlacementPolicy = (pkg: ExecutionPackage, meta: DispatchMetadata | undefine
 function dispatchMetadataFromPolicy(policy: ExecutionPolicy): DispatchMetadata;   // computeTarget→target, priority, resources→estimated*, affinity→lane
 function defaultPlacementPolicy(defaultTarget: string): PlacementPolicy;
 class PlacementDispatcher implements ExecutionDispatcher {
-  constructor(options: { targets: Record<string, ExecutionDispatcher>; default: string; policy?: PlacementPolicy })
+  constructor(options: { targets: Record<string, ExecutionDispatcher>; default: string; policy?: PlacementPolicy; onWarn?: (message: string) => void })
 }
 #+end_src
 
@@ -3423,7 +3477,7 @@ class RemoteWorkerRuntime implements WorkerRuntime {
 function createWorkerServer(worker: WorkerRuntime, options?: { port?: number; authorize?; onError?; onSuperseded?: (executionId: string, err: unknown) => void }): WorkerServer   // POST /execute, POST /cancel, GET /health
 // POST /execute answers a superseded refusal (L20) with 409 { error: "execution superseded", code: "superseded", executionId };
 // RemoteWorkerRuntime maps exactly that (code AND executionId) to ExecutionSupersededError. Other failures: opaque 500 + errorId.
-function startWorkerServer(worker: WorkerRuntime, options?: { port?: number }): Promise<WorkerServer>  // port ← env.PORT ?? 8080
+function startWorkerServer(worker: WorkerRuntime, options?: { port?: number; host?: string; authorize? }): Promise<WorkerServer>  // port ← env.PORT ?? 8080
 interface WorkerServer { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly port: number; }
 #+end_src
 
@@ -3436,7 +3490,10 @@ class CloudRunWorkerRuntime {
 interface CloudRunPlatform {
   resolveEndpoint(config: CloudRunConfig): Promise<string>;   // load-bearing
   release?(endpoint: string): Promise<void>;
-  secrets?: SecretProvider; identity?: IdentityProvider; logs?: LogSink; metrics?: MetricSink;
+  identity?: IdentityProvider;   // getIdentityToken(audience): sent as Authorization: Bearer on every request,
+                                 // audience = the service URL's origin; a failing provider fails the dispatch
+  secrets?: SecretProvider;      // a slot for your own adapter and effects: the runtime does not read it
+  logs?: LogSink; metrics?: MetricSink;   // logs on allocate; metrics records cloudrun.execute.ms
 }
 interface CloudRunConfig { cpu: number; memoryMb: number; concurrency?: number; }
 type SizingPolicy = (meta?: DispatchMetadata) => CloudRunConfig;   // defaultSizingPolicy exported
@@ -3452,6 +3509,7 @@ function executeGraph(dispatcher: ExecutionDispatcher, nodes: GraphNode[], optio
   parentExecutionId?: string; limit?: number;
   branchRegistry?: BranchRegistry;                 // records parent→child lineage
   executionIdFor?: (node: GraphNode) => string;
+  principal?: Record<string, unknown>;             // the caller; without one the dispatch is anonymous (refused under strict)
 }): Promise<GraphExecution>
 interface GraphNode   { id: string; flowId: string; input?: unknown; metadata?: DispatchMetadata; }
 interface GraphExecution { nodes: GraphNodeResult[]; byId: Record<string, ExecutionResult>; completed: boolean; }
@@ -3485,7 +3543,7 @@ Each of these is a lens on the durable event log; all are exposed both as librar
 Pure, *read-only* analyzers over the log (never a writer), plus an advisory runtime-intelligence report. Mines the facts M1–K3 write (~RESOURCE_METERED~, ~DECISION_RECORDED~, ~EFFECT_DENIED~, ~QUOTA_EXCEEDED~, ~STEP_*~).
 
 #+begin_src typescript
-function analyze(events: EventEnvelope[]): Analytics;   // { execution, cost, reasoning, failure }
+function analyze(events: EventEnvelope[], options?: { dimensionUnits? }): Analytics;   // { execution, cost, reasoning, failure }
 function executionAnalytics(events): { steps; completed; failed; cancelledSteps; suspended; resumes; status? }
 function costAnalytics(events, { dimensionUnits? }?): { tokens; costUsd; ms; meteredCalls; quotaExceeded; custom?; customReport? }
 // custom = ADR 0115 open dimensions summed (<=32 names per report, rest under "(other)"); also resourceGraph().total.custom / byStep[].custom
@@ -3508,14 +3566,14 @@ function runtimeIntelligence(events: EventEnvelope[], options?: { budgetHeadroom
 Natural language → a *delta* against the existing app → *plain, static, inspectable TypeScript you own*. No runtime interpretation of NL. Four stages, NL isolated to one (see [[file:adr/0042-ai-native-brownfield-appgen.md][ADR 0042]]).
 
 #+begin_src typescript
-function scanApp(dir: string): AppModel;                              // deterministic scan (flows/steps/gates/handlerState)
-function planChangesDeterministic(intent: string, m: AppModel): ChangeSpec;  // the one NL stage (swappable for a model)
-function applyChanges(spec: ChangeSpec, m: AppModel): FilePlan;       // pure, surgical, formatting-preserving
+function scanApp(root: string): AppModel;                              // deterministic scan (flows/steps/gates/handlerState)
+function planChangesDeterministic(intent: string, appModel: AppModel): ChangeSpec;  // the one NL stage (swappable for a model)
+function applyChanges(changeSpec: ChangeSpec, appModel: AppModel): FilePlan;       // pure, surgical, formatting-preserving
 function typecheck(dir: string): TypecheckResult;                    // in-process tsc
 
 type Op = "create" | "extend" | "modify" | "delete";
-interface ChangeSpec { name: string; capabilities: CapabilityChange[]; planner: "deterministic" | "model"; elevations?: {...}[]; }
-interface FilePlan { creates; edits; deletes; skips; regenRegistration: boolean; }
+interface ChangeSpec { name: string; capabilities: CapabilityChange[]; compute?: ComputeSpec; planner: "deterministic" | "model"; elevations?: { from: string; to: string; reason: string }[]; }
+interface FilePlan { root: string; isNewProject: boolean; creates; edits; deletes; skips; regenRegistration: boolean; }
 #+end_src
 
 Grammar: "create a <name>" · "(add )?step <name>" · "delete <name>" / "delete step <s> from <flow>"
@@ -3529,8 +3587,8 @@ lockfile. See [[file:loom-2.0/05-capabilities-agents-intelligence-dx.md][the DX 
 Swaps a small on-device Gemma model (via ~node-llama-cpp~, an optional dep) into ~appgen~'s plan stage: grammar-constrained ~ChangeSpec~ JSON, the ~@loom/reasoning~ cheap-first elevation ladder, and a self-repair loop. Fully optional and offline — falls back to the deterministic parser whenever the model is missing, too weak, or produces an invalid plan.
 
 #+begin_src typescript
-function planChangesModel(intent: string, m: AppModel, opts: { routes; decide?; maxRepairs? }): Promise<ChangeSpec>;
-function gemmaRoute(modelPath: string, tier?: "e2b" | "e4b" | "12b"): ModelRoute;   // default e4b
+function planChangesModel(intent: string, appModel: AppModel, opts: { routes: ModelRoute[]; decide?: DecideFn; temperature?: number; maxRepairs?: number }): Promise<ChangeSpec>;
+function gemmaRoute(modelPath: string, tierKey?: string): ModelRoute;   // tierKey a key of GEMMA_TIERS; default DEFAULT_TIER = "e4b"
 class GemmaProvider implements LlmProvider { /* node-llama-cpp, load/unload per call */ }
 #+end_src
 
@@ -3554,7 +3612,7 @@ copy of the command table is a second thing to forget. Broad strokes:
 | knowledge corpus         | ~knowledge sync~ / ~list~ / ~search~                            |
 | dev loop & config        | ~dev~ (gen --watch + run the app + the inspector), ~migrate-config~ (flat ~defineConfig~ options into their groups) |
 
-Every command has a pure, testable core exported from ~@loom/cli~: ~foldAt(events, sequence?)~, ~formatLog(events)~, ~describeState(state)~, ~evaluateGoldens(goldens)~, ~buildTrace(events)~, ~checkManifest(manifest)~, ~discoverFlows(dir)~ / ~cmdGen(dir)~ / ~cmdNew(kind, name, dir)~, ~loadLogs(dir)~ / ~runDeployCheck(logs, resolver)~, ~serveInspector(eventStore, { port? })~, ~parseArgs(argv)~.
+Every command has a pure, testable core exported from ~@loom/cli~: ~foldAt(events, sequence?)~, ~formatLog(events, redact?)~, ~describeState(state, redact?)~, ~evaluateGoldens(goldens)~, ~buildTrace(events)~, ~checkManifest(manifest)~, ~discoverFlows(dir, skipped?)~ / ~cmdGen(dir, root?)~ / ~cmdNew(kind, name, dir, template?, root?)~, ~loadLogs(dir)~ / ~runDeployCheck(logs, resolver)~, ~serveInspector(eventStore, { port?, host? })~, ~parseArgs(argv)~.
 
 ** ~@loom/testing~ — the testing kit
 
@@ -3573,7 +3631,7 @@ function waitFor(pred: () => boolean | Promise<boolean>, options?: { timeoutMs?:
 function waitForPhase(pr: ProjectionRuntime, surface: string, executionId: string, phase: string, options?): Promise<void>
 function getSurfaceState<T>(pr: ProjectionRuntime, surface: string, executionId: string): T
 function driveToSuspend(handle: ExecutionHandle): Promise<unknown>
-function resumeWith(runtime: WorkflowRuntime, executionId: string, event?: ResumeEvent): Promise<ExecutionHandle>
+function resumeWith(runtime: WorkflowRuntime, executionId: string, event?: ResumeEvent, options?: RunOptions): Promise<ExecutionHandle>
 function captureGolden(eventStore: EventStore, executionId: string): Promise<EventEnvelope[]>
 
 // K9.5 crash injection — wrap a store so a test can kill an execution between an effect completing and its event reaching the log
@@ -3607,7 +3665,7 @@ runEvalSuite({ name, cases: EvalCase[], subject, graders: (Grader | { grader, we
 //   a pure function of its inputs: no clock, no random; cases reported in order; errored cases score 0 and stay in the mean
 exactMatch(o?) / regexMatch(re, o?) / jsonSchema(schema | zod, o?)   // an unsupported JSON-Schema keyword FAILS the case
 llmJudge({ rubric, judge: (prompt) => Promise<string> | { decide: ctx.decide, toolId }, passScore? })   // decide form: authorized + recorded + replayed (ADR 0119)
-class CassetteProvider implements LlmProvider { constructor(o: { mode?: "replay" | "record"; inner?; data? }); toJSON() }   // replay never calls a model; a miss throws CassetteMissError
+class CassetteProvider implements LlmProvider { constructor(opts?: { mode?: "replay" | "record"; inner?; data? }); toJSON() }   // replay never calls a model; a miss throws CassetteMissError
 stubProvider(fn); flowSubject({ start }); reportDigest(report); compareReports(baseline, candidate, { tolerance? }): Regression[]; formatSuiteReport(report)
 #+end_src
 
@@ -3635,7 +3693,7 @@ function appFiles(appName: string): Record<string, string>      // used by creat
 #+begin_src typescript
 function loomPlugin(): Plugin                                    // Vite plugin: handler$ extraction, flow-graph analysis
 function buildManifest(state: PluginState, outDir?: string, root?: string): LoomManifest
-interface LoomManifest { version: "1"; flows: Record<string, ManifestFlow>; skills: Record<string, ManifestSkill>; flowModules: string[]; }
+interface LoomManifest { version: "1"; flows: Record<string, ManifestFlow>; skills: Record<string, ManifestSkill>; projections: Record<string, ManifestProjection>; flowModules: string[]; }
 
 // Source analyses the transform emits into each flow's manifest entry, auto-injected by `loom verify`:
 function analyzeNonDeterminism(source: string, location?: string, options?: AnalyzeOptions): NonDeterministicCall[]  // → `nonDeterministic`
@@ -3651,12 +3709,12 @@ interface RunnerReach { steps: RunnerStepRef[]; unresolved: UnresolvedReach[]; s
 Static checks that run before anything executes, over the app's own declarations plus (optionally) the compiler manifest. Findings, with severities — `loom verify` exits non-zero on an error.
 
 #+begin_src typescript
-function verify(app: LoomApp, options?: { lint?: VerifyLintInputs }): VerificationReport
-function runVerification(spec: VerifySpec): VerificationReport
+function verify(input: VerifyInput, options?: { rules?: readonly RuleName[] }): VerificationReport   // the pure core; LoomApp.verify({ lint? }) builds the VerifyInput from the app
+function runVerification(mode: "off" | "warn" | "error", buildInput: () => VerifyInput, options?: VerifyOptions, log?: (message: string) => void): VerificationReport | null   // null when mode is "off"
 function formatReport(report: VerificationReport): string
-const RULE_ORDER: readonly string[]    // determinism · replay-safety · capability-compat ·
-                                       // effect-class · suspension-safety · classification-reachability · …
-const RULES: Record<string, Rule>
+const RULE_ORDER: readonly RuleName[]  // determinism · replay-safety · suspension-safety · capability-compat ·
+                                       // placement-compat · resource-compat · classification-reachability · effect-class
+const RULES: Record<RuleName, Rule>
 class VerificationError extends Error { readonly report: VerificationReport }
 #+end_src
 
@@ -3668,19 +3726,25 @@ Strictly read-only (ADR 0071): it reconstructs, never writes, and never falls ba
 
 #+begin_src typescript
 class ReplayInspector {
-  reconstructAt(executionId: string, sequence: number): Promise<InspectedState>
-  reconstructMany(executionId: string, sequences: readonly number[]): Promise<InspectedState[]>
-  reconstructProjections(executionId: string, opts?: ProjectionReconstructOptions): Promise<ProjectionSlice[]>
-  pinOf(executionId: string): Promise<PinStatus>     // pinned | unpinned-legacy | unavailable
+  constructor(options: { events: ReadOnlyEventStore; snapshots?: ReadOnlySnapshotStore; projections?: readonly ProjectionSource[]; redactPaths?: readonly string[]; maxEvents?: number; diff?: DiffOptions })
+  stateAt(executionId: string, position: number): Promise<InspectedState>      // { position, state, pin: VersionPin, foldedEvents }
+  timeline(executionId: string, positions: readonly number[]): Promise<InspectedState[]>
+  pinAt(executionId: string, position: number): Promise<VersionPin>             // VersionPin = { status: "pinned" | "unpinned-legacy"; workflowId; workflowVersion; flowHash? }
+  transitionAt(executionId: string, sequence: number): Promise<Transition>      // { event?, before, after, delta, frames, projections }
 }
-function diffState(a: InspectedState, b: InspectedState, opts?: DiffOptions): DiffResult
-function anchorFor(events: readonly EventEnvelope[], sequence: number): number
+// the same machinery as free functions
+function reconstructAt(events: ReadOnlyEventStore, snapshots: ReadOnlySnapshotStore | undefined, executionId: string, position: number, options?: { maxEvents?: number }): Promise<ReconstructionPoint>
+function reconstructMany(events, snapshots, executionId: string, positions: readonly number[], options?): Promise<ReconstructionPoint[]>
+function reconstructProjections(events: ReadOnlyEventStore, executionId: string, sources: readonly ProjectionSource[], position: number, options?: ProjectionReconstructOptions): Promise<ProjectionSlice[]>
+function pinOf(state: ExecutionState): VersionPin
+function diffState(before: unknown, after: unknown, options?: DiffOptions): DiffResult
+function anchorFor(snapshots: ReadOnlySnapshotStore | undefined, executionId: string, position: number): Promise<ReconstructionAnchor>
 class InspectorBudgetError extends Error {}          // a reconstruction that would exceed its budget
 #+end_src
 
 ** ~@loom/sdk~ — the public barrel
 
-Re-exports the surface most apps import (~200 symbols) so an application depends on one package rather than a dozen. It adds nothing of its own: every entry is documented under its owning package above, and a symbol absent here is absent from the barrel.
+Re-exports the surface most apps import (about 480 runtime exports) so an application depends on one package rather than a dozen. It adds nothing of its own: every entry is documented under its owning package above, and a symbol absent here is absent from the barrel.
 
 #+begin_src typescript
 import { flow$, step$ /* … */ } from "@loom/sdk";
@@ -3692,7 +3756,7 @@ import { defineConfig } from "@loom/app";   // the composition root is its own p
 A backend is conformant if it passes the kit, not if it looks right. Every kit is a `describe` block a third-party package runs against its own implementation.
 
 #+begin_src typescript
-function runEventStoreConformance(factory: () => EventStore, label?: string): void
+function runEventStoreConformance(factory: () => EventStore, label?: string, options?: EventStoreConformanceOptions): void
 function runSnapshotStoreConformance(factory, label?): void
 // a store DECORATOR: every optional method survives a full-capability inner (or is refused with a
 // reason), the `keys` encryption marker survives, then the whole SPI suite runs THROUGH it
@@ -3704,10 +3768,10 @@ function runExecutionDispatcherConformance(factory, label?, options?: { overWork
 function runTimerStoreConformance(factory, label?): void
 function runProjectionRuntimeConformance(factory, label?): void
 function runWorkerRuntimeConformance(factory, label?): void
-function runLlmProviderConformance(factory, label?): void
+function runLlmProviderConformance(factory, label?, opts?): void
 function runCapabilityAuthorizerConformance(factory, label?): void
 function runKeyStoreConformance(factory, label?): void
-function runContentStoreConformance(factory, label?): void
+function runContentStoreConformance(factory, label?, options?: ContentStoreConformanceOptions): void
 function runMemoryStoreConformance(factory, label?): void
 function runDurableStateStoreConformance(factory, label?): void
 function runReadModelStoreConformance(factory, label?): void
@@ -3720,7 +3784,7 @@ function kernelManifest(): KernelManifest        // built by IMPORTING the real 
 function checkCompatibility(deployment: DeploymentVersions): CompatReport
 function majorCompatible(a: string, b: string): boolean
 const CAPABILITIES: readonly Capability[]        // evidence-derived L0–L5 maturity registry
-function renderMaturityTable(): string; function renderCompatibilityMatrix(): string
+function renderMaturityTable(caps?: readonly Capability[]): string; function renderCompatibilityMatrix(m?: KernelManifest): string
 function readWorkspaceGraph(root?: string): Map<string, PackageNode>
 function findLayeringViolations(root?: string): LayeringViolation[]   // kernel ↛ plugins; reads the graph itself
 const KERNEL_PACKAGES: readonly string[]; const SPI_PACKAGES: readonly string[]
@@ -3734,7 +3798,7 @@ Read-only; nothing here touches execution semantics. The generated `docs/spec/` 
 interface CustomStorage { kind: "custom"; eventStore: EventStore; snapshotStore: SnapshotStore;
                           branchRegistry?: BranchRegistry; archiveStore?: ArchiveStore }
 type StoragePreset<Options = void> = (options: Options) => CustomStorage
-function defineStoragePreset<Options = void>(build: (options: Options) => CustomStorage): StoragePreset<Options>
+function defineStoragePreset<Options = void>(fn: StoragePreset<Options>): StoragePreset<Options>
 // spread the result into defineConfig({ storage }) — the shape a plugin returns, so a preset
 // never hand-rolls it and never drifts from the config type
 #+end_src
@@ -3778,7 +3842,7 @@ class StorageWriteError extends Error    { constructor(cause: unknown); }
 class CapabilityDeniedError extends Error        { readonly toolId: string; readonly reason: string; }       // K2 — @loom/effect-runtime
 class QuotaExceededError extends Error           { readonly reason: string; }                                // K3 — @loom/middleware
 class CircuitOpenError extends Error             { readonly key: string; }                                   // K4 — @loom/dispatcher
-class SafetyViolationError extends Error         { readonly reason: string; readonly phase: "input" | "output"; } // K6 — @loom/middleware
+class SafetyViolationError extends Error         { readonly validatorId: string; readonly category: string | undefined; readonly reason: string; } // K6 — @loom/middleware
 class EgressDeniedError extends Error            { readonly toolId: string; readonly target: string; readonly reason: string; } // K7 — @loom/isolate
 class PayloadShreddedError extends Error         { /* subject key destroyed */ }                             // K10 — @loom/plugin-crypto
 class FlowCodeMismatchError extends Error        { /* pinned flowContentHash drifted */ }                    // K11 — @loom/workflow-runtime
