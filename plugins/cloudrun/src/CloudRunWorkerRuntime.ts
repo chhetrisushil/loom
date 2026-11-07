@@ -22,7 +22,7 @@ export interface CloudRunWorkerRuntimeOptions {
    * (≤60 min) is the hard bound; keep this at or under it.
    */
   requestTimeoutMs?: number;
-  /** Injectable fetch, forwarded to the per-endpoint RemoteWorkerRuntime. */
+  /** Injectable fetch, forwarded to the per-endpoint RemoteWorkerRuntime. `platform.identity` wraps it. */
   fetchImpl?: FetchLike;
 }
 
@@ -77,10 +77,8 @@ export class CloudRunWorkerRuntime implements WorkerRuntime {
 
   async execute(lease: WorkerLease, pkg: ExecutionPackage): Promise<ExecutionResult> {
     const { endpoint } = lease.metadata as unknown as LeaseState;
-    const remote = new RemoteWorkerRuntime(
-      endpoint,
-      this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}
-    );
+    const fetchImpl = this.authenticated(endpoint);
+    const remote = new RemoteWorkerRuntime(endpoint, fetchImpl ? { fetchImpl } : {});
     const started = performanceNow();
     const run = remote.execute(lease, pkg);
     const result = this.requestTimeoutMs
@@ -90,6 +88,27 @@ export class CloudRunWorkerRuntime implements WorkerRuntime {
       status: result.status,
     });
     return result;
+  }
+
+  /**
+   * With `platform.identity`, every request to this endpoint carries an identity token for it, which
+   * a private Cloud Run service requires. The audience is the service URL, so a token is only ever
+   * minted for, and sent to, the endpoint it names. A provider that fails fails the dispatch: sending
+   * the request without its token would only come back as a 403. Caching tokens is the provider's job.
+   */
+  private authenticated(endpoint: string): FetchLike | undefined {
+    const identity = this.platform.identity;
+    if (identity === undefined) return this.fetchImpl;
+    const base = this.fetchImpl ?? (globalThis as unknown as { fetch?: FetchLike }).fetch;
+    if (base === undefined) return undefined; // RemoteWorkerRuntime reports the missing fetch
+    const audience = new URL(endpoint).origin;
+    return async (input, init) => {
+      const token = await identity.getIdentityToken(audience);
+      return base(input, {
+        ...init,
+        headers: { ...init?.headers, authorization: `Bearer ${token}` },
+      });
+    };
   }
 
   async release(lease: WorkerLease): Promise<void> {

@@ -33,10 +33,12 @@ await dispatcher.dispatch(
 
 ## Behaviour that surprises people
 
-- **`identity` and `secrets` are not used by the runtime.** The platform interface declares them, but
-  nothing in this package calls them or adds a token to a request. To authenticate against a private
-  service, give `fetchImpl` a function that attaches the credential. Only `logs` (on allocate) and
-  `metrics` (the `cloudrun.execute.ms` timing) are called.
+- **`identity` authenticates every request.** With it set, each request to the worker carries
+  `Authorization: Bearer <token>`, with the service URL's origin as the audience, which is what a private
+  Cloud Run service requires. It is called per request, so cache tokens inside your provider. A provider that
+  fails fails the dispatch.
+- **`secrets` is not used by the runtime.** It has no secret of its own to fetch, so the slot is for your own
+  adapter and effects. `logs` (on allocate) and `metrics` (the `cloudrun.execute.ms` timing) are called.
 - **The sizing result reaches only your platform.** With `StaticCloudRunPlatform` it has no effect.
 - **`requestTimeoutMs` stops waiting, not the request.** It rejects the call after that long; Cloud Run's
   own deadline (60 minutes at most) is the hard bound, so keep it at or below that.
