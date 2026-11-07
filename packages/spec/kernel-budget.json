@@ -1,0 +1,201 @@
+{
+  "kernelDir": "packages/workflow-runtime/src",
+  "files": {
+    "DivergenceGuard.ts": {
+      "codeLines": 203,
+      "adr": "baseline"
+    },
+    "ExecutionJournal.ts": {
+      "codeLines": 259,
+      "adr": "baseline"
+    },
+    "LogLifecycle.ts": {
+      "codeLines": 1276,
+      "adr": "baseline"
+    },
+    "TimerService.ts": {
+      "codeLines": 780,
+      "adr": "baseline"
+    },
+    "WorkflowContext.ts": {
+      "codeLines": 1815,
+      "adr": "baseline"
+    },
+    "WorkflowRuntime.ts": {
+      "codeLines": 6796,
+      "adr": "baseline"
+    },
+    "__tests__/quarantineHarness.ts": {
+      "codeLines": 190,
+      "adr": "baseline"
+    },
+    "__tests__/r2Backends.ts": {
+      "codeLines": 82,
+      "adr": "baseline"
+    },
+    "__tests__/r2Harness.ts": {
+      "codeLines": 279,
+      "adr": "baseline"
+    },
+    "__tests__/s7dRig.ts": {
+      "codeLines": 132,
+      "adr": "baseline"
+    },
+    "abi.ts": {
+      "codeLines": 97,
+      "adr": "baseline"
+    },
+    "approvalBinding.ts": {
+      "codeLines": 26,
+      "adr": "baseline"
+    },
+    "archiveMove.ts": {
+      "codeLines": 310,
+      "adr": "baseline"
+    },
+    "blankStream.ts": {
+      "codeLines": 464,
+      "adr": "baseline"
+    },
+    "checkpointGuard.ts": {
+      "codeLines": 217,
+      "adr": "baseline"
+    },
+    "contextStore.ts": {
+      "codeLines": 40,
+      "adr": "baseline"
+    },
+    "continuation.ts": {
+      "codeLines": 293,
+      "adr": "baseline"
+    },
+    "cron.ts": {
+      "codeLines": 162,
+      "adr": "baseline"
+    },
+    "deadlineTimer.ts": {
+      "codeLines": 57,
+      "adr": "baseline"
+    },
+    "driverLease.ts": {
+      "codeLines": 400,
+      "adr": "baseline"
+    },
+    "executionAccessPolicy.ts": {
+      "codeLines": 105,
+      "adr": "baseline"
+    },
+    "executionTerminated.ts": {
+      "codeLines": 21,
+      "adr": "baseline"
+    },
+    "inDoubt.ts": {
+      "codeLines": 28,
+      "adr": "baseline"
+    },
+    "inbox.ts": {
+      "codeLines": 778,
+      "adr": "baseline"
+    },
+    "index.ts": {
+      "codeLines": 267,
+      "adr": "baseline"
+    },
+    "kernelPark.ts": {
+      "codeLines": 15,
+      "adr": "baseline"
+    },
+    "leaseEvidence.ts": {
+      "codeLines": 135,
+      "adr": "baseline"
+    },
+    "leaseKeeper.ts": {
+      "codeLines": 712,
+      "adr": "baseline"
+    },
+    "leaseRenewal.ts": {
+      "codeLines": 36,
+      "adr": "baseline"
+    },
+    "operator.ts": {
+      "codeLines": 1,
+      "adr": "baseline"
+    },
+    "orphanCensus.ts": {
+      "codeLines": 89,
+      "adr": "baseline"
+    },
+    "placement.ts": {
+      "codeLines": 10,
+      "adr": "baseline"
+    },
+    "principal.ts": {
+      "codeLines": 187,
+      "adr": "baseline"
+    },
+    "pruneBranchRefs.ts": {
+      "codeLines": 56,
+      "adr": "baseline"
+    },
+    "quarantine.ts": {
+      "codeLines": 245,
+      "adr": "baseline"
+    },
+    "reconcileTimers.ts": {
+      "codeLines": 49,
+      "adr": "baseline"
+    },
+    "recoverAbandoned.ts": {
+      "codeLines": 287,
+      "adr": "baseline"
+    },
+    "redriveAbandoned.ts": {
+      "codeLines": 177,
+      "adr": "baseline"
+    },
+    "resumability.ts": {
+      "codeLines": 26,
+      "adr": "baseline"
+    },
+    "retentionPolicy.ts": {
+      "codeLines": 93,
+      "adr": "baseline"
+    },
+    "retireAbandonedBranches.ts": {
+      "codeLines": 90,
+      "adr": "baseline"
+    },
+    "sealGuard.ts": {
+      "codeLines": 414,
+      "adr": "baseline"
+    },
+    "signedResumeAuthenticator.ts": {
+      "codeLines": 192,
+      "adr": "baseline"
+    },
+    "strayPassthroughs.ts": {
+      "codeLines": 236,
+      "adr": "baseline"
+    },
+    "testSurface.ts": {
+      "codeLines": 45,
+      "adr": "baseline"
+    },
+    "transientFold.ts": {
+      "codeLines": 33,
+      "adr": "baseline"
+    },
+    "types.ts": {
+      "codeLines": 769,
+      "adr": "baseline"
+    },
+    "userspaceEmit.ts": {
+      "codeLines": 216,
+      "adr": "baseline"
+    },
+    "writeConflict.ts": {
+      "codeLines": 16,
+      "adr": "baseline"
+    }
+  }
+}
