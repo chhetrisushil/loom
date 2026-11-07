@@ -78,6 +78,16 @@ await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure", sna
   path holds exactly the marker is stored verbatim, so a shredded owner can still
   journal an erased delivery. Plaintext written BEFORE crypto was enabled passes through
   unsealed and survives a shred (see docs/compliance.md).
+- **A6 — a reserved EXTENSION stream.** A package built on loom may keep its own log
+  under the reserved `__loom_` prefix, so enumerators of real executions skip it (loom-ui's
+  lineage writes `__loom_ui_lineage__:<experienceId>`). No default maps such a stream to a
+  person, so YOUR `subjectOf` does: it is called with the stream id on every append and read,
+  and an `EncryptingContentStore` calls it with the `ContentAccess` the package passes on each
+  `put` / `get`. Return the owner's subject for the stream and register the package's event
+  paths (`registerSensitive`), and the stream and its blobs are sealed under, and erased with,
+  the owner's key. `shredSubject` does not tombstone a reserved stream (it is not an
+  execution), so the stream is erased by the key alone: call it with the owner's real
+  `executionIds`, or `[]`, and a later read throws `KeyUnavailableError` (`isKeyUnavailable`).
 - **Real encryption** — AES-256-GCM with a per-value random IV and an auth tag;
   a wrong key fails, not silently mis-decrypts.
 

@@ -216,6 +216,18 @@ a trim or delete moved to the archive), `legacyCheckpoints` (checkpoints of a lo
 archive existed) and `unarchived` (every range of the original log the export could not return, `[]` for a
 complete log).
 
+### A package's own reserved stream
+
+A package built on loom can keep its own log in a stream under the reserved `__loom_` prefix (loom-ui's
+lineage writes `__loom_ui_lineage__:<experienceId>`). If that log holds personal data, map the stream to
+its owner in your `subjectOf`, which is called with the stream id on every append and read, and register
+the package's sensitive event paths with the encrypting store. An `EncryptingContentStore` resolves the
+package's blobs through the same `subjectOf`, from the `ContentAccess` the package passes. Erasing the
+owner then reaches the stream and its blobs: `shredSubject(keys, raw, id, { subjectId, executionIds })`
+destroys the key, with `executionIds` the owner's real executions or `[]` (a reserved stream is never
+tombstoned), and a read of the stream afterwards throws `KeyUnavailableError`. What the package's stream
+cannot hold is plaintext written before crypto was composed: it was never sealed, so no key reaches it.
+
 ### A message still in flight in an inbox (ADR 0110)
 
 A durable inbox (`kernel.features.inbox`) holds a message in a reserved stream
