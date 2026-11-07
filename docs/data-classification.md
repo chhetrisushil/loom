@@ -235,10 +235,11 @@ because a framework that writes into your system prompt is doing the very thing 
 
 ### Producing taint
 
-Two producers ship, both opt-in:
+These producers ship, all opt-in:
 
 | Producer | Origin | What it taints |
 |---|---|---|
+| `client.registerInto(effects, { taintResults: true })`, `mcpTool$(client, name, { taintResults: true })` | `mcp:<serverHost>/<toolName>` | the whole result |
 | `registerMcpInvoke(client, runtime, { taintResults: true })` | `mcp:<server>/<toolName>` | the whole result — `mcpInvoke$` yields `unknown`, so there is no field to single out |
 | `new A2APeerClient({ url, taintResults: true })` | `a2a:<toolId>` | `content` only — `raw` carries task state that feeds control flow |
 
@@ -252,6 +253,14 @@ sees it, with no ceremony at the call site.
 For the A2A peer the flag's *literal type* selects the output type
 (`A2APeerOutput` vs `TaintedA2APeerOutput`), so a caller who does not opt in compiles exactly as
 before rather than being handed a union to narrow.
+
+
+What `taintResults` does not cover, so these stay your code's responsibility:
+
+- **A thrown tool error.** An MCP tool's failure text is carried in the thrown error. `agentLoop$` and `AgentRunner` fence it, but a flow that catches the error and uses `e.message` in a prompt gets unmarked text.
+- **Direct client calls.** `client.callTool`, `callToolResult` and `readResource` return the server's content unmarked.
+- **`input.context` on an agent.** A tainted value placed in `context` is flattened with `JSON.stringify` into the user message, so it reaches the model unfenced. Pass it as a tainted message, or as `prompt` with `promptOrigin` on `agentLoop$`, instead.
+- **Whether a model obeys the fence.** The fence is a label: it stops content reaching instruction positions, and it cannot stop a model being persuaded.
 
 ### Model reasoning ([ADR 0133](adr/0133-model-reasoning-audit-capture.md))
 

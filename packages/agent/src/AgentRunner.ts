@@ -383,7 +383,12 @@ export class AgentRunner {
             // authority errors, a park, a safety / kill-switch / quota / rate-limit stop and a
             // cancellation are the runtime's and are never handed to the model.
             if (isTerminalToolError(err)) throw err;
-            return { output: { error: String(err) }, isError: true };
+            // Error text is never trusted instructions: a server's or peer's own words arrive inside
+            // thrown errors, so it is fenced as data, as in `agentLoop$` (ADR 0121 D1).
+            return {
+              output: tainted({ error: String(err) }, `tool-error:${toolCall.name}`),
+              isError: true,
+            };
           }
         };
 

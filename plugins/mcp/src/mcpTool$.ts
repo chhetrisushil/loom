@@ -22,13 +22,12 @@ export function mcpTool$(
   options: { resultFidelity?: McpResultFidelity; taintResults?: boolean } = {}
 ): StepDefinition<unknown, unknown> {
   const fidelity = options.resultFidelity ?? "value";
+  const taintResults = options.taintResults === true;
   return step$({
     id: toolName,
     name: toolName,
     inputSchema: z.unknown() as z.ZodType<unknown>,
     outputSchema: z.unknown() as z.ZodType<unknown>,
-    handler: handler$((input: unknown) =>
-      client.callAs(toolName, input, fidelity, options.taintResults === true)
-    ),
+    handler: handler$((input: unknown) => client.callAs(toolName, input, fidelity, taintResults)),
   });
 }
