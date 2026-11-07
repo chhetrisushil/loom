@@ -427,16 +427,20 @@ Emits ~RESOURCE_METERED~ (folds into ~variables._resources~); replay-safe (meter
 
 #+begin_src typescript
 function safetyMiddleware(options: { validators: readonly SafetyValidator[] }): EffectMiddleware
-type SafetyPhase = "input" | "output";
-interface SafetyCheckInfo { phase: SafetyPhase; toolId: string; stepId: string; value: unknown; ctx: EffectContext; }
-type SafetyVerdict   = { ok: true } | { ok: false; reason: string };
-type SafetyValidator = (info: SafetyCheckInfo) => SafetyVerdict | Promise<SafetyVerdict>;
+type SafetyPhase = "input" | "output" | "delta";
+interface SafetyCheckInfo { phase: SafetyPhase; stepId: string; input: unknown;
+  result?: unknown;    // "output" phase only
+  text?: string; }     // "delta" phase only: the running streamed text
+interface SafetyVerdict { ok: boolean; reason?: string }
+interface SafetyValidator { id: string; phase: SafetyPhase; category?: string;
+  check(info: SafetyCheckInfo): SafetyVerdict;
+  checkDelta?; }       // the delta form of an "output" validator; without one, streaming is refused
 class SafetyViolationError extends Error { readonly reason: string; readonly phase: SafetyPhase; }
 // bundled validators:
-function denyPatterns(patterns: readonly RegExp[]): SafetyValidator;   // block on matched content
-function piiValidator(options?: { … }): SafetyValidator;              // block emails/SSNs/… in payloads
-function schemaValidator(schema: SchemaLike, phase?: SafetyPhase): SafetyValidator;
-function killSwitch(isOpen: () => boolean): SafetyValidator;          // global stop
+function denyPatterns(patterns: readonly RegExp[], opts?: { id?: string; phase?: SafetyPhase; category?: string }): SafetyValidator;
+function piiValidator(opts?: { id?: string; phase?: SafetyPhase }): SafetyValidator;   // block emails/SSNs/… in payloads
+function schemaValidator(schema: SchemaLike, opts?: { id?: string }): SafetyValidator; // "output" phase
+function killSwitch(isTripped: () => boolean, opts?: { id?: string }): SafetyValidator; // "input" phase: global stop
 #+end_src
 
 *Secrets & redaction (2.0, K10).* ~redactionMiddleware~ resolves ~secretRef~ placeholders in effect input just-in-time (so a secret's plaintext is never logged) and, with ~redactOutput~, replaces marked result fields with a reference before ~STEP_COMPLETED~ is written.
@@ -720,7 +724,7 @@ closed as ~LeaseEvidenceError~ (a one-TTL quiet period follows recovery).
 still has events (R5.3) — and a branch nobody answered is suspended forever, so a forked parent
 returns ~blocked-by-branch~ on every sweep, permanently.
 ~retireAbandonedBranches(runtime, registry, parentId, { isAbandoned })~ (~@loom/workflow-runtime~)
-walks that parent's direct children, offers the non-terminal ones to your predicate, and ~cancel()~s
+walks that parent's direct children, offers the non-terminal ones to your predicate, and calls ~cancel()~ on
 the ones it claims — a durable ~EXECUTION_CANCELLED~, not a deletion, so *why* the branch ended
 survives. Ordinary retention then collects the branch on its own TTL and the parent behind it.
 ~isAbandoned~ is REQUIRED, for the same reason ~recoverAbandoned~'s is: a branch parked on a human
@@ -1390,7 +1394,7 @@ class CachingContentStore implements ContentStore {}        // forwards every op
 function sweepUnpinnedContent(options: ContentSweepOptions): Promise<ContentSweepReport>
 interface ContentSweepOptions {
   eventStores: readonly (Pick<EventStore, "read"> & ExecutionEnumerable)[]   // live AND every archive
-  contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage">
+  contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage" | "touchClock" | "touch">
   pinnedEventTypes: Iterable<string>; dryRun?: boolean
   olderThanMs?: number                  // EXACTLY ONE of olderThanMs / policy (ADR 0145: policy.content.unpinnedAfterMs; a policy with no content section throws)
   policy?: RetentionPolicy
@@ -2781,7 +2785,9 @@ the flat one is dropped before GA.
 function createMcpServer(options?: {
   tools?: readonly McpServedTool[]; resources?: readonly McpServedResource[];
   port?: number; serverInfo?: { name: string; version: string }; protocolVersion?: string;
-  authorize?(req): boolean | Promise<boolean>;        // UNSET ⇒ UNAUTHENTICATED
+  host?: string;                                       // default "127.0.0.1", loopback only
+  authenticate?; authorize?(req): boolean | Promise<boolean>;   // with neither, creating the server throws
+  insecure?: boolean;                                  // explicitly allow no auth; refused under security.strict
   audienceOf?(req): "model" | "app";                  // default "model"
   authorizeAppJournaledCall?(tool, req): boolean | Promise<boolean>;  // default DENY
 }): McpServer   // start() / stop() / url
