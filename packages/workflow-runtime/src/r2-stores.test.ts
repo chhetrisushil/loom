@@ -90,7 +90,16 @@ const postgres: Backend = {
     timers: new PostgresTimerStore(pool as never),
   }),
   teardown: async () => {
-    await pool?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+    // A write still settling from the last test can deadlock with the DROP. Postgres aborts the
+    // DROP as the victim and nothing is left half-done, so running it again is safe.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await pool?.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+        break;
+      } catch (err) {
+        if ((err as { code?: string }).code !== "40P01" || attempt >= 5) throw err;
+      }
+    }
     await pool?.end();
   },
 };
@@ -155,7 +164,14 @@ for (const backend of [memory, sqlite, postgres]) {
           (i % 2 === 0 ? h.rt : other).send(e, { topic: "q", payload: i })
         )
       );
-      await done(h, e);
+      // A cross-process send that loses the race to wake the owner leaves a due-now row, and the
+      // TimerService serves it (ADR 0110). A deployment runs one, so this test has to as well: without
+      // it the run stays parked on a pending wake whenever the last send loses that race.
+      const timers = new TimerService(h.rt, h.timers);
+      await until(async () => {
+        await timers.tick(Date.now());
+        return (await h.rt.loadState(e))?.status === "completed";
+      }, 8000);
       expect(new Set(res.map((r) => r.inboxSeq)).size).toBe(N);
       const expected = res
         .map((r, i) => ({ s: r.inboxSeq, p: i }))
