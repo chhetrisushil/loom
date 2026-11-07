@@ -80,7 +80,7 @@ it is refused, and next to `--db` it is read as the execution id (`loom logs --d
 
 | | |
 |---|---|
-| `loom ls <store-flags>` | list executions; what each suspended one waits on (`--status`, `--since 1h`; newest activity first) |
+| `loom ls <store-flags>` | list executions; what each suspended one waits on (`--status`, `--waiting-on`, `--since 1h`; newest activity first) |
 | `loom logs <store-flags> <id>` | the event timeline (`--redact a,b`; `-v` detail; `--type`/`--from`/`--to`; `--follow` tails it) |
 | `loom debug <store-flags> <id> --at N` | folded state at sequence N — time travel |
 | `loom inspect <store-flags>` | web timeline with a slider (`loom dev` is the dev loop, not an alias) |

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`loom ls --waiting-on <event>`, and every in-doubt step in the listing (`@loom/cli`; additive, no kernel, `KERNEL_ABI`, `EVENT_SCHEMA` or SPI change).** The flag keeps suspended executions waiting on a gate event, inbox topic, or `timer`, and filters during the scan so `--limit` cannot hide an older match. A run parked in doubt now lists every step still awaiting a verdict (`in doubt: refund, cancel-sub`, and `waiting.inDoubtSteps` in `--json`), because the park names only one step at a time. `@loom/workflow-runtime` exports `inDoubtDecisionId`.
+
 - **`observability.onDurableEvent`: a callback that only reports what the log holds (`@loom/workflow-runtime`, `@loom/app`; [ADR 0147](docs/adr/0147-on-durable-event.md); additive, opt-in, no `KERNEL_ABI`, `EVENT_SCHEMA` or SPI change).** It fires after an event's durable write, so a lost, rejected or fenced write is never reported, unlike `onEvent`, which can fire first. It is at most once, in order per writer rather than per execution, lags by the write, and only sees this runtime's writes. A throw or rejection is reported through `onWarn`, at most once a minute, and never reaches the run; an async consumer is not awaited. Unset, the write path does no extra work. `onEvent` is unchanged.
 
 - **`pinByEventTypes`: retention pins from the declared kinds (`@loom/workflow-runtime` `LogLifecycle`, `@loom/app` `durability.retention`; additive, opt-in, no kernel, `KERNEL_ABI`, `EVENT_SCHEMA` or SPI change).** With `pinByEventTypes: true`, retention pins (outcome `"pinned"`) an execution whose log holds an event of one of `pinnedEventTypes`, the check `pinByEventKinds(store, kinds)` makes, read from the events `evaluate` already loaded: the kinds are declared once instead of again in a predicate, and the pin costs no extra read. ORed with `pinned`. Off by default, so `pinnedEventTypes` alone still only governs compaction (ADR 0106); `true` with no `pinnedEventTypes`, or a non-boolean, throws at construction. `pinByEventKinds` is unchanged.
@@ -1701,6 +1703,8 @@ Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel 
 - **BREAKING: `A2AEffect` is no longer exported from `@loom/effect-runtime`.** The deprecated copy ([ADR 0115](docs/adr/0115-open-vocabularies.md)) is deleted; import `A2AEffect` from `@loom/plugin-a2a`. No in-repo or sibling-repo source imported it from effect-runtime.
 
 ### Fixed
+
+- **Clone instructions use HTTPS.** The README, getting-started guide and `create-loom-app` pointed at SSH URLs, which fail for anyone without a GitHub SSH key. The repos are public.
 
 - **`liveQuery` recovers from a lost wake-up (`@loom/live-query`; additive, no kernel, `KERNEL_ABI`, `EVENT_SCHEMA` or SPI change).** A wake-up lost across nodes is not sent later, so a subscriber whose execution had no later event, for example one waiting for a completion, waited forever. Each subscription now also re-reads the log every `pollMs` (default 5000) until its state is terminal, at most two indexed reads per interval and emitting nothing when quiet. `pollMs: 0` turns it off.
 

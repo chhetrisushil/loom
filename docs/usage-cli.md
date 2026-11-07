@@ -69,7 +69,7 @@ validate
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
 
 observe
-  loom ls    <store-flags> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]
+  loom ls    <store-flags> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--waiting-on <event>] [--since <dur>] [--limit N] [--keys] [--json]
                                                   list executions: status, last activity, and what a
                                                   suspended one waits on (read-only; --leases adds owners)
   loom logs  <store-flags> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
@@ -610,7 +610,7 @@ Loading a config:
 - **Errors say where.** A config that throws on import is reported as `while loading <absolute file>: <message>` plus a hint (exit `1`). `--verbose` or `LOOM_DEBUG=1` also prints the original stack to stderr.
 - **No `[loom] …` noise.** While importing a config the CLI sets `LOOM_QUIET=1`, which silences `defineConfig`'s default `console.warn("[loom] …")` composition notices so they do not bury the command's answer (they never touch stdout, and `--json` stays pure either way). `LOOM_DEBUG=1` leaves them on. `LOOM_QUIET=1` only mutes that default sink: an `onWarn` you pass still runs, and refusals (thrown errors) are never silenced. Set it yourself to quiet a script that imports your config.
 
-### `loom ls <store-flags> [--status …] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]`
+### `loom ls <store-flags> [--status …] [--workflow <id>] [--waiting-on <event>] [--since <dur>] [--limit N] [--keys] [--json]`
 
 Lists executions: id, workflow, status, last sequence, last activity time (absolute plus `5m ago`), and for a **suspended** one what it waits on — the event type it is parked on, or for a timer `timer wakeAt <iso> (in 3m)` (and `overdue` when the time has passed and nothing has woken it). The gate's `correlationKey` is an application-chosen id that can be sensitive, so it is **omitted** from the text, from `--json` and from the inspector list; `--keys` includes it (`key <id>`). The lease owner and the gate event name are operational ids and always shown. Give a lease store (`--leases <l.db>`, or the app's `timers.leases` via `--config`) and a row also shows the lease owner and whether it is expired.
 
@@ -628,6 +628,8 @@ ID        WORKFLOW  STATUS     LAST  LAST ACTIVITY                         WAITI
 
 - `--status` is one of `pending|running|suspended|completed|failed|cancelled|continued`; `--since 1h` keeps executions with activity in the last hour.
 - It is **bounded**: it scans at most 5000 executions (the cap bounds the *scan*, not the matches), orders the matches by last activity, newest first, and prints the first `--limit` of them (default `50`). When it cuts anything it says so (`2 shown of 9 matched`, `truncated at --limit 50 …` / `stopped after scanning …`) — a partial list is never printed as a complete one; `--json` carries `matched` and `truncated`. One read and fold per execution scanned; reserved control streams are skipped.
+- `--waiting-on <event>` keeps suspended executions waiting on that gate event, inbox topic, or `timer`. It filters during the scan, before `--limit`, so `--waiting-on EffectInDoubtResolved` finds every in-doubt run in the scanned set however old it is.
+- A run parked in doubt also lists every step still awaiting a verdict, `in doubt: refund, cancel-sub`. The park names only one at a time, and the run parks again on the next after each verdict.
 - A store that cannot enumerate executions is refused with the same wording as `loom census` (exit `2`).
 
 ### `loom logs <store-flags> <executionId> [--redact a,b] [-v] [--type A,B] [--from N] [--to N] [--follow]`
@@ -1385,7 +1387,7 @@ npx loom plugin search postgres
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom verify` | pre-flight runtime verification over a built app | `--config` *(req)*, `--manifest` | any error-severity finding |
 | `loom lint claim-check` | claim-check reach-through lint (CC-5) | `--dir .` | any finding |
-| `loom ls` | list executions + what each suspended one waits on | store *(req)*, `--status`, `--workflow`, `--since`, `--limit` | unknown store (a store that cannot enumerate is exit `2`) |
+| `loom ls` | list executions + what each suspended one waits on | store *(req)*, `--status`, `--workflow`, `--waiting-on`, `--since`, `--limit` | unknown store (a store that cannot enumerate is exit `2`) |
 | `loom logs` | print the event timeline | store *(req)*, `--redact`, `-v`, `--type`, `--from`, `--to`, `--follow` | unknown execution id; `--db` file missing |
 | `loom debug` | folded state at / after a sequence | store *(req)*, `--at N`, `--redact` | unknown execution id; `--db` file missing |
 | `loom snapshot show` | a stored snapshot, decoded (zstd frame or JSON) | store *(req)* (`--db` also needs `--snap`), `--at SEQ`, `--redact` | no snapshot for the id / sequence |

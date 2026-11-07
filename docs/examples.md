@@ -1,7 +1,7 @@
 # Examples catalogue
 
 The runnable example apps live in the sibling **`loom-examples`** repo
-(`git@github.com:chhetrisushil/loom-examples.git`) — extracted from this repo to
+(`https://github.com/chhetrisushil/loom-examples.git`) — extracted from this repo to
 keep the framework packages front-and-centre. This page is the index: what each
 example teaches and the APIs/ADRs it exercises, so you can pick the right
 reference (or point an agent at it) without cloning first.
@@ -16,7 +16,7 @@ rationale — and why git/npm deps can't work for an unpublished monorepo — is
 `loom-examples/AGENTS.md`.
 
 ```bash
-git clone git@github.com:chhetrisushil/loom-examples.git   # beside ./loom
+git clone https://github.com/chhetrisushil/loom-examples.git   # beside ./loom
 cd loom-examples && pnpm install
 pnpm --filter @loom/db-observability start
 ```

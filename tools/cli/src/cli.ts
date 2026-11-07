@@ -71,7 +71,7 @@ validate
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
 
 observe
-  loom ls    <store-flags> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]
+  loom ls    <store-flags> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--waiting-on <event>] [--since <dur>] [--limit N] [--keys] [--json]
                                                   list executions: status, last activity, and what a
                                                   suspended one waits on (read-only; --leases adds owners)
   loom logs  <store-flags> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
@@ -329,6 +329,7 @@ async function dispatch(
         ...(flags.keys === "true" && { keys: true }),
         ...(flags.status !== undefined && { status: flags.status as (typeof LS_STATUSES)[number] }),
         ...(flags.workflow !== undefined && { workflow: flags.workflow }),
+        ...(flags["waiting-on"] !== undefined && { waitingOn: flags["waiting-on"] }),
         ...(flags.since !== undefined && { sinceMs: parseDuration(flags.since) }),
         ...(flags.limit !== undefined && { limit: Number.parseInt(flags.limit, 10) }),
       });

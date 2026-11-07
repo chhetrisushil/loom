@@ -44,7 +44,7 @@ TypeScript; Loom provides the durable spine that makes it trustworthy in product
 Loom is not published to npm yet, so today you build it from a checkout and scaffold inside the workspace:
 
 #+begin_src sh
-git clone git@github.com:chhetrisushil/loom.git && cd loom
+git clone https://github.com/chhetrisushil/loom.git && cd loom
 pnpm install && pnpm build
 node tools/create-loom-app/dist/index.js apps/my-app   # scaffolds into the workspace
 pnpm install && cd apps/my-app && pnpm test
@@ -322,7 +322,7 @@ long-form catalogue — each example, the pattern it teaches, and the APIs/ADRs 
 
 ** Running them
 
-From the sibling checkout — ~git clone git@github.com:chhetrisushil/loom-examples.git~
+From the sibling checkout — ~git clone https://github.com/chhetrisushil/loom-examples.git~
 beside this repo, then ~cd loom-examples && pnpm install~:
 
 #+begin_src sh

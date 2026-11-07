@@ -177,7 +177,7 @@ function resolveLoomPath(raw: string, cwd: string): string {
     readName(path.join(root, "packages", "core", "package.json")) !== "@loom/core"
   ) {
     throw new Refusal(
-      `--loom-path "${raw}" is not a loom checkout (no pnpm-workspace.yaml with packages/core = @loom/core). Clone git@github.com:chhetrisushil/loom.git and point at its root.`
+      `--loom-path "${raw}" is not a loom checkout (no pnpm-workspace.yaml with packages/core = @loom/core). Clone https://github.com/chhetrisushil/loom.git and point at its root.`
     );
   }
   const pkgs = loomPackages(root);

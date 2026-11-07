@@ -16,7 +16,7 @@ Not published to npm yet, so `npm create loom-app` does not work. Build the fram
 the built binary. Where the app lives decides how `@loom/*` is wired:
 
 ```bash
-git clone git@github.com:chhetrisushil/loom.git && cd loom
+git clone https://github.com/chhetrisushil/loom.git && cd loom
 pnpm install && pnpm build           # or `pnpm build:fast`
 
 # Anywhere on disk: link to the built checkout (the usual day-one path)

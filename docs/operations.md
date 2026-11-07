@@ -130,7 +130,7 @@ crash or a failed write it can report an event the log never recorded, including
 complete. `observability.onDurableEvent` fires after the write, so everything it reports is in the log (as far as the store's write
 is durable: SQLite with `synchronous = NORMAL` can lose its last commits on power loss), but it is at most once: a process that dies just after a write never delivers that event, and the process that would have sent a page may be
 the one that died. Use it as a fast, truthful hint, and alert from the log as the guarantee, for example
-`loom ls --status suspended`.
+`loom ls --waiting-on EffectInDoubtResolved`, which also names every step awaiting a verdict.
 
 **What the poll and the sweep use as evidence.**
 
