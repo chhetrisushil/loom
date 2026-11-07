@@ -394,6 +394,9 @@ const NOT_A_CAPABILITY = new Set([
   // 0146 - reclaimable content ages from the citing execution's end: a change to the content sweep's clock
   // that only ever reclaims less (ADR 0055 GC). No event, SPI, ABI or subsystem change; nothing to grade.
   "0146",
+  // 0147 - onDurableEvent: one optional observer callback on the existing write path. No event, SPI or
+  // ABI change and no new subsystem; nothing to grade.
+  "0147",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

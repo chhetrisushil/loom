@@ -278,6 +278,7 @@ interface LoomConfig {
   telemetry?: TelemetryAdapter[];
   dispatcher?: ExecutionDispatcher;              // placement (default: in-process)
   onEvent?: (event: EventEnvelope) => void;      // fired after projection + telemetry
+  onDurableEvent?: (event: EventEnvelope) => void; // after the durable write, at most once (ADR 0147)
 }
 
 // Every option that moved into a group, paired with its group — the single table the flat-key
@@ -490,6 +491,7 @@ The durable execution engine (~@loom/workflow-runtime~). ~defineConfig~ returns 
 interface WorkflowRuntimeDeps {
   eventStore: EventStore; snapshotStore: SnapshotStore; effectRuntime: EffectRuntime;
   onEvent?: (event: EventEnvelope) => void;
+  onDurableEvent?: (event: EventEnvelope) => void; // after the durable write (ADR 0147)
   branchRegistry?: BranchRegistry;
   onStorageError?: (executionId: string, err: unknown) => void;
   snapshotEvery?: number;   // mid-run snapshot every N committed events (bounds replay); omit = only at suspend/fork

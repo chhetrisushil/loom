@@ -55,7 +55,11 @@ export class ExecutionJournal {
     private readonly fence?: number,
     // Injectable clock for envelope timestamps (DST/simulation — the same
     // time-injection principle as TimerStore.due(now)). Default: wall clock.
-    private readonly now: () => number = Date.now
+    private readonly now: () => number = Date.now,
+    // ADR 0147 — fired after an event's durable write has resolved, from the serial write chain,
+    // so only what the log holds is reported. Must not throw: a throw here would read as a lost
+    // write (the runtime passes an isolated wrapper). Unset, the write path is unchanged.
+    private readonly onDurable?: (event: EventEnvelope) => void
   ) {
     // ADR 0106 — a blank identity is the pre-0106 compaction checkpoint's, and every event this
     // journal wrote under it went to execution "". Refuse it here, where the writes begin:
@@ -287,7 +291,11 @@ export class ExecutionJournal {
         }
         // Durable now: release the batch (and whatever queued behind it) to the live subscribers.
         // A throwing subscriber must not read as a lost write (flushEmits swallows it).
-        return store.appendBatch(envelopes).then(() => settle("ready"));
+        return store.appendBatch(envelopes).then(() => {
+          settle("ready");
+          if (this.onDurable !== undefined)
+            for (const envelope of envelopes) this.onDurable(envelope);
+        });
       })
       .catch((err: unknown) => {
         settle("dropped");
@@ -314,6 +322,9 @@ export class ExecutionJournal {
     }
     this.seq = envelope.sequence;
     this.vm.applyEvent(envelope);
+    const onDurable = this.onDurable;
+    // Already durable: a throwing `onEvent` still propagates, but must not hide it from `onDurable`.
+    if (onDurable !== undefined) this.tail = this.tail.then(() => onDurable(envelope));
     this.emit(envelope);
     this.onCommit?.(envelope.sequence);
   }
@@ -351,7 +362,9 @@ export class ExecutionJournal {
         if (this.firstWriteError !== undefined) return; // stop after first failure
         const refused = this.writeGate?.();
         if (refused !== undefined) throw refused;
-        return this.store.append(envelope);
+        const landed = this.store.append(envelope);
+        const onDurable = this.onDurable;
+        return onDurable === undefined ? landed : landed.then(() => onDurable(envelope));
       })
       .catch((err: unknown) => {
         if (this.firstWriteError === undefined) {

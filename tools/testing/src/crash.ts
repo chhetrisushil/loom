@@ -40,6 +40,10 @@ export interface CrashingEventStore {
  * (converges under `idempotent: true`/undeclared re-runs; parks at
  * EFFECT_INDOUBT under `idempotent: false`).
  *
+ * A swallowed write RESOLVES, so the journal treats it as durable and `onDurableEvent` reports it.
+ * This harness therefore cannot test that it only reports the log (ADR 0147): use a write that
+ * rejects, or one that never resolves, for that.
+ *
  * ```ts
  * const crash = crashingEventStore(new InMemoryAsyncEventStore(), {
  *   dropFrom: (e) =>

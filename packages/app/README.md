@@ -76,7 +76,7 @@ await app.close();
 ## Key concepts and options
 
 - **Grouped options.** Cross-cutting concerns are namespaced: `security` (authorizer, policies,
-  secrets, resume authenticator, compliance), `observability` (telemetry, `onEvent`, `onWarn`,
+  secrets, resume authenticator, compliance), `observability` (telemetry, `onEvent`, `onDurableEvent`, `onWarn`,
   `onStorageError`), `durability` (`snapshotEvery`, `retention`, `heartbeat`), `execution`
   (dispatcher, `effectMiddleware`, `registerEffects`, envelope) and `checks`. The old flat
   spellings throw at `defineConfig` rather than being ignored.
