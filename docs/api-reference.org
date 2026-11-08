@@ -3081,6 +3081,13 @@ function followConversation(deps: { reader; eventStore }, id: string, o?: { curs
 function createConversationReader(store: EventStore): ConversationReader      // NO authorization: authorize before calling
 function findHeadGeneration(store, conversationId, hint?): Promise<number | undefined>   // O(log G)
 
+// After a turn: one call per settled turn, once its closing record is durable. Pass it as the runtime's
+// onDurableEvent (ADR 0147): never on replay or recovery, at most once (missed if the process dies first).
+function turnSettledObserver(flow: { definition: { id: string } }, listener: (e: TurnSettledEvent) => void | Promise<void>):
+  (event: EventEnvelope) => void | Promise<void>
+interface TurnSettledEvent { conversationId: string; executionId: string; turn: number /* 0 = rejected */; ord: number;
+  status: "complete" | "interrupted" | "failed" | "rejected"; asker?: Identity }   // ids and status only, never text
+
 // Barge-in: the signal comes from outside the body, and is read only through agentLoop$'s recorded checkpoints.
 type BargeInSource = (conversationId, ownerId, h: { onMessage(): void; isKnown(id: string): boolean }) => Promise<() => void> | (() => void)
 function inboxBargeIn(eventStore: EventStore): BargeInSource

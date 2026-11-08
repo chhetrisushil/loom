@@ -42,6 +42,28 @@ const transcript = input.messages.map((m) => `${m.role}: ${summarizerText(m.cont
 
 The text is **untrusted data**: summarize or quote it, never put it in a system prompt or assistant message (if the summarizer calls an LLM with this text, re-wrap it with `tainted(text, origin)` and put it in a user message, never the system prompt: `guardRequest` can no longer refuse it after unwrapping). The returned summary is clipped to `maxSummaryTokens` and re-injected as a fenced `user` message with origin `conversation:summary`, never the system prompt.
 
+## Work after a turn (`turnSettledObserver`)
+
+To start work once a reply exists (a title, an index entry, something composed from the answer), observe the runtime's durable writes. The listener is called once per settled turn of ANY conversation of the flow, after the closing record is in the log:
+
+```ts
+import { turnSettledObserver } from "@loom/conversation";
+
+const runtime = new WorkflowRuntime({
+  ...deps,
+  onDurableEvent: turnSettledObserver(chat, (e) => {
+    // { conversationId, executionId, turn, ord, status, asker? }: ids and status, never text
+    if (e.status === "complete") jobs.enqueue(`visual:${e.conversationId}:${e.ord}`);
+  }),
+});
+// or defineConfig({ observability: { onDurableEvent: turnSettledObserver(chat, listener) } })
+```
+
+- **Which records.** The assistant record closes an answered turn (`complete`, `interrupted`, `failed`); a message refused before any model call is closed by its user record (`rejected`, `turn: 0`). An edit is a new turn and is reported as one.
+- **After the write, at most once** (ADR 0147). A `history` read made from the listener sees the record. Replay and recovery serve records from the log and append nothing, so they never call it again. A process that dies after the write but before the call never makes it: keep a recovery path (for example, read `history` from the last `ord` you handled) and key the work by `conversationId` + `ord`.
+- **Isolated, not awaited.** A throw or a rejection goes to the runtime's `onWarn` and never touches the turn. The listener's synchronous part runs on the runtime's write chain, so enqueue the work and return.
+- **One `onDurableEvent` per runtime**, and only this runtime's writes. To observe other things too, call each observer from one function.
+
 ## What it is
 
 - **One chained execution per conversation.** The id is the chain id. Idle, it is parked on the inbox; a user turn wakes it. Every `rotateEveryTurns` (default 100) it `continueAsNew`s, carrying the rolling summary and a bounded window, so any one generation's fold and log stay small. The inbox cursors and dedupe window cross the rotation (kernel).

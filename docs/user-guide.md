@@ -1008,6 +1008,12 @@ const latest = await conversations.history(conversationId, { principal, directio
   A client's retry of the same `messageId` is not a barge-in. Without `bargeIn` the conversation
   queues instead.
 - **History** is the log: every message is a decision, `history` reads them with bounded range reads across all generations (`maxScan` caps the work of one call; `nextCursor` continues). Cursors are `<generation>.<sequence>`.
+- **Work after a turn.** `turnSettledObserver(chat, (e) => ...)`, passed as the runtime's
+  `onDurableEvent`, is called once per settled turn (`complete`, `interrupted`, `failed`, or a
+  `rejected` message) of any conversation, after its closing record is written, so a `history` read
+  from the callback sees it. It carries ids and status, never text. Replay and recovery do not call it
+  again; a process that dies before the call never makes it, so keep a recovery path and key the work
+  by `conversationId` + `ord`.
 - **Budgeting.** The prompt is fitted to `contextWindow` (minus `reserveOutputTokens`) by dropping
   the oldest *whole turns*; `counter` is pluggable (the default heuristic over-counts non-ASCII on
   purpose). The verdict is recorded, so replay never re-decides it. With `summarizerToolId`, dropped
