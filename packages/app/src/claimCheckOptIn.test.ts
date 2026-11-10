@@ -581,7 +581,7 @@ describe("security.crypto / compliance.erase fail closed (ADR 0140 D8)", () => {
 });
 
 describe("B2(b): erasing a subject reaches the claim-checked blobs (plaintext store)", () => {
-  async function twoSubjects() {
+  async function twoSubjects(controlStreamKey?: string) {
     const content = new CountingContentStore();
     // alice's tool outputs are payload(0), payload(1); bob's is payload(0) (an identical, deduplicated blob)
     const b = boot({
@@ -598,7 +598,10 @@ describe("B2(b): erasing a subject reaches the claim-checked blobs (plaintext st
                   ? "alice"
                   : "bob"
                 : undefined,
-            erase: { shred: async () => {} },
+            erase: {
+              shred: async () => {},
+              ...(controlStreamKey !== undefined && { controlStreamKey }),
+            },
           },
         },
       },
@@ -621,7 +624,10 @@ describe("B2(b): erasing a subject reaches the claim-checked blobs (plaintext st
                   ? "alice"
                   : "bob"
                 : undefined,
-            erase: { shred: async () => {} },
+            erase: {
+              shred: async () => {},
+              ...(controlStreamKey !== undefined && { controlStreamKey }),
+            },
           },
         },
       },
@@ -657,6 +663,15 @@ describe("B2(b): erasing a subject reaches the claim-checked blobs (plaintext st
     );
     const done = control.find((e) => e.eventType === "ERASURE_CONTENT_DELETED")!;
     expect(done.payload).toMatchObject({ subjectId: "alice", deleted: 1, retained: 1 });
+  });
+
+  it("compliance.erase.controlStreamKey reaches the coordinator: the control rows carry a keyed digest, not the id", async () => {
+    const { alice } = await twoSubjects("control-stream-secret-0001");
+    expect((await alice.app.eraseSubject("alice")).outcome).toBe("erased");
+    const control = await alice.eventStore.read("__loom_erasure__");
+    expect(control.map((e) => e.eventType)).toContain("ERASURE_CONTENT_DELETED");
+    expect(JSON.stringify(control)).not.toContain("alice");
+    for (const e of control) expect(e.payload).toHaveProperty("subjectRef");
   });
 
   it("exportSubject returns the RESOLVED blobs, not just the envelopes", async () => {

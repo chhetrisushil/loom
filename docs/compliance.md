@@ -142,6 +142,38 @@ The **one hard rule** (T3-R4.5): never shred a fold that is still in flight. Era
 
 This is honest deferral: the request is recorded and named, never silently dropped.
 
+The control stream is append-only, and by default every row on it that names a subject (the park,
+and an erasure's crash-recovery intents `ERASURE_{CONTENT_DELETE,ARCHIVE_DELETE,SENDER_REDACTION}_INTENDED`
+and their completions) holds the subject id in plaintext for good. When one principal is keyed under a
+pseudonymous subject AND its own id, erasing both would put the two ids side by side. Set
+`compliance.erase.controlStreamKey` (a secret HMAC key): each such row then carries
+`subjectRef: "hmac-sha256:…"`, a keyed digest of the tenant and the subject, instead of `subjectId` and
+`tenant` (plus `keyId`, the fingerprint of the key that wrote it), and recovery finds an open intent or
+a parked request by recomputing it. Keep the key secret, at least 16 bytes: a holder can test a guessed
+id against a row, which is why it is keyed and not a bare hash of a guessable id. To rotate it, move the
+old key to `previousControlStreamKeys` until nothing it recorded is parked or interrupted. An open intent
+written under a key the coordinator does not hold fails the erasure with `ControlStreamKeyError` (after
+the shred the intent is the only record of what is left to delete, so it is never re-planned past), and a
+parked row under such a key is reported through `onWarn` at boot. Rows written in plaintext before the
+key was set are still honoured, and they stay plaintext.
+
+The key hides identities, not every link: an intent still lists what it deletes. If both subjects cite
+the same deduplicated blob, wrote to the same chain, or own execution ids built from the user id, the
+content addresses, stream ids or execution ids in their rows can still connect them.
+
+Separately, `record: false` skips the park row altogether: the call still returns `parked` with
+`pending`, but appends nothing and registers no auto-completion, so the caller owns the retry: re-call
+`eraseSubject` until it returns `erased`. A request an earlier call recorded stays recorded. With
+`parked: "shred"`, suspended owners are cancelled before a running one defers the subject, so a caller
+that stops retrying leaves them cancelled and the subject unerased.
+
+```ts
+let r = await app.eraseSubject("user-42", undefined, { parked: "shred", record: false });
+// { outcome: "parked", pending: ["exec-7"] }: nothing written to the control stream
+// ...later, after exec-7 ends:
+r = await app.eraseSubject("user-42", undefined, { parked: "shred", record: false }); // "erased"
+```
+
 **"Live" means "not terminal", a PARKED execution included.** An execution suspended on an
 approval, a timer or `ctx.receive` is not `completed`/`failed`/`cancelled`/`continued`, so the
 coordinator defers on it. A chat agent that parks on `receive` forever therefore blocks the

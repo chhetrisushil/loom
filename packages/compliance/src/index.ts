@@ -16,6 +16,7 @@ export {
 export {
   ArchivedCopiesRemainError,
   ContentCopiesRemainError,
+  ControlStreamKeyError,
   claimCheckRefsOf,
   trustedClaimCheckRefsOf,
   SenderRedactionUnsupportedError,

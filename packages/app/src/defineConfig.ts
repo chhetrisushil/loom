@@ -354,6 +354,15 @@ export interface SecurityOptions {
        * and for `exportSubject` to read it; without it a key-unavailable stream is refused.
        */
       destroyed?: (subjectId: string) => boolean | Promise<boolean>;
+      /**
+       * A SECRET (HMAC key) that keeps subject ids off the reserved erasure control stream: the rows that
+       * name a subject (`ERASURE_PENDING` and the erasure's crash-recovery intents) carry a keyed digest
+       * instead of the plaintext id and tenant. Keep it secret and stable (rotating it strands an
+       * erasure that is parked or interrupted). See `EraseCoordinatorOptions.controlStreamKey`.
+       */
+      controlStreamKey?: string | Uint8Array;
+      /** Former `controlStreamKey`s, kept to recognise the rows they wrote while a rotation drains. */
+      previousControlStreamKeys?: ReadonlyArray<string | Uint8Array>;
     };
   };
 }
@@ -2230,6 +2239,12 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           // remembered last archived sequence for it (assigned below; nothing erases before defineConfig returns).
           onArchiveKeyChanged: (key: string) => runtime.invalidateInboxArchive(key),
           ...(destroyedProof !== undefined && { destroyed: destroyedProof }),
+          ...(config.compliance.erase.controlStreamKey !== undefined && {
+            controlStreamKey: config.compliance.erase.controlStreamKey,
+          }),
+          ...(config.compliance.erase.previousControlStreamKeys !== undefined && {
+            previousControlStreamKeys: config.compliance.erase.previousControlStreamKeys,
+          }),
           // `parked: "shred"` cancels each parked owner first, under the runtime's own authority.
           // `runtime` is assigned below; nothing erases before defineConfig returns.
           cancel: (executionId, reason) =>
