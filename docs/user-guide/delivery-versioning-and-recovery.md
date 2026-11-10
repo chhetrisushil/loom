@@ -158,7 +158,7 @@ under another. Three things close that, none of which hashes `toString()`:
    function-branch `parallel` inserted before a recorded one can run a new step before the refusal;
    an execution with any frame lacking a scope path (scopes turned on mid-life) uses the weaker
    floor; past 4096 inner steps or 64 KiB of their ids a served decision also exempts the frames
-   first started during it. frames before an `EXECUTION_MIGRATED` are exempt. After a migration, a
+   first started during it. Frames before an `EXECUTION_MIGRATED` are exempt. After a migration, a
    snapshot hides *when* it happened, so the detector then checks only the frames completed since
    that snapshot (fail-open). The cost is O(1) amortised per append.
 
