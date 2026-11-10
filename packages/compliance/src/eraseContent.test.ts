@@ -3,12 +3,18 @@ import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   brandPayloadShredded,
+  buildReservedSegment,
   buildSegment,
 } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { describe, expect, it, vi } from "vitest";
 import { SubjectIndex } from "./SubjectIndex";
-import { ContentCopiesRemainError, ERASURE_STREAM, EraseCoordinator } from "./eraseSubject";
+import {
+  ContentCopiesRemainError,
+  ControlStreamKeyError,
+  ERASURE_STREAM,
+  EraseCoordinator,
+} from "./eraseSubject";
 import { exportSubject } from "./exportSubject";
 
 // ADR 0140 D8 - erasure reaches the claim-checked blobs a plaintext content store holds.
@@ -652,5 +658,309 @@ describe("ref collection reaches archives and snapshots (ADR 0140 D8)", () => {
     const r = await coord.eraseSubject("ann");
     expect(r.outcome).toBe("erased");
     expect(blobs.has("snap")).toBe(false); // nothing readable cites it, so it is deleted
+  });
+});
+
+// A principal keyed under a pseudonymous subject AND its own id: with `controlStreamKey` erasing both
+// leaves no row on the control stream that names either, so the stream cannot pair them.
+describe("controlStreamKey keeps subject ids off the erasure control stream", () => {
+  const PSEUDO = "anon-7f3c";
+  const REAL = "alice@example.com";
+  const KEY = "control-stream-secret-0001";
+  const OLD_KEY = "control-stream-secret-0000";
+  const inbox = (c: string) => `__loom_inbox__:${c}`;
+  const msg = (key: string, seq: number, actor: string) => ({
+    ...ev(key, seq, "INBOX_MESSAGE", {
+      topic: "t",
+      messageId: `m${seq}`,
+      payload: "x",
+      sender: { actor },
+    }),
+    workflowId: "__loom_inbox__",
+  });
+  async function principal() {
+    const store = new InMemoryAsyncEventStore();
+    const blobs = new Map<string, Uint8Array>();
+    const put = async (id: string, user: string, address: string, done = true) => {
+      blobs.set(address, new TextEncoder().encode(`"${address}"`));
+      await store.append(ev(id, 0, "EXECUTION_STARTED", { input: { userId: user } }));
+      await store.append(ev(id, 1, "STEP_COMPLETED", { stepId: `${id}#t`, output: env(address) }));
+      if (done) await store.append(ev(id, 2, "EXECUTION_COMPLETED", { output: null }));
+    };
+    await put("p1", PSEUDO, "blob-p");
+    await put("r1", REAL, "blob-r");
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("p1")), ...(await store.read("r1"))],
+      subjectOf
+    );
+    const archive = new InMemoryArchiveStore();
+    for (const id of ["p1", "r1"]) {
+      await archive.append(id, buildSegment([ev(id, 1, "STEP_COMPLETED", {})], "inc"));
+    }
+    // another chain's archived inbox, where both identities sent a message
+    const other = inbox("other");
+    await archive.append(
+      other,
+      buildReservedSegment([msg(other, 1, PSEUDO), msg(other, 2, REAL)], "inc")
+    );
+    let failNextDelete = false;
+    const content = {
+      delete: vi.fn(async (ref: { __loomContent: string }) => void blobs.delete(ref.__loomContent)),
+      get: async (ref: { __loomContent: string }) => blobs.get(ref.__loomContent) ?? null,
+      touchClock: async () => 0,
+      deleteIfUntouchedSince: async (ref: { __loomContent: string }) => {
+        if (failNextDelete) {
+          failNextDelete = false;
+          throw new Error("store down");
+        }
+        return blobs.delete(ref.__loomContent);
+      },
+    };
+    const coordinator = (key: string | undefined = KEY, previous?: string[]) =>
+      new EraseCoordinator({
+        index,
+        eventStore: store,
+        shred: async () => {},
+        content,
+        archives: [archive],
+        ...(key !== undefined && { controlStreamKey: key }),
+        ...(previous !== undefined && { previousControlStreamKeys: previous }),
+      });
+    return {
+      store,
+      blobs,
+      archive,
+      coordinator,
+      failNext: () => {
+        failNextDelete = true;
+      },
+    };
+  }
+  const controlText = async (store: InMemoryAsyncEventStore) =>
+    JSON.stringify(await store.read(ERASURE_STREAM));
+
+  it("erasing both subjects (content, archive copies, sender copies) leaves no row naming either", async () => {
+    const { store, blobs, archive, coordinator } = await principal();
+    const coord = coordinator();
+    const a = await coord.eraseSubject(PSEUDO);
+    const b = await coord.eraseSubject(REAL);
+    expect([a.outcome, b.outcome]).toEqual(["erased", "erased"]);
+    expect(a.contentDeleted?.deleted).toBe(1);
+    expect(b.archivedCopiesDeleted?.executions).toEqual(["r1"]);
+    expect(b.senderRedactions).toEqual([{ streamId: inbox("other"), envelopes: 1 }]);
+    expect(blobs.size).toBe(0);
+    expect(JSON.stringify(await archive.read(inbox("other")))).not.toContain(REAL);
+    const rows = await store.read(ERASURE_STREAM);
+    // every kind of subject-naming row was written...
+    expect(new Set(rows.map((e) => e.eventType))).toEqual(
+      new Set([
+        "ERASURE_CONTENT_DELETE_INTENDED",
+        "ERASURE_CONTENT_DELETED",
+        "ERASURE_ARCHIVE_DELETE_INTENDED",
+        "ERASURE_ARCHIVE_DELETED",
+        "ERASURE_SENDER_REDACTION_INTENDED",
+        "ERASURE_SENDER_REDACTED",
+      ])
+    );
+    // ...and none names either subject: each carries a keyed digest, the same one per subject
+    const text = await controlText(store);
+    for (const id of [PSEUDO, REAL, "alice", "7f3c"]) expect(text).not.toContain(id);
+    const refs = new Set(rows.map((e) => (e.payload as { subjectRef?: string }).subjectRef));
+    expect(refs.size).toBe(2);
+    for (const r of refs) expect(r).toMatch(/^hmac-sha256:[0-9a-f]{64}$/);
+    for (const e of rows) expect(e.payload).not.toHaveProperty("subjectId");
+  });
+
+  it("a crash between INTENDED and DELETED is finished by a RESTARTED coordinator from the keyed intent", async () => {
+    const { store, blobs, coordinator, failNext } = await principal();
+    failNext();
+    await expect(coordinator().eraseSubject(PSEUDO)).rejects.toThrow(/store down/);
+    expect(blobs.has("blob-p")).toBe(true);
+    const intents = async () =>
+      (await store.read(ERASURE_STREAM)).filter(
+        (e) => e.eventType === "ERASURE_CONTENT_DELETE_INTENDED"
+      );
+    expect(await intents()).toHaveLength(1);
+
+    const restarted = coordinator(); // a new process: same key, nothing in memory
+    await restarted.loadParked();
+    const r = await restarted.eraseSubject(PSEUDO);
+    expect(r).toMatchObject({ outcome: "erased", contentDeleted: { deleted: 1 } });
+    expect(blobs.has("blob-p")).toBe(false);
+    // the retry FOUND the open intent (no second one) and completed it
+    expect(await intents()).toHaveLength(1);
+    const [intent] = await intents();
+    const completed = (await store.read(ERASURE_STREAM)).filter(
+      (e) => e.eventType === "ERASURE_CONTENT_DELETED"
+    );
+    expect(completed.map((e) => (e.payload as { intentId?: string }).intentId)).toEqual([
+      intent?.id,
+    ]);
+    expect(await controlText(store)).not.toContain(PSEUDO);
+  });
+
+  it("a PARKED request is a keyed row, restored after a restart, listed, and auto-completed", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await store.append(ev("live", 0, "EXECUTION_STARTED", { input: { userId: REAL } }));
+    const index = SubjectIndex.fromEvents(await store.read("live"), subjectOf);
+    const shred = vi.fn(async () => {});
+    const make = () =>
+      new EraseCoordinator({ index, eventStore: store, shred, controlStreamKey: KEY });
+    expect((await make().eraseSubject(REAL)).outcome).toBe("parked");
+    const [row] = await store.read(ERASURE_STREAM);
+    expect(row?.eventType).toBe("ERASURE_PENDING");
+    expect(JSON.stringify(row)).not.toContain(REAL);
+
+    const restarted = make();
+    await restarted.loadParked();
+    expect(restarted.pendingSubjects()).toEqual([REAL]);
+    const done = ev("live", 1, "EXECUTION_COMPLETED", {});
+    await store.append(done);
+    await restarted.handleEvent(done);
+    expect(shred).toHaveBeenCalledWith(REAL, ["live"]);
+    expect(restarted.pendingSubjects()).toEqual([]);
+  });
+
+  it("a PLAINTEXT row written before the key was set is still honoured (parked and intents)", async () => {
+    const { store, blobs, coordinator, failNext } = await principal();
+    failNext();
+    await expect(coordinator(undefined).eraseSubject(PSEUDO)).rejects.toThrow(/store down/);
+    const r = await coordinator().eraseSubject(PSEUDO); // now keyed: resumes the plaintext intent
+    expect(r.contentDeleted?.deleted).toBe(1);
+    expect(blobs.has("blob-p")).toBe(false);
+    expect(
+      (await store.read(ERASURE_STREAM)).filter(
+        (e) => e.eventType === "ERASURE_CONTENT_DELETE_INTENDED"
+      )
+    ).toHaveLength(1);
+
+    const s2 = new InMemoryAsyncEventStore();
+    await s2.append(ev("live", 0, "EXECUTION_STARTED", { input: { userId: REAL } }));
+    const index = SubjectIndex.fromEvents(await s2.read("live"), subjectOf);
+    const shred = vi.fn(async () => {});
+    await new EraseCoordinator({ index, eventStore: s2, shred }).eraseSubject(REAL); // plaintext park
+    const keyed = new EraseCoordinator({ index, eventStore: s2, shred, controlStreamKey: KEY });
+    await keyed.loadParked();
+    expect(keyed.pendingSubjects()).toEqual([REAL]);
+    const done = ev("live", 1, "EXECUTION_COMPLETED", {});
+    await s2.append(done);
+    await keyed.handleEvent(done);
+    expect(shred).toHaveBeenCalledOnce();
+  });
+
+  it("a ROTATED key fails closed on an open intent it cannot attribute, and resumes it once the old key is listed", async () => {
+    const { store, blobs, coordinator, failNext } = await principal();
+    failNext();
+    await expect(coordinator(OLD_KEY).eraseSubject(PSEUDO)).rejects.toThrow(/store down/);
+    const [intent] = (await store.read(ERASURE_STREAM)).filter(
+      (e) => e.eventType === "ERASURE_CONTENT_DELETE_INTENDED"
+    );
+    // the new key alone cannot tell whose intent it is: refuse rather than re-plan past it
+    const err = await coordinator(KEY)
+      .eraseSubject(PSEUDO)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ControlStreamKeyError);
+    expect((err as ControlStreamKeyError).intentId).toBe(intent?.id);
+    expect((err as ControlStreamKeyError).keyId).toBe((intent?.payload as { keyId: string }).keyId);
+    // removing the key altogether fails closed too
+    await expect(coordinator(undefined).eraseSubject(PSEUDO)).rejects.toThrow(
+      ControlStreamKeyError
+    );
+    // with the old key listed the open intent is found and completed (no second intent)
+    const r = await coordinator(KEY, [OLD_KEY]).eraseSubject(PSEUDO);
+    expect(r.contentDeleted?.deleted).toBe(1);
+    expect(blobs.has("blob-p")).toBe(false);
+    expect(
+      (await store.read(ERASURE_STREAM)).filter(
+        (e) => e.eventType === "ERASURE_CONTENT_DELETE_INTENDED"
+      )
+    ).toHaveLength(1);
+  });
+
+  it("a parked row under a key the coordinator does not hold is WARNED at loadParked", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await store.append(ev("live", 0, "EXECUTION_STARTED", { input: { userId: REAL } }));
+    const index = SubjectIndex.fromEvents(await store.read("live"), subjectOf);
+    const shred = vi.fn(async () => {});
+    await new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred,
+      controlStreamKey: OLD_KEY,
+    }).eraseSubject(REAL);
+    const warnings: string[] = [];
+    const rotated = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred,
+      controlStreamKey: KEY,
+      onWarn: (m) => warnings.push(m),
+    });
+    await rotated.loadParked();
+    expect(warnings.join("\n")).toMatch(/does not hold/);
+    const listed = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred,
+      controlStreamKey: KEY,
+      previousControlStreamKeys: [OLD_KEY],
+      onWarn: (m) => warnings.push(m),
+    });
+    const before = warnings.length;
+    await listed.loadParked();
+    expect(warnings).toHaveLength(before);
+    expect(listed.pendingSubjects()).toEqual([REAL]);
+  });
+
+  it("refuses a short key, and previous keys without a current one", () => {
+    const store = new InMemoryAsyncEventStore();
+    const index = SubjectIndex.fromEvents([], subjectOf);
+    const base = { index, eventStore: store, shred: async () => {} };
+    expect(() => new EraseCoordinator({ ...base, controlStreamKey: "" })).toThrow(
+      /at least 16 bytes/
+    );
+    expect(() => new EraseCoordinator({ ...base, controlStreamKey: "short" })).toThrow(
+      /at least 16/
+    );
+    expect(
+      () =>
+        new EraseCoordinator({ ...base, controlStreamKey: KEY, previousControlStreamKeys: ["x"] })
+    ).toThrow(/at least 16/);
+    expect(() => new EraseCoordinator({ ...base, previousControlStreamKeys: [KEY] })).toThrow(
+      /needs a controlStreamKey/
+    );
+    expect(
+      () => new EraseCoordinator({ ...base, controlStreamKey: new Uint8Array(16) })
+    ).not.toThrow();
+  });
+
+  it("a TENANT is not written either, and one subject id in two tenants gets two digests", async () => {
+    const store = new InMemoryAsyncEventStore();
+    const tenantOf = (e: EventEnvelope) =>
+      (e.payload as { input?: { tenant?: string } }).input?.tenant;
+    for (const [id, tenant] of [
+      ["t-a", "acme-corp"],
+      ["t-b", "globex-inc"],
+    ] as const) {
+      await store.append(ev(id, 0, "EXECUTION_STARTED", { input: { userId: REAL, tenant } }));
+    }
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("t-a")), ...(await store.read("t-b"))],
+      subjectOf,
+      { tenantOf }
+    );
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      controlStreamKey: KEY,
+    });
+    expect((await coord.eraseSubject(REAL, "acme-corp")).outcome).toBe("parked");
+    expect((await coord.eraseSubject(REAL, "globex-inc")).outcome).toBe("parked");
+    const rows = await store.read(ERASURE_STREAM);
+    const text = JSON.stringify(rows);
+    for (const id of [REAL, "acme-corp", "globex-inc"]) expect(text).not.toContain(id);
+    const refs = rows.map((e) => (e.payload as { subjectRef: string }).subjectRef);
+    expect(new Set(refs).size).toBe(2);
   });
 });

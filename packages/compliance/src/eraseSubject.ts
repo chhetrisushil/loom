@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
   ArchiveConflictError,
@@ -365,6 +365,31 @@ export interface EraseCoordinatorOptions {
    */
   cancel?: (executionId: string, reason: string) => Promise<boolean>;
   /**
+   * A SECRET (HMAC-SHA256 key) that keeps subject ids off the reserved control stream. Every row the
+   * coordinator writes that names a subject (`ERASURE_PENDING`, and the `ERASURE_*_INTENDED` /
+   * `ERASURE_*_DELETED` / `ERASURE_SENDER_REDACTED` crash-recovery intents) then carries
+   * `subjectRef` (a keyed digest of the tenant and the subject) INSTEAD of `subjectId` and `tenant`,
+   * and recovery matches a row by recomputing the digest. Without it those rows name the subject in
+   * plaintext, permanently (the stream is append-only), so two subjects of one principal erased
+   * together sit side by side.
+   *
+   * Keep it SECRET: whoever holds it can test a candidate id against a row (it is keyed because
+   * subject ids are guessable, so a bare hash would not hide them). At least 16 bytes, else the
+   * constructor throws. Each keyed row also carries `keyId`, a fingerprint of the key that wrote it.
+   * To ROTATE, list the old key in {@link previousControlStreamKeys} until no request it wrote is
+   * open. An open intent written under a key the coordinator does not hold (rotated away, or the
+   * key removed) FAILS the erasure with {@link ControlStreamKeyError} rather than re-planning without
+   * it, because after the shred the subject's logs are unreadable and the intent is the only record
+   * of what is still to delete; a parked row under such a key is reported through `onWarn` at
+   * `loadParked`. Rows written in plaintext before the key was set are still read.
+   */
+  controlStreamKey?: string | Uint8Array;
+  /**
+   * Former {@link controlStreamKey}s, still used to RECOGNISE rows they wrote (never to write).
+   * Keep one here until no erasure it recorded is parked or interrupted.
+   */
+  previousControlStreamKeys?: ReadonlyArray<string | Uint8Array>;
+  /**
    * ADR 0106 — where compaction checkpoints live. A compacted execution's log no longer holds
    * its prefix (`[0]` after compacting through the tip), so folding the log alone reads a
    * TERMINAL execution as still running and a parked erasure would wait for it forever. With
@@ -443,8 +468,8 @@ export interface EraseSubjectOptions {
   parked?: "defer" | "shred";
   /**
    * Whether a `parked` outcome is RECORDED (default `true`). When recorded, the request is journaled
-   * on the reserved control stream (`ERASURE_PENDING { subjectId }`, in plaintext, never cleared,
-   * because the stream is append-only) and the coordinator completes it automatically when the
+   * on the reserved control stream (`ERASURE_PENDING`, never cleared, because the stream is
+   * append-only; it names the subject in plaintext unless `controlStreamKey` is set) and the coordinator completes it automatically when the
    * subject's last live execution terminates, across a restart.
    *
    * `record: false` reports `parked` (with `pending`) WITHOUT appending `ERASURE_PENDING` and
@@ -454,11 +479,14 @@ export interface EraseSubjectOptions {
    * stream must not link subject ids, e.g. a principal keyed under a pseudonymous subject and under
    * its own id, both erased.
    *
+   * With `parked: "shred"`, the suspended owners are cancelled BEFORE a running one defers the
+   * subject; with `record: false` nothing durable then says an erasure is owed, so a caller that
+   * stops retrying leaves them cancelled and the subject unerased.
+   *
    * It governs the PARK only. A request already recorded by an earlier call stays recorded (and
-   * still auto-completes). The `erased` path still journals the subject id on the control stream
-   * when it deletes plaintext archive copies, claim-checked content or sender copies
-   * (`ERASURE_*_INTENDED` / `ERASURE_*_DELETED`, the crash-recovery intents); with none of those,
-   * it writes nothing there.
+   * still auto-completes). The `erased` path still journals the subject on the control stream when
+   * it deletes plaintext archive copies, claim-checked content or sender copies (the crash-recovery
+   * intents); `controlStreamKey` keeps the id out of those rows.
    */
   record?: boolean;
   /**
@@ -470,6 +498,25 @@ export interface EraseSubjectOptions {
    */
   force?: "key-destroyed-elsewhere";
 }
+
+/**
+ * An erasure met an OPEN control-stream intent written under a `controlStreamKey` this coordinator
+ * does not hold, so it cannot tell whether the intent is this subject's. Fail closed: pass the key
+ * that wrote it in `previousControlStreamKeys` (`keyId` names it) and retry.
+ */
+export class ControlStreamKeyError extends Error {
+  constructor(
+    readonly keyId: string,
+    readonly intentId: string
+  ) {
+    super(
+      `erasure control stream: open intent ${intentId} was written under controlStreamKey ${keyId}, which this coordinator does not hold; pass that key in previousControlStreamKeys and retry`
+    );
+    this.name = "ControlStreamKeyError";
+  }
+}
+
+const MIN_CONTROL_KEY_BYTES = 16;
 
 const defaultWarn = (message: string): void => {
   console.warn(`[loom] ${message}`);
@@ -484,8 +531,35 @@ export class EraseCoordinator {
   // Parked requests keyed by `tenant\x00subject` (T3-R2.4 — two tenants may share a subject
   // id; they must not collide into one park entry). Authoritative live view; also durable.
   private readonly parked = new Set<string>();
+  // Parked requests restored from a `subjectRef` row (`controlStreamKey`): only the digest is durable.
+  private readonly parkedRefs = new Set<string>();
 
-  constructor(private readonly options: EraseCoordinatorOptions) {}
+  // The control-stream keys (`controlStreamKey` first, then the previous ones) and their fingerprints.
+  private readonly controlKeys: ReadonlyArray<{ key: string | Uint8Array; id: string }>;
+
+  constructor(private readonly options: EraseCoordinatorOptions) {
+    const keys = [
+      ...(options.controlStreamKey !== undefined ? [options.controlStreamKey] : []),
+      ...(options.previousControlStreamKeys ?? []),
+    ];
+    if (options.controlStreamKey === undefined && keys.length > 0) {
+      throw new TypeError(
+        "previousControlStreamKeys needs a controlStreamKey: new rows are written under the current key"
+      );
+    }
+    for (const key of keys) {
+      const bytes = typeof key === "string" ? Buffer.byteLength(key) : key.byteLength;
+      if (bytes < MIN_CONTROL_KEY_BYTES) {
+        throw new TypeError(
+          `controlStreamKey must be a secret of at least ${MIN_CONTROL_KEY_BYTES} bytes (got ${bytes}): a short key lets anyone test guessed subject ids against the control stream`
+        );
+      }
+    }
+    this.controlKeys = keys.map((key) => ({
+      key,
+      id: createHmac("sha256", key).update("loom-erasure-key-id").digest("hex").slice(0, 16),
+    }));
+  }
 
   /** Best-effort: repopulate the parked set from the durable control stream (restart recovery). */
   async loadParked(): Promise<void> {
@@ -493,8 +567,22 @@ export class EraseCoordinator {
     // below must never leave it empty (that would fail open).
     for (const event of await this.options.eventStore.read(ERASURE_STREAM)) {
       if (event.eventType === "ERASURE_PENDING") {
-        const p = event.payload as { subjectId: string; tenant?: string };
-        this.parked.add(parkKey(p.tenant ?? DEFAULT_TENANT, p.subjectId));
+        const p = event.payload as {
+          subjectId?: string;
+          tenant?: string;
+          subjectRef?: string;
+          keyId?: string;
+        };
+        if (typeof p.subjectRef === "string") {
+          this.parkedRefs.add(p.subjectRef);
+          if (!this.controlKeys.some((k) => k.id === p.keyId)) {
+            (this.options.onWarn ?? defaultWarn)(
+              `erasure coordinator: parked request ${event.id} was written under controlStreamKey ${String(p.keyId)}, which this coordinator does not hold; it will not auto-complete until that key is passed in previousControlStreamKeys (or the erasure is re-issued)`
+            );
+          }
+        } else if (typeof p.subjectId === "string") {
+          this.parked.add(parkKey(p.tenant ?? DEFAULT_TENANT, p.subjectId));
+        }
       }
     }
     // ADR 0139 N1: a stage an earlier build left (a crash mid-redaction) is restored at BOOT, not at the
@@ -604,7 +692,7 @@ export class EraseCoordinator {
       const archived = await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
       const contentDeleted = await this.finishContentDeletion(subjectId, tenant, content);
       const redactions = await this.redactSenderCopies(subjectId, tenant);
-      this.parked.delete(parkKey(tenant, subjectId));
+      this.unpark(subjectId, tenant);
       return {
         subjectId,
         outcome: "erased",
@@ -618,7 +706,7 @@ export class EraseCoordinator {
     }
     // R4.5 — a live fold is in flight; record the request durably and defer (unless the caller owns
     // the retry: `record: false` writes nothing and registers nothing).
-    if (options.record !== false && !this.parked.has(parkKey(tenant, subjectId))) {
+    if (options.record !== false && !this.isParked(subjectId, tenant)) {
       this.parked.add(parkKey(tenant, subjectId));
       await this.appendPending(subjectId, tenant);
     }
@@ -627,11 +715,12 @@ export class EraseCoordinator {
 
   /** Complete a parked erasure when the subject's last live execution terminates. */
   async handleEvent(event: EventEnvelope): Promise<void> {
-    if (!TERMINAL_EVENTS.has(event.eventType) || this.parked.size === 0) return;
+    if (!TERMINAL_EVENTS.has(event.eventType)) return;
+    if (this.parked.size === 0 && this.parkedRefs.size === 0) return;
     const subjectId = this.options.index.subjectOfExecution(event.executionId);
     if (subjectId === undefined) return;
     const tenant = this.options.index.tenantOfExecution(event.executionId) ?? DEFAULT_TENANT;
-    if (!this.parked.has(parkKey(tenant, subjectId))) return;
+    if (!this.isParked(subjectId, tenant)) return;
     const executions = this.options.index.executionsOf(subjectId, tenant);
     if ((await this.liveExecutions(executions, this.options.destroyed)).length > 0) return; // still blocked
     const chains = await this.finishedChains(executions, this.options.destroyed);
@@ -648,7 +737,49 @@ export class EraseCoordinator {
     await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
     await this.finishContentDeletion(subjectId, tenant, content);
     await this.redactSenderCopies(subjectId, tenant);
+    this.unpark(subjectId, tenant);
+  }
+
+  /** Whether a request to erase the subject is parked (registered in memory or restored from either row form). */
+  private isParked(subjectId: string, tenant: string): boolean {
+    if (this.parked.has(parkKey(tenant, subjectId))) return true;
+    return this.subjectRefs(subjectId, tenant).some((ref) => this.parkedRefs.has(ref));
+  }
+
+  private unpark(subjectId: string, tenant: string): void {
     this.parked.delete(parkKey(tenant, subjectId));
+    for (const ref of this.subjectRefs(subjectId, tenant)) this.parkedRefs.delete(ref);
+  }
+
+  /**
+   * The keyed digests a control row may name the subject by: one per held key, the current key's first
+   * (`[]` without `controlStreamKey`). Each part is length-prefixed, so no (tenant, subject) pair can
+   * be spelled as another.
+   */
+  private subjectRefs(subjectId: string, tenant: string): string[] {
+    const input = `loom-erasure-subject:${tenant.length}:${tenant}:${subjectId.length}:${subjectId}`;
+    return this.controlKeys.map(
+      ({ key }) => `hmac-sha256:${createHmac("sha256", key).update(input).digest("hex")}`
+    );
+  }
+
+  /** How a control row names the subject: the current key's digest and its id, or (no key) the plaintext id and tenant. */
+  private subjectFields(subjectId: string, tenant: string): Record<string, string> {
+    const current = this.controlKeys[0];
+    if (current !== undefined) {
+      return { subjectRef: this.subjectRefs(subjectId, tenant)[0]!, keyId: current.id };
+    }
+    return { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }) };
+  }
+
+  /** Whether a control row names the subject, in either form (a plaintext row predates the key). */
+  private rowNames(payload: unknown, subjectId: string, tenant: string): boolean {
+    const p = payload as { subjectId?: unknown; tenant?: unknown; subjectRef?: unknown } | null;
+    if (p === null || typeof p !== "object") return false;
+    if (typeof p.subjectRef === "string") {
+      return this.subjectRefs(subjectId, tenant).includes(p.subjectRef);
+    }
+    return p.subjectId === subjectId && (p.tenant ?? DEFAULT_TENANT) === tenant;
   }
 
   /**
@@ -843,10 +974,21 @@ export class EraseCoordinator {
       }
     }
     let found: EventEnvelope | undefined;
+    let foreign: { keyId: string; intentId: string } | undefined;
     for (const e of events) {
       if (e.eventType !== intentType || done.has(e.id)) continue;
-      const p = e.payload as { subjectId?: string; tenant?: string };
-      if (p.subjectId === subjectId && (p.tenant ?? DEFAULT_TENANT) === tenant) found = e;
+      if (this.rowNames(e.payload, subjectId, tenant)) found = e;
+      else {
+        const p = e.payload as { subjectRef?: unknown; keyId?: unknown } | null;
+        const keyId = typeof p?.keyId === "string" ? p.keyId : "(none)";
+        if (typeof p?.subjectRef === "string" && !this.controlKeys.some((k) => k.id === keyId)) {
+          foreign = { keyId, intentId: e.id };
+        }
+      }
+    }
+    // An open keyed intent this coordinator cannot attribute might be this subject's: never re-plan past it.
+    if (found === undefined && foreign !== undefined) {
+      throw new ControlStreamKeyError(foreign.keyId, foreign.intentId);
     }
     return found;
   }
@@ -857,11 +999,7 @@ export class EraseCoordinator {
     tenant: string,
     body: object
   ): Promise<string> {
-    return this.appendControl(type, {
-      subjectId,
-      ...(tenant !== DEFAULT_TENANT && { tenant }),
-      ...body,
-    });
+    return this.appendControl(type, { ...this.subjectFields(subjectId, tenant), ...body });
   }
 
   private async appendCompletion(
@@ -872,8 +1010,7 @@ export class EraseCoordinator {
     body: object
   ): Promise<void> {
     await this.appendControl(type, {
-      subjectId,
-      ...(tenant !== DEFAULT_TENANT && { tenant }),
+      ...this.subjectFields(subjectId, tenant),
       ...(intentId !== undefined && { intentId }),
       ...body,
     });
@@ -1407,7 +1544,18 @@ export class EraseCoordinator {
 
   /** Subjects with a deferred erasure still awaiting completion (sorted, deduped across tenants). */
   pendingSubjects(): string[] {
-    return [...new Set([...this.parked].map(subjectOfKey))].sort();
+    const out = new Set([...this.parked].map(subjectOfKey));
+    if (this.parkedRefs.size > 0) {
+      // A restored digest names its subject only through the index (one HMAC per indexed subject).
+      for (const tenant of this.options.index.tenants()) {
+        for (const subject of this.options.index.subjects(tenant)) {
+          if (this.subjectRefs(subject, tenant).some((r) => this.parkedRefs.has(r))) {
+            out.add(subject);
+          }
+        }
+      }
+    }
+    return [...out].sort();
   }
 
   /** The subset of `executions` that are not yet terminal (a live fold reading the key), with status. */
@@ -1571,7 +1719,7 @@ export class EraseCoordinator {
       eventType: "ERASURE_PENDING",
       sequence: prior.length,
       timestamp: 0, // deterministic; the fact of the request is what matters
-      payload: { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }) },
+      payload: this.subjectFields(subjectId, tenant),
     });
   }
 }
