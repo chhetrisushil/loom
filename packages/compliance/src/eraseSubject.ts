@@ -442,6 +442,26 @@ export interface EraseSubjectOptions {
    */
   parked?: "defer" | "shred";
   /**
+   * Whether a `parked` outcome is RECORDED (default `true`). When recorded, the request is journaled
+   * on the reserved control stream (`ERASURE_PENDING { subjectId }`, in plaintext, never cleared,
+   * because the stream is append-only) and the coordinator completes it automatically when the
+   * subject's last live execution terminates, across a restart.
+   *
+   * `record: false` reports `parked` (with `pending`) WITHOUT appending `ERASURE_PENDING` and
+   * WITHOUT registering the auto-completion: the subject id is not written to the control stream by
+   * a park. The caller owns the retry, and must re-call `eraseSubject` until it returns `erased`
+   * (nothing completes it otherwise; `pendingSubjects()` does not list it). Use it when the control
+   * stream must not link subject ids, e.g. a principal keyed under a pseudonymous subject and under
+   * its own id, both erased.
+   *
+   * It governs the PARK only. A request already recorded by an earlier call stays recorded (and
+   * still auto-completes). The `erased` path still journals the subject id on the control stream
+   * when it deletes plaintext archive copies, claim-checked content or sender copies
+   * (`ERASURE_*_INTENDED` / `ERASURE_*_DELETED`, the crash-recovery intents); with none of those,
+   * it writes nothing there.
+   */
+  record?: boolean;
+  /**
    * ADR 0130 D7 (round 6) - OPERATOR OVERRIDE, per call (mirrors `ShredOptions.force`). Asserts
    * that the subject's key was destroyed in the authoritative key store, for a store that cannot
    * prove it (no `wasDestroyed`). It lets a retry in the ShredIncomplete window complete, and is
@@ -596,8 +616,9 @@ export class EraseCoordinator {
         ...(shredParked && { parkedShredded: parkedOwners }),
       };
     }
-    // R4.5 — a live fold is in flight; record the request durably and defer.
-    if (!this.parked.has(parkKey(tenant, subjectId))) {
+    // R4.5 — a live fold is in flight; record the request durably and defer (unless the caller owns
+    // the retry: `record: false` writes nothing and registers nothing).
+    if (options.record !== false && !this.parked.has(parkKey(tenant, subjectId))) {
       this.parked.add(parkKey(tenant, subjectId));
       await this.appendPending(subjectId, tenant);
     }

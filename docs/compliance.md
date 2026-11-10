@@ -142,6 +142,22 @@ The **one hard rule** (T3-R4.5): never shred a fold that is still in flight. Era
 
 This is honest deferral: the request is recorded and named, never silently dropped.
 
+The control stream is append-only, so a recorded park leaves the subject id there in plaintext
+for good. When that is unacceptable (one principal keyed under a pseudonymous subject AND under its
+own id: erasing both would put the two ids side by side), pass `record: false`. The call still
+returns `parked` with `pending`, but appends nothing and registers no auto-completion, so the caller
+owns the retry: re-call `eraseSubject` until it returns `erased`. A request an earlier call recorded
+stays recorded. The `erased` path writes the subject id on the control stream only when it deletes
+plaintext archive copies, claim-checked content or sender copies (the `ERASURE_*_INTENDED` /
+`ERASURE_*_DELETED` crash-recovery intents).
+
+```ts
+let r = await app.eraseSubject("user-42", undefined, { parked: "shred", record: false });
+// { outcome: "parked", pending: ["exec-7"] }: nothing written to the control stream
+// ...later, after exec-7 ends:
+r = await app.eraseSubject("user-42", undefined, { parked: "shred", record: false }); // "erased"
+```
+
 **"Live" means "not terminal", a PARKED execution included.** An execution suspended on an
 approval, a timer or `ctx.receive` is not `completed`/`failed`/`cancelled`/`continued`, so the
 coordinator defers on it. A chat agent that parks on `receive` forever therefore blocks the

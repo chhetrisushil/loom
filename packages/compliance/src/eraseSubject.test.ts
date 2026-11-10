@@ -665,6 +665,42 @@ describe("EraseCoordinator and PARKED owners (review P2-2)", () => {
     expect(woke.shred).not.toHaveBeenCalled();
   });
 
+  it("{ record: false } parks WITHOUT naming the subject on the control stream, and a later call erases normally", async () => {
+    const { store, shred, coord } = await make(["p1"], ["r1"]);
+    const r = await coord.eraseSubject("pat", undefined, { parked: "shred", record: false });
+    expect(r).toMatchObject({ outcome: "parked", erased: [], pending: ["r1"] });
+    expect(await store.read(ERASURE_STREAM)).toEqual([]);
+    expect(coord.pendingSubjects()).toEqual([]);
+    // the default mode too, and a repeat call: still nothing written
+    expect((await coord.eraseSubject("pat", undefined, { record: false })).outcome).toBe("parked");
+    expect(await store.read(ERASURE_STREAM)).toEqual([]);
+
+    // NOT auto-completed: the running owner terminates, and nothing is shredded
+    await store.append(ev("r1", 1, "EXECUTION_COMPLETED", {}));
+    await coord.handleEvent((await store.read("r1")).at(-1)!);
+    expect(shred).not.toHaveBeenCalled();
+
+    // the caller's retry erases normally
+    const done = await coord.eraseSubject("pat", undefined, { parked: "shred", record: false });
+    expect(done).toMatchObject({ outcome: "erased", erased: ["p1", "r1"], parkedShredded: ["p1"] });
+    expect(shred).toHaveBeenCalledWith("pat", ["p1", "r1"]);
+    expect(
+      (await store.read(ERASURE_STREAM)).filter((e) => JSON.stringify(e.payload).includes("pat"))
+    ).toEqual([]);
+  });
+
+  it("{ record: false } does not un-record a request an earlier call recorded: it still auto-completes", async () => {
+    const { store, shred, coord } = await make([], ["r1"]);
+    await coord.eraseSubject("pat");
+    expect(await coord.eraseSubject("pat", undefined, { record: false })).toMatchObject({
+      outcome: "parked",
+    });
+    expect((await store.read(ERASURE_STREAM)).map((e) => e.eventType)).toEqual(["ERASURE_PENDING"]);
+    await store.append(ev("r1", 1, "EXECUTION_COMPLETED", {}));
+    await coord.handleEvent((await store.read("r1")).at(-1)!);
+    expect(shred).toHaveBeenCalledWith("pat", ["r1"]);
+  });
+
   it('{ parked: "shred" } without a `cancel` hook throws and shreds nothing', async () => {
     const { store, shred } = await make(["p1"]);
     const coord = new EraseCoordinator({
