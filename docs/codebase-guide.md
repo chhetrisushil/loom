@@ -109,7 +109,7 @@ Line numbers below are approximate (as of loom `29890224`); search for the symbo
 | `@loom/snapshot-runtime` | `src/` | `SnapshotStore` SPI: checkpoints so a resume folds only the tail. |
 | `@loom/effect-runtime` | `src/EffectRuntime.ts` (`execute` L60), `authz.ts`, `policy.ts`, `effects/*` | The side-effect boundary keyed by `toolId`. Authorizer first (K2, `EFFECT_DENIED`), then the middleware chain (`middleware[0]` outermost), then the effect (`ToolEffect`, `LlmEffect`, `HumanEffect`, `LazyEffect`). |
 | `@loom/middleware` | `src/` | Reference middleware: retry, metering (K3), safety (K6), redaction (K10), claim-check (large results stored by reference). |
-| `@loom/app` | `src/defineConfig.ts` (`LoomConfig` L1104, `LoomApp` L1456, `defineConfig` L1904) | The composition root. Turns one static config into a wired `WorkflowRuntime`, `EffectRuntime`, `ProjectionRuntime`, stores, A2A bus, timers, memory and schedules. |
+| `@loom/app` | `src/defineConfig.ts` (`LoomConfig` L1104, `LoomApp` L1456, `defineConfig` L1914) | The composition root. Turns one static config into a wired `WorkflowRuntime`, `EffectRuntime`, `ProjectionRuntime`, stores, A2A bus, timers, memory and schedules. |
 | `@loom/sdk` | `src/index.ts` | The public re-export barrel. |
 
 ### Around the kernel
@@ -120,7 +120,7 @@ Line numbers below are approximate (as of loom `29890224`); search for the symbo
 - **Storage backends.** `plugins/sqlite` (embedded, zero-server) and `plugins/postgres` (horizontal scale, `LISTEN/NOTIFY` live subscribe) implement every store SPI. `plugins/crypto`, `audit-chain` and `content` wrap stores.
 - **Coordination.** `@loom/orchestration` (spawn and await children), `@loom/saga` (compensation), `@loom/live-query` (subscribe to in-flight state).
 - **Read-only lenses.** `@loom/replay-inspector`, `@loom/analytics`, `@loom/verify`, `@loom/learning`, `@loom/compliance`. None of these write to the log.
-- **Governance.** `@loom/spec` is the kernel manifest (every version constant) and also hosts repo-wide fitness tests (`testTiming.test.ts`, `testServerBinding.test.ts`, `testTypecheckCoverage.test.ts`). `@loom/conformance` holds SPI conformance kits for third-party backends.
+- **Governance.** `@loom/spec` is the kernel manifest (every version constant) and also hosts repo-wide fitness tests (`testTiming.test.ts`, `testServerBinding.test.ts`, `testTypecheckCoverage.test.ts`, `kernelBudget.test.ts`). `@loom/conformance` holds SPI conformance kits for third-party backends.
 
 ### What a minimal app looks like
 

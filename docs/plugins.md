@@ -343,7 +343,7 @@ loom plugin new sandbox my-box
   `request.signal` to `fetch`, cap the response bytes, map any unexpected response to `infrastructure`
   with your own message, never the body.
 - A backend that never settles loses: the effect races it against the caller's abort and a
-  `wallClockMs + backendGraceMs` deadline (default 60 s) and hands it a combined signal; whatever it
+  `wallClockMs + backendGraceMs` deadline (`backendGraceMs` defaults to 60 s, on top of the 1 s default `wallClockMs`) and hands it a combined signal; whatever it
   throws is untyped and bounded, never a channel.
 - Prove it: `runSandboxBackendConformance(() => backend, { fixtures? })` from `@loom/conformance`
   runs ADR 0064's security list through the effect. QuickJS (`@loom/plugin-sandbox`) passes it in both

@@ -55,8 +55,10 @@ deadline cancels the run (`EXECUTION_CANCELLED`). Effects receive the abort via 
 (LLM effects forward it to the provider's HTTP call automatically); effects that ignore it
 are settled durably anyway. Aborted effects are still **metered** (wall-time at minimum), so
 cancel-before-completion cannot evade a K3 budget, and the retry middleware treats abort as
-terminally non-retryable. Deadlines fire while a process is actively running the execution;
-durable firing across idle suspension arrives with T1's timer service.
+terminally non-retryable. Deadlines fire while a process is actively running the execution. A suspended execution is not
+cancelled while it sits idle: a resume re-arms the deadline from its logged anchor, so a budget that ran out
+while it was parked cancels the run at once. T1 timers (`suspend({ timeout })`, `ctx.sleep`) are separate and
+do fire across idle suspension.
 
 **Across the compute seam (K8.5):** cancellation follows the execution wherever it runs —
 `dispatcher.cancel(executionId)` forwards the kill through the placement seam, and a remote
