@@ -1365,8 +1365,14 @@ export class WorkflowRuntime {
   }
 
   /** R3 — a read-only `{ loadState }` view carrying the system grant, for census/live-query readers. */
-  systemStateReader(): { loadState(executionId: string): Promise<ExecutionState | null> } {
-    return { loadState: (executionId) => this.loadState(executionId, this.systemOptions()) };
+  systemStateReader(): {
+    loadState(executionId: string): Promise<ExecutionState | null>;
+    erasedStatus(executionId: string): Promise<ExecutionState["status"] | undefined>;
+  } {
+    return {
+      loadState: (executionId) => this.loadState(executionId, this.systemOptions()),
+      erasedStatus: (executionId) => this.erasedStatus(executionId),
+    };
   }
 
   // ── R3k — the durable principal (ADR 0111) ─────────────────────────────────
@@ -3363,6 +3369,21 @@ export class WorkflowRuntime {
    * fold stay strict (a resume off a redacted fold would diverge). A COMPACTED log (its prefix is
    * gone and its checkpoint is sealed too) cannot be reconstructed this way and keeps the error.
    */
+  /**
+   * The status of an ERASED execution, folded from its redacted view the way `cancel` folds it (status
+   * is plaintext), for recovery and census to tell a finished erased execution (nothing to do) from one
+   * left non-terminal (stuck for good: only `cancel` moves it). `undefined` when the view cannot be
+   * reconstructed (a compacted log). Not authorization-checked: it reveals the status alone, and its
+   * callers already hold the system grant.
+   */
+  async erasedStatus(executionId: string): Promise<ExecutionState["status"] | undefined> {
+    try {
+      return (await this.foldStateForCancel(executionId))?.status;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async foldStateForCancel(executionId: string): Promise<ExecutionState | null> {
     try {
       return await this.foldState(executionId);

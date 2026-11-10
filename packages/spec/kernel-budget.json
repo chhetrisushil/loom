@@ -22,8 +22,8 @@
       "adr": "baseline"
     },
     "WorkflowRuntime.ts": {
-      "codeLines": 6796,
-      "adr": "baseline"
+      "codeLines": 6809,
+      "adr": "0130"
     },
     "__tests__/quarantineHarness.ts": {
       "codeLines": 190,
@@ -122,8 +122,8 @@
       "adr": "baseline"
     },
     "orphanCensus.ts": {
-      "codeLines": 89,
-      "adr": "baseline"
+      "codeLines": 119,
+      "adr": "0130"
     },
     "placement.ts": {
       "codeLines": 10,
@@ -146,8 +146,8 @@
       "adr": "baseline"
     },
     "recoverAbandoned.ts": {
-      "codeLines": 287,
-      "adr": "baseline"
+      "codeLines": 317,
+      "adr": "0130"
     },
     "redriveAbandoned.ts": {
       "codeLines": 177,

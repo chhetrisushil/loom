@@ -159,6 +159,13 @@ is a maintenance pass you schedule (cron, a Kubernetes Job, a leader-elected tic
 `fenced: true` so a predecessor that is not really dead loses at the store. Be generous with any
 time-based threshold: a wrongly preempted live worker's in-flight effect may still land
 ([user guide](user-guide/delivery-versioning-and-recovery.md#recovering-executions-whose-supervisor-died-adr-0004), "Recovering executions whose supervisor died").
+An ERASED execution (its subject's key destroyed, so its read throws `PayloadShreddedError`) never
+stops the sweep or the census: there is nothing left to recover, so it is skipped and the executions
+listed after it are still reached. A finished erased execution is skipped silently. One erased while
+NOT finished (a direct `shredSubject` on a running or parked owner) is stuck for good: the sweep counts
+it in `summary.erasedNotTerminal` and reports it through `onError` (an `ErasedNotTerminalError`, first
+then every 16th pass), `loom recover` and `loom census` list it as "erased but not finished", and only
+`cancel` moves it (cancel folds the redacted view).
 
 **The CLI.**
 

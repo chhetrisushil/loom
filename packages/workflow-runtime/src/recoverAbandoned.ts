@@ -3,6 +3,7 @@ import {
   type ExecutionEnumerable,
   type LeaseStore,
   inboxChainOf,
+  isPayloadShredded,
   isReservedStream,
   iterateExecutionIds,
 } from "@loom/event-runtime";
@@ -173,6 +174,12 @@ export interface RecoverAbandonedSummary {
   inboxExpired?: number;
   /** ADR 0110 D1 — inbox streams of a terminal owner that this pass deleted (crash orphans). */
   inboxReclaimed?: number;
+  /**
+   * ERASED executions (their subject's key destroyed) left NON-terminal: no pass can recover them and
+   * they never finish; `cancel` them. Each is reported through `onError` (an `ErasedNotTerminalError`,
+   * first then every 16th pass). A terminal erased execution is skipped silently and not counted.
+   */
+  erasedNotTerminal?: number;
 }
 
 /**
@@ -266,6 +273,13 @@ export async function recoverAbandoned(
       // ADR 0130 residuals D7 - a stream this node cannot open (a marker it cannot open, a key it
       // does not hold): not recoverable HERE, and no reason to abort the pass. Back off, report
       // (first then every 16th), and leave it for a capable node.
+      // An ERASED execution (its subject's key destroyed: the branded PayloadShreddedError) is
+      // recoverable NOWHERE: skip it, or every pass after an erasure would stop at it and never reach
+      // the executions listed after it. Reported only when it was left non-terminal (stuck for good).
+      if (isPayloadShredded(err)) {
+        await noteErased(runtime, executionId, summary, options);
+        continue;
+      }
       if (!isSealedUnreadable(err)) throw err;
       sealedRefusalBackoff(runtime, executionId, err, options);
       summary.failed++;
@@ -339,12 +353,19 @@ export async function recoverAbandoned(
     }
 
     if (maxRecoveries !== undefined) {
-      const recoveries = await unproductiveRecoveries(
-        runtime,
-        executionId,
-        state.sequence,
-        maxRecoveries
-      );
+      let recoveries: number;
+      try {
+        recoveries = await unproductiveRecoveries(
+          runtime,
+          executionId,
+          state.sequence,
+          maxRecoveries
+        );
+      } catch (err) {
+        if (!isPayloadShredded(err)) throw err; // erased after the load: as above
+        await noteErased(runtime, executionId, summary, options);
+        continue;
+      }
       if (recoveries >= maxRecoveries) {
         summary.exhausted++;
         options.onExhausted?.(executionId, recoveries);
@@ -484,6 +505,25 @@ async function* candidateIds(
 // used for this map, or a back-off stamped on one clock would be read on another.
 function sealedBackedOff(runtime: WorkflowRuntime, executionId: string): boolean {
   return isSealedBackedOff(runtime, executionId, runtime.clock());
+}
+
+/** An erased execution: counted and reported (rate-limited) only when it was left non-terminal. */
+async function noteErased(
+  runtime: WorkflowRuntime,
+  executionId: string,
+  summary: RecoverAbandonedSummary,
+  options: RecoverAbandonedOptions
+): Promise<void> {
+  const status = await runtime.erasedStatus(executionId);
+  if (status !== "running" && status !== "pending" && status !== "suspended") return;
+  summary.erasedNotTerminal = (summary.erasedNotTerminal ?? 0) + 1;
+  const err = Object.assign(
+    new Error(
+      `execution ${executionId} was erased while ${status}: it cannot be recovered and will not finish; cancel it`
+    ),
+    { name: "ErasedNotTerminalError", status }
+  );
+  sealedRefusalBackoff(runtime, executionId, err, options);
 }
 
 function sealedRefusalBackoff(

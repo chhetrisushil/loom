@@ -105,6 +105,7 @@ export async function cmdRecover(
     const found: string[] = [];
     const failed: string[] = [];
     const exhausted: string[] = [];
+    const erased: string[] = [];
     const summary = await recoverAbandoned(runtime, {
       ...(stores.eventStore.listExecutions !== undefined && {
         source: {
@@ -126,7 +127,11 @@ export async function cmdRecover(
       dryRun: !flags.apply,
       fenced: true,
       onCandidate: (id) => found.push(id),
-      onError: (id) => failed.push(id),
+      onError: (id, err) =>
+        ((err as { name?: unknown } | null)?.name === "ErasedNotTerminalError"
+          ? erased
+          : failed
+        ).push(id),
     });
 
     const evidence =
@@ -140,13 +145,20 @@ export async function cmdRecover(
     ];
     // Exhausted executions are reported whatever else happened: they are the ones an operator
     // must act on (cancel, or fix and re-drive), because no pass will touch them again.
-    const exhaustedLines =
+    const exhaustedLines: string[] =
       exhausted.length > 0
         ? [
             `exhausted: ${summary.exhausted} (no progress in the last ${flags.maxRecoveries} re-drives; left for you)`,
             ...exhausted.map((id) => `  ${id}`),
           ]
         : [];
+    // Erased while not finished: no pass recovers them and they never end. Only `cancel` moves them.
+    if (summary.erasedNotTerminal !== undefined) {
+      exhaustedLines.push(
+        `erased but not finished: ${summary.erasedNotTerminal} (cannot be recovered; cancel them)`,
+        ...erased.map((id) => `  ${id}`)
+      );
+    }
     if (found.length === 0) {
       return [`${lines[0]}`, "  (nothing abandoned)", ...exhaustedLines].join("\n");
     }
