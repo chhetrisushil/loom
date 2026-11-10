@@ -819,6 +819,15 @@ describe("controlStreamKey keeps subject ids off the erasure control stream", ()
     await restarted.handleEvent(done);
     expect(shred).toHaveBeenCalledWith(REAL, ["live"]);
     expect(restarted.pendingSubjects()).toEqual([]);
+    // the clear row names the pending row, never the subject; a second restart does not re-park
+    const cleared = (await store.read(ERASURE_STREAM)).filter(
+      (e) => e.eventType === "ERASURE_PENDING_CLEARED"
+    );
+    expect(cleared.map((e) => e.payload)).toEqual([{ pendingIds: [row?.id] }]);
+    expect(JSON.stringify(await store.read(ERASURE_STREAM))).not.toContain(REAL);
+    const again = make();
+    await again.loadParked();
+    expect(again.pendingSubjects()).toEqual([]);
   });
 
   it("a PLAINTEXT row written before the key was set is still honoured (parked and intents)", async () => {

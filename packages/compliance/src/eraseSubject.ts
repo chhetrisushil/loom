@@ -162,6 +162,12 @@ const CONTENT_DELETE_INTENDED = "ERASURE_CONTENT_DELETE_INTENDED";
 const CONTENT_DELETED = "ERASURE_CONTENT_DELETED";
 const SENDER_REDACTION_INTENDED = "ERASURE_SENDER_REDACTION_INTENDED";
 const SENDER_REDACTED = "ERASURE_SENDER_REDACTED";
+/**
+ * Closes `ERASURE_PENDING` rows once their subject is erased: `{ pendingIds }`, the ids of the rows it
+ * closes (never a subject). Without it every park ever written was reloaded as parked after a restart,
+ * and a later execution of an erased subject was erased automatically when it ended.
+ */
+const PENDING_CLEARED = "ERASURE_PENDING_CLEARED";
 
 /** ADR 0143 D5: how many distinct citing executions per address the ownership proof is tried under. */
 const MAX_CITERS_PER_ADDRESS = 16;
@@ -565,8 +571,10 @@ export class EraseCoordinator {
   async loadParked(): Promise<void> {
     // The parked set FIRST: it is what the key-window guard reads, so a failure of the archive recovery
     // below must never leave it empty (that would fail open).
-    for (const event of await this.options.eventStore.read(ERASURE_STREAM)) {
-      if (event.eventType === "ERASURE_PENDING") {
+    const control = await this.options.eventStore.read(ERASURE_STREAM);
+    const cleared = clearedPendingIds(control);
+    for (const event of control) {
+      if (event.eventType === "ERASURE_PENDING" && !cleared.has(event.id)) {
         const p = event.payload as {
           subjectId?: string;
           tenant?: string;
@@ -692,6 +700,7 @@ export class EraseCoordinator {
       const archived = await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
       const contentDeleted = await this.finishContentDeletion(subjectId, tenant, content);
       const redactions = await this.redactSenderCopies(subjectId, tenant);
+      await this.clearPending(subjectId, tenant);
       this.unpark(subjectId, tenant);
       return {
         subjectId,
@@ -737,7 +746,27 @@ export class EraseCoordinator {
     await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
     await this.finishContentDeletion(subjectId, tenant, content);
     await this.redactSenderCopies(subjectId, tenant);
+    await this.clearPending(subjectId, tenant);
     this.unpark(subjectId, tenant);
+  }
+
+  /**
+   * Close the subject's open `ERASURE_PENDING` rows (either form) now that it is erased, so a restart
+   * does not park it again. Written LAST: a crash before it leaves the request parked, and completing
+   * it again is idempotent. Names the rows, never the subject.
+   */
+  private async clearPending(subjectId: string, tenant: string): Promise<void> {
+    const control = await this.options.eventStore.read(ERASURE_STREAM);
+    const cleared = clearedPendingIds(control);
+    const pendingIds = control
+      .filter(
+        (e) =>
+          e.eventType === "ERASURE_PENDING" &&
+          !cleared.has(e.id) &&
+          this.rowNames(e.payload, subjectId, tenant)
+      )
+      .map((e) => e.id);
+    if (pendingIds.length > 0) await this.appendControl(PENDING_CLEARED, { pendingIds });
   }
 
   /** Whether a request to erase the subject is parked (registered in memory or restored from either row form). */
@@ -1722,6 +1751,17 @@ export class EraseCoordinator {
       payload: this.subjectFields(subjectId, tenant),
     });
   }
+}
+
+/** The ids of the `ERASURE_PENDING` rows an `ERASURE_PENDING_CLEARED` closed. */
+function clearedPendingIds(control: readonly EventEnvelope[]): Set<string> {
+  const out = new Set<string>();
+  for (const e of control) {
+    if (e.eventType !== PENDING_CLEARED) continue;
+    const ids = (e.payload as { pendingIds?: unknown } | null)?.pendingIds;
+    if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string") out.add(id);
+  }
+  return out;
 }
 
 /** A chain whose head the subject owned, with the live streams of its inbox. */

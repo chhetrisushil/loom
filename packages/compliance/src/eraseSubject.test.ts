@@ -1203,6 +1203,79 @@ describe("erasure redaction and deletion are atomic, recorded and fail closed (A
 
 type ErasableArchiveLike = InMemoryArchiveStore;
 
+describe("a completed erasure is not parked again after a restart (ERASURE_PENDING_CLEARED)", () => {
+  async function parkedThenErased(complete: "auto" | "direct") {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "x1", "dan");
+    const index = SubjectIndex.fromEvents(await store.read("x1"), subjectOf);
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred });
+    expect((await coord.eraseSubject("dan")).outcome).toBe("parked");
+    const done = ev("x1", 1, "EXECUTION_COMPLETED", {});
+    await store.append(done);
+    if (complete === "auto") await coord.handleEvent(done);
+    else expect((await coord.eraseSubject("dan")).outcome).toBe("erased");
+    expect(shred).toHaveBeenCalledOnce();
+    return { store, index, shred };
+  }
+
+  for (const complete of ["auto", "direct"] as const) {
+    it(`${complete}: the pending row is closed, a restart does not re-park, and a LATER execution is not auto-erased`, async () => {
+      const { store, index, shred } = await parkedThenErased(complete);
+      const rows = await store.read(ERASURE_STREAM);
+      const pending = rows.find((e) => e.eventType === "ERASURE_PENDING");
+      const cleared = rows.filter((e) => e.eventType === "ERASURE_PENDING_CLEARED");
+      expect(cleared.map((e) => e.payload)).toEqual([{ pendingIds: [pending?.id] }]);
+
+      const restarted = new EraseCoordinator({ index, eventStore: store, shred });
+      await restarted.loadParked();
+      expect(restarted.pendingSubjects()).toEqual([]);
+      // the subject comes back with a new execution: its end must NOT erase it
+      const again = ev("x2", 0, "EXECUTION_STARTED", { input: { userId: "dan" } });
+      await store.append(again);
+      index.handleEvent(again);
+      const end = ev("x2", 1, "EXECUTION_COMPLETED", {});
+      await store.append(end);
+      await restarted.handleEvent(end);
+      expect(shred).toHaveBeenCalledOnce();
+    });
+  }
+
+  it("an erasure that never parked writes no clear row; a crash before the clear leaves the request parked (safe)", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "t1", "eve");
+    await store.append(ev("t1", 1, "EXECUTION_COMPLETED", {}));
+    const index = SubjectIndex.fromEvents(await store.read("t1"), subjectOf);
+    await new EraseCoordinator({ index, eventStore: store, shred: async () => {} }).eraseSubject(
+      "eve"
+    );
+    expect(await store.read(ERASURE_STREAM)).toEqual([]);
+
+    // parked, then the erasure's last write (the clear) fails: a restart still holds the request
+    const s2 = new InMemoryAsyncEventStore();
+    await seedStarted(s2, "x1", "dan");
+    const i2 = SubjectIndex.fromEvents(await s2.read("x1"), subjectOf);
+    await new EraseCoordinator({ index: i2, eventStore: s2, shred: async () => {} }).eraseSubject(
+      "dan"
+    );
+    const failing = Object.create(s2) as InMemoryAsyncEventStore;
+    failing.append = async (e) => {
+      if (e.eventType === "ERASURE_PENDING_CLEARED") throw new Error("disk full");
+      return s2.append(e);
+    };
+    await s2.append(ev("x1", 1, "EXECUTION_COMPLETED", {}));
+    const crashing = new EraseCoordinator({
+      index: i2,
+      eventStore: failing,
+      shred: async () => {},
+    });
+    await expect(crashing.eraseSubject("dan")).rejects.toThrow("disk full");
+    const restarted = new EraseCoordinator({ index: i2, eventStore: s2, shred: async () => {} });
+    await restarted.loadParked();
+    expect(restarted.pendingSubjects()).toEqual(["dan"]);
+  });
+});
+
 describe("loadParked loads the parked set even when archive recovery fails (ADR 0139 D22)", () => {
   it("a failing archive is warned loudly, the parked erasure is still known, and recovery stays retryable", async () => {
     const store = new InMemoryAsyncEventStore();

@@ -138,7 +138,11 @@ The **one hard rule** (T3-R4.5): never shred a fold that is still in flight. Era
 - any still live → **park** the request (a durable `ERASURE_PENDING` fact on a control
   stream) and complete it automatically when the last live execution terminates
   (`"parked"`, with the blocking executions named). The park survives a restart — the
-  control stream folds back to the pending set.
+  control stream folds back to the pending set. Once the subject is erased (automatically or by a
+  later call) its pending rows are closed by `ERASURE_PENDING_CLEARED { pendingIds }`, which names the
+  rows and never the subject, so a restart does not park an erased subject again (and a later
+  execution of that subject is not erased when it ends). The close is written last: a crash before it
+  leaves the request parked, and completing it again is idempotent.
 
 This is honest deferral: the request is recorded and named, never silently dropped.
 
