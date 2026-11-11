@@ -1,5 +1,11 @@
 import type { ExecutionState, ScheduleDefinition } from "@loom/core";
-import type { EventStore, LeaseStore, TimerRecord, TimerStore } from "@loom/event-runtime";
+import {
+  type EventStore,
+  type LeaseStore,
+  type TimerRecord,
+  type TimerStore,
+  isPayloadShredded,
+} from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { INBOX_WAKE_AT } from "./inbox";
@@ -641,6 +647,10 @@ export class TimerService {
       try {
         state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       } catch (err) {
+        if (isPayloadShredded(err)) {
+          await this.retireErased(executionId, wakeAt, err);
+          return true;
+        }
         if (!isSealedUnreadable(err)) {
           this.onError?.(executionId, err);
           await this.failRefusal(executionId, wakeAt, refused);
@@ -927,6 +937,26 @@ export class TimerService {
   }
 
   /**
+   * ADR 0039 - the execution was ERASED (crypto-shredded): unlike a sealed stream, no node can ever
+   * load it again, so no wake can land and the row is obsolete. Retire it and report the erasure
+   * once: with the row gone, no later poll sees it. (An erased execution that never reached a
+   * terminal state is still cancellable; `loom census` lists it.) Never throws: a
+   * retire that fails leaves the row for the next poll and must not end the rest of this one.
+   */
+  private async retireErased(executionId: string, wakeAt: number, err: unknown): Promise<void> {
+    this.wakeBackoff.delete(executionId);
+    this.refusalAttempts.delete(executionId);
+    clearSealedBackoff(this.runtime, executionId);
+    try {
+      await this.store.complete(executionId, wakeAt);
+    } catch (storeErr) {
+      this.onError?.(executionId, storeErr);
+      return;
+    }
+    this.onError?.(executionId, err);
+  }
+
+  /**
    * ADR 0130 - this node cannot open what the wake needs. Keep the row (a capable node needs it)
    * but stop hammering: exponential back-off with no attempt cap, and report the first refusal and
    * then only every 16th, not every poll.
@@ -1196,6 +1226,10 @@ export class TimerService {
       }
       await this.store.complete(executionId, wakeAt);
     } catch (err) {
+      if (isPayloadShredded(err)) {
+        await this.retireErased(executionId, wakeAt, err);
+        return;
+      }
       // ADR 0130 residuals D7 - a stream this node cannot open: leave the row for a capable node,
       // back off, and report first-then-every-16th (not every poll).
       if (isSealedUnreadable(err)) {
