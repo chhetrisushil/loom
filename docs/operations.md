@@ -225,6 +225,9 @@ context in [data-protection-patterns.md](data-protection-patterns.md). The opera
 6. **Derived read models are not erased by the shred.** Purge the subject's rows (preferred) or
    `clear` and rebuild ([compliance.md](compliance.md), "Erasure does not reach a derived read
    model").
+   An erased execution's pending timer rows are retired by the `TimerService` on their next poll,
+   each reported once to `onError` with the branded `PayloadShreddedError` (`isPayloadShredded`):
+   no node can load the execution again, so no wake could land.
 7. **Keep the erasure request itself as the audit record**; the journaled cancel records only
    `reason: "erased"`.
 
