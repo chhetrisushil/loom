@@ -3,9 +3,11 @@ import {
   type ExecutionEnumerable,
   type Lease,
   type LeaseStore,
+  isPayloadShredded,
   isReservedStream,
   iterateExecutionIds,
 } from "@loom/event-runtime";
+import { isSealedUnreadable } from "./sealGuard";
 
 /**
  * All a census needs: the folding read. Structural, so a `WorkflowRuntime` satisfies it and a
@@ -14,6 +16,11 @@ import {
  */
 export interface CensusStateReader {
   loadState(executionId: string): Promise<ExecutionState | null>;
+  /**
+   * The status of an ERASED execution (`WorkflowRuntime.erasedStatus`). Without it an erased execution
+   * is skipped uncounted; `systemStateReader()` provides it.
+   */
+  erasedStatus?(executionId: string): Promise<ExecutionState["status"] | undefined>;
 }
 
 // ── What is stuck, and is anything watching it ────────────────────────────────
@@ -56,6 +63,13 @@ export interface OrphanCensus {
   scanned: number;
   /** Those `running`/`pending` — the only ones that can be stuck. */
   inFlight: number;
+  /**
+   * ERASED executions (their subject's key destroyed) left non-terminal: stuck for good, only `cancel`
+   * moves them. Not in `inFlight` or a band. Present when there is one.
+   */
+  erasedNotTerminal?: { count: number; sample: string[] };
+  /** Executions this reader cannot open (a sealed stream, a key it does not hold). Present when there is one. */
+  unreadable?: { count: number; sample: string[] };
   /** Oldest band first. */
   bands: OrphanBand[];
   /** Lease coverage across ALL in-flight executions, when a lease store was given. */
@@ -125,7 +139,22 @@ export async function orphanCensus(
     // reads `pending` forever and would be reported as an orphan.
     if (isReservedStream(executionId)) continue;
     census.scanned++;
-    const state = await reader.loadState(executionId);
+    let state: ExecutionState | null;
+    try {
+      state = await reader.loadState(executionId);
+    } catch (err) {
+      // One erased or unreadable execution must not end the census of everything listed after it.
+      if (isPayloadShredded(err)) {
+        const status = await reader.erasedStatus?.(executionId);
+        if (status === "running" || status === "pending" || status === "suspended") {
+          tally(census, "erasedNotTerminal", executionId, sampleSize);
+        }
+        continue;
+      }
+      if (!isSealedUnreadable(err)) throw err;
+      tally(census, "unreadable", executionId, sampleSize);
+      continue;
+    }
     if (state === null) continue;
     if (state.status !== "running" && state.status !== "pending") continue;
     census.inFlight++;
@@ -142,6 +171,18 @@ export async function orphanCensus(
     }
   }
   return census;
+}
+
+function tally(
+  census: OrphanCensus,
+  key: "erasedNotTerminal" | "unreadable",
+  executionId: string,
+  sampleSize: number
+): void {
+  const entry = census[key] ?? { count: 0, sample: [] };
+  census[key] = entry;
+  entry.count++;
+  if (entry.sample.length < sampleSize) entry.sample.push(executionId);
 }
 
 /** `undefined` when no store was given, or when the store cannot be read (no `get`). */

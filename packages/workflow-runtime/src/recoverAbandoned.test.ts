@@ -1,11 +1,16 @@
 import { step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
+import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
+import {
+  InMemoryAsyncEventStore,
+  InMemoryLeaseStore,
+  brandPayloadShredded,
+} from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { orphanCensus } from "./orphanCensus";
 import { type RecoverAbandonedOptions, recoverAbandoned } from "./recoverAbandoned";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
@@ -179,6 +184,142 @@ describe("recoverAbandoned", () => {
     // already accepts — plus the tail `c` that had never run at all.
     expect(b.ran).toEqual(["b", "c"]);
     expect(a.ran).toEqual(["a", "b"]);
+  });
+
+  /**
+   * Erased executions listed BEFORE the abandoned one: each read throws the branded
+   * PayloadShreddedError a decrypting store raises once the subject's key is destroyed, carrying the
+   * redacted view (status is plaintext), as `EncryptingEventStore` does.
+   */
+  async function withErased(
+    stores: Stores,
+    erased: Record<string, "running" | "completed">,
+    shredLater?: { id: string; now: () => boolean }
+  ) {
+    const raw = stores.eventStore;
+    const views = new Map<string, EventEnvelope[]>();
+    for (const [id, status] of Object.entries(erased)) {
+      const evs: EventEnvelope[] = [
+        {
+          id: `${id}-0`,
+          workflowId: "guarded",
+          executionId: id,
+          eventType: "EXECUTION_STARTED",
+          sequence: 0,
+          timestamp: 1,
+          payload: { input: {} },
+        },
+      ];
+      if (status === "completed") {
+        evs.push({
+          ...evs[0]!,
+          id: `${id}-1`,
+          eventType: "EXECUTION_COMPLETED",
+          sequence: 1,
+          payload: { output: { ok: true } },
+        });
+      }
+      for (const e of evs) await raw.append(e);
+      views.set(id, evs);
+    }
+    const shredded = (redacted: EventEnvelope[]) =>
+      brandPayloadShredded(
+        Object.assign(new Error("shredded"), { name: "PayloadShreddedError", redacted })
+      );
+    const erasing = Object.create(raw) as InMemoryAsyncEventStore;
+    erasing.read = async (id: string, ...rest: unknown[]) => {
+      const view = views.get(id);
+      if (view !== undefined) throw shredded(view);
+      if (shredLater?.id === id && shredLater.now()) {
+        throw shredded(await (raw.read as (i: string) => Promise<EventEnvelope[]>)(id));
+      }
+      return (raw.read as (i: string, ...r: unknown[]) => Promise<EventEnvelope[]>)(id, ...rest);
+    };
+    // The re-drive bookkeeping reads a RANGE of the log, not the whole stream.
+    for (const m of ["readFrom", "readRange"] as const) {
+      const orig = (raw as unknown as Record<string, unknown>)[m];
+      if (typeof orig !== "function") continue;
+      (erasing as unknown as Record<string, unknown>)[m] = async (
+        id: string,
+        ...rest: unknown[]
+      ) => {
+        if (shredLater?.id === id && shredLater.now()) {
+          throw shredded(await (raw.read as (i: string) => Promise<EventEnvelope[]>)(id));
+        }
+        return (orig as (...a: unknown[]) => unknown).call(raw, id, ...rest);
+      };
+    }
+    const appended: string[] = [];
+    erasing.append = async (e: EventEnvelope) => {
+      appended.push(e.executionId);
+      return raw.append(e);
+    };
+    return { erasing, appended };
+  }
+
+  it("ERASED executions listed first are skipped and the pass recovers the ones after them; one left RUNNING is reported, a finished one is silent", async () => {
+    const { stores, executionId } = await abandonOne();
+    expect("aa-erased" < executionId && "aa-done" < executionId).toBe(true);
+    const { erasing, appended } = await withErased(stores, {
+      "aa-erased": "running",
+      "aa-done": "completed",
+    });
+    const b = boot({ shared: { eventStore: erasing, snapshotStore: stores.snapshotStore } });
+    const errors: Array<[string, string]> = [];
+    const summary = await recoverAbandoned(b.runtime, {
+      source: erasing,
+      isAbandoned: () => true,
+      onError: (id, err) => errors.push([id, (err as Error).name]),
+    });
+    expect(summary.recovered).toBe(1);
+    expect(summary.failed).toBe(0); // erased is not a failure: there is nothing to recover
+    expect(summary.erasedNotTerminal).toBe(1);
+    expect(errors).toEqual([["aa-erased", "ErasedNotTerminalError"]]);
+    expect((await b.runtime.loadState(executionId))?.status).toBe("completed");
+    expect(appended.filter((id) => id.startsWith("aa-"))).toEqual([]); // nothing written to them
+    expect(await b.runtime.erasedStatus("aa-done")).toBe("completed");
+  });
+
+  it("an execution erased MID-PASS (after its load) is skipped too, not the end of the pass", async () => {
+    const { stores, executionId } = await abandonOne();
+    let shred = false;
+    const { erasing } = await withErased(stores, {}, { id: executionId, now: () => shred });
+    const b = boot({ shared: { eventStore: erasing, snapshotStore: stores.snapshotStore } });
+    const summary = await recoverAbandoned(b.runtime, {
+      source: erasing,
+      maxRecoveries: 3,
+      isAbandoned: () => {
+        shred = true; // the shred lands between the load and the re-drive bookkeeping
+        return true;
+      },
+    });
+    expect(summary).toMatchObject({ recovered: 0, failed: 0, erasedNotTerminal: 1 });
+  });
+
+  it("orphanCensus counts an erased non-terminal execution apart and keeps counting past it", async () => {
+    const { stores } = await abandonOne();
+    const { erasing } = await withErased(stores, {
+      "aa-erased": "running",
+      "aa-done": "completed",
+    });
+    const b = boot({ shared: { eventStore: erasing, snapshotStore: stores.snapshotStore } });
+    const census = await orphanCensus(b.runtime.systemStateReader(), { source: erasing });
+    expect(census.scanned).toBe(3);
+    expect(census.inFlight).toBe(1); // the abandoned one, listed after both erased ones
+    expect(census.erasedNotTerminal).toEqual({ count: 1, sample: ["aa-erased"] });
+  });
+
+  it("an UNBRANDED store failure still aborts the pass (only erasure is skipped)", async () => {
+    const { stores } = await abandonOne();
+    const raw = stores.eventStore;
+    const failing = Object.create(raw) as InMemoryAsyncEventStore;
+    failing.read = async () => {
+      throw Object.assign(new Error("disk gone"), { name: "PayloadShreddedError" }); // name only
+    };
+    const b = boot({ shared: { eventStore: failing, snapshotStore: stores.snapshotStore } });
+    await expect(
+      recoverAbandoned(b.runtime, { source: failing, isAbandoned: () => true })
+    ).rejects.toThrow("disk gone");
   });
 
   // ── dryRun — the preview runs through the pass, not beside it ──────────────

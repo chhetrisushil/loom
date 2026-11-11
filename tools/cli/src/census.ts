@@ -106,6 +106,20 @@ export function renderCensus(
     lines.push("  all in flight:");
     lines.push(...leaseLine(census.leases));
   }
+  if (census.erasedNotTerminal !== undefined) {
+    const { count, sample } = census.erasedNotTerminal;
+    lines.push(
+      `  erased but not finished ${String(count).padStart(5)}  (no pass recovers these; cancel them)`
+    );
+    lines.push(`      e.g. ${sample.join(", ")}`);
+  }
+  if (census.unreadable !== undefined) {
+    const { count, sample } = census.unreadable;
+    lines.push(
+      `  unreadable here ${String(count).padStart(5)}  (sealed, or a key this node does not hold)`
+    );
+    lines.push(`      e.g. ${sample.join(", ")}`);
+  }
   if (suspended !== undefined) lines.push(...suspendedLines(suspended, now));
   return lines.join("\n");
 }
@@ -169,6 +183,7 @@ export async function censusReport(
         }
         return state;
       },
+      erasedStatus: (id: string) => runtime.erasedStatus(id),
     };
     const census = await orphanCensus(watching, {
       source: {
