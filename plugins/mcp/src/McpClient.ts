@@ -5,6 +5,7 @@ import type { EffectRuntime } from "@loomwork/effect-runtime";
 import { ToolEffect } from "@loomwork/effect-runtime";
 import { z } from "zod";
 import { refuseMalformedInput } from "./inputShape";
+import { packageInfo } from "./packageInfo";
 import {
   DEFAULT_MCP_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION_META_KEY,
@@ -234,7 +235,7 @@ export class McpClient {
         tools: {},
         extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_UI_MIME_TYPE] } },
       },
-      clientInfo: { name: "@loomwork/plugin-mcp", version: "0.0.1" },
+      clientInfo: packageInfo(),
     });
     // Negotiation, not assertion: adopt the server's choice for later requests.
     if (typeof result.protocolVersion === "string") {
