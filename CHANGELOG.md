@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The MCP handshake reports the real package version (`@loomwork/plugin-mcp`).** `McpClient` (`clientInfo`) and `createMcpServer` (default `serverInfo`) advertised a hard-coded `version: "0.0.1"`; both now read the package's own `package.json`. An explicit `serverInfo` option still wins.
+
 ### Changed
 
 - **Every package is renamed from `@loom/*` to `@loomwork/*` and prepared for npm ([ADR 0148](docs/adr/0148-npm-publishing-under-loomwork.md); no behaviour, `KERNEL_ABI`, `EVENT_SCHEMA` or SPI change).** `@loom` is taken on npm, so imports change from `@loom/<name>` to `@loomwork/<name>`; nothing else in a package name changes, and the framework, the `loom` CLI, `loom.config.ts` and `LOOM_*` variables keep their names. Every public package is at 0.1.0 with publish metadata written by `scripts/publish-metadata.mjs` (guarded by `publishMetadata.test.ts`), sibling dependencies are `workspace:^` (published as `^0.1.0`), and `scripts/publish.mjs` publishes under the `next` dist-tag (a dry run unless given `--yes`). The app initializer is `npm create @loomwork/loom-app`; the unscoped `create-loom-app` on npm is an unrelated project.
