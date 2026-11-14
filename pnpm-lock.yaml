@@ -1304,18 +1304,9 @@ importers:
       '@loomwork/plugin-mcp':
         specifier: workspace:^
         version: link:../../plugins/mcp
-      '@loomwork/plugin-postgres':
-        specifier: workspace:^
-        version: link:../../plugins/postgres
       '@loomwork/plugin-renderer-terminal':
         specifier: workspace:^
         version: link:../../plugins/renderer-terminal
-      '@loomwork/plugin-sandbox':
-        specifier: workspace:^
-        version: link:../../plugins/sandbox
-      '@loomwork/plugin-sqlite':
-        specifier: workspace:^
-        version: link:../../plugins/sqlite
       '@loomwork/projection-runtime':
         specifier: workspace:^
         version: link:../projection-runtime
@@ -1335,6 +1326,15 @@ importers:
         specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
+      '@loomwork/plugin-postgres':
+        specifier: workspace:*
+        version: link:../../plugins/postgres
+      '@loomwork/plugin-sandbox':
+        specifier: workspace:*
+        version: link:../../plugins/sandbox
+      '@loomwork/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

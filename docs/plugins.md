@@ -71,6 +71,8 @@ via a **subpath**, not the main barrel:
   `import { sandboxEval$ } from "@loomwork/sdk/sandbox"`. The sandbox subpath also carries the backend
   SPI (`SandboxBackend`, `SandboxEffect`, `registerSandboxBackend`, ADR 0144); a third-party backend
   package depends on `@loomwork/sandbox` directly instead, since the subpath loads QuickJS too.
+  The plugins behind these subpaths are optional peers of the SDK, so an app adds the one it uses
+  (`@loomwork/plugin-sqlite`, `-postgres` or `-sandbox`) beside `@loomwork/sdk`.
 
 Plugins outside the barrel (renderers with a framework peer dependency, the compute adapters, the
 UI-protocol plugins) are imported by their own package name — being outside the barrel is a

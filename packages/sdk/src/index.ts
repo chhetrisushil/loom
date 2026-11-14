@@ -11,7 +11,8 @@ export type { SnapshotStore, Snapshot } from "@loomwork/snapshot-runtime";
 // Native-dep 1P store plugins (SQLite → better-sqlite3, Postgres → pg) are re-exported
 // via subpaths — `@loomwork/sdk/sqlite`, `@loomwork/sdk/postgres` — so a bare `@loomwork/sdk` import
 // stays lean and browser-safe (ADR 0043). The QuickJS sandbox (WASM engine) likewise
-// rides `@loomwork/sdk/sandbox` (ADR 0064).
+// rides `@loomwork/sdk/sandbox` (ADR 0064). The three plugins are OPTIONAL PEERS (ADR 0043
+// amendment), so they are installed only by an app that adds the one it uses.
 
 // ── Agentic capabilities ─────────────────────────────────────────────────────
 export * from "@loomwork/llm";
