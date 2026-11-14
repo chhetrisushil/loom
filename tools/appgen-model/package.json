@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/appgen-model",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local-model planner for `loom appgen` — turns intent + a scanned AppModel into a ChangeSpec using a small on-device Gemma model (node-llama-cpp, optional) with grammar-constrained JSON, composed over @loomwork/reasoning's cheap-first elevation ladder. Emits only a ChangeSpec; codegen never sees raw NL.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/deploy-sim",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Deploy-simulation for Loom — replay historical event logs (especially in-flight suspended executions) against new flow definitions to catch resume-breaking changes before promoting",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

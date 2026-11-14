@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/conformance",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Portable SPI conformance kits for Loom — run run<Spi>Conformance(factory) in your vitest suite to prove a store/dispatcher/timer/projection backend conforms. Ships ESM so `import vitest` resolves natively; vitest is a peer.",
   "type": "module",
   "main": "./dist/index.js",

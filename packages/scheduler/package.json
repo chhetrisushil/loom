@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/scheduler",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Ephemeral cooperative scheduler for Loom — priority ordering, bounded concurrency, and AbortSignal cancellation for live in-flight work",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

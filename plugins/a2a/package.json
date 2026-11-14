@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-a2a",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent-to-Agent (A2A) protocol client and server for Loom workflows",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/conversation",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A durable conversation over one chained execution: turns arrive on the inbox, a new turn barges in on a running one, long dialogues rotate (continue-as-new), history is read from the log, and the prompt is fitted to a token budget",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

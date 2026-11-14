@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-sentinel",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "The perpetual-agent pattern as one declaration (DX-1, db-copilot infra): sentinelPreset() bundles the schedule, contract-migratable carry state (@loomwork/plugin-durable-state), claim-checked telemetry (@loomwork/middleware), and the K10.6 pin policy — the five files of the db-sentinel example's harness, composition-time only (ADR 0043/0044).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/agent-surface",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent-surface — Loom's native, event-sourced patch protocol for driving durable, replayable UI surfaces",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

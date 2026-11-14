@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/agent",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "ReAct-style agent loop for Loom workflows",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

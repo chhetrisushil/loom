@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/learning",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "The learning substrate for Loom — mine the durable log into trajectories, evaluate a candidate policy against real production traffic before shipping it, and gate promotion on the result. Read-only over the log; the learning algorithm itself is third-party.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

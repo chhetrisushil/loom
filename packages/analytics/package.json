@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/analytics",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Event-intelligence for Loom — pure read-only analyzers and an advisory runtime-intelligence report over the durable event log (execution / cost / reasoning / failure). A lens on the log, never a writer.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
