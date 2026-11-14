@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/dst",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Deterministic Simulation Testing for Loom — a seeded virtual clock, fault-injecting store/network, and invariant checker that drive the kernel under adversarial schedules and reproduce any failure bit-for-bit. Test/dev-only; imported by no runtime package, so zero production overhead is structural.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

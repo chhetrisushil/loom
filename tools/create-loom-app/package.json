@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/create-loom-app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Scaffold a minimal Loom app wired via defineConfig — config, tools, steps, a flow, middleware, and an eval",
   "bin": {
     "create-loom-app": "./dist/index.js"

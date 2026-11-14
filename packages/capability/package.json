@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/capability",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Capability catalog for Loom — flows exposed as intent-addressable capabilities",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

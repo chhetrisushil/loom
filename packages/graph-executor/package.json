@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/graph-executor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Distributed execution graph for Loom — fans a set of nodes into per-node executions (one writer each), dispatches them concurrently via the ExecutionDispatcher, records lineage, and joins the results",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

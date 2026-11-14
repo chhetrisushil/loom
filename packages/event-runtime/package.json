@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/event-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Append-only event store for the Loom framework",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

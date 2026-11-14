@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/wire-abi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "T2 wire-level kernel ABI — a versioned JSON-RPC projection of the K1 syscalls (unary/channel), a carrier that drives executions over the wire, and language-agnostic fold-conformance vectors any client can run",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

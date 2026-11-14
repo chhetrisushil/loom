@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-worker-remote",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "HTTP WorkerRuntime for Loom — dispatches an ExecutionPackage to a stateless worker's POST /execute endpoint and collects the ExecutionResult",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

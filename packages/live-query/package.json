@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/live-query",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Live queries over in-flight Loom executions — read the current folded state and subscribe to updates as new events land, without a syscall. A read-model over loadState + EventStore.subscribe.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

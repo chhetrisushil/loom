@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/snapshot-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Snapshot serialization and storage for Loom workflow execution state",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

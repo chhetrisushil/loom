@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/replay-inspector",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Read-only replay inspector — reconstruct an execution's state at any point in its log, diff transitions, and read projection slices, under the version the execution is pinned to. A cache of the log, never an authority; no write path.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

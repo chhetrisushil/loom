@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/middleware",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reference effect middleware for Loom — cross-cutting concerns (retries, and later logging/idempotency/tracing) around effect execution, replay-safe and statically ordered",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
