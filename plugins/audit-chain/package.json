@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-audit-chain",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Tamper-evident hash-chained EventStore wrapper for Loom — each event carries H(prevHash ‖ canonical(event)) plus an optional HMAC signature, so the durable log is cryptographically verifiable. Fold-invisible: replay is byte-identical.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-worker-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Stateless Loom worker HTTP endpoint — POST /execute runs one ExecutionPackage on an injected WorkerRuntime and returns the ExecutionResult. The container entrypoint for remote/Cloud Run execution",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

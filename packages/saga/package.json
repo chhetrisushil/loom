@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/saga",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Saga / compensation for Loom flows — register compensators as you go and run them in reverse on failure, built entirely from ctx.run (so rollback is replay-safe) with no new syscall or event type.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

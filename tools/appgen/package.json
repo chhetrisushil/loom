@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/appgen",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AI-native DX for Loom — turn a natural-language intent into a structured AppSpec, then emit plain, static, inspectable TypeScript you own (flows, steps, capabilities, defineConfig). Codegen, never a runtime NL interpreter.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

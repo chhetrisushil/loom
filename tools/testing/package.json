@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/testing",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Testing kit for Loom apps — spin up an in-memory app, wait on surfaces, capture golden logs, and record/replay LLM calls, all over defineConfig",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

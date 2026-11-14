@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/effect-runtime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Effect isolation layer for tool, LLM, human, and A2A effects",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

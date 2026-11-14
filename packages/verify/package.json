@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/verify",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Pre-flight runtime verification for Loom — pure, read-only, off-log checks (determinism, replay-safety, suspension-safety, capability/placement/resource compatibility) that run before an execution starts. Advises; never a new enforcement ring.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

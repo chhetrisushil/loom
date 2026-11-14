@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/reasoning",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Reasoning runtime for Loom — model routing, confidence-based elevation, and critique as composable stages, with route decisions logged (P9)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

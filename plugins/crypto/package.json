@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-crypto",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "K10 crypto-shredding — field-level payload encryption wrappers over any EventStore/SnapshotStore, with per-subject keys and GDPR-erasure by key destruction (PAYLOAD_SHREDDED)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/fair-scheduler",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Per-tenant fair scheduler for Loom — a drop-in Scheduler implementation that dispatches with weighted round-robin across tenants behind a concurrency cap, so no single tenant can monopolize a lane. Keeps the zero-overhead Infinity fast path.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

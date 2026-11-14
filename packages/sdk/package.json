@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/sdk",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Public re-export surface for the Loom framework",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
