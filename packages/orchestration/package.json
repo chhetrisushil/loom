@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/orchestration",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cross-execution orchestration for Loom — spawn a child workflow from a parent and durably await its result, built from execute/decide/suspend/resume with no new syscall. A supervisor correlates child completion back to the waiting parent.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

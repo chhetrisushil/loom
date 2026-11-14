@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/worker-runtime-local",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "In-process WorkerRuntime for Loom — runs an ExecutionPackage on the local WorkflowRuntime. The zero-cloud reference implementation of the Platform SPI",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

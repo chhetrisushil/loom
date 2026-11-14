@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/sandbox",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sandbox backend SPI for Loom — bring your own isolation boundary for model-written code, keep loom's limits, channels and replay rules (ADR 0144)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

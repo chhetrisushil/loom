@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { workspacePackages } from "./package-readmes.mjs";
 
 /** The release version every public package carries. Bump here, re-run, commit. */
-export const RELEASE_VERSION = "0.1.0";
+export const RELEASE_VERSION = "0.1.1";
 export const DIST_TAG = "next";
 export const REPOSITORY_URL = "git+https://github.com/chhetrisushil/loom.git";
 

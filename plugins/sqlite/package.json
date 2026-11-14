@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-sqlite",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SQLite store plugin for Loom — embedded EventStore, SnapshotStore, BranchRegistry, TimerStore, DurableStateStore, ReadModelStore, ContentStore and MemoryStore over better-sqlite3, behind the same interfaces as the in-memory reference. The zero-server durable backend; keeps the native driver out of the kernel packages.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

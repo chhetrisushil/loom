@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-cloudrun",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cloud Run platform adapter for Loom — CloudRunWorkerRuntime maps DispatchMetadata to a Cloud Run sizing config, resolves a service endpoint, and invokes the stateless worker. Cloud specifics stay behind the CloudRunPlatform SPI",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

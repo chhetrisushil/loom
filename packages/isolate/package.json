@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/isolate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "K7 data-plane isolation — run tool effects in a separate authority domain (child process with scrubbed env), with kernel-side egress brokering (allowlist + resolve-and-pin, EGRESS_DENIED) and per-tool credential injection",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

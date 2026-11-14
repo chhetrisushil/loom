@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/app",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "App composition for Loom — defineConfig assembles the durable runtime, effect middleware, projection, and A2A transport from a static config, so apps skip the copy-pasted composition root",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-conversation-sse",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Authenticated Server-Sent-Events gateway for @loomwork/conversation: streams a conversation's durable messages (resumable from Last-Event-ID) and live reply deltas to an end user, and carries the user's turns back in",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

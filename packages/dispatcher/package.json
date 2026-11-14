@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/dispatcher",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Execution dispatcher for Loom — decides WHERE an execution runs and owns worker allocation, retries, timeout and result collection, sitting between the orchestrator and a WorkerRuntime",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

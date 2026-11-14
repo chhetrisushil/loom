@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/worker-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Worker runtime SPI for Loom — the platform-agnostic contract for executing an ExecutionPackage on some compute placement (local, remote HTTP, Cloud Run)",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
