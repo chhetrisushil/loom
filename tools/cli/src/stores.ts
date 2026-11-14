@@ -10,19 +10,15 @@ import type {
   LeaseStore,
   TimerStore,
 } from "@loomwork/event-runtime";
-import {
-  SqliteBranchRegistry,
-  SqliteEventStore,
-  SqliteLeaseStore,
-  SqliteSnapshotStore,
-} from "@loomwork/plugin-sqlite";
 import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 import type { ArchiveStores, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { CliError } from "./args";
+import { loadSqlitePlugin } from "./sqlitePlugin";
 import { STORE_FLAG_HELP, hasStoreFlags, storeFlagsOf } from "./storeFlags";
 
 // The flag helpers live in ./storeFlags so the CLI front door can use them without loading this
-// module (which pulls the SQLite driver). Re-exported for existing importers.
+// module. SQLite itself loads only when `--db` is used (./sqlitePlugin: an optional peer).
+// Re-exported for existing importers.
 export { STORE_FLAG_HELP, hasStoreFlags, storeFlagsOf };
 
 // ── Where an operator command gets its storage ───────────────────────────────
@@ -349,6 +345,8 @@ function fromSqlite(flags: StoreFlags): ResolvedStores {
   if (flags.snap !== undefined) requireExistingFile("snap", flags.snap);
   if (flags.branches !== undefined) requireExistingFile("branches", flags.branches);
   if (flags.leases !== undefined) requireExistingFile("leases", flags.leases);
+  const { SqliteBranchRegistry, SqliteEventStore, SqliteLeaseStore, SqliteSnapshotStore } =
+    loadSqlitePlugin();
   const eventStore = new SqliteEventStore(flags.db as string);
   // Optional by design: without a snapshot store every state folds from the log — slower and
   // identical. A diagnostic must not require the deployment's full wiring.

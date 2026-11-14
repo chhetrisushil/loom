@@ -6,13 +6,8 @@ import {
   type ContentSweepReport,
   sweepUnpinnedContent,
 } from "@loomwork/plugin-content";
-import {
-  SqliteArchiveStore,
-  SqliteContentStore,
-  SqliteEventStore,
-  SqliteSnapshotStore,
-} from "@loomwork/plugin-sqlite";
 import type { SnapshotStore } from "@loomwork/snapshot-runtime";
+import { loadSqlitePlugin } from "./sqlitePlugin";
 import { type StoreFlags, requireExistingFile, resolveStores } from "./stores";
 
 // ── `loom sweep content` — the operator surface for the K10.6 pinned sweep ────
@@ -169,11 +164,11 @@ export async function cmdSweepContent(
   const configArchive = stores.archive;
   const archive =
     opts.archiveDb !== undefined
-      ? new SqliteEventStore(opts.archiveDb)
+      ? new (loadSqlitePlugin().SqliteEventStore)(opts.archiveDb)
       : (configArchive?.eventStore as (EventStore & ExecutionEnumerable) | undefined);
   const archiveSnap =
     opts.archiveSnap !== undefined
-      ? new SqliteSnapshotStore(opts.archiveSnap)
+      ? new (loadSqlitePlugin().SqliteSnapshotStore)(opts.archiveSnap)
       : configArchive?.snapshotStore;
   const snapshotStores = [stores.snapshotStore, archiveSnap].filter(
     (s): s is SnapshotStore => s !== undefined
@@ -196,7 +191,7 @@ export async function cmdSweepContent(
       candidate !== undefined &&
       (opts.compactionArchive !== undefined || existsSync(candidate))
     ) {
-      compactionArchive = new SqliteArchiveStore(candidate);
+      compactionArchive = new (loadSqlitePlugin().SqliteArchiveStore)(candidate);
       ownsCompactionArchive = true;
     }
   }
@@ -247,7 +242,7 @@ export async function cmdSweepContent(
       "loom sweep content --orphans --apply refuses without --snapshots-touch-content: a fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else, and only a snapshot store wrapped in ContentTouchingSnapshotStore (@loomwork/plugin-content) touches them. The CLI opens raw snapshot stores and cannot tell how the writing runtime built its own, so assert it: pass --snapshots-touch-content once every runtime that writes these snapshots wraps its snapshot store, or run without --apply (a dry run is exempt)."
     );
   }
-  const content = new SqliteContentStore(opts.content);
+  const content = new (loadSqlitePlugin().SqliteContentStore)(opts.content);
   const pins = (opts.pin ?? "")
     .split(",")
     .map((k) => k.trim())

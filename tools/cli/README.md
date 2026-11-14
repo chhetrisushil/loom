@@ -15,9 +15,14 @@ deploy. The in-memory default has no log for it to read.
 
 ## Install
 
-`pnpm add -D @loomwork/cli@next` (an app from `create-loom-app` already lists it as a dev dependency),
+`pnpm add -D @loomwork/cli` (an app from `create-loom-app` already lists it as a dev dependency),
 then run `pnpm loom ...` or `npx loom ...`. Inside this workspace use `"@loomwork/cli": "workspace:*"`. To put `loom` on your PATH
 from a checkout, run `pnpm link:global` at the repo root (`pnpm unlink:global` removes it).
+
+The SQLite file flags (`--db`, `--snap`, `--branches`, `--leases`, and `loom sweep content`'s files) need
+`@loomwork/plugin-sqlite`, an optional peer that is not installed with the CLI: `pnpm add -D @loomwork/plugin-sqlite`.
+It brings the native `better-sqlite3` driver, so an app on Postgres or another store skips it and uses
+`--config`. Without it, a SQLite flag exits 1 and names the package to install.
 
 ## Entry points
 

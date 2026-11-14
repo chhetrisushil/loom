@@ -39,7 +39,6 @@
     "@loomwork/orchestration": "workspace:^",
     "@loomwork/plugin-content": "workspace:^",
     "@loomwork/plugin-kit": "workspace:^",
-    "@loomwork/plugin-sqlite": "workspace:^",
     "@loomwork/replay-vm": "workspace:^",
     "@loomwork/scaffold": "workspace:^",
     "@loomwork/snapshot-runtime": "workspace:^",
@@ -48,9 +47,18 @@
     "@loomwork/workflow-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
+  "peerDependencies": {
+    "@loomwork/plugin-sqlite": "workspace:^"
+  },
+  "peerDependenciesMeta": {
+    "@loomwork/plugin-sqlite": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@loomwork/memory": "workspace:*",
     "@loomwork/plugin-crypto": "workspace:*",
+    "@loomwork/plugin-sqlite": "workspace:*",
     "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

@@ -2509,9 +2509,6 @@ importers:
       '@loomwork/plugin-kit':
         specifier: workspace:^
         version: link:../../packages/plugin-kit
-      '@loomwork/plugin-sqlite':
-        specifier: workspace:^
-        version: link:../../plugins/sqlite
       '@loomwork/replay-vm':
         specifier: workspace:^
         version: link:../../packages/replay-vm
@@ -2540,6 +2537,9 @@ importers:
       '@loomwork/plugin-crypto':
         specifier: workspace:*
         version: link:../../plugins/crypto
+      '@loomwork/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

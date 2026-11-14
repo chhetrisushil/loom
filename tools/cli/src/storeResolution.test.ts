@@ -19,6 +19,8 @@ const SRC = __dirname;
  * wearing a green tick.
  */
 const ALLOWED: Record<string, string> = {
+  "sqlitePlugin.ts":
+    "the one place that loads the optional @loomwork/plugin-sqlite peer; every SQLite user goes through loadSqlitePlugin()",
   "stores.ts": "the `--db` SQLite shorthand lives here, and only here",
   "sweepContent.ts":
     "`--content` and `--archive-db` are paths: defineConfig has no content-store seam, so there is nothing for --config to hand over",
@@ -32,7 +34,11 @@ describe("S5 — diagnostics resolve storage, they do not construct it", () => {
   it("no command names a concrete backend outside the allowlist", () => {
     const offenders = sourceFiles().filter((file) => {
       if (file in ALLOWED) return false;
-      return /@loomwork\/plugin-(sqlite|postgres)/.test(readFileSync(join(SRC, file), "utf8"));
+      // The plugin is an optional peer loaded through `loadSqlitePlugin()`, so a call to it names
+      // the backend as surely as an import does.
+      return /@loomwork\/plugin-(sqlite|postgres)|loadSqlitePlugin/.test(
+        readFileSync(join(SRC, file), "utf8")
+      );
     });
     expect(offenders).toEqual([]);
   });
