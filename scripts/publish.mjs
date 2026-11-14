@@ -3,6 +3,10 @@
 //
 //   node scripts/publish.mjs          # DRY RUN: packs each package and reports what would ship
 //   node scripts/publish.mjs --yes    # really publish (needs `npm login` with publish rights on @loomwork)
+//   node scripts/publish.mjs --yes --otp=123456   # with a 2FA code; without one, npm asks in the browser
+//
+// A 2FA code expires in about 30 s: if it lapses mid-run, run again with a fresh one. Versions already on the
+// registry are skipped, so a re-run resumes where the last one stopped.
 //
 // Preconditions (refused otherwise): a clean git tree, publish metadata current
 // (`node scripts/publish-metadata.mjs --check`), and every public package built (`dist/` present).
@@ -18,6 +22,11 @@ import { DIST_TAG, plan } from "./publish-metadata.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const really = process.argv.includes("--yes");
+const otp = process.argv.find((a) => a.startsWith("--otp="))?.slice("--otp=".length);
+if (otp !== undefined && !/^\d{6,8}$/.test(otp)) {
+  console.error("publish: --otp takes the 6-8 digit code from your authenticator");
+  process.exit(1);
+}
 
 function fail(msg) {
   console.error(`publish: ${msg}`);
@@ -45,6 +54,7 @@ try {
   }
   const args = ["-r", "publish", "--tag", DIST_TAG, "--access", "public", "--no-git-checks"];
   if (!really) args.push("--dry-run");
+  if (otp) args.push(`--otp=${otp}`);
   console.log(`${really ? "PUBLISHING" : "dry run:"} ${entries.length} packages (tag ${DIST_TAG})`);
   execFileSync("pnpm", args, { cwd: root, stdio: "inherit" });
 } finally {
