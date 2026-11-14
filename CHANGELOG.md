@@ -7,13 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/promote-latest.mjs` moves npm's `latest` dist-tag to a release ([ADR 0148](docs/adr/0148-npm-publishing-under-loomwork.md) amendment; release tooling only).** npm set `latest` on each package's first publish (0.1.0), and every sibling dependency is a `^0.1.x` range that npm and pnpm resolve to `latest`, so 0.1.1 published on `next` alone still installed the broken 0.1.0 packages transitively. Each release is now published under `next`, verified, then promoted to `latest` (a dry run without `--yes`; skips packages already promoted; runs in loom-ui and loom-plugins as `node ../loom/scripts/promote-latest.mjs`). `latest` is 0.1.1 for every loom package, and the docs now show `npm create @loomwork/loom-app` without `@next`.
+
+## [0.1.1] - 2026-11-14
+
 ### Fixed
 
 - **`@loomwork/conformance` loads under Node's ESM loader.** It is `"type": "module"` but imported its own files without an extension (`"./contentTouchContract"`), so `import("@loomwork/conformance")` from npm failed with `ERR_MODULE_NOT_FOUND` (a `link:` checkout hid it: Vite inlines files outside `node_modules`). Every relative import now names `.js`, and the spec guard `esmRelativeImports.test.ts` refuses an extensionless relative import in any published `"type": "module"` package.
 
 - **The MCP handshake reports the real package version (`@loomwork/plugin-mcp`).** `McpClient` (`clientInfo`) and `createMcpServer` (default `serverInfo`) advertised a hard-coded `version: "0.0.1"`; both now read the package's own `package.json`. An explicit `serverInfo` option still wins.
 
-- **`create-loom-app` installs `@loomwork/*` from npm by default (`@loomwork/create-loom-app`, `@loomwork/scaffold`, `loom plugin new`).** Outside the loom workspace and without `--loom-path`, it refused ("not published"); it now writes `^<its own version>` for every `@loomwork/*` dependency, which also works inside another pnpm workspace (no overrides needed). `--loom-path` still links a local checkout, and inside the loom workspace apps still get `workspace:*`. A third-party plugin from `loom plugin new` peers on `^<release>` instead of `*`. Docs now say `npm create @loomwork/loom-app@next`.
+- **`create-loom-app` installs `@loomwork/*` from npm by default (`@loomwork/create-loom-app`, `@loomwork/scaffold`, `loom plugin new`).** Outside the loom workspace and without `--loom-path`, it refused ("not published"); it now writes `^<its own version>` for every `@loomwork/*` dependency, which also works inside another pnpm workspace (no overrides needed). `--loom-path` still links a local checkout, and inside the loom workspace apps still get `workspace:*`. A third-party plugin from `loom plugin new` peers on `^<release>` instead of `*`. Docs now say `npm create @loomwork/loom-app`.
+
+## [0.1.0] - 2026-11-14
+
+The first npm release. Every entry below shipped in it.
 
 ### Changed
 

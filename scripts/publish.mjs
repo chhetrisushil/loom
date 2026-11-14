@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Publishes every public workspace package to npm under the `next` dist-tag.
+// Publishes every public workspace package to npm under the `next` dist-tag. Afterwards, once the release
+// is verified, `node scripts/promote-latest.mjs --yes` moves `latest` to it (ADR 0148 amendment).
 //
 //   node scripts/publish.mjs          # DRY RUN: packs each package and reports what would ship
 //   node scripts/publish.mjs --yes    # really publish (needs `npm login` with publish rights on @loomwork)

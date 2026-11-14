@@ -44,10 +44,10 @@ TypeScript; Loom provides the durable spine that makes it trustworthy in product
 
 * Quick start
 
-The packages are on npm as ~@loomwork/*~ under the ~next~ dist-tag:
+The packages are on npm as ~@loomwork/*~ (pre-1.0):
 
 #+begin_src sh
-npm create @loomwork/loom-app@next my-app
+npm create @loomwork/loom-app my-app
 cd my-app && pnpm install && pnpm test && pnpm start
 #+end_src
 

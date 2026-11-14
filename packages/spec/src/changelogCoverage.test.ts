@@ -20,7 +20,8 @@ import { describe, expect, it } from "vitest";
 // a rejection, a deferral, a process rule with no shipped surface — is listed here, which
 // makes "no entry" a decision with a reason rather than an omission.
 //
-// SCOPE, stated rather than assumed. The CHANGELOG has one `[Unreleased]` section and does
+// SCOPE, stated rather than assumed. The CHANGELOG has an `[Unreleased]` section and one per npm
+// release from 0.1.0 (the whole file is searched, so an entry counts in any of them). It does
 // not reach back to the beginning of the project: coverage is systematic only from ADR 0080
 // onward, and 34 earlier records (0021–0079, ignoring the allowlist) have no entry. That
 // back-fill is a separate task from keeping the file current — so the floor is a named

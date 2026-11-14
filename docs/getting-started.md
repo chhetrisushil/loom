@@ -15,11 +15,11 @@ This guide takes you from zero to a **durable flow that runs, pauses for a human
 
 ## 1. Scaffold an app
 
-Loom's `@loomwork/*` packages are on npm under the `next` dist-tag (pre-1.0, so there is no `latest`
-yet). Create an app anywhere on disk:
+Loom's `@loomwork/*` packages are on npm (pre-1.0: each release goes out on the `next` dist-tag first and is
+then promoted to `latest`). Create an app anywhere on disk:
 
 ```bash
-npm create @loomwork/loom-app@next my-app   # or: pnpm create @loomwork/loom-app@next my-app
+npm create @loomwork/loom-app my-app   # or: pnpm create @loomwork/loom-app my-app
 cd my-app
 pnpm install                        # @loomwork/* from npm at ^<this release>
 pnpm test                           # the scaffold ships a passing test
