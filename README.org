@@ -44,7 +44,14 @@ TypeScript; Loom provides the durable spine that makes it trustworthy in product
 
 * Quick start
 
-Loom is not published to npm yet, so today you build it from a checkout and scaffold inside the workspace:
+The packages are on npm as ~@loomwork/*~ under the ~next~ dist-tag:
+
+#+begin_src sh
+npm create @loomwork/loom-app@next my-app
+cd my-app && pnpm install && pnpm test && pnpm start
+#+end_src
+
+To work on Loom itself, build it from a checkout and scaffold inside the workspace:
 
 #+begin_src sh
 git clone https://github.com/chhetrisushil/loom.git && cd loom
@@ -53,7 +60,7 @@ node tools/create-loom-app/dist/index.js apps/my-app   # scaffolds into the work
 pnpm install && cd apps/my-app && pnpm test
 #+end_src
 
-Once published, this becomes ~npm create @loomwork/loom-app@latest my-app~. Details and the sibling repos are in
+Details, linking an app to a local checkout, and the sibling repos are in
 [[file:docs/getting-started.md][Getting Started]].
 
 Define a flow — schema-checked steps plus an ordinary ~async~ runner:

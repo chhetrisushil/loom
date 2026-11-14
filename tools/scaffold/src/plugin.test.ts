@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { SEAM_KEYS, joinNoun, listSeams, pluginFiles, pluginNextSteps } from "./plugin";
+import {
+  SEAM_KEYS,
+  joinNoun,
+  listSeams,
+  loomRelease,
+  pluginFiles,
+  pluginNextSteps,
+} from "./plugin";
 
 describe("pluginFiles", () => {
   it("scaffolds a first-party store plugin under plugins/ with the @loomwork/plugin- name", () => {
@@ -25,7 +32,8 @@ describe("pluginFiles", () => {
     const pkg = JSON.parse(files["loom-plugin-redis/package.json"]!);
     expect(pkg.name).toBe("loom-plugin-redis");
     expect(pkg.keywords).toContain("loom-plugin");
-    expect(pkg.peerDependencies["@loomwork/snapshot-runtime"]).toBe("*");
+    expect(pkg.peerDependencies["@loomwork/snapshot-runtime"]).toBe(`^${loomRelease()}`);
+    expect(loomRelease()).toMatch(/^\d+\.\d+\.\d+/);
     expect(pkg.dependencies).toBeUndefined();
   });
 

@@ -4,7 +4,7 @@
 
 > New here? Follow the **[Getting Started](getting-started.md)** quickstart first, then the **[Usage Guide](usage.md)** (Step 13 introduces the CLI in context). This doc is the command-by-command reference.
 
-The binary ships in `@loomwork/cli`. Run it with `npx loom …`, a package script (`"scripts": { "loom": "loom" }` → `pnpm loom …`), or the local `node_modules/.bin/loom`. Starting a brand-new project? `create-loom-app <dir> --loom-path <your built loom checkout>` (see [Getting Started](getting-started.md)); `npm create loom-app` does not work until the packages are published.
+The binary ships in `@loomwork/cli`. Run it with `npx loom …`, a package script (`"scripts": { "loom": "loom" }` → `pnpm loom …`), or the local `node_modules/.bin/loom`. Starting a brand-new project? `npm create @loomwork/loom-app@next <dir>` (see [Getting Started](getting-started.md); the unscoped `create-loom-app` on npm is an unrelated project). Add `--loom-path <your built loom checkout>` to link the app to a local checkout instead of npm.
 
 > **Working in the Loom monorepo?** The dev-tooling bins (`loom`, `loom-compile`, `create-loom-app`) live under `tools/`. Expose them globally against your local build with **`pnpm link:global`** (and `pnpm unlink:global` to remove) — a root script that re-links all three from `tools/*`. Run it after a fresh clone, or any time the tooling packages move (a stale global link left over from an old path is what breaks `loom` otherwise).
 
@@ -184,7 +184,7 @@ help
                          files. Flags you omit are stores the command cannot consult, and it
                          says so rather than reporting them as empty.
 
-New project?  →  create-loom-app <dir> --loom-path <loom>   (unpublished: see getting-started)
+New project?  →  npm create @loomwork/loom-app@next <dir>   (--loom-path <loom> to link a checkout)
 ```
 
 > Data-protection commands: `--redact a,b` masks output dot-paths from `logs`/`debug` (K10-R6);

@@ -19,6 +19,8 @@ import {
   globToRegExp,
   linkPackageJson,
   loomPackages,
+  registryPackageJson,
+  releaseVersion,
   scaffoldFiles,
   workspaceGlobs,
 } from "./index";
@@ -193,14 +195,44 @@ describe("create-loom-app day-one wiring", () => {
     expect(r.out).toContain("Next: cd apps/my-app && pnpm install && pnpm test && pnpm start");
   });
 
-  it("outside the workspace WITHOUT --loom-path refuses up front (exit 2) and writes nothing", () => {
+  it("outside the workspace WITHOUT --loom-path installs @loomwork/* from npm at ^<this release>", () => {
     const cwd = scratch();
     const r = cli(["demo"], cwd);
-    expect(r.code).toBe(2);
-    expect(r.out).toContain("--loom-path");
-    expect(r.out).toContain("not published");
-    expect(r.out).not.toContain("Next:");
-    expect(readdirSync(cwd)).toEqual([]);
+    expect(r.code).toBe(0);
+    const version = releaseVersion();
+    expect(version).toBe(
+      JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")).version
+    );
+    const pkg = JSON.parse(readFileSync(join(cwd, "demo/package.json"), "utf8"));
+    expect(pkg.dependencies["@loomwork/app"]).toBe(`^${version}`);
+    expect(pkg.devDependencies["@loomwork/cli"]).toBe(`^${version}`);
+    expect(pkg.dependencies.zod).toBe("^3.23.8"); // non-loom specs untouched
+    expect(pkg.pnpm).toBeUndefined();
+    expect(JSON.stringify(pkg)).not.toContain("workspace:");
+    expect(r.out).toContain(`installs from npm at ^${version}`);
+    expect(r.out).toContain("Next: cd demo && pnpm install && pnpm test && pnpm start");
+  });
+
+  it("inside someone else's pnpm workspace WITHOUT --loom-path installs from npm (no overrides needed)", () => {
+    const base = scratch();
+    const mono = join(base, "mono");
+    mkdirSync(join(mono, "apps"), { recursive: true });
+    writeFileSync(join(mono, "pnpm-workspace.yaml"), "packages:\n  - 'apps/*'\n");
+    const r = cli(["apps/x"], mono);
+    expect(r.code).toBe(0);
+    const pkg = JSON.parse(readFileSync(join(mono, "apps/x/package.json"), "utf8"));
+    expect(pkg.dependencies["@loomwork/core"]).toBe(`^${releaseVersion()}`);
+    expect(pkg.pnpm).toBeUndefined();
+  });
+
+  it("registryPackageJson rewrites only @loomwork/* specs", () => {
+    const json = JSON.stringify({
+      dependencies: { "@loomwork/core": "workspace:*", zod: "^3.0.0" },
+      devDependencies: { "@loomwork/cli": "workspace:*", vitest: "^2.0.0" },
+    });
+    const pkg = JSON.parse(registryPackageJson(json, "1.2.3"));
+    expect(pkg.dependencies).toEqual({ "@loomwork/core": "^1.2.3", zod: "^3.0.0" });
+    expect(pkg.devDependencies).toEqual({ "@loomwork/cli": "^1.2.3", vitest: "^2.0.0" });
   });
 
   it("outside the workspace WITH --loom-path emits link: + overrides for every loom package", () => {
