@@ -40,11 +40,11 @@ import {
   checkContentStoreTouchContract,
   checkTouchNeverMovesBackwards,
   settle,
-} from "./contentTouchContract";
-import { checkDeclaredMediaOnWire } from "./mediaWire";
-import { checkPartsReadAsText } from "./partsTextRead";
-import { checkReasoningParity } from "./reasoningParity";
-import { checkToolCallStreamParity } from "./toolCallParity";
+} from "./contentTouchContract.js";
+import { checkDeclaredMediaOnWire } from "./mediaWire.js";
+import { checkPartsReadAsText } from "./partsTextRead.js";
+import { checkReasoningParity } from "./reasoningParity.js";
+import { checkToolCallStreamParity } from "./toolCallParity.js";
 
 export {
   runEmbeddingProviderConformance,

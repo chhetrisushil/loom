@@ -1,4 +1,4 @@
-import type { ContentStoreLike } from "./index";
+import type { ContentStoreLike } from "./index.js";
 
 // ── ContentStore SPI 1.3.0/1.4.0 touch contract (ADR 0055 D5, D6 amendment 2) — internal to the kit ──
 

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`@loomwork/conformance` loads under Node's ESM loader.** It is `"type": "module"` but imported its own files without an extension (`"./contentTouchContract"`), so `import("@loomwork/conformance")` from npm failed with `ERR_MODULE_NOT_FOUND` (a `link:` checkout hid it: Vite inlines files outside `node_modules`). Every relative import now names `.js`, and the spec guard `esmRelativeImports.test.ts` refuses an extensionless relative import in any published `"type": "module"` package.
+
 - **The MCP handshake reports the real package version (`@loomwork/plugin-mcp`).** `McpClient` (`clientInfo`) and `createMcpServer` (default `serverInfo`) advertised a hard-coded `version: "0.0.1"`; both now read the package's own `package.json`. An explicit `serverInfo` option still wins.
 
 - **`create-loom-app` installs `@loomwork/*` from npm by default (`@loomwork/create-loom-app`, `@loomwork/scaffold`, `loom plugin new`).** Outside the loom workspace and without `--loom-path`, it refused ("not published"); it now writes `^<its own version>` for every `@loomwork/*` dependency, which also works inside another pnpm workspace (no overrides needed). `--loom-path` still links a local checkout, and inside the loom workspace apps still get `workspace:*`. A third-party plugin from `loom plugin new` peers on `^<release>` instead of `*`. Docs now say `npm create @loomwork/loom-app@next`.
