@@ -58,8 +58,8 @@ console.log(renderBlueprintToString(bp, state, { registry: defaultTerminalRegist
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/plugin-renderer-terminal` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0097](../../docs/adr/0097-blueprint-ir-2.md), [ADR 0098](../../docs/adr/0098-blueprint-ir-placement-and-titles.md)
   and [ADR 0099](../../docs/adr/0099-blueprint-ir-layout-roles.md): the status matrix, placement, roles.

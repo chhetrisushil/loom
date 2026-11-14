@@ -51,8 +51,8 @@ console.log(store.profile().largest); // top executions by latest snapshot size
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/snapshot-runtime` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0033](../../docs/adr/0033-spi-conformance-contracts.md): SPI conformance contracts.
 - [ADR 0134](../../docs/adr/0134-snapshot-pruning.md): pruning, and

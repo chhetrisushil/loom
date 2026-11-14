@@ -8,7 +8,7 @@ the packages themselves.
 ## Why they moved
 
 Every example depended on the workspace's `@loomwork/*` packages and added ~15 build
-+ test tasks to this repo. Loom is unpublished, so the examples resolve those
++ test tasks to this repo. They track `main` rather than an npm release, so the examples resolve those
 packages from a sibling `../loom` checkout via `link:` (pnpm `overrides`) instead
 of `workspace:*`. See `../loom-examples/AGENTS.md` for the full mechanism.
 

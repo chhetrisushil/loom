@@ -10,8 +10,8 @@
 ## Day one
 
 ```bash
-# unpublished: build a loom checkout once (pnpm install && pnpm build), then
-node <loom>/tools/create-loom-app/dist/index.js my-app --loom-path <loom>
+npm create @loomwork/loom-app my-app   # @loomwork/* from npm
+# (to link a loom checkout instead: node <loom>/tools/create-loom-app/dist/index.js my-app --loom-path <loom>)
 cd my-app && pnpm install && pnpm test && pnpm start
 
 loom new flow checkout      # scaffold a definition (+ its flow.test.ts), then run gen

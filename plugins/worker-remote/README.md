@@ -45,8 +45,8 @@ console.log(result.status); // "completed" | "suspended" | "failed"
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/plugin-worker-remote` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0001](../../docs/adr/0001-execution-dispatcher-and-worker-runtime.md) and
   [ADR 0002](../../docs/adr/0002-http-worker-and-remote-worker-runtime.md): the dispatcher and the HTTP worker.

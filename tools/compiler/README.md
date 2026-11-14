@@ -51,8 +51,8 @@ It writes transformed files with source maps, the extracted chunks under `<outDi
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/compiler` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - Guide: [docs/usage-compiler.org](../../docs/usage-compiler.org).
 - [ADR 0044](../../docs/adr/0044-no-compiler-plugin-api-manifest-as-output-contract.md): the manifest as the

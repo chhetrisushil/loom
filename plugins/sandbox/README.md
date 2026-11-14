@@ -64,8 +64,8 @@ export const reshape = sandboxEval$("reshape");
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/plugin-sandbox` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0064](../../docs/adr/0064-sandbox-eval-plugin.md): the engine, limits and failure channels.
 - [ADR 0089](../../docs/adr/0089-sandbox-worker-pool.md): the worker pool and the hard kill.
