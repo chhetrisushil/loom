@@ -12,7 +12,7 @@ To keep this repo focused on the framework, the example apps were extracted to
 **`loom-examples`** (`https://github.com/chhetrisushil/loom-examples.git`), the same
 sibling-repo pattern used for `loom-plugins` (3P plugins) and `loom-demo`.
 
-They consume this repo's **unpublished** `@loomwork/*` packages from a sibling
+They consume this repo's `@loomwork/*` packages (on npm, but NOT from npm here) from a sibling
 `../loom` checkout via `link:` (pnpm `overrides`), not `workspace:*`:
 
 ```

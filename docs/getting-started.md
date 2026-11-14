@@ -15,9 +15,21 @@ This guide takes you from zero to a **durable flow that runs, pauses for a human
 
 ## 1. Scaffold an app
 
-Loom's `@loomwork/*` packages are **not published to npm yet**, so you build the framework from a
-checkout once and point `create-loom-app` at it. An app anywhere on disk links to the built checkout
-with `--loom-path`:
+Loom's `@loomwork/*` packages are on npm under the `next` dist-tag (pre-1.0, so there is no `latest`
+yet). Create an app anywhere on disk:
+
+```bash
+npm create @loomwork/loom-app@next my-app   # or: pnpm create @loomwork/loom-app@next my-app
+cd my-app
+pnpm install                        # @loomwork/* from npm at ^<this release>
+pnpm test                           # the scaffold ships a passing test
+pnpm start                          # runs the greet flow once
+```
+
+Use the scoped name: the unscoped `create-loom-app` on npm is an unrelated project.
+
+**Working on Loom itself?** Build the framework from a checkout and link an app to it with
+`--loom-path`, so the app runs your local changes:
 
 ```bash
 git clone https://github.com/chhetrisushil/loom.git
@@ -31,12 +43,9 @@ pnpm start                          # runs the greet flow once
 ```
 
 (`pnpm link:global` at the repo root also puts `create-loom-app` and `loom` on your PATH.) Without
-`--loom-path`, outside the checkout, `create-loom-app` refuses before writing anything: `workspace:*`
-cannot resolve there. Scaffolding **inside** the checkout (`node tools/create-loom-app/dist/index.js
-apps/my-app`, then `pnpm install` from the repo root) needs no flag and uses `workspace:*`.
-
-> **Once published**, this collapses to `npm create @loomwork/loom-app@latest my-app && cd my-app && pnpm install`.
-> That command does not work yet.
+`--loom-path`, outside the checkout, the app depends on the published packages instead. Scaffolding
+**inside** the checkout (`node tools/create-loom-app/dist/index.js apps/my-app`, then `pnpm install`
+from the repo root) needs no flag and uses `workspace:*`.
 
 This wires a minimal app through `defineConfig` — a runtime, in-memory stores, and a projection
 surface — so you can run immediately.
@@ -50,7 +59,7 @@ workspace/
 └── loom-examples/   # runnable example apps:      git clone, then pnpm install
 ```
 
-`loom-examples` consumes this repo's unpublished packages from `../loom` through pnpm `overrides`
+`loom-examples` consumes this repo's packages from the `../loom` checkout (not npm) through pnpm `overrides`
 with `link:` paths (not `workspace:*`, git or npm dependencies), so check it out **next to** `loom`
 and build `loom` first. Run an example with `pnpm --filter @loomwork/<name> start` from that repo; the
 [examples catalogue](examples.md) says which one teaches what.

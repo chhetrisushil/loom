@@ -15,8 +15,8 @@ deploy. The in-memory default has no log for it to read.
 
 ## Install
 
-Not published to npm yet. Inside this workspace add `"@loomwork/cli": "workspace:*"` (the scaffold already
-lists it as a dev dependency) and run `pnpm loom ...` or `npx loom ...`. To put `loom` on your PATH
+`pnpm add -D @loomwork/cli@next` (an app from `create-loom-app` already lists it as a dev dependency),
+then run `pnpm loom ...` or `npx loom ...`. Inside this workspace use `"@loomwork/cli": "workspace:*"`. To put `loom` on your PATH
 from a checkout, run `pnpm link:global` at the repo root (`pnpm unlink:global` removes it).
 
 ## Entry points

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { camel, pascal } from "./codegen";
 
 // ── Plugin scaffolding (used by `loom plugin new`) ───────────────────────────
@@ -1637,11 +1639,23 @@ export function listSeams(): string {
   return `Loom plugin seams (loom plugin new <seam> <name>):\n\n${rows.join("\n")}`;
 }
 
+/**
+ * The Loom release this scaffold ships with, read from its own package.json (CommonJS output sits
+ * directly under `dist/`, so `..` is the package root from `dist/` and `src/`). A third-party plugin
+ * peers on `^<this>` of the published `@loomwork/*` packages.
+ */
+export function loomRelease(): string {
+  const pkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")) as {
+    version: string;
+  };
+  return pkg.version;
+}
+
 function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boolean): string {
   // Per seam: only what the template imports (a peer dependency nothing imports is a
   // constraint on the consumer for no reason).
   const spi = [...new Set(seam.spiDeps)];
-  const version = firstParty ? "workspace:*" : "*";
+  const version = firstParty ? "workspace:*" : `^${loomRelease()}`;
   const deps: Record<string, string> = {};
   for (const d of spi) deps[d] = version;
 
@@ -1897,8 +1911,8 @@ export function pluginNextSteps(
     lines.push(
       "",
       `this plugin depends on: ${loom.join(", ")}`,
-      "      If you consume an unpublished Loom checkout, your workspace needs a pnpm override",
-      "      (a `link:` path into your Loom checkout) for each of them, e.g.",
+      `      They install from npm at ^${loomRelease()}. To develop against a local Loom checkout instead,`,
+      "      add a pnpm override (a `link:` path into the checkout) for each of them, e.g.",
       '      "@loomwork/<name>": "link:../loom/packages/<dir>" under pnpm.overrides in the root package.json.'
     );
   }

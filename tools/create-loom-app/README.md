@@ -12,8 +12,16 @@ To start a new app. For adding a flow, tool or agent to an existing app use `loo
 
 ## Install
 
-Not published to npm yet, so `npm create loom-app` does not work. Build the framework once, then run
-the built binary. Where the app lives decides how `@loomwork/*` is wired:
+```bash
+npm create @loomwork/loom-app@next my-app   # @loomwork/* from npm at ^<this release>
+cd my-app && pnpm install && pnpm test && pnpm start
+```
+
+Use the scoped name: the unscoped `create-loom-app` on npm is an unrelated project. Pre-1.0 releases
+are on the `next` dist-tag.
+
+To work on Loom itself, build the framework and run the built binary; where the app lives decides
+how `@loomwork/*` is wired:
 
 ```bash
 git clone https://github.com/chhetrisushil/loom.git && cd loom

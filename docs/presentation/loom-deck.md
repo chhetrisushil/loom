@@ -248,7 +248,7 @@ pnpm --filter @loomwork/agent-network start
 ## Start in 5 minutes
 
 ```bash
-npm create @loomwork/loom-app@latest my-app && cd my-app && pnpm install
+npm create @loomwork/loom-app@next my-app && cd my-app && pnpm install
 ```
 
 ```ts

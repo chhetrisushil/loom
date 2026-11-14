@@ -13,9 +13,10 @@ export const scaffoldFiles = appFiles;
 const USAGE = `usage: create-loom-app <directory> [--loom-path <loom checkout>] [--name <package>] [--force]
 
   <directory>    new app folder; refused when it already has files (unless --force)
-  --loom-path    your built loom checkout. @loomwork/* is not published, so an app created
-                 OUTSIDE the loom pnpm workspace links to it (link: + pnpm overrides).
-                 Not needed inside the workspace (apps/<name> gets workspace:*).
+  --loom-path    link the app to your built loom checkout (link: + pnpm overrides) instead of
+                 installing @loomwork/* from npm. Without it, an app outside the loom workspace
+                 depends on the published packages (^<this release>); inside the workspace
+                 (apps/<name>) it gets workspace:*.
   --name         npm package name, may be scoped (default: the folder name, which must be a valid one)
   --force        scaffold into a non-empty folder: overwrites only the files this generates,
                  never deletes anything`;
@@ -196,7 +197,38 @@ function resolveLoomPath(raw: string, cwd: string): string {
 }
 
 /**
- * Rewrite the scaffolded `package.json` for an app outside the loom workspace: `@loomwork/*`
+ * The release this initializer ships with, read from its own package.json (the package compiles
+ * to CommonJS directly under `dist/`, so `..` is the package root from `dist/` and from `src/`).
+ * An app created outside the loom workspace depends on `^<this>` from npm.
+ */
+export function releaseVersion(): string {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")) as {
+    version: string;
+  };
+  return pkg.version;
+}
+
+/**
+ * Rewrite the scaffolded `package.json` for an app that installs `@loomwork/*` from npm: every
+ * `workspace:*` loom dependency becomes `^<version>`. No overrides, so the app may also live
+ * inside another pnpm workspace.
+ */
+export function registryPackageJson(json: string, version: string): string {
+  const pkg = JSON.parse(json) as {
+    dependencies: Record<string, string>;
+    devDependencies: Record<string, string>;
+    [k: string]: unknown;
+  };
+  for (const table of [pkg.dependencies, pkg.devDependencies]) {
+    for (const name of Object.keys(table)) {
+      if (name.startsWith("@loomwork/")) table[name] = `^${version}`;
+    }
+  }
+  return `${JSON.stringify(pkg, null, 2)}\n`;
+}
+
+/**
+ * Rewrite the scaffolded `package.json` for an app linked to a loom checkout: `@loomwork/*`
  * dependencies become `*`, and `pnpm.overrides` redirects EVERY loom package to a `link:` into
  * the checkout. All of them, not just the app's direct ones: a `link:` dependency does not bring
  * its own `workspace:*` dependencies, so each transitive one must be mapped too — the same wiring
@@ -393,26 +425,29 @@ export function run(argv: string[], cwd: string): number {
       existing = entries.length;
     }
 
-    // Inside the loom workspace `workspace:*` resolves; anywhere else it cannot (unpublished).
+    // Inside the loom workspace `workspace:*` resolves. Elsewhere the app installs @loomwork/* from
+    // npm, or, with --loom-path, links to a local checkout.
     const ws = findWorkspace(root);
     let loomRoot: string | undefined;
-    if (ws.root !== undefined && !ws.isLoom) {
-      throw new Refusal(
-        `"${target}" is a member of the pnpm workspace at ${ws.root}, which is not a loom checkout. pnpm reads \`overrides\` only from a workspace root, so a linked app cannot live there — scaffold outside that workspace.`
-      );
-    }
+    let registryVersion: string | undefined;
     if (!ws.isLoom) {
-      if (args.loomPath === undefined) {
-        throw new Refusal(
-          `@loomwork/* packages are not published to npm yet, so an app outside the loom workspace must link to a built loom checkout.\n  create-loom-app ${shellQuote(target)} --loom-path <path to your loom checkout>\n(build it first: \`pnpm install && pnpm build\` there). Or scaffold inside it, e.g. <loom>/apps/<name>, which needs no flag.`
-        );
+      if (args.loomPath !== undefined) {
+        if (ws.root !== undefined) {
+          throw new Refusal(
+            `"${target}" is a member of the pnpm workspace at ${ws.root}, which is not a loom checkout. pnpm reads \`overrides\` only from a workspace root, so a linked app cannot live there. Drop --loom-path to install @loomwork/* from npm, or scaffold outside that workspace.`
+          );
+        }
+        loomRoot = resolveLoomPath(args.loomPath, cwd);
+      } else {
+        registryVersion = releaseVersion();
       }
-      loomRoot = resolveLoomPath(args.loomPath, cwd);
     }
 
     const files = appFiles(pkgName);
     if (loomRoot !== undefined) {
       files["package.json"] = linkPackageJson(files["package.json"] as string, root, loomRoot);
+    } else if (registryVersion !== undefined) {
+      files["package.json"] = registryPackageJson(files["package.json"] as string, registryVersion);
     }
 
     // `--force` into an existing directory: a planted `package.json -> ~/.x` (or a linked `src/`) must not be
@@ -442,7 +477,9 @@ export function run(argv: string[], cwd: string): number {
     console.log(
       loomRoot !== undefined
         ? `Linked @loomwork/* to ${loomRoot} (link: + pnpm overrides in package.json).`
-        : "Inside the loom workspace: @loomwork/* is workspace:* (run `pnpm install` from the repo root or this app)."
+        : registryVersion !== undefined
+          ? `@loomwork/* installs from npm at ^${registryVersion}.`
+          : "Inside the loom workspace: @loomwork/* is workspace:* (run `pnpm install` from the repo root or this app)."
     );
     const cd = target === "." ? "" : `cd ${shellQuote(target)} && `;
     console.log(`Next: ${cd}pnpm install && pnpm test && pnpm start`);
@@ -455,7 +492,7 @@ export function run(argv: string[], cwd: string): number {
 }
 
 // Run only when invoked as a CLI (not when imported by tests).
-// `require.main === module`, not a filename check: `npm create loom-app` and any global
+// `require.main === module`, not a filename check: `npm create @loomwork/loom-app` and any global
 // install invoke this through a symlink named `create-loom-app`, where argv[1] never ends
 // in "index.js" — the scaffolder would exit 0 having created nothing.
 if (require.main === module) {
