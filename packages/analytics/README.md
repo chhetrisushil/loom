@@ -52,8 +52,8 @@ console.log(hotFailures(events, 3));
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/analytics` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0034](../../docs/adr/0034-advisory-optimization-pipeline.md): the advisory pipeline.
 - [ADR 0115](../../docs/adr/0115-open-vocabularies.md) and

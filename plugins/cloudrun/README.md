@@ -48,8 +48,8 @@ await dispatcher.dispatch(
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/plugin-cloudrun` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [Cloud Run deploy guide](deploy.md) and [ADR 0003](../../docs/adr/0003-cloud-run-worker-runtime.md).
 - The container side is [`@loomwork/plugin-worker-server`](../worker-server/README.md); the transport is

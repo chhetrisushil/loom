@@ -78,4 +78,5 @@ export const summarize = createLlmEffect<{ ticket: string }, string>({
 
 ## Install
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override (see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/llm` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).

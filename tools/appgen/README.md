@@ -54,8 +54,8 @@ and `deploy on <target>` (the api-reference section below lists the grammar).
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/appgen` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0042](../../docs/adr/0042-ai-native-brownfield-appgen.md) (the four stages) and
   [ADR 0050](../../docs/adr/0050-appgen-model-provider-agnostic.md) (model-driven planning).

@@ -8,11 +8,12 @@ reference (or point an agent at it) without cloning first.
 
 ## How the examples consume loom
 
-Loom is unpublished. Each example resolves this repo's `@loomwork/*` packages from a
+The examples are not published, and they track this repo's `main` rather than an npm release.
+Each example resolves this repo's `@loomwork/*` packages from a
 sibling `../loom` checkout via `link:` (declared centrally as pnpm `overrides` in
 `loom-examples/package.json`), not `workspace:*`. Lay the two repos out as
 siblings, install/build `loom`, then `pnpm install` in `loom-examples`. The full
-rationale — and why git/npm deps can't work for an unpublished monorepo — is in
+rationale — and why they link a checkout rather than install from npm — is in
 `loom-examples/AGENTS.md`.
 
 ```bash

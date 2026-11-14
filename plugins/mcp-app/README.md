@@ -60,8 +60,8 @@ export const server = createMcpServer({
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/plugin-mcp-app` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0072](../../docs/adr/0072-mcp-apps-ui-extension-placement.md): placement and the host-role boundary.
 - [ADR 0069](../../docs/adr/0069-a2ui-egress-adapter.md): the A2UI component model it reuses.

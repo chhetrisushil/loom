@@ -56,8 +56,8 @@ stop();
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/projection-runtime` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0068](../../docs/adr/0068-projection-selector-subscription.md): selector subscriptions.
 - [ADR 0095](../../docs/adr/0095-binding-semantics-pin.md): the declared `version` and pin checks.

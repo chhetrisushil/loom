@@ -92,7 +92,11 @@ describe("cheatsheets stay true to what they enumerate", () => {
     }
     expect(names.size).toBeGreaterThan(50);
     for (const file of [FEATURES, DX]) {
-      const named = [...card(file).matchAll(/@loomwork\/[a-z][a-z0-9-]*/g)].map((m) => m[0]);
+      // `npm create @loomwork/<x>` runs the package `@loomwork/create-<x>` (npm's initializer rule),
+      // so it names that package, not one called `@loomwork/<x>`.
+      const named = [
+        ...card(file).matchAll(/(npm |pnpm |yarn )?(create )?@loomwork\/([a-z][a-z0-9-]*)/g),
+      ].map((m) => (m[2] ? `@loomwork/create-${m[3]}` : `@loomwork/${m[3]}`));
       const unknown = [...new Set(named)].filter((n) => !names.has(n));
       expect(unknown, `${file} names packages that do not exist: ${unknown.join(", ")}`).toEqual(
         []

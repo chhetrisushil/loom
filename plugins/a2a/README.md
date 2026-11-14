@@ -69,8 +69,8 @@ await server.start();
 
 ## Status / See also
 
-Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
-(see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/plugin-a2a` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep them on the same release.
+Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0125](../../docs/adr/0125-tool-search.md) (D14): card text and `trustDescriptions`;
   [ADR 0085](../../docs/adr/0085-untrusted-content-integrity-axis.md): the taint model.

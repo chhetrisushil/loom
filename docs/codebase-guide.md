@@ -32,7 +32,7 @@ The one idea to hold while reading either repo: **the log is the source of truth
 
 ### How the repos relate
 
-loom-ui depends on loom, never the reverse. loom is an unpublished monorepo, so loom-ui's `package.json` redirects every `@loomwork/*` dependency through `pnpm.overrides` to `link:../loom/packages/<name>` (or `../loom/plugins/<name>`). That means:
+loom-ui depends on loom, never the reverse. loom-ui's packages declare the published `@loomwork/*` range, and for development its `package.json` redirects every `@loomwork/*` dependency through `pnpm.overrides` to `link:../loom/packages/<name>` (or `../loom/plugins/<name>`). That means:
 
 - `../loom` must be checked out beside `loom-ui`, installed and **built** (`pnpm install && pnpm build`) before anything in loom-ui resolves.
 - loom-ui tests and typechecks read loom's built `dist` and `.d.ts`. Edit loom, rebuild loom, then test loom-ui.

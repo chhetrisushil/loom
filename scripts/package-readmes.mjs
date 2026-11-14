@@ -70,7 +70,7 @@ export function renderReadme({ rel, pkg }, apiReferenceOrg) {
   lines.push(
     pkg.private
       ? "Private workspace package; not published."
-      : "Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override (see [AGENTS.md](../../AGENTS.md)).",
+      : `\`npm install ${pkg.name}\` (or pnpm / yarn). Pre-1.0: every \`@loomwork/*\` package shares one version, so keep them on the same release. Inside this repo use \`workspace:*\`; a sibling checkout links it with a \`link:\` override (see [AGENTS.md](../../AGENTS.md)).`,
     ""
   );
   const heading = apiReferenceHeading(apiReferenceOrg, pkg.name);
