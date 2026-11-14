@@ -220,3 +220,14 @@ Landed on branch `feat/plugin-packaging-1p-3p`, each phase built + tested + lint
 4. **1P rename** to `@loomwork/plugin-*` with shims; stand up the `loom-plugins` repo + author
    template + vetting checklist.
 5. **a2ui split** — only if/when the wire format must be swappable.
+
+## Amendment (2026-11-14): the subpath plugins are optional peers of the SDK
+
+The subpath decision above kept `better-sqlite3`, `pg` and QuickJS out of a bare `import "@loomwork/sdk"`,
+but `plugin-sqlite`, `plugin-postgres` and `plugin-sandbox` stayed regular dependencies of `@loomwork/sdk`. Once
+the packages were on npm (ADR 0148), every SDK install therefore downloaded and built all three, and
+`better-sqlite3` is a native build that fails where no prebuilt binary or toolchain exists. They are now
+optional peers (`peerDependenciesMeta.optional`): an app adds the plugin for the subpath it imports, and a
+subpath imported without it fails with `Cannot find module` naming the plugin. The same change makes
+`plugin-sqlite` an optional peer of `@loomwork/cli`, which loads it only for its SQLite file flags.
+

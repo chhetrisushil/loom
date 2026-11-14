@@ -54,7 +54,10 @@ export const app = defineConfig({ storage: sqliteStorage({ dir: ".data" }), flow
 
 - **The native and WASM dependencies are behind subpaths** so a bare `@loomwork/sdk` import stays lean and
   browser-safe (ADR 0043, ADR 0064): SQLite, Postgres and the QuickJS sandbox load only when you import
-  their subpath.
+  their subpath. **They are optional peers, not dependencies**, so they are not installed with the SDK:
+  add the one you use beside it (`@loomwork/plugin-sqlite`, `@loomwork/plugin-postgres` or
+  `@loomwork/plugin-sandbox`). Importing a subpath without its plugin fails with `Cannot find module`
+  naming the plugin.
 - **Subpaths need a modern module resolution.** They resolve through the package's `exports`. With
   `moduleResolution: "node"` (the old `node10` mode) TypeScript reports the subpath as unresolved; use
   `node16`, `nodenext` or `bundler`.
