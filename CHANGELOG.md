@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`@loomwork/plugin-sqlite` is an optional peer of `@loomwork/cli`, not a dependency (BREAKING for `--db` users).** Every CLI install pulled the native `better-sqlite3` driver, even for an app on Postgres or a custom store. Where no prebuilt binary or toolchain exists the CLI then failed to install, and pnpm 10 skips the build, leaving a driver that fails at runtime. The CLI now loads the plugin only when a SQLite file flag is used (`--db`, `--snap`, `--branches`, `--leases`, `loom sweep content`'s files); `--config` and every other command never load it. **Migration:** if you use `--db`, add `@loomwork/plugin-sqlite` beside the CLI (`pnpm add -D @loomwork/plugin-sqlite`). Without it those flags exit 1 and name the package to install.
+
 ### Added
 
 - **`scripts/promote-latest.mjs` moves npm's `latest` dist-tag to a release ([ADR 0148](docs/adr/0148-npm-publishing-under-loomwork.md) amendment; release tooling only).** npm set `latest` on each package's first publish (0.1.0), and every sibling dependency is a `^0.1.x` range that npm and pnpm resolve to `latest`, so 0.1.1 published on `next` alone still installed the broken 0.1.0 packages transitively. Each release is now published under `next`, verified, then promoted to `latest` (a dry run without `--yes`; skips packages already promoted; runs in loom-ui and loom-plugins as `node ../loom/scripts/promote-latest.mjs`). `latest` is 0.1.1 for every loom package, and the docs now show `npm create @loomwork/loom-app` without `@next`.

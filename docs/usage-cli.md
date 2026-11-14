@@ -191,7 +191,7 @@ New project?  →  npm create @loomwork/loom-app <dir>   (--loom-path <loom> to 
 > `retention run`, `sweep content` (both dry-run by default, `--apply` to reclaim) and
 > `compliance report` (subject inventory) sweep the store via the `listExecutions` SPI.
 
-There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints a one-line error with a did-you-mean (`unknown command "logz" (did you mean "logs"?) — see \`loom help\``) to stderr and exits `2`; it no longer dumps the whole usage.
+There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file; the SQLite flags need `@loomwork/plugin-sqlite`, an optional peer installed beside the CLI), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints a one-line error with a did-you-mean (`unknown command "logz" (did you mean "logs"?) — see \`loom help\``) to stderr and exits `2`; it no longer dumps the whole usage.
 
 ### Help, version, completion: `help`, `version`, `completion`
 
