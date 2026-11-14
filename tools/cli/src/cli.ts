@@ -186,7 +186,7 @@ help
                          files. Flags you omit are stores the command cannot consult, and it
                          says so rather than reporting them as empty.
 
-New project?  →  npm create @loomwork/loom-app@next <dir>   (--loom-path <loom> to link a checkout)
+New project?  →  npm create @loomwork/loom-app <dir>   (--loom-path <loom> to link a checkout)
 `;
 
 /** The config files a command may default to (discovery) in the working directory. */

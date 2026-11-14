@@ -3,7 +3,7 @@
 // plugins/*, tools/*; a package with `"private": true` is never published and is left alone).
 // One source of truth for: the shared release `version`, `license`, `repository` (with the
 // package's `directory`), the `files` allowlist (built output + sources for the sourcemaps, never
-// tests, fixtures, tsconfig or build caches), `publishConfig` (public access, the `next` dist-tag),
+// tests, fixtures, tsconfig or build caches), `publishConfig` (public access, the `next` dist-tag; promote-latest.mjs moves `latest` after a release),
 // `engines`, and `workspace:^` for every sibling dependency (pnpm publish rewrites it to `^<version>`,
 // so consumers dedupe one copy instead of pinning an exact one).
 //

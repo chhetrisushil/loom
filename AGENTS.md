@@ -134,11 +134,15 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
   turbo's per-package cache is what the `test` task's `^build` dependency reads —
   CI has no remote cache, so it pays the cold number on every run.
 - All changes land on a feature branch via PR (never commit to `main` directly).
-- **Publishing to npm.** Every non-private package publishes as `@loomwork/*` under the `next`
-  dist-tag. `scripts/publish-metadata.mjs` is the one source of the publish fields (`version`,
+- **Publishing to npm.** Every non-private package publishes as `@loomwork/*`, first under the `next`
+  dist-tag, then promoted to `latest`. `scripts/publish-metadata.mjs` is the one source of the publish fields (`version`,
   `files`, `repository`, `publishConfig`, `workspace:^`); edit `RELEASE_VERSION` there, re-run it,
   commit (the guard `packages/spec/src/publishMetadata.test.ts` refuses drift). Then, on a clean,
   built `main`: `node scripts/publish.mjs` (dry run), and `node scripts/publish.mjs --yes` to publish.
+  Verify the release from a clean install pinned to it, then `node scripts/promote-latest.mjs --yes` to move
+  `latest` (ADR 0148 amendment: npm set `latest` on the first publish, and `^0.1.x` ranges resolve to it, so
+  skipping this step hands consumers the previous release). Both need 2FA, so the owner runs them in a real
+  terminal.
   Order: loom, then loom-ui and loom-plugins (their `@loomwork/*` ranges name the published version).
 - ADRs in `docs/adr/`; the recipe docs in `docs/` cross-link the examples that
   demonstrate them (e.g. `docs/transient-interpreter.md` → `db-observability`).
