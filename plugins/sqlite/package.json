@@ -1,6 +1,6 @@
 {
   "name": "@loom/plugin-sqlite",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "SQLite store plugin for Loom — embedded EventStore, SnapshotStore, BranchRegistry, TimerStore, DurableStateStore, ReadModelStore, ContentStore and MemoryStore over better-sqlite3, behind the same interfaces as the in-memory reference. The zero-server durable backend; keeps the native driver out of the kernel packages.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,15 +20,15 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/memory": "workspace:*",
-    "@loom/plugin-durable-state": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/core": "workspace:^",
+    "@loom/event-runtime": "workspace:^",
+    "@loom/memory": "workspace:^",
+    "@loom/plugin-durable-state": "workspace:^",
+    "@loom/snapshot-runtime": "workspace:^",
     "better-sqlite3": "^11.5.0",
-    "@loom/plugin-kit": "workspace:*",
-    "@loom/plugin-read-model": "workspace:*",
-    "@loom/plugin-content": "workspace:*"
+    "@loom/plugin-kit": "workspace:^",
+    "@loom/plugin-read-model": "workspace:^",
+    "@loom/plugin-content": "workspace:^"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
@@ -36,5 +36,30 @@
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "@loom/conformance": "workspace:*"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "plugins/sqlite"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

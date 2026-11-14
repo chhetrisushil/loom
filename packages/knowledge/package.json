@@ -1,7 +1,7 @@
 {
   "name": "@loom/knowledge",
-  "version": "0.0.1",
-  "description": "Document corpora over memory \u2014 ingest, revise, retrieve with provenance",
+  "version": "0.1.0",
+  "description": "Document corpora over memory — ingest, revise, retrieve with provenance",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,16 +20,41 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:*",
-    "@loom/core": "workspace:*",
-    "@loom/llm": "workspace:*",
-    "@loom/memory": "workspace:*",
-    "@loom/verify": "workspace:*"
+    "@loom/classify": "workspace:^",
+    "@loom/core": "workspace:^",
+    "@loom/llm": "workspace:^",
+    "@loom/memory": "workspace:^",
+    "@loom/verify": "workspace:^"
   },
   "devDependencies": {
     "@loom/plugin-sqlite": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/knowledge"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

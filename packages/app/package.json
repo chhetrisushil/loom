@@ -1,7 +1,7 @@
 {
   "name": "@loom/app",
-  "version": "0.0.1",
-  "description": "App composition for Loom \u2014 defineConfig assembles the durable runtime, effect middleware, projection, and A2A transport from a static config, so apps skip the copy-pasted composition root",
+  "version": "0.1.0",
+  "description": "App composition for Loom — defineConfig assembles the durable runtime, effect middleware, projection, and A2A transport from a static config, so apps skip the copy-pasted composition root",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,27 +20,27 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/agent": "workspace:*",
-    "@loom/agent-surface": "workspace:*",
-    "@loom/classify": "workspace:*",
-    "@loom/compliance": "workspace:*",
-    "@loom/core": "workspace:*",
-    "@loom/dispatcher": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/knowledge": "workspace:*",
-    "@loom/memory": "workspace:*",
-    "@loom/middleware": "workspace:*",
-    "@loom/orchestration": "workspace:*",
-    "@loom/plugin-a2a": "workspace:*",
-    "@loom/plugin-crypto": "workspace:*",
-    "@loom/projection-runtime": "workspace:*",
-    "@loom/replay-vm": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/telemetry": "workspace:*",
-    "@loom/verify": "workspace:*",
-    "@loom/worker-runtime-local": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loom/agent": "workspace:^",
+    "@loom/agent-surface": "workspace:^",
+    "@loom/classify": "workspace:^",
+    "@loom/compliance": "workspace:^",
+    "@loom/core": "workspace:^",
+    "@loom/dispatcher": "workspace:^",
+    "@loom/effect-runtime": "workspace:^",
+    "@loom/event-runtime": "workspace:^",
+    "@loom/knowledge": "workspace:^",
+    "@loom/memory": "workspace:^",
+    "@loom/middleware": "workspace:^",
+    "@loom/orchestration": "workspace:^",
+    "@loom/plugin-a2a": "workspace:^",
+    "@loom/plugin-crypto": "workspace:^",
+    "@loom/projection-runtime": "workspace:^",
+    "@loom/replay-vm": "workspace:^",
+    "@loom/snapshot-runtime": "workspace:^",
+    "@loom/telemetry": "workspace:^",
+    "@loom/verify": "workspace:^",
+    "@loom/worker-runtime-local": "workspace:^",
+    "@loom/workflow-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -51,5 +51,30 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/app"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

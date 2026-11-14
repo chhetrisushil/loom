@@ -1,6 +1,6 @@
 {
   "name": "@loom/plugin-worker-remote",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "HTTP WorkerRuntime for Loom — dispatches an ExecutionPackage to a stateless worker's POST /execute endpoint and collects the ExecutionResult",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,11 +20,36 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/worker-runtime": "workspace:*"
+    "@loom/worker-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "plugins/worker-remote"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

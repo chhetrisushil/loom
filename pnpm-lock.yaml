@@ -179,28 +179,28 @@ importers:
   packages/agent:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
       '@loom/memory':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../memory
       '@loom/reasoning':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../reasoning
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
       zod:
         specifier: ^3.23.8
@@ -246,13 +246,13 @@ importers:
   packages/agent-surface:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../projection-runtime
     devDependencies:
       '@loom/effect-runtime':
@@ -283,13 +283,13 @@ importers:
   packages/analytics:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/verify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../verify
     devDependencies:
       '@types/node':
@@ -305,67 +305,67 @@ importers:
   packages/app:
     dependencies:
       '@loom/agent':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../agent
       '@loom/agent-surface':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../agent-surface
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/compliance':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../compliance
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/dispatcher':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../dispatcher
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/knowledge':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../knowledge
       '@loom/memory':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../memory
       '@loom/middleware':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../middleware
       '@loom/orchestration':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../orchestration
       '@loom/plugin-a2a':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/a2a
       '@loom/plugin-crypto':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/crypto
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../projection-runtime
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
       '@loom/telemetry':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../telemetry
       '@loom/verify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../verify
       '@loom/worker-runtime-local':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../worker-runtime-local
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
       zod:
         specifier: ^3.23.8
@@ -396,13 +396,13 @@ importers:
   packages/blueprint-runtime:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
     devDependencies:
       '@types/node':
@@ -418,10 +418,10 @@ importers:
   packages/capability:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
       zod:
         specifier: ^3.23.8
@@ -462,16 +462,16 @@ importers:
   packages/compliance:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
     devDependencies:
       '@types/node':
@@ -487,31 +487,31 @@ importers:
   packages/conformance:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/dispatcher':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../dispatcher
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../projection-runtime
       '@loom/sandbox':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../sandbox
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../worker-runtime
     devDependencies:
       typescript:
@@ -524,25 +524,25 @@ importers:
   packages/conversation:
     dependencies:
       '@loom/agent':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../agent
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
       zod:
         specifier: ^3.23.8
@@ -586,10 +586,10 @@ importers:
   packages/dispatcher:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../worker-runtime
     devDependencies:
       '@types/node':
@@ -605,19 +605,19 @@ importers:
   packages/effect-runtime:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
     devDependencies:
       '@types/node':
@@ -633,7 +633,7 @@ importers:
   packages/event-runtime:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
       '@types/node':
@@ -649,7 +649,7 @@ importers:
   packages/fair-scheduler:
     dependencies:
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
     devDependencies:
       '@types/node':
@@ -665,16 +665,16 @@ importers:
   packages/graph-executor:
     dependencies:
       '@loom/dispatcher':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../dispatcher
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../worker-runtime
     devDependencies:
       '@loom/core':
@@ -717,22 +717,22 @@ importers:
   packages/intent:
     dependencies:
       '@loom/capability':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../capability
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
       '@loom/reasoning':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../reasoning
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@loom/effect-runtime':
@@ -760,10 +760,10 @@ importers:
   packages/isolate:
     dependencies:
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
     devDependencies:
       '@loom/middleware':
@@ -782,19 +782,19 @@ importers:
   packages/knowledge:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
       '@loom/memory':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../memory
       '@loom/verify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../verify
     devDependencies:
       '@loom/plugin-sqlite':
@@ -813,16 +813,16 @@ importers:
   packages/learning:
     dependencies:
       '@loom/analytics':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../analytics
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/verify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../verify
     devDependencies:
       '@loom/effect-runtime':
@@ -856,16 +856,16 @@ importers:
   packages/live-query:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@loom/effect-runtime':
@@ -902,13 +902,13 @@ importers:
   packages/llm:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
     devDependencies:
       '@types/node':
@@ -924,10 +924,10 @@ importers:
   packages/memory:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
       '@loom/conformance':
@@ -946,13 +946,13 @@ importers:
   packages/middleware:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
     devDependencies:
       '@types/node':
@@ -971,19 +971,19 @@ importers:
   packages/orchestration:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/verify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../verify
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@loom/replay-vm':
@@ -1020,31 +1020,31 @@ importers:
   packages/planner:
     dependencies:
       '@loom/agent':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../agent
       '@loom/capability':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../capability
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
       '@loom/reasoning':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../reasoning
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
       zod:
         specifier: ^3.23.8
@@ -1069,10 +1069,10 @@ importers:
   packages/plugin-kit:
     dependencies:
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
     devDependencies:
       typescript:
@@ -1085,10 +1085,10 @@ importers:
   packages/projection-runtime:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
     devDependencies:
       '@types/node':
@@ -1104,10 +1104,10 @@ importers:
   packages/reasoning:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
     devDependencies:
       '@types/node':
@@ -1123,7 +1123,7 @@ importers:
   packages/registry:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
       '@types/node':
@@ -1139,19 +1139,19 @@ importers:
   packages/replay-inspector:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
     devDependencies:
       '@loom/effect-runtime':
@@ -1176,10 +1176,10 @@ importers:
   packages/replay-vm:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
     devDependencies:
       '@types/node':
@@ -1195,10 +1195,10 @@ importers:
   packages/saga:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@loom/dst':
@@ -1229,10 +1229,10 @@ importers:
   packages/sandbox:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       zod:
         specifier: ^3.23.8
@@ -1263,76 +1263,76 @@ importers:
   packages/sdk:
     dependencies:
       '@loom/agent':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../agent
       '@loom/agent-surface':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../agent-surface
       '@loom/blueprint-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../blueprint-runtime
       '@loom/capability':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../capability
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/intent':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../intent
       '@loom/knowledge':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../knowledge
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../llm
       '@loom/memory':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../memory
       '@loom/orchestration':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../orchestration
       '@loom/planner':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../planner
       '@loom/plugin-a2a':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/a2a
       '@loom/plugin-mcp':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/mcp
       '@loom/plugin-postgres':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/postgres
       '@loom/plugin-renderer-terminal':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/renderer-terminal
       '@loom/plugin-sandbox':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/sandbox
       '@loom/plugin-sqlite':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/sqlite
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../projection-runtime
       '@loom/reasoning':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../reasoning
       '@loom/registry':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../registry
       '@loom/sandbox':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../sandbox
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@types/node':
@@ -1348,10 +1348,10 @@ importers:
   packages/snapshot-runtime:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
     devDependencies:
       '@types/node':
@@ -1367,34 +1367,34 @@ importers:
   packages/spec:
     dependencies:
       '@loom/compiler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../tools/compiler
       '@loom/dispatcher':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../dispatcher
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/memory':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../memory
       '@loom/plugin-content':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/content
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/sandbox':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../sandbox
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
       '@loom/wire-abi':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../wire-abi
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@loom/blueprint-runtime':
@@ -1416,10 +1416,10 @@ importers:
   packages/telemetry:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
       '@types/node':
@@ -1450,13 +1450,13 @@ importers:
   packages/wire-abi:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@loom/effect-runtime':
@@ -1484,7 +1484,7 @@ importers:
   packages/worker-runtime:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
     devDependencies:
       '@types/node':
@@ -1500,13 +1500,13 @@ importers:
   packages/worker-runtime-local:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../worker-runtime
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
       '@loom/conformance':
@@ -1543,25 +1543,25 @@ importers:
   packages/workflow-runtime:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../event-runtime
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../replay-vm
       '@loom/scheduler':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scheduler
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../snapshot-runtime
       ulid:
         specifier: ^2.3.0
@@ -1604,16 +1604,16 @@ importers:
   plugins/a2a:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/workflow-runtime
       zod:
         specifier: ^3.23.8
@@ -1641,19 +1641,19 @@ importers:
   plugins/a2ui:
     dependencies:
       '@loom/agent-surface':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/agent-surface
       '@loom/blueprint-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/blueprint-runtime
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
     devDependencies:
       '@types/node':
@@ -1669,10 +1669,10 @@ importers:
   plugins/audit-chain:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
     devDependencies:
       '@loom/conformance':
@@ -1709,13 +1709,13 @@ importers:
   plugins/cloudrun:
     dependencies:
       '@loom/dispatcher':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/dispatcher
       '@loom/plugin-worker-remote':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../worker-remote
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/worker-runtime
     devDependencies:
       '@loom/core':
@@ -1758,16 +1758,16 @@ importers:
   plugins/content:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/snapshot-runtime
     devDependencies:
       '@loom/conformance':
@@ -1792,25 +1792,25 @@ importers:
   plugins/conversation-sse:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/conversation':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/conversation
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/llm
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/workflow-runtime
     devDependencies:
       '@loom/agent':
@@ -1835,19 +1835,19 @@ importers:
   plugins/crypto:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/plugin-content':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../content
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/snapshot-runtime
     devDependencies:
       '@loom/compliance':
@@ -1875,10 +1875,10 @@ importers:
   plugins/durable-state:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       zod:
         specifier: ^3.23.8
@@ -1900,13 +1900,13 @@ importers:
   plugins/mcp:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       zod:
         specifier: ^3.23.8
@@ -1943,25 +1943,25 @@ importers:
   plugins/mcp-app:
     dependencies:
       '@loom/agent-surface':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/agent-surface
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/plugin-a2ui':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../a2ui
       '@loom/plugin-mcp':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../mcp
     devDependencies:
       '@types/jsdom':
@@ -1983,25 +1983,25 @@ importers:
   plugins/postgres:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/memory':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/memory
       '@loom/plugin-durable-state':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../durable-state
       '@loom/plugin-kit':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/plugin-kit
       '@loom/plugin-read-model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../read-model
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/snapshot-runtime
       pg:
         specifier: ^8.13.0
@@ -2032,13 +2032,13 @@ importers:
   plugins/read-model:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
     devDependencies:
       '@loom/conformance':
@@ -2060,10 +2060,10 @@ importers:
   plugins/renderer-dom:
     dependencies:
       '@loom/blueprint-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/blueprint-runtime
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/projection-runtime
     devDependencies:
       '@loom/core':
@@ -2106,19 +2106,19 @@ importers:
   plugins/renderer-react:
     dependencies:
       '@loom/agent-surface':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/agent-surface
       '@loom/blueprint-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/blueprint-runtime
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/projection-runtime
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/workflow-runtime
     devDependencies:
       '@testing-library/react':
@@ -2155,10 +2155,10 @@ importers:
   plugins/renderer-terminal:
     dependencies:
       '@loom/blueprint-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/blueprint-runtime
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/projection-runtime
     devDependencies:
       '@loom/core':
@@ -2177,13 +2177,13 @@ importers:
   plugins/sandbox:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       '@loom/sandbox':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/sandbox
       quickjs-emscripten:
         specifier: ^0.31.0
@@ -2223,22 +2223,22 @@ importers:
   plugins/sentinel:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/middleware':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/middleware
       '@loom/plugin-content':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../content
       '@loom/plugin-durable-state':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../durable-state
       zod:
         specifier: ^3.23.8
@@ -2263,28 +2263,28 @@ importers:
   plugins/sqlite:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/memory':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/memory
       '@loom/plugin-content':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../content
       '@loom/plugin-durable-state':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../durable-state
       '@loom/plugin-kit':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/plugin-kit
       '@loom/plugin-read-model':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../read-model
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/snapshot-runtime
       better-sqlite3:
         specifier: ^11.5.0
@@ -2309,7 +2309,7 @@ importers:
   plugins/worker-remote:
     dependencies:
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/worker-runtime
     devDependencies:
       '@types/node':
@@ -2325,10 +2325,10 @@ importers:
   plugins/worker-server:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/worker-runtime
     devDependencies:
       '@loom/dispatcher':
@@ -2371,7 +2371,7 @@ importers:
   tools/appgen:
     dependencies:
       '@loom/scaffold':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scaffold
       typescript:
         specifier: ^5.6.3
@@ -2387,13 +2387,13 @@ importers:
   tools/appgen-model:
     dependencies:
       '@loom/appgen':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../appgen
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/llm
       '@loom/reasoning':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/reasoning
     optionalDependencies:
       node-llama-cpp:
@@ -2462,73 +2462,73 @@ importers:
   tools/cli:
     dependencies:
       '@loom/analytics':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/analytics
       '@loom/app':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/app
       '@loom/appgen':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../appgen
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/compliance':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/compliance
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/deploy-sim':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../deploy-sim
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       '@loom/eval':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../eval
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/knowledge':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/knowledge
       '@loom/learning':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/learning
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/llm
       '@loom/orchestration':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/orchestration
       '@loom/plugin-content':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/content
       '@loom/plugin-kit':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/plugin-kit
       '@loom/plugin-sqlite':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../plugins/sqlite
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/replay-vm
       '@loom/scaffold':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scaffold
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/snapshot-runtime
       '@loom/spec':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/spec
       '@loom/verify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/verify
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/workflow-runtime
       zod:
         specifier: ^3.23.8
@@ -2572,7 +2572,7 @@ importers:
   tools/create-loom-app:
     dependencies:
       '@loom/scaffold':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../scaffold
     devDependencies:
       '@types/node':
@@ -2588,10 +2588,10 @@ importers:
   tools/deploy-sim:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/eval':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../eval
     devDependencies:
       '@loom/effect-runtime':
@@ -2622,19 +2622,19 @@ importers:
   tools/dst:
     dependencies:
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/effect-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/effect-runtime
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/snapshot-runtime
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/workflow-runtime
     devDependencies:
       '@loom/conformance':
@@ -2656,16 +2656,16 @@ importers:
   tools/eval:
     dependencies:
       '@loom/classify':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/classify
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/llm
       '@loom/replay-vm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/replay-vm
     devDependencies:
       '@loom/effect-runtime':
@@ -2708,31 +2708,31 @@ importers:
   tools/testing:
     dependencies:
       '@loom/app':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/app
       '@loom/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/core
       '@loom/dispatcher':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/dispatcher
       '@loom/event-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/event-runtime
       '@loom/llm':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/llm
       '@loom/projection-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/projection-runtime
       '@loom/snapshot-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/snapshot-runtime
       '@loom/worker-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/worker-runtime
       '@loom/workflow-runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../packages/workflow-runtime
       vitest:
         specifier: ^2.1.8

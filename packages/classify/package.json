@@ -1,6 +1,6 @@
 {
   "name": "@loom/classify",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Data-handling vocabulary for Loom — the sensitive()/secret()/internal() confidentiality markers + a schema walker, so a field is classified ONCE at its schema and every mechanism (crypto, redaction, egress) derives its wiring from that; plus the integrity axis (tainted()/unwrapTainted()), which attaches provenance to a VALUE at ingress because trustworthiness is not a property a schema can know. Kernel stays ignorant of both (G3).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -29,5 +29,30 @@
   "devDependencies": {
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/classify"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

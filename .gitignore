@@ -33,3 +33,11 @@ tools/*/lib/
 
 # loom evals scoreboard output (the committed baseline is evals/baseline/)
 evals/out/
+
+# copied in by scripts/publish.mjs for the duration of a pack
+packages/*/LICENSE
+packages/*/NOTICE
+plugins/*/LICENSE
+plugins/*/NOTICE
+tools/*/LICENSE
+tools/*/NOTICE

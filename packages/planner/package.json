@@ -1,6 +1,6 @@
 {
   "name": "@loom/planner",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Planner runtime for Loom — turns a goal into an ordered capability plan",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,15 +20,15 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/agent": "workspace:*",
-    "@loom/capability": "workspace:*",
-    "@loom/classify": "workspace:*",
-    "@loom/core": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/llm": "workspace:*",
-    "@loom/reasoning": "workspace:*",
-    "@loom/scheduler": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loom/agent": "workspace:^",
+    "@loom/capability": "workspace:^",
+    "@loom/classify": "workspace:^",
+    "@loom/core": "workspace:^",
+    "@loom/effect-runtime": "workspace:^",
+    "@loom/llm": "workspace:^",
+    "@loom/reasoning": "workspace:^",
+    "@loom/scheduler": "workspace:^",
+    "@loom/workflow-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -37,5 +37,30 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/planner"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

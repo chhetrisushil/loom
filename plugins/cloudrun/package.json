@@ -1,6 +1,6 @@
 {
   "name": "@loom/plugin-cloudrun",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Cloud Run platform adapter for Loom — CloudRunWorkerRuntime maps DispatchMetadata to a Cloud Run sizing config, resolves a service endpoint, and invokes the stateless worker. Cloud specifics stay behind the CloudRunPlatform SPI",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,9 +20,9 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/dispatcher": "workspace:*",
-    "@loom/worker-runtime": "workspace:*",
-    "@loom/plugin-worker-remote": "workspace:*"
+    "@loom/dispatcher": "workspace:^",
+    "@loom/worker-runtime": "workspace:^",
+    "@loom/plugin-worker-remote": "workspace:^"
   },
   "devDependencies": {
     "@loom/core": "workspace:*",
@@ -37,5 +37,32 @@
     "vitest": "^2.1.8",
     "zod": "^3.23.8",
     "@loom/plugin-sqlite": "workspace:*"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "plugins/cloudrun"
+  },
+  "files": [
+    "dist",
+    "src",
+    "Dockerfile",
+    "deploy.md",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

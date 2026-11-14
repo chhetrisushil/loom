@@ -1,6 +1,6 @@
 {
   "name": "@loom/replay-inspector",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Read-only replay inspector — reconstruct an execution's state at any point in its log, diff transitions, and read projection slices, under the version the execution is pinned to. A cache of the log, never an authority; no write path.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,11 +20,11 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:*",
-    "@loom/core": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/replay-vm": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*"
+    "@loom/classify": "workspace:^",
+    "@loom/core": "workspace:^",
+    "@loom/event-runtime": "workspace:^",
+    "@loom/replay-vm": "workspace:^",
+    "@loom/snapshot-runtime": "workspace:^"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",
@@ -33,5 +33,30 @@
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/replay-inspector"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

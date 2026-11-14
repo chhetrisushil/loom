@@ -1,6 +1,6 @@
 {
   "name": "@loom/saga",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Saga / compensation for Loom flows — register compensators as you go and run them in reverse on failure, built entirely from ctx.run (so rollback is replay-safe) with no new syscall or event type.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,8 +20,8 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*"
+    "@loom/core": "workspace:^",
+    "@loom/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
     "@loom/dst": "workspace:*",
@@ -32,5 +32,30 @@
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/saga"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

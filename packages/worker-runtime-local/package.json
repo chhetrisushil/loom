@@ -1,6 +1,6 @@
 {
   "name": "@loom/worker-runtime-local",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "In-process WorkerRuntime for Loom — runs an ExecutionPackage on the local WorkflowRuntime. The zero-cloud reference implementation of the Platform SPI",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,9 +20,9 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/worker-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*"
+    "@loom/core": "workspace:^",
+    "@loom/worker-runtime": "workspace:^",
+    "@loom/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
     "@loom/event-runtime": "workspace:*",
@@ -35,5 +35,30 @@
     "@loom/plugin-sqlite": "workspace:*",
     "@loom/conformance": "workspace:*",
     "@loom/dispatcher": "workspace:*"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/worker-runtime-local"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

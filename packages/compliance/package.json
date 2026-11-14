@@ -1,7 +1,7 @@
 {
   "name": "@loom/compliance",
-  "version": "0.0.1",
-  "description": "Data-subject rights for Loom (T3, GDPR/CCPA-enabling) \u2014 a subject index (subjectId \u2192 executions) fed by the event stream, exportSubject for Art. 15/20 access + portability, and eraseSubject for Art. 17 erasure (crypto-shredding, plus deletion of archived copies). Event-sourcing makes these a fold; this productizes that. Not legal advice.",
+  "version": "0.1.0",
+  "description": "Data-subject rights for Loom (T3, GDPR/CCPA-enabling) — a subject index (subjectId → executions) fed by the event stream, exportSubject for Art. 15/20 access + portability, and eraseSubject for Art. 17 erasure (crypto-shredding, plus deletion of archived copies). Event-sourcing makes these a fold; this productizes that. Not legal advice.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -19,14 +19,39 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/replay-vm": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*"
+    "@loom/core": "workspace:^",
+    "@loom/event-runtime": "workspace:^",
+    "@loom/replay-vm": "workspace:^",
+    "@loom/snapshot-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/compliance"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

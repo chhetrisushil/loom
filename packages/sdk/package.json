@@ -1,6 +1,6 @@
 {
   "name": "@loom/sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Public re-export surface for the Loom framework",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -35,34 +35,59 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/agent": "workspace:*",
-    "@loom/agent-surface": "workspace:*",
-    "@loom/blueprint-runtime": "workspace:*",
-    "@loom/capability": "workspace:*",
-    "@loom/core": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/intent": "workspace:*",
-    "@loom/knowledge": "workspace:*",
-    "@loom/llm": "workspace:*",
-    "@loom/memory": "workspace:*",
-    "@loom/orchestration": "workspace:*",
-    "@loom/planner": "workspace:*",
-    "@loom/plugin-a2a": "workspace:*",
-    "@loom/plugin-mcp": "workspace:*",
-    "@loom/plugin-postgres": "workspace:*",
-    "@loom/plugin-renderer-terminal": "workspace:*",
-    "@loom/plugin-sandbox": "workspace:*",
-    "@loom/plugin-sqlite": "workspace:*",
-    "@loom/projection-runtime": "workspace:*",
-    "@loom/reasoning": "workspace:*",
-    "@loom/registry": "workspace:*",
-    "@loom/sandbox": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*"
+    "@loom/agent": "workspace:^",
+    "@loom/agent-surface": "workspace:^",
+    "@loom/blueprint-runtime": "workspace:^",
+    "@loom/capability": "workspace:^",
+    "@loom/core": "workspace:^",
+    "@loom/event-runtime": "workspace:^",
+    "@loom/intent": "workspace:^",
+    "@loom/knowledge": "workspace:^",
+    "@loom/llm": "workspace:^",
+    "@loom/memory": "workspace:^",
+    "@loom/orchestration": "workspace:^",
+    "@loom/planner": "workspace:^",
+    "@loom/plugin-a2a": "workspace:^",
+    "@loom/plugin-mcp": "workspace:^",
+    "@loom/plugin-postgres": "workspace:^",
+    "@loom/plugin-renderer-terminal": "workspace:^",
+    "@loom/plugin-sandbox": "workspace:^",
+    "@loom/plugin-sqlite": "workspace:^",
+    "@loom/projection-runtime": "workspace:^",
+    "@loom/reasoning": "workspace:^",
+    "@loom/registry": "workspace:^",
+    "@loom/sandbox": "workspace:^",
+    "@loom/snapshot-runtime": "workspace:^",
+    "@loom/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/sdk"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
