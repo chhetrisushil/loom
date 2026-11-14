@@ -89,12 +89,36 @@ const touch = (file: string, body = "export {};\n") => {
 };
 
 const alive = (pid: number): boolean => {
+  // kill(0, 0) probes OUR process group and always succeeds: a pid read as 0 would wait forever.
+  if (!Number.isInteger(pid) || pid <= 1) throw new Error(`not a child pid: ${pid}`);
   try {
     process.kill(pid, 0);
     return true;
   } catch {
     return false;
   }
+};
+
+/**
+ * The pid an app wrote to `file`, or undefined until it has. The apps use writeFileSync, which
+ * creates the file before filling it, so "the file exists" can still read as "" (Number("") is 0).
+ */
+const pidIn = (file: string): number | undefined => {
+  try {
+    const raw = readFileSync(file, "utf8");
+    return /^\d+$/.test(raw) ? Number(raw) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+/** Wait until `file` holds a pid, and return it. */
+const waitForPid = async (file: string): Promise<number> => {
+  let pid: number | undefined;
+  await until(() => {
+    pid = pidIn(file);
+    return pid !== undefined;
+  });
+  return pid as number;
 };
 
 describe("watchTree", () => {
@@ -439,21 +463,21 @@ describe("loom dev (runDev)", () => {
   it("regenerates and restarts on a new module, kills the whole process group, exits 0 on abort", async () => {
     const { app, lines, ac, starts, start } = setup();
     const done = start();
-    await until(() => starts().length === 1 && existsSync(join(root, "grandchild.pid")));
+    await until(() => starts().length === 1);
+    const firstGrand = await waitForPid(join(root, "grandchild.pid"));
     expect(readFileSync(join(app, "loom.gen.ts"), "utf8")).toContain("./flows/alpha/flow");
     const firstChild = starts()[0] as number;
-    const firstGrand = Number(readFileSync(join(root, "grandchild.pid"), "utf8"));
     expect(alive(firstGrand)).toBe(true);
 
     unlinkSync(join(root, "grandchild.pid"));
     touch(join(app, "flows", "beta", "flow.ts"));
-    await until(() => starts().length === 2 && existsSync(join(root, "grandchild.pid")));
+    await until(() => starts().length === 2);
+    const secondGrand = await waitForPid(join(root, "grandchild.pid"));
     expect(readFileSync(join(app, "loom.gen.ts"), "utf8")).toContain("./flows/beta/flow");
     // The previous run's whole tree is gone - not just the pid the loop spawned.
     await until(() => !alive(firstChild) && !alive(firstGrand));
     expect(lines.some((l) => l.includes("restarting"))).toBe(true);
 
-    const secondGrand = Number(readFileSync(join(root, "grandchild.pid"), "utf8"));
     ac.abort();
     await expect(done).resolves.toBe(0);
     // No orphan, no zombie: by the time runDev resolves the tree is down.
@@ -575,8 +599,7 @@ describe("loom dev (runDev)", () => {
        setInterval(() => {}, 1000);`
     );
     const done = start({ command: `"${process.execPath}" ${join(root, "parent.js")}` });
-    await until(() => existsSync(join(root, "gc-ready")));
-    const grand = Number(readFileSync(join(root, "gc-ready"), "utf8"));
+    const grand = await waitForPid(join(root, "gc-ready"));
     ac.abort();
     await expect(done).resolves.toBe(0);
     expect(existsSync(join(root, "flushed"))).toBe(true); // not SIGKILLed mid-flush
@@ -598,8 +621,7 @@ describe("loom dev (runDev)", () => {
       killGraceMs: 600_000,
       forceSignal: force.signal,
     });
-    await until(() => existsSync(join(root, "gc-ready")));
-    const pid = Number(readFileSync(join(root, "gc-ready"), "utf8"));
+    const pid = await waitForPid(join(root, "gc-ready"));
     ac.abort(); // first interrupt: SIGTERM, which this app ignores
     await until(() => existsSync(join(root, "got-term")));
     expect(alive(pid)).toBe(true);
@@ -810,9 +832,18 @@ describe("loom dev (cli)", () => {
         "--port",
         "0",
       ]);
-      await until(() => existsSync(join(root, "env.json")));
+      // Wait for the content, not the file: writeFileSync creates it before filling it.
+      let seen: unknown;
+      await until(() => {
+        try {
+          seen = JSON.parse(readFileSync(join(root, "env.json"), "utf8"));
+          return true;
+        } catch {
+          return false;
+        }
+      });
       expect(logs.join("\n")).toContain("loom inspector on"); // the config DID load for the inspector
-      expect(JSON.parse(readFileSync(join(root, "env.json"), "utf8"))).toEqual({
+      expect(seen).toEqual({
         a: null,
         q: null,
         dev: "1",
