@@ -1,6 +1,6 @@
 {
   "name": "@loom/graph-executor",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Distributed execution graph for Loom — fans a set of nodes into per-node executions (one writer each), dispatches them concurrently via the ExecutionDispatcher, records lineage, and joins the results",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,10 +20,10 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/dispatcher": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/scheduler": "workspace:*",
-    "@loom/worker-runtime": "workspace:*"
+    "@loom/dispatcher": "workspace:^",
+    "@loom/event-runtime": "workspace:^",
+    "@loom/scheduler": "workspace:^",
+    "@loom/worker-runtime": "workspace:^"
   },
   "devDependencies": {
     "@loom/core": "workspace:*",
@@ -38,5 +38,30 @@
     "vitest": "^2.1.8",
     "zod": "^3.23.8",
     "@loom/plugin-sqlite": "workspace:*"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/graph-executor"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

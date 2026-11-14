@@ -134,5 +134,11 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
   turbo's per-package cache is what the `test` task's `^build` dependency reads —
   CI has no remote cache, so it pays the cold number on every run.
 - All changes land on a feature branch via PR (never commit to `main` directly).
+- **Publishing to npm.** Every non-private package publishes as `@loom/*` under the `next`
+  dist-tag. `scripts/publish-metadata.mjs` is the one source of the publish fields (`version`,
+  `files`, `repository`, `publishConfig`, `workspace:^`); edit `RELEASE_VERSION` there, re-run it,
+  commit (the guard `packages/spec/src/publishMetadata.test.ts` refuses drift). Then, on a clean,
+  built `main`: `node scripts/publish.mjs` (dry run), and `node scripts/publish.mjs --yes` to publish.
+  Order: loom, then loom-ui and loom-plugins (their `@loom/*` ranges name the published version).
 - ADRs in `docs/adr/`; the recipe docs in `docs/` cross-link the examples that
   demonstrate them (e.g. `docs/transient-interpreter.md` → `db-observability`).

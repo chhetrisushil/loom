@@ -352,6 +352,12 @@ import {
       for (const e of entries) {
         const norm = e.replace(/^\.\//, "").replace(/\/$/, "");
         if (norm === "dist" || norm.startsWith("dist/") || norm === "package.json") continue;
+        // A `!` entry excludes, so it ships nothing; `src` (the sourcemaps' target) is the
+        // compiled sources, which the src/ scan above already checks (with its exemptions);
+        // LICENSE/NOTICE are copied in by scripts/publish.mjs at pack time and hold no code.
+        if (norm.startsWith("!") || norm === "src" || norm === "LICENSE" || norm === "NOTICE") {
+          continue;
+        }
         if (norm.includes("*")) {
           bad.push(
             `${p.dir}: glob entry "${e}" outside dist/ cannot be scanned; list files explicitly`

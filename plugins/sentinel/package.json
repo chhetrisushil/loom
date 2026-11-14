@@ -1,6 +1,6 @@
 {
   "name": "@loom/plugin-sentinel",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "The perpetual-agent pattern as one declaration (DX-1, db-copilot infra): sentinelPreset() bundles the schedule, contract-migratable carry state (@loom/plugin-durable-state), claim-checked telemetry (@loom/middleware), and the K10.6 pin policy — the five files of the db-sentinel example's harness, composition-time only (ADR 0043/0044).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,12 +19,12 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/middleware": "workspace:*",
-    "@loom/plugin-content": "workspace:*",
-    "@loom/plugin-durable-state": "workspace:*",
+    "@loom/core": "workspace:^",
+    "@loom/effect-runtime": "workspace:^",
+    "@loom/event-runtime": "workspace:^",
+    "@loom/middleware": "workspace:^",
+    "@loom/plugin-content": "workspace:^",
+    "@loom/plugin-durable-state": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -33,5 +33,30 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "plugins/sentinel"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }

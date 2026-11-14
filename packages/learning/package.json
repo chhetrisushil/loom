@@ -1,7 +1,7 @@
 {
   "name": "@loom/learning",
-  "version": "0.0.1",
-  "description": "The learning substrate for Loom \u2014 mine the durable log into trajectories, evaluate a candidate policy against real production traffic before shipping it, and gate promotion on the result. Read-only over the log; the learning algorithm itself is third-party.",
+  "version": "0.1.0",
+  "description": "The learning substrate for Loom — mine the durable log into trajectories, evaluate a candidate policy against real production traffic before shipping it, and gate promotion on the result. Read-only over the log; the learning algorithm itself is third-party.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,10 +20,10 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/analytics": "workspace:*",
-    "@loom/classify": "workspace:*",
-    "@loom/core": "workspace:*",
-    "@loom/verify": "workspace:*"
+    "@loom/analytics": "workspace:^",
+    "@loom/classify": "workspace:^",
+    "@loom/core": "workspace:^",
+    "@loom/verify": "workspace:^"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",
@@ -35,5 +35,30 @@
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chhetrisushil/loom.git",
+    "directory": "packages/learning"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__",
+    "!src/**/__fixtures__",
+    "!src/**/__snapshots__",
+    "!src/**/__golden__",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "next"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
