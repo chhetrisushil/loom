@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 
 // ── Learning evidence from the FOLD, not the log ─────────────────────────────
 //

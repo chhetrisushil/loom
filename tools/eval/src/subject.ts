@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import type { Subject } from "./suite";
 
 /** What `flowSubject` needs of a runtime: structurally `WorkflowRuntime.start`. */

@@ -16,7 +16,7 @@ import ts from "typescript";
 //
 // Like `nondeterminism.ts`, this analyzes a SOURCE REGION (the flow runner /
 // orchestration body). Step handler$ bodies are memoized by the kernel and are
-// not the target. Output feeds `@loom/verify`'s determinism rule via
+// not the target. Output feeds `@loomwork/verify`'s determinism rule via
 // `FlowSpec.loopIdentityCalls`.
 
 export interface LoopStepIdentityFinding {
@@ -202,7 +202,7 @@ export function analyzeLoopIdentityNode(
 /**
  * Analyze a source string (a flow runner / orchestration body) for `ctx.run`/
  * `ctx.execute` calls inside loops whose step id cannot vary per iteration
- * (ADR 0061). Feed the result to `@loom/verify` via `FlowSpec.loopIdentityCalls`.
+ * (ADR 0061). Feed the result to `@loomwork/verify` via `FlowSpec.loopIdentityCalls`.
  */
 export function analyzeLoopIdentity(source: string, location?: string): LoopStepIdentityFinding[] {
   const sf = ts.createSourceFile("loopid.ts", source, ts.ScriptTarget.ESNext, true);

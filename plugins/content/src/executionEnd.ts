@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // A terminal timestamp that is not a finite number (NaN, a string from an imported log or a 3P store,
 // +-Infinity, null) is not comparable: treat the execution as not ended so the citation clock applies.
@@ -12,7 +12,7 @@ const finiteOrUndefined = (t: unknown): number | undefined =>
  * EXECUTION_SUSPENDED / EXECUTION_STARTED likewise means live). `undefined` makes the sweep fall back
  * to the citation clock, so every uncertainty can only age a ref LATER or equal, never earlier.
  *
- * The terminal set is the one `@loom/workflow-runtime`'s `terminalEndedAt` uses (and the replay VM's
+ * The terminal set is the one `@loomwork/workflow-runtime`'s `terminalEndedAt` uses (and the replay VM's
  * `isKernelWritten` check for EXECUTION_CONTINUED); it is duplicated, not imported, so this package
  * takes no dependency on workflow-runtime. `gc.endClock.test.ts` (l) pins it against the ReplayVM.
  * Scans from the tail in sequence order (not timestamp order), usually stopping within a few events.

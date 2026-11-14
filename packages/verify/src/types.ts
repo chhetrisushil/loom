@@ -1,7 +1,7 @@
 /**
  * Structural input + report types for pre-flight runtime verification.
  *
- * `@loom/verify` is deliberately dependency-free: it operates on a `VerifyInput`
+ * `@loomwork/verify` is deliberately dependency-free: it operates on a `VerifyInput`
  * that is a *structural projection* of a resolved Loom config (flows, grants,
  * dispatcher targets, metered dimensions, schema versions). A thin adapter maps
  * a real `defineConfig(...)` + compiler manifest onto this shape, so the engine
@@ -105,7 +105,7 @@ export interface BudgetSpec {
 
 /**
  * A `secret()`/`sensitive()`/`internal()` mark the dot-path sinks cannot address (K10-R1).
- * Produced by `collectUnreachableMarks` in `@loom/classify`; the mark is silently inert —
+ * Produced by `collectUnreachableMarks` in `@loomwork/classify`; the mark is silently inert —
  * masking, field encryption and externalization all address scalar dot-paths, and none of
  * them descend into array elements.
  */
@@ -123,7 +123,7 @@ export interface UnreachableMarkRef {
 /**
  * A `ctx.run`/`ctx.suspend` target in the runner body that static analysis could
  * not resolve — an imported binding, a minted step (`mcpInvoke$("…")`), an
- * element access. Produced by `@loom/compiler`'s `analyzeRunnerReach`.
+ * element access. Produced by `@loomwork/compiler`'s `analyzeRunnerReach`.
  *
  * It exists so the reach-bounded rules can say "partially verified" instead of
  * reporting clean. Reachability is what `capability-compat`, `effect-class` and

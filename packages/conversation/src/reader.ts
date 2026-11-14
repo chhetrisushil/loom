@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { type EventStore, headOf, readRangeOf } from "@loomwork/event-runtime";
 import { type Identity, parseIdentity } from "./access";
 import { generationId } from "./ids";
 import { type HistoryEntry, type MessageRecord, RECORD_SOURCE } from "./types";

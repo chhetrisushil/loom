@@ -1,4 +1,4 @@
-import type { LlmStreamChunk } from "@loom/llm";
+import type { LlmStreamChunk } from "@loomwork/llm";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type Booted,
@@ -233,7 +233,7 @@ describe("live deltas are the ASKER's until the turn is classified", () => {
 
 describe("round 2: the gateway", () => {
   it("refuses a runtime whose policy lets a tenant peer query or send (the transcript would be readable around the filter)", async () => {
-    const { executionAccessPolicy } = await import("@loom/workflow-runtime");
+    const { executionAccessPolicy } = await import("@loomwork/workflow-runtime");
     await expect(
       boot({
         shared: true,

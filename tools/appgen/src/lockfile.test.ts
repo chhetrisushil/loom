@@ -142,7 +142,7 @@ describe("readLockfile validation", () => {
   it("the config sink escapes a grant even if one were to reach it", () => {
     const grant = "db.read\u202e\u2066\u2028\u{e0041}";
     const r = wireGrantsIntoConfig(
-      'import { defineConfig } from "@loom/app";\nexport default defineConfig({});\n',
+      'import { defineConfig } from "@loomwork/app";\nexport default defineConfig({});\n',
       { "cap\u202e": [grant] }
     );
     expect(r.changed).toBe(true);

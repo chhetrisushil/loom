@@ -1,5 +1,5 @@
-import { tainted } from "@loom/classify";
-import type { EffectContext } from "@loom/effect-runtime";
+import { tainted } from "@loomwork/classify";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import {
   UnsupportedModalityError,

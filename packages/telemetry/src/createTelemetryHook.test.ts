@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it, vi } from "vitest";
 import { createTelemetryHook } from "./createTelemetryHook";
 import type { TelemetryAdapter } from "./types";

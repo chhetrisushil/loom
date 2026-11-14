@@ -1,7 +1,7 @@
-import { projection$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import { projection$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { ReadModelService } from "./ReadModelService";

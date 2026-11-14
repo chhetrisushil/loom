@@ -1,4 +1,4 @@
-import { memory$ } from "@loom/core";
+import { memory$ } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { MemoryRuntime } from "./MemoryRuntime";
 

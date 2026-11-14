@@ -1,4 +1,4 @@
-# @loom/knowledge — document corpora over memory
+# @loomwork/knowledge — document corpora over memory
 
 A corpus of documents you ingest, revise, delete and retrieve passages from, built on the memory seam. There
 is no `knowledge$` construct and no separate embedding interface (ADR 0090): this package owns the one thing
@@ -8,9 +8,9 @@ retrieval-augmented answers over a runbook, wiki or policy set. `app.knowledge(s
 same `memoryStore` that backs `app.memory`.
 
 ```ts
-import { InMemoryMemoryStore } from "@loom/memory";
-import { assertGrounded, groundedRequest, openKnowledgeBase } from "@loom/knowledge";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import { InMemoryMemoryStore } from "@loomwork/memory";
+import { assertGrounded, groundedRequest, openKnowledgeBase } from "@loomwork/knowledge";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 
 const kb = openKnowledgeBase(new InMemoryMemoryStore(), { scope: "runbooks" });
 
@@ -67,7 +67,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/knowledge` — a corpus over the memory seam" in [docs/api-reference.org](../../docs/api-reference.org). It shows `openKnowledgeBase(config)`; the source takes `(store, options)`.
+- API reference: section "`@loomwork/knowledge` — a corpus over the memory seam" in [docs/api-reference.org](../../docs/api-reference.org). It shows `openKnowledgeBase(config)`; the source takes `(store, options)`.
 - Guide: [user guide, section 8: intent, planner and memory](../../docs/user-guide.md#8-intent-planner--memory).
 - ADRs: [0090 knowledge is retrieval over memory](../../docs/adr/0090-knowledge-is-retrieval-over-memory.md), [0091 corpus lifecycle](../../docs/adr/0091-corpus-lifecycle-and-the-knowledge-package.md), [0085 untrusted content](../../docs/adr/0085-untrusted-content-integrity-axis.md).
-- Source: `packages/knowledge/src`. Storage and tiers: [`@loom/memory`](../memory/README.md).
+- Source: `packages/knowledge/src`. Storage and tiers: [`@loomwork/memory`](../memory/README.md).

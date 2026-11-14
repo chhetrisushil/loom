@@ -1,5 +1,5 @@
-import { memory$ } from "@loom/core";
-import { InMemoryMemoryStore } from "@loom/memory";
+import { memory$ } from "@loomwork/core";
+import { InMemoryMemoryStore } from "@loomwork/memory";
 import { describe, expect, it } from "vitest";
 import { defineConfig } from "./defineConfig";
 

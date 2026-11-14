@@ -73,7 +73,7 @@ Being a genuine second consumer changed the design rather than ratifying it: a b
 single consumer would have accepted — cannot serve a flat component list at all. The rule earned
 its keep here.
 
-`plugins/a2ui` therefore gains a dependency on `@loom/blueprint-runtime`, the edge
+`plugins/a2ui` therefore gains a dependency on `@loomwork/blueprint-runtime`, the edge
 `renderer-react` and `renderer-terminal` already have.
 
 ## Consequences

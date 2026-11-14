@@ -1,8 +1,8 @@
-import { agent$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider } from "@loom/llm";
-import { ReasoningRuntime } from "@loom/reasoning";
+import { agent$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { LlmProvider } from "@loomwork/llm";
+import { ReasoningRuntime } from "@loomwork/reasoning";
 import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "./AgentRunner";
 

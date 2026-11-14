@@ -8,7 +8,7 @@
   output), [ADR 0140](0140-agent-claim-check-opt-in.md) (the claim-check, the other lever on tool-output
   bytes), [ADR 0138](0138-compaction-archives-what-it-removes.md) (the archive a removed frame stays resolvable
   from), [ADR 0061](0061-step-identity-interpreter-guardrails.md) (the frame ids), [ADR 0083](0083-second-consumer-rule.md).
-- Placement: **1P, `@loom/agent`.** Kernel, KERNEL_ABI, EVENT_SCHEMA, every SPI unchanged.
+- Placement: **1P, `@loomwork/agent`.** Kernel, KERNEL_ABI, EVENT_SCHEMA, every SPI unchanged.
 
 ## Context
 
@@ -39,8 +39,8 @@ digest of THAT value (tested against a flaky tool). A call settled without runni
 / skill-activation call) has no frame and no decision at that id; its `status` and digest describe the result
 the model saw, which the log holds only inside the next model call's messages. An invalid value throws `AgentLoopConfigError`.
 
-**D2 — digest canonicalization.** `digest` is the sha256 (lowercase hex, `sha256Hex` from `@loom/core`) of
-`canonicalJson(JSON.parse(JSON.stringify(output)))` (`@loom/core`: sorted object keys, no whitespace, arrays in
+**D2 — digest canonicalization.** `digest` is the sha256 (lowercase hex, `sha256Hex` from `@loomwork/core`) of
+`canonicalJson(JSON.parse(JSON.stringify(output)))` (`@loomwork/core`: sorted object keys, no whitespace, arrays in
 order; the one canonicalization ADR 0063 uses for schema pins), and `bytes` is the UTF-8 length of that text.
 The JSON round trip is deliberate: the live output a tool returned is not what a JSON event store records (a
 `Date` is its ISO string, a class with `toJSON` is its JSON, a `Map` is `{}`) and a resumed run reads the
@@ -75,7 +75,7 @@ cannot be proven full at compile time: the mode is runtime config) - a type-leve
 noted in the CHANGELOG. `isLeanAgentStep(step)` narrows an entry. `AgentRunner` and `agentStep$` (deprecated, ADR 0121) are not given the
 option.
 
-**D6 — readers.** `@loom/conversation` reads tool names only (works in both modes, tested). The `evals`
+**D6 — readers.** `@loomwork/conversation` reads tool names only (works in both modes, tested). The `evals`
 agentLoop subject reads `status` on a lean entry and the output heuristic on a full one; a DECLINED approval is
 `"error"` in lean mode only (the heuristic does not count a refusal), documented in its test. A reader that needs
 the output itself (a diagnostics runner that parses a tool's JSON) must resolve `stepId`, or stay on `"full"`.

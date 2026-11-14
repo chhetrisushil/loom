@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it, vi } from "vitest";
 import { outcomeAnalytics, rankFromOutcomes, recordOutcome } from "./outcomes";
 
@@ -39,7 +39,7 @@ describe("learning seam — outcomes → rankings", () => {
     expect(rankings["model-a"]).toBe(0.5); // 1/2
     expect(rankings["model-b"]).toBeGreaterThan(rankings["model-a"] as number);
 
-    // Closes the loop: feed these into `rankedRouter` (@loom/reasoning) and future
+    // Closes the loop: feed these into `rankedRouter` (@loomwork/reasoning) and future
     // routes prefer model-b — its choice is then a logged DECISION_RECORDED (P9).
     const stats = outcomeAnalytics(log);
     expect(stats[0]?.key).toBe("model-b");

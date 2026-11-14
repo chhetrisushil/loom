@@ -284,7 +284,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     flags: { config: "string", apply: "boolean", json: "boolean" },
   },
   verify: {
-    summary: "pre-flight runtime verification (@loom/verify)",
+    summary: "pre-flight runtime verification (@loomwork/verify)",
     usage: ["loom verify --config <module> [--manifest <path>] [--json]"],
     flags: { config: "string", manifest: "string", json: "boolean" },
   },
@@ -435,7 +435,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     flags: {},
   },
   version: {
-    summary: "print the @loom/cli version",
+    summary: "print the @loomwork/cli version",
     usage: ["loom version", "loom --version"],
     flags: {},
   },

@@ -1,4 +1,4 @@
-# @loom/cli
+# @loomwork/cli
 
 The `loom` command: project-local commands that are all lenses on the same durable event log. It
 scaffolds code (`new`, `gen`, `appgen`), validates before you run (`doctor`, `check`, `verify`,
@@ -15,14 +15,14 @@ deploy. The in-memory default has no log for it to read.
 
 ## Install
 
-Not published to npm yet. Inside this workspace add `"@loom/cli": "workspace:*"` (the scaffold already
+Not published to npm yet. Inside this workspace add `"@loomwork/cli": "workspace:*"` (the scaffold already
 lists it as a dev dependency) and run `pnpm loom ...` or `npx loom ...`. To put `loom` on your PATH
 from a checkout, run `pnpm link:global` at the repo root (`pnpm unlink:global` removes it).
 
 ## Entry points
 
 - Binary: `loom` (`dist/cli.js`).
-- Library: `@loom/cli` exports the core commands as functions (`cmdLogs`, `cmdDebug`, `cmdEval`,
+- Library: `@loomwork/cli` exports the core commands as functions (`cmdLogs`, `cmdDebug`, `cmdEval`,
   `cmdCheck`, `cmdGen`, `cmdNew`, `cmdAppgen`, `cmdDeployCheck`, `serveInspector`, `parseArgs`, ...).
   The newer commands are reachable through the binary only; import their logic from the packages
   they wrap.
@@ -37,7 +37,7 @@ npx loom doctor --config ./loom.config.ts              # every pre-flight check 
 ```
 
 ```ts
-import { cmdEval } from "@loom/cli";
+import { cmdEval } from "@loomwork/cli";
 
 const { report } = cmdEval("evals/");
 if (!report.ok) process.exit(1);
@@ -56,6 +56,6 @@ if (!report.ok) process.exit(1);
 
 - [CLI usage guide](../../docs/usage-cli.md) (command-by-command reference),
   [user guide, section 11](../../docs/user-guide.md#11-the-loom-cli).
-- [API reference: `@loom/cli`](../../docs/api-reference.org).
+- [API reference: `@loomwork/cli`](../../docs/api-reference.org).
 - [ADR 0010](../../docs/adr/0010-loom-cli.md), [operations runbook](../../docs/operations.md#6-pre-flight-checklist-loom-doctor).
-- [`@loom/create-loom-app`](../create-loom-app/README.md), [`@loom/compiler`](../compiler/README.md).
+- [`@loomwork/create-loom-app`](../create-loom-app/README.md), [`@loomwork/compiler`](../compiler/README.md).

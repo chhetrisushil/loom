@@ -11,17 +11,17 @@
   [ADR 0060](0060-typed-failure-channels.md) (typed channels), [ADR 0085](0085-untrusted-content-integrity-axis.md)
   (untrusted text), [ADR 0003](0003-cloud-run-worker-runtime.md) (the Cloud Run worker runtime, which this
   is NOT).
-- Placement: **SPI = new `@loom/sandbox` package (`packages/sandbox`, listed in `SPI_PACKAGES`);
-  reference backend = `@loom/plugin-sandbox` (QuickJS, 1P); every other backend = 3P.** Kernel,
+- Placement: **SPI = new `@loomwork/sandbox` package (`packages/sandbox`, listed in `SPI_PACKAGES`);
+  reference backend = `@loomwork/plugin-sandbox` (QuickJS, 1P); every other backend = 3P.** Kernel,
   KERNEL_ABI and EVENT_SCHEMA unchanged. New `SANDBOX_BACKEND_SPI_VERSION 1.0.0`.
 
 ## Context
 
-`@loom/plugin-sandbox` runs model-written code in QuickJS-in-WASM. It is the right engine for what it was
+`@loomwork/plugin-sandbox` runs model-written code in QuickJS-in-WASM. It is the right engine for what it was
 built for (reshaping tool output in JavaScript), and it is the only engine loom offers. Two questions came
 up together:
 
-1. *Can the Cloud Run plugin run model-written code?* No. `@loom/platform-cloudrun` decides **where**
+1. *Can the Cloud Run plugin run model-written code?* No. `@loomwork/platform-cloudrun` decides **where**
    trusted, registered flows run (`POST /execute` names a `flowId`, never source), and its worker holds
    the stores, the platform's secrets and identity, and can run as SYSTEM. It is a placement adapter, not
    an isolation boundary.
@@ -44,7 +44,7 @@ many review rounds (ADR 0064's 2026-09-27 amendment, `inputLimit.test.ts`, `outp
 `scriptIntegrity.test.ts`). A backend author who re-implements them gets them subtly wrong, and the copy
 that drifts is the one nobody runs the security list against (ADR 0089 D2's argument, one level up).
 
-`@loom/isolate` stays separate (owner ruling, 2026-11-01). It runs TRUSTED tool code with brokered egress;
+`@loomwork/isolate` stays separate (owner ruling, 2026-11-01). It runs TRUSTED tool code with brokered egress;
 this seam runs UNTRUSTED, model-written scripts. The two have different trust models, and one interface
 over both would blur the line that matters most.
 
@@ -52,7 +52,7 @@ over both would blur the line that matters most.
 
 ### D1 — The SPI is the engine, and only the engine
 
-`@loom/sandbox` defines:
+`@loomwork/sandbox` defines:
 
 ```ts
 interface SandboxBackend {
@@ -122,7 +122,7 @@ the QuickJS backend. Mapping to channels, the order between them and every bound
 
 ### D3 — One effect owns the guarantees; it is the only way to use a backend
 
-`SandboxEffect` (in `@loom/sandbox`) takes `(scripts: ScriptReader, backend, options)` and does,
+`SandboxEffect` (in `@loomwork/sandbox`) takes `(scripts: ScriptReader, backend, options)` and does,
 unchanged from ADR 0064/0089:
 
 - parse `SandboxEvalInput`;
@@ -133,8 +133,8 @@ unchanged from ADR 0064/0089:
 - bound the output (`limitExceeded { kind: "output" }`);
 - check the shape (`shapeMismatch`).
 
-`SANDBOX_ERRORS`, `SandboxEvalInput`, `sandboxEval$`, `shapeHash` and `boundText` move to `@loom/sandbox`.
-`@loom/plugin-sandbox` re-exports them, and its `SandboxEvalEffect` and `registerSandboxEval` keep their
+`SANDBOX_ERRORS`, `SandboxEvalInput`, `sandboxEval$`, `shapeHash` and `boundText` move to `@loomwork/sandbox`.
+`@loomwork/plugin-sandbox` re-exports them, and its `SandboxEvalEffect` and `registerSandboxEval` keep their
 signatures (QuickJS backend preconfigured), so no existing consumer changes a line.
 
 **New: the success value is returned as its JSON round-trip.** The effect already serialises the value to
@@ -173,7 +173,7 @@ interface SandboxBackendCapabilities {
 
 ### D5 — The security list becomes a conformance kit
 
-`runSandboxBackendConformance(factory, { fixtures? })` in `@loom/conformance` runs ADR 0064's list against
+`runSandboxBackendConformance(factory, { fixtures? })` in `@loomwork/conformance` runs ADR 0064's list against
 any backend, through `SandboxEffect`, so it proves the composition a user actually deploys:
 
 | Case | Asserted |
@@ -197,7 +197,7 @@ the kit in loom CI.
 
 ### D6 — `loom plugin new sandbox <name>` scaffolds a backend
 
-A new `sandbox` seam in `@loom/scaffold`. It emits a package with:
+A new `sandbox` seam in `@loomwork/scaffold`. It emits a package with:
 
 - a `SandboxBackend` stub whose capabilities are the most conservative honest claims, the WORST case:
   `network: "open"`, `freshPerRun: false`, `wallClock: "soft"`, `memory: false`, `cpu: false`. Each
@@ -219,7 +219,7 @@ rule through `SPI_PACKAGES`.
 - A Cloud Run, Firecracker, E2B or in-house sandbox is a 3P package of one class, which proves itself with
   the same kit QuickJS passes, and inherits every channel, bound and replay rule without copying them.
 - QuickJS-specific error interpretation moves from the effect into the QuickJS backend. The ADR 0064
-  security tests keep running, unchanged, against `@loom/plugin-sandbox`.
+  security tests keep running, unchanged, against `@loomwork/plugin-sandbox`.
 - Behaviour change, D3: the first run returns the JSON form of the value, which is what replay already
   returned. Covered by a test.
 - Behaviour changes against the pre-0144 `SandboxEvalEffect`: (a) a success outcome that arrives after the

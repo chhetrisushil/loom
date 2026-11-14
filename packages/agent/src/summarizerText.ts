@@ -1,4 +1,4 @@
-import { isTainted } from "@loom/classify";
+import { isTainted } from "@loomwork/classify";
 
 /** Bound on wrapper-in-wrapper and part nesting, matching loom's other content walkers. */
 const MAX_DEPTH = 16;

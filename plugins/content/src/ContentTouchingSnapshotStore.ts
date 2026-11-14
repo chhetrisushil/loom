@@ -1,5 +1,9 @@
-import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
-import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import { type DecoratorPlan, installOptional } from "@loomwork/event-runtime";
+import type {
+  OptionalSnapshotStoreMethod,
+  Snapshot,
+  SnapshotStore,
+} from "@loomwork/snapshot-runtime";
 import type { ContentStore } from "./ContentStore";
 import { type TouchErrorHook, touchAround } from "./touchAround";
 

@@ -1,5 +1,5 @@
 {
-  "name": "@loom/graph-executor",
+  "name": "@loomwork/graph-executor",
   "version": "0.1.0",
   "description": "Distributed execution graph for Loom — fans a set of nodes into per-node executions (one writer each), dispatches them concurrently via the ExecutionDispatcher, records lineage, and joins the results",
   "main": "./dist/index.js",
@@ -20,24 +20,24 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/dispatcher": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/scheduler": "workspace:^",
-    "@loom/worker-runtime": "workspace:^"
+    "@loomwork/dispatcher": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/scheduler": "workspace:^",
+    "@loomwork/worker-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/plugin-cloudrun": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/worker-runtime-local": "workspace:*",
-    "@loom/plugin-worker-server": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/core": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/plugin-cloudrun": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/worker-runtime-local": "workspace:*",
+    "@loomwork/plugin-worker-server": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8",
-    "@loom/plugin-sqlite": "workspace:*"
+    "@loomwork/plugin-sqlite": "workspace:*"
   },
   "license": "Apache-2.0",
   "repository": {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import {
   type ConversationHub,
   ConversationNotFoundError,
@@ -15,17 +15,17 @@ import {
   isValidConversationId,
   parseCursor,
   parseIdentity,
-} from "@loom/conversation";
-import { BadRequestError, exposeError } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import { type ReasoningReader, readReasoningBounded } from "@loom/llm";
+} from "@loomwork/conversation";
+import { BadRequestError, exposeError } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import { type ReasoningReader, readReasoningBounded } from "@loomwork/llm";
 import {
   ExecutionDeniedError,
   InboxClosedError,
   InboxFullError,
   InboxMessageRefusedError,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { SseSink, frame } from "./sse";
 
 // ── The end-user gateway of a conversation (ADR 0122 D6, D10) ───────────────────────────────────────
@@ -46,7 +46,7 @@ import { SseSink, frame } from "./sse";
 //   * AUTHENTICATION: every route needs `authenticate(req)` to return a principal with an `actor`;
 //     the server REFUSES TO BE CREATED without it unless `insecure: true` (never under strict), and
 //     refuses a runtime with no fail-closed execution authorizer unless `allowNoRuntimeAuthz`.
-//   * AUTHORIZATION is `@loom/conversation`'s, per conversation: OWNER-ONLY by default (the identity that
+//   * AUTHORIZATION is `@loomwork/conversation`'s, per conversation: OWNER-ONLY by default (the identity that
 //     started it), or the explicit participant set of a shared conversation. There is no second ACL here.
 //   * EXISTENCE IS HIDDEN: a conversation the caller may not touch and one that does not exist both
 //     answer 404 `{"error":"not found"}`, on every route including the stream.

@@ -42,7 +42,7 @@ KERNEL_ABI unchanged.
 | Trust ladder; destructive DDL "structurally unreachable" | K2 capability grants + `policy$` + K12 verified approvals (`APPROVAL_GRANTED`) + suspend gates — the ladder is **policy content over existing enforcement rings**, per environment |
 | Shadow execution / lock estimation dry-runs | fork → simulate → promote branching (ADR 0005; `incident-war-room`, `schema-migration-planner`) |
 | Decisional layer captured as interaction exhaust | `ctx.decide` / `DECISION_RECORDED` + `OUTCOME_RECORDED` |
-| Acceptance-governed proactivity / self-demoting categories | `@loom/analytics` outcome mining + `rankedRouter` (M9–M11) |
+| Acceptance-governed proactivity / self-demoting categories | `@loomwork/analytics` outcome mining + `rankedRouter` (M9–M11) |
 | Ambient panel / interruptive alerts | A2UI durable panels folded from the log; alert tiering is app policy |
 | Stale telemetry → "confidently wrong" defense | Staleness-typed reads: a stale wake is a recorded, replayable outcome (requirements P-3) |
 | Data governance (query text carries PII) | `classify` markers, K10.2 crypto-shredding, K10.3 redaction, T3 subject rights, K12 tenant scoping |
@@ -61,7 +61,7 @@ proposal needs a data-protection section — the answers exist in the K10/T3/K12
 
 Loom does not become a telemetry ingestion system (unchanged from the sentinel requirements);
 collectors and rollup jobs stay outside the `tool$` boundary. Editor/CI surfaces, NL query
-authoring, and the diagram UI are application work over existing seams (`@loom/llm`, A2UI,
+authoring, and the diagram UI are application work over existing seams (`@loomwork/llm`, A2UI,
 deploy-check tooling). T4 run chaining stays behind its ADR 0052 evidence gate — nothing in
 the copilot (including on-demand Q&A, which is ordinary request/response executions) hits
 either promotion wall.
@@ -78,7 +78,7 @@ Today's query story — per-execution `read()` + in-memory projections (ADR 0049
 re-folds the world on cold start.
 
 **RM-1 (MUST, alongside copilot Phase 1–2).** A first-party read-model plugin
-(`@loom/plugin-read-model` or a durable-projection extension of `projection-runtime`):
+(`@loomwork/plugin-read-model` or a durable-projection extension of `projection-runtime`):
 projections whose folded state is **persisted and checkpointed** (state + last-seen watermark),
 tailing the store's cross-node `subscribe` feed, resuming from the watermark on restart. No
 kernel change — a consumer of existing seams.
@@ -131,8 +131,8 @@ same both times.
 
 **ST-0 (no action — already shipped transports).** UI/token streaming: `ctx.stream(eventType,
 delta, done)` (durable, replay-deterministic — the A2UI path) and the LLM SPI's
-`LlmStreamChunk`. Cross-flow composition ("piping" flows): `@loom/orchestration` /
-graph-executor. Live tailing: `subscribe` / `@loom/live-query`.
+`LlmStreamChunk`. Cross-flow composition ("piping" flows): `@loomwork/orchestration` /
+graph-executor. Live tailing: `subscribe` / `@loomwork/live-query`.
 
 **ST-1 (SHOULD).** Optional **`putStream()`** on the `ContentStore` SPI (additive MINOR,
 conformance-tested): content-addressed streaming ingestion, hash computed over the stream,
@@ -166,7 +166,7 @@ retention has an operator surface (`loom retention run`), the blob sweep needs t
 (dry-run by default, `--apply`, report table).
 
 **DX-3 (SHOULD).** The acceptance-governance loop as a worked example/doc:
-`OUTCOME_RECORDED` → `@loom/analytics` → `rankedRouter` demotion — the proposal's
+`OUTCOME_RECORDED` → `@loomwork/analytics` → `rankedRouter` demotion — the proposal's
 "suggestion categories demote themselves" is assembled from existing parts; document the
 assembly so the copilot team doesn't rediscover it.
 

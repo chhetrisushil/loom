@@ -1,4 +1,4 @@
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLlmEffect } from "./createLlmEffect";
 import { assistantMessageOf, layoutOf } from "./parts";

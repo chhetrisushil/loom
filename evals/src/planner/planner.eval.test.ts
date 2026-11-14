@@ -1,5 +1,5 @@
 import { readdirSync } from "node:fs";
-import { CassetteMissError, reportDigest } from "@loom/eval";
+import { CassetteMissError, reportDigest } from "@loomwork/eval";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializeCassette } from "../cassetteFiles";
 import { failingMetrics, toRows } from "../gate";
@@ -24,7 +24,7 @@ const swap = (id: string, data: ReturnType<typeof store.load>) => (c: PlannerCas
 const isRouting = (system: string | undefined) =>
   system?.startsWith("You route a user's request") === true;
 
-describe("planner eval (@loom/intent + @loom/planner, hand-authored cassettes)", () => {
+describe("planner eval (@loomwork/intent + @loomwork/planner, hand-authored cassettes)", () => {
   let real: SuiteRun;
   const fetchSpy = vi.fn(() => {
     throw new Error("network call during a replay eval");

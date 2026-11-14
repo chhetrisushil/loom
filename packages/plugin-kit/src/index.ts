@@ -1,15 +1,15 @@
 // Type helpers for authoring Loom plugins. This package intentionally depends only
-// on the SPI interface packages — never on @loom/app — so a store plugin can be
+// on the SPI interface packages — never on @loomwork/app — so a store plugin can be
 // typed against the preset contract without pulling in the composition layer (and
 // without the app→plugin cycle that would create). See ADR 0043 / docs/plugins.md.
 
-import type { ArchiveStore, BranchRegistry, EventStore } from "@loom/event-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+import type { ArchiveStore, BranchRegistry, EventStore } from "@loomwork/event-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 
 /**
  * The `custom` storage descriptor every store plugin's preset returns — structurally
- * identical to `@loom/app`'s `StorageConfig` `custom` arm, but declared here so plugins
- * don't depend on `@loom/app`.
+ * identical to `@loomwork/app`'s `StorageConfig` `custom` arm, but declared here so plugins
+ * don't depend on `@loomwork/app`.
  */
 export interface CustomStorage {
   kind: "custom";

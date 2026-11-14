@@ -1,9 +1,9 @@
-import type { CapabilityCatalog } from "@loom/capability";
-import type { LlmProvider } from "@loom/llm";
-import type { ReasoningRuntime } from "@loom/reasoning";
-import { Priority } from "@loom/scheduler";
-import type { Scheduler } from "@loom/scheduler";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import type { CapabilityCatalog } from "@loomwork/capability";
+import type { LlmProvider } from "@loomwork/llm";
+import type { ReasoningRuntime } from "@loomwork/reasoning";
+import { Priority } from "@loomwork/scheduler";
+import type { Scheduler } from "@loomwork/scheduler";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import { PlanFailedError, type PlanGoalInput, planGoal } from "./planGoal";
 import type { PlanGraph } from "./planGraph";
 

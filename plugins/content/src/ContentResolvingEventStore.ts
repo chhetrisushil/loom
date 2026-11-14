@@ -1,11 +1,11 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type DecoratorPlan,
   type EventStore,
   type OptionalEventStoreMethod,
   installOptional,
   readRangeOf,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import {
   type ContentRef,
@@ -47,7 +47,7 @@ export interface ContentResolvingEventStoreOptions {
  * re-wrap needed. A read of an execution whose externalized bytes were erased throws
  * {@link ContentMissingError} — replay fails loudly, never silently diverges (G1).
  *
- * **Composing with `@loom/plugin-audit-chain`:** wrap this store INSIDE the hash chain —
+ * **Composing with `@loomwork/plugin-audit-chain`:** wrap this store INSIDE the hash chain —
  * `hashChainedEventStore(new ContentResolvingEventStore(...))`. Chained the other way round
  * the chain hashes only the ref string, so a rewritten blob verifies clean. See
  * `hashChainedEventStore`'s note and `contentOrdering.test.ts`.

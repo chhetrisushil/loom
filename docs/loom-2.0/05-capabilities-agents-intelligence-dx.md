@@ -37,7 +37,7 @@ export interface CapabilityDefinition<TIn = unknown, TOut = unknown> {
   readonly _tag: "CapabilityDefinition";
   id: string;
   name: string;
-  intent: string;                    // NL goal — matched by @loom/intent & @loom/planner
+  intent: string;                    // NL goal — matched by @loomwork/intent & @loomwork/planner
   tags: string[];
   inputSchema: ZodSchema<TIn>;
   flow: RegisteredFlow<TIn, TOut>;
@@ -110,8 +110,8 @@ M7 adds a second, **distinct** protection ring. It is important not to conflate 
 
 | Ring | Governs | Boundary | Fact on denial |
 |---|---|---|---|
-| **K2 effect authorizer** (`@loom/effect-runtime`) | which *effects* (tools/LLM/human/A2A) a running flow may invoke | inside the `EffectRuntime`, per `toolId` | `EFFECT_DENIED` (logged, P9) → `CapabilityDeniedError` |
-| **M7 invoke authorizer** (`@loom/capability`) | who may **invoke a capability** (start an intent-addressable flow at all) | at the catalog's `invoke` entry point | throws `CapabilityInvokeDeniedError` (no execution started) |
+| **K2 effect authorizer** (`@loomwork/effect-runtime`) | which *effects* (tools/LLM/human/A2A) a running flow may invoke | inside the `EffectRuntime`, per `toolId` | `EFFECT_DENIED` (logged, P9) → `CapabilityDeniedError` |
+| **M7 invoke authorizer** (`@loomwork/capability`) | who may **invoke a capability** (start an intent-addressable flow at all) | at the catalog's `invoke` entry point | throws `CapabilityInvokeDeniedError` (no execution started) |
 
 The K2 ring decides *what a flow that is already running is allowed to do*. The M7 ring decides *whether that flow is allowed to start in the first place* — front-door admission versus in-house permissions.
 
@@ -149,7 +149,7 @@ sequenceDiagram
 
 ## 2. Agent runtime re-based (M8, P8)
 
-`@loom/agent` is a ReAct-style, tool-using loop that runs *inside* a durable flow. M8's headline change: the agent's model call is **re-based onto the `ReasoningRuntime`** so routing and elevation are decided (and logged) by the reasoning plane, while the agent stays thin. The bare-provider path is preserved byte-for-byte.
+`@loomwork/agent` is a ReAct-style, tool-using loop that runs *inside* a durable flow. M8's headline change: the agent's model call is **re-based onto the `ReasoningRuntime`** so routing and elevation are decided (and logged) by the reasoning plane, while the agent stays thin. The bare-provider path is preserved byte-for-byte.
 
 > **Since ADR 0087 there are two ways to run the loop, and this chapter describes the first.**
 > `agentStep$` wraps the whole loop in ONE `LlmEffect`, so replay serves the whole thing from a
@@ -239,7 +239,7 @@ sequenceDiagram
 
 M1–M8 *enriched the log*: metering wrote `RESOURCE_METERED` (tokens/cost/ms), the decision seam wrote `DECISION_RECORDED` (routes/elevations), and the authority/quota rings wrote `EFFECT_DENIED` / `QUOTA_EXCEEDED`. M9–M11 are the payoff — pure, read-only *lenses on the log* ([D11 in the architecture](../architecture.md#d11--tooling-is-lenses-on-the-log-not-new-infrastructure)) that turn that enriched history into analytics, optimizers, and a single advisory report. **None of them writes; none affects the fold.**
 
-### 3.1 M9 — `@loom/analytics`: read-only analyzers
+### 3.1 M9 — `@loomwork/analytics`: read-only analyzers
 
 Four pure functions each fold an `EventEnvelope[]` into a typed summary; `analyze` runs all four ([`packages/analytics/src/analyze.ts`](../../packages/analytics/src/analyze.ts)):
 
@@ -297,7 +297,7 @@ M10 turns the M9 lenses into *optimizers* ([`packages/analytics/src/intelligence
 - **`rankModels(events)`** ([`intelligence.ts`](../../packages/analytics/src/intelligence.ts)) — returns `reasoningAnalytics(events).routes`, i.e. each model id → how often it was the chosen route. This is a proxy for "which models actually got used and (implicitly) trusted."
 - **`hotFailures(events, limit = 5)`** ([`intelligence.ts`](../../packages/analytics/src/intelligence.ts)) — the "what's flaky" lens: most-failing step ids, most-frequent first.
 
-The learned router lives in `@loom/reasoning`. **`rankedRouter(rankings)`** ([`packages/reasoning/src/router.ts`](../../packages/reasoning/src/router.ts)) is a `Router` that, given a ranking (typically from `rankModels`), **prefers the highest-ranked route that exists**, falling back to cheap-first `tagRouter` for unranked requests:
+The learned router lives in `@loomwork/reasoning`. **`rankedRouter(rankings)`** ([`packages/reasoning/src/router.ts`](../../packages/reasoning/src/router.ts)) is a `Router` that, given a ranking (typically from `rankModels`), **prefers the highest-ranked route that exists**, falling back to cheap-first `tagRouter` for unranked requests:
 
 ```ts
 export function rankedRouter(rankings: Record<string, number>): Router {
@@ -360,7 +360,7 @@ Analyze → rank → apply (via `rankedRouter` + `ctx.decide`) → log → analy
 
 ## 4. AI-native DX — NL → codegen (P11)
 
-`@loom/appgen` is Loom's answer to "AI-native developer experience" — and it is deliberately *not* a runtime that interprets natural language. It is **brownfield-aware**: it scans the app that already exists and applies a *delta*. Four stages, with NL understanding isolated to exactly one and everything else deterministic and offline (see [ADR 0042](../adr/0042-ai-native-brownfield-appgen.md)):
+`@loomwork/appgen` is Loom's answer to "AI-native developer experience" — and it is deliberately *not* a runtime that interprets natural language. It is **brownfield-aware**: it scans the app that already exists and applies a *delta*. Four stages, with NL understanding isolated to exactly one and everything else deterministic and offline (see [ADR 0042](../adr/0042-ai-native-brownfield-appgen.md)):
 
 **scan → plan → apply → validate.** The output is ordinary Loom code, statically wired (P4/P5), with `TODO` handlers to fill in — *code you own*, not a black box you call.
 
@@ -370,7 +370,7 @@ Analyze → rank → apply (via `rankedRouter` + `ctx.decide`) → log → analy
 
 ### 4.2 `planChanges(intent, appModel) → ChangeSpec` (the one NL stage)
 
-The plan stage is the *only* component that sees raw NL, and it emits a structured `ChangeSpec` — an `AppSpec` extended with an operation per capability and step (`create | extend | modify | delete`), plus `addApproval`/`addUi`/`wireGrants`. `planChangesDeterministic` wraps the directive grammar parser and diffs the result against the `AppModel`; a model-backed planner ([`@loom/appgen-model`](../../tools/appgen-model), §4.5) emits the *same* `ChangeSpec`. Codegen never sees raw NL either way.
+The plan stage is the *only* component that sees raw NL, and it emits a structured `ChangeSpec` — an `AppSpec` extended with an operation per capability and step (`create | extend | modify | delete`), plus `addApproval`/`addUi`/`wireGrants`. `planChangesDeterministic` wraps the directive grammar parser and diffs the result against the `AppModel`; a model-backed planner ([`@loomwork/appgen-model`](../../tools/appgen-model), §4.5) emits the *same* `ChangeSpec`. Codegen never sees raw NL either way.
 
 The base `AppSpec`/`ChangeSpec` types ([`tools/appgen/src/types.ts`](../../tools/appgen/src/types.ts), [`changeSpec.ts`](../../tools/appgen/src/changeSpec.ts)):
 
@@ -406,7 +406,7 @@ Natural, compound phrasing ("add a summarize step to the planner and pause for a
 
 ### 4.3 `applyChanges(changeSpec, appModel) → FilePlan` (deterministic)
 
-Creates come from the same folder-convention templates as `create-loom-app` / `loom new` (reusing `@loom/scaffold`): `app/flows/<id>/flow.ts` (a `RegisteredFlow` with `step$`/`handler$`/`flow$` and `TODO` handlers), and a regenerated `app/loom.gen.ts`. Edits to existing flows are **surgical, formatting-preserving splices** via a self-contained `FlowEditor` (a TS-AST reader + an offset splice buffer): insert a `step$` const, register it in `steps: [...]`, wire a `ctx.run(...)` call into the runner, add an approval/UI gate, or wire grants into `app/config.ts`. Deletes remove generated flow files/steps.
+Creates come from the same folder-convention templates as `create-loom-app` / `loom new` (reusing `@loomwork/scaffold`): `app/flows/<id>/flow.ts` (a `RegisteredFlow` with `step$`/`handler$`/`flow$` and `TODO` handlers), and a regenerated `app/loom.gen.ts`. Edits to existing flows are **surgical, formatting-preserving splices** via a self-contained `FlowEditor` (a TS-AST reader + an offset splice buffer): insert a `step$` const, register it in `steps: [...]`, wire a `ctx.run(...)` call into the runner, add an approval/UI gate, or wire grants into `app/config.ts`. Deletes remove generated flow files/steps.
 
 The **safety gate**: a handler body is overwritten only if it still hashes to the generated `TODO` stub. Anything a human has touched is insert-only, and a `delete` refuses to remove a flow/step carrying hand-written code. Untouched formatting and comments are preserved byte-for-byte, which keeps the `--dry-run` diff honest.
 
@@ -423,9 +423,9 @@ flowchart LR
   PLAN --> OWN["Plain, static TypeScript<br/>you own & edit (P4/P5) + .loom lockfile"]
 ```
 
-### 4.5 Optional local model (`@loom/appgen-model`)
+### 4.5 Optional local model (`@loomwork/appgen-model`)
 
-The plan stage can be driven by a small **on-device Gemma model** (`loom appgen --model <gguf>`): output is constrained to the `ChangeSpec` JSON schema (grammar-constrained decoding), planning runs through [`@loom/reasoning`](../../packages/reasoning)'s cheap-first elevation ladder with a *validator* confidence signal (logging elevations, P9), and a **self-repair loop** re-prompts the model with the exact semantic issues when a plan references a flow/step that doesn't exist. It is entirely optional and offline — if the model is missing, too weak, or produces an invalid plan, `appgen` falls back to the deterministic parser. You always get a valid `ChangeSpec`; that is the AI-native DX thesis — NL gets you a *starting point of real, inspectable code you own*, never a runtime that re-interprets English.
+The plan stage can be driven by a small **on-device Gemma model** (`loom appgen --model <gguf>`): output is constrained to the `ChangeSpec` JSON schema (grammar-constrained decoding), planning runs through [`@loomwork/reasoning`](../../packages/reasoning)'s cheap-first elevation ladder with a *validator* confidence signal (logging elevations, P9), and a **self-repair loop** re-prompts the model with the exact semantic issues when a plan references a flow/step that doesn't exist. It is entirely optional and offline — if the model is missing, too weak, or produces an invalid plan, `appgen` falls back to the deterministic parser. You always get a valid `ChangeSpec`; that is the AI-native DX thesis — NL gets you a *starting point of real, inspectable code you own*, never a runtime that re-interprets English.
 
 ---
 

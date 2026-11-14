@@ -1,10 +1,10 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import {
   InMemoryAsyncSnapshotStore,
   ProfilingSnapshotStore,
   type Snapshot,
   zstdAvailable,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
 import { decryptValue, encryptValue } from "./crypto";

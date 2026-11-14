@@ -1,5 +1,5 @@
-import { UNTRUSTED_CONTENT_SYSTEM_NOTE } from "@loom/llm";
-import type { LlmMessageInput, LlmRequestInput } from "@loom/llm";
+import { UNTRUSTED_CONTENT_SYSTEM_NOTE } from "@loomwork/llm";
+import type { LlmMessageInput, LlmRequestInput } from "@loomwork/llm";
 import type { Passage } from "./types";
 
 /**

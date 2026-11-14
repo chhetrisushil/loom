@@ -1,4 +1,4 @@
-import type { ModelRoute } from "@loom/reasoning";
+import type { ModelRoute } from "@loomwork/reasoning";
 import { GemmaProvider } from "./GemmaProvider";
 import { changeSpecJsonSchema } from "./schema";
 

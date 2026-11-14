@@ -1,17 +1,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { step$ } from "@loom/core";
-import { LocalDispatcher } from "@loom/dispatcher";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { step$ } from "@loomwork/core";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
 
-import { createWorkerServer } from "@loom/plugin-worker-server";
-import type { WorkerServer } from "@loom/plugin-worker-server";
-import type { ExecutionResult } from "@loom/worker-runtime";
-import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+import { createWorkerServer } from "@loomwork/plugin-worker-server";
+import type { WorkerServer } from "@loomwork/plugin-worker-server";
+import type { ExecutionResult } from "@loomwork/worker-runtime";
+import { LocalWorkerRuntime } from "@loomwork/worker-runtime-local";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { CloudRunWorkerRuntime } from "./CloudRunWorkerRuntime";

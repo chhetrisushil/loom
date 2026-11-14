@@ -7,7 +7,7 @@
 The `EffectRuntime` is the authority boundary. Give it a least-privilege `GrantTable` and an ungranted effect is **denied** (the denial is logged as `EFFECT_DENIED`; the step fails).
 
 ```ts
-import { EffectRuntime, GrantTable } from "@loom/effect-runtime";
+import { EffectRuntime, GrantTable } from "@loomwork/effect-runtime";
 
 const effectRuntime = new EffectRuntime([], {
   security: { authorizer: new GrantTable({ "incident-flow": ["metrics-tool", "logs-tool"] }) }, // grant only these
@@ -19,7 +19,7 @@ const effectRuntime = new EffectRuntime([], {
 **Declarative policies (`policy$`).** A `GrantTable` is imperative wiring; `policy$` is the declarative companion enforced through the *same* ring by a `PolicyAuthorizer`. Attach policies to a flow (`flow$({ policies: [...] })`) or app-globally (`defineConfig({ security: { policies: [...] } })`) — `defineConfig` reads them and builds the authorizer automatically.
 
 ```ts
-import { policy$ } from "@loom/core";
+import { policy$ } from "@loomwork/core";
 
 policy$({
   id: "pii-guard",
@@ -47,7 +47,7 @@ source uses the grant model.)*
 
 Grants are a **runtime floor** — may this flow invoke this tool at all. Effect classes are a
 **static ceiling** — may this flow reach something *worse than it declared*. They are separate
-questions, so a granted capability can still bust the class and K2 will not stop it. `@loom/verify`'s
+questions, so a granted capability can still bust the class and K2 will not stop it. `@loomwork/verify`'s
 `effect-class` rule catches that before the run starts.
 
 The class **vocabulary is yours** — Loom checks the ordering you give it rather than defining one:
@@ -76,7 +76,7 @@ The kernel's defaults are permissive — a missing authorizer allows every effec
 - **What strict refuses.** `defineConfig` throws, listing every problem, without `security.authorizer`, `security.executionAuthorizer` and `security.resumeAuthenticator` (`strict: { requireResumeAuthenticator: false }` declares an app with no approval gates), if `checks.verify` is `"off"`, and if every spend bound is switched off. Not strict, you get one advisory via `observability.onWarn`; `strict: false` silences it.
 - **Fail-closed execution authz (R3).** Under strict a principal-less
   `start`/`resume`/`cancel`/`loadState` is handed to `security.executionAuthorizer` with
-  `principal: undefined` instead of skipping it; `executionAccessPolicy` (`@loom/workflow-runtime`)
+  `principal: undefined` instead of skipping it; `executionAccessPolicy` (`@loomwork/workflow-runtime`)
   is the reference policy (owner/tenant/any/deny per op, workflow allow-list, `allowAnonymous`
   default false). Timers, recovery and the child supervisor present `runtime.systemOptions()`;
   `LocalWorkerRuntime` does NOT by default: a dispatched package acts as its `principal` (an
@@ -135,7 +135,7 @@ defineConfig({ …, security: { resumeAuthenticator: {
 // one records a durable APPROVAL_GRANTED { actor, verifiedBy } fact.
 
 // K12.4 — verifiable attenuated delegation (macaroon-lite), checked at the callee:
-import { signDelegation, DelegationAuthorizer } from "@loom/effect-runtime";
+import { signDelegation, DelegationAuthorizer } from "@loomwork/effect-runtime";
 const token = signDelegation(secret, "callee-flow", ["deploy"]); // delegator confers a subset
 const authorizer = new DelegationAuthorizer({ secret, base: calleeOwnGrants });
 // principal.delegation = token → authorized only for effects in BOTH the VERIFIED
@@ -148,8 +148,8 @@ another's data — cross-tenant reads/subscriptions are impossible *by construct
 filter:
 
 ```ts
-import { TenantScopedEventStore } from "@loom/event-runtime";
-import { TenantScopedSnapshotStore } from "@loom/snapshot-runtime";
+import { TenantScopedEventStore } from "@loomwork/event-runtime";
+import { TenantScopedSnapshotStore } from "@loomwork/snapshot-runtime";
 const eventStore = new TenantScopedEventStore(sharedEvents, tenantId);      // key-prefixed
 const snapshotStore = new TenantScopedSnapshotStore(sharedSnaps, tenantId); // fork stays in-tenant
 // (Postgres row-level security is an optional hardening layer on top of prefixing, not a replacement.)
@@ -159,7 +159,7 @@ const snapshotStore = new TenantScopedSnapshotStore(sharedSnaps, tenantId); // f
 wins:
 
 ```ts
-import { nestedBudgetMiddleware, BudgetLedger } from "@loom/middleware";
+import { nestedBudgetMiddleware, BudgetLedger } from "@loomwork/middleware";
 const ledger = new BudgetLedger(); // a cross-execution projection, fed from RESOURCE_METERED
 new EffectRuntime([nestedBudgetMiddleware({
   ledger, pricing,

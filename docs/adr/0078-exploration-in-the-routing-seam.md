@@ -42,10 +42,10 @@ serves the recording back.
 
 ## Decision
 
-Fix the policy where the policy lives — in `@loom/reasoning` and `@loom/analytics`.
+Fix the policy where the policy lives — in `@loomwork/reasoning` and `@loomwork/analytics`.
 Nothing moves toward the kernel.
 
-### `@loom/reasoning` — routers that can keep learning
+### `@loomwork/reasoning` — routers that can keep learning
 
 - **`ArmStats { key, rank, count }`** — evidence carries its sample count. Structurally
   identical to what `outcomeAnalytics` returns, so it feeds in with no conversion.
@@ -66,7 +66,7 @@ the behaviour of every existing deployment silently, which is the same class of 
 as the one being fixed. Its docstring now states the collapse property outright and
 points at `ucb1`.
 
-### `@loom/analytics` — evidence that ages
+### `@loomwork/analytics` — evidence that ages
 
 - **`outcomeAnalytics(events, { halfLifeMs, now })`** — optional exponential recency
   decay. `now` defaults to the **newest `OUTCOME_RECORDED` timestamp in the log**, not
@@ -96,5 +96,5 @@ points at `ucb1`.
   such guarantee and should inject `rng`.
 - **Still not RL.** This is a bandit policy over an existing seam. The placement
   evaluation's larger verdicts — contextual features on `DECISION_RECORDED`, trajectory
-  extraction, off-policy evaluation, `@loom/learning` — are untouched and remain
+  extraction, off-policy evaluation, `@loomwork/learning` — are untouched and remain
   unbuilt.

@@ -1,6 +1,6 @@
-import type { AppModel } from "@loom/appgen";
-import type { LlmProvider } from "@loom/llm";
-import type { ModelRoute } from "@loom/reasoning";
+import type { AppModel } from "@loomwork/appgen";
+import type { LlmProvider } from "@loomwork/llm";
+import type { ModelRoute } from "@loomwork/reasoning";
 import { describe, expect, it } from "vitest";
 import { GEMMA_TIERS, gemmaRoute } from "./gemmaModels";
 import { extractJsonObject, tryParseChangeSpec } from "./parse";

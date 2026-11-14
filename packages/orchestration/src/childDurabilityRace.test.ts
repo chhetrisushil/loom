@@ -1,9 +1,9 @@
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { type ChildSupervisor, awaitChild, superviseChildren } from "./orchestration";

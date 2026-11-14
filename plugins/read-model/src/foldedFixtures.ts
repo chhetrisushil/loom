@@ -1,5 +1,5 @@
-import { projection$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
+import { projection$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { FoldedModelEngine, foldedCapable } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { ReadModelService } from "./ReadModelService";

@@ -1,6 +1,6 @@
-import type { AgentDefinition } from "@loom/core";
+import type { AgentDefinition } from "@loomwork/core";
 
-// Structural agent card shape. Mirrors the AgentCard served by @loom/plugin-a2a but is
+// Structural agent card shape. Mirrors the AgentCard served by @loomwork/plugin-a2a but is
 // defined locally so the registry package stays dependency-light (core only).
 export interface RegisteredAgentCard {
   name: string;

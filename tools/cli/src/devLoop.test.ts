@@ -770,7 +770,7 @@ describe("loom dev (cli)", () => {
   it("end to end: a config that loaded for the inspector leaves the app's env clean, and SIGHUP stops it", async () => {
     const { run } = await import("./cli");
     const evRuntime = createRequire(join(__dirname, "devLoop.test.ts")).resolve(
-      "@loom/event-runtime"
+      "@loomwork/event-runtime"
     );
     writeFileSync(
       join(root, "loom.config.js"),

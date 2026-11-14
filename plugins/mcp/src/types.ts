@@ -1,5 +1,5 @@
-import type { ToolDefinition } from "@loom/core";
-import type { ToolEffect } from "@loom/effect-runtime";
+import type { ToolDefinition } from "@loomwork/core";
+import type { ToolEffect } from "@loomwork/effect-runtime";
 // Type-only cycle with ./ui (which imports the wire shapes from here) — erased
 // at compile time, so no runtime import cycle exists.
 import type { McpUiToolMeta } from "./ui";

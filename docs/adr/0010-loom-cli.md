@@ -13,13 +13,13 @@ the log directly.
 
 ## Decision
 
-New `@loom/cli` with bin `loom`. Each command's logic is a **pure function**; the
+New `@loomwork/cli` with bin `loom`. Each command's logic is a **pure function**; the
 bin is a thin argv wrapper, so behaviour is unit-tested without spawning
 processes.
 
 - **`loom debug --db <path> <executionId> [--at N]`** — time-travel over the log.
   `foldAt(events, seq)` reconstructs the exact `ExecutionState` at any sequence,
-  deterministically, with no live effects (reusing `@loom/eval`'s identity-seeded
+  deterministically, with no live effects (reusing `@loomwork/eval`'s identity-seeded
   fold). This is the uniquely-Loom capability — principled time-travel is only
   possible because of deterministic replay + snapshots.
 - **`loom logs --db <path> <executionId>`** — `formatLog` prints the event stream
@@ -44,7 +44,7 @@ processes.
 - The durable log becomes directly inspectable/debuggable from the terminal.
 - `foldAt`/`formatLog`/`evaluateGoldens` are exported for reuse (e.g. the Phase-6
   inspector reuses `foldAt` for its time-travel slider).
-- New package: `@loom/cli` (deps: core, eval, event-runtime, replay-vm).
+- New package: `@loomwork/cli` (deps: core, eval, event-runtime, replay-vm).
 
 ## Verification
 

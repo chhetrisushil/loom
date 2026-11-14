@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-renderer-terminal",
+  "name": "@loomwork/plugin-renderer-terminal",
   "version": "0.1.0",
   "description": "Terminal/string surface renderer for Loom blueprints — proves multi-surface delivery",
   "main": "./dist/index.js",
@@ -20,11 +20,11 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/blueprint-runtime": "workspace:^",
-    "@loom/projection-runtime": "workspace:^"
+    "@loomwork/blueprint-runtime": "workspace:^",
+    "@loomwork/projection-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/core": "workspace:*",
+    "@loomwork/core": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

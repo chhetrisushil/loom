@@ -1,4 +1,4 @@
-# ADR 0091 — A corpus is mutable: entry identity, and `@loom/knowledge`
+# ADR 0091 — A corpus is mutable: entry identity, and `@loomwork/knowledge`
 
 - Status: **Accepted — implemented** (2026-09-07)
 - Date: 2026-09-07
@@ -61,7 +61,7 @@ round trip for every backend, `remove` or not.
 This makes the SPI version **2.0.0** rather than 1.1.0. Both first-party SQL backends decompose an
 entry into columns, and a decomposing backend silently drops a field nobody told it to keep;
 adding a case they fail is a breaking change by this repo's own rule, and the seam now has an
-implementation outside this workspace to break. (`loom-plugin-vector`, which stores the entry
+implementation outside this workspace to break. (`@loomwork/plugin-vector`, which stores the entry
 object whole, conforms unchanged — the same split that decides who has work to do.)
 
 Neither SQL backend needed a migration or a column: both already persist the entry as JSON, so the
@@ -74,7 +74,7 @@ and therefore a thing able to disagree with it.
 match `undefined` against nothing and then match the *string* `"undefined"` against a missing
 field if it stringifies first. The kit passes `["a", "undefined", "null", ""]` for that reason.
 
-### D2 — `@loom/knowledge`: the document ↔ passage mapping, and nothing else
+### D2 — `@loomwork/knowledge`: the document ↔ passage mapping, and nothing else
 
 A first-party package, ~200 lines, owning no storage and no ranking. `KnowledgeBase` sits over an
 ordinary `TieredMemory` and holds exactly what neither the store nor the app should:
@@ -124,7 +124,7 @@ misread from a passage — there was no passage. Because the retrieval is record
 documents the model could possibly have read is known exactly, which makes this the one
 hallucination in a RAG answer that is *decidable* rather than judged. It costs a set membership
 test and is almost never written. It deliberately does not check whether the answer's claims follow
-from the cited passage: that needs a judge, it belongs to `@loom/learning`'s evaluation surface, and
+from the cited passage: that needs a judge, it belongs to `@loomwork/learning`'s evaluation surface, and
 merging the two would turn a decidable check into an approximate one.
 
 ### D4 — What this does NOT reopen
@@ -170,10 +170,10 @@ the backend can express a delete", and both first-party SQL backends do it in on
 statement — with the SQLite suite asserting the query plan actually USES that index, since an
 index the planner ignores turns the fast path back into the slow one with extra steps.
 
-**`@loom/memory` was missing from `SPI_PACKAGES`**, and had been for as long as the seam
+**`@loomwork/memory` was missing from `SPI_PACKAGES`**, and had been for as long as the seam
 existed. `loom plugin check` reported a green "SPI packages are peer dependencies" to every
 memory backend while being structurally unable to see the one package that matters to it —
-the same vacuity the list's `@loom/learning` entry was added to fix. For this seam a bundled
+the same vacuity the list's `@loomwork/learning` entry was added to fix. For this seam a bundled
 copy is not a duplicate kernel but a duplicate CONTRACT: `searchableText`, `tokenize` and
 `clampSearchLimit` decide what a backend indexes and what counts as a term, so a plugin
 carrying its own copy can answer a different question than the app asked and still pass
@@ -214,7 +214,7 @@ rather than hidden.
 
 ## Follow-on — two writers, one corpus (2026-09-07)
 
-`@loom/knowledge` was designed around a corpus whose documents are authored elsewhere and
+`@loomwork/knowledge` was designed around a corpus whose documents are authored elsewhere and
 reconciled from a source of truth. Asked whether knowledge that comes from a FEEDBACK LOOP fits
 the same structure, the answer is mostly yes — a learning is a document whose author is the
 agent, `putDoc` writes it, taint keeps it out of instruction positions, and `ctx.decide` makes a
@@ -238,7 +238,7 @@ documents it does not own" describe very different corpora, and only one of them
 operator should stop noticing.
 
 What this deliberately does NOT do is judge a learning. Whether one was any good is
-`@loom/learning`'s question — trajectories, propensity, off-policy evaluation — and giving a
+`@loomwork/learning`'s question — trajectories, propensity, off-policy evaluation — and giving a
 corpus a notion of reward would duplicate that substrate badly.
 
 ## Evidence
@@ -263,5 +263,5 @@ corpus a notion of reward would duplicate that substrate badly.
   (D5), pinned in both directions: `docId`/`index` absent from `searchableText`, `title`/`meta`
   present.
 - `tools/cli/src/plugin.ts` via `SPI_PACKAGES` — verified by running `checkPlugin` over a
-  manifest that bundles `@loom/memory` and watching the warning appear, since a rule that
+  manifest that bundles `@loomwork/memory` and watching the warning appear, since a rule that
   cannot fire looks exactly like one that passes.

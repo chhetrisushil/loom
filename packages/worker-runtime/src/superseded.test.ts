@@ -1,4 +1,4 @@
-import { StorageWriteError } from "@loom/core";
+import { StorageWriteError } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { ExecutionSupersededError, isSupersededRefusal } from "./superseded";
 

@@ -1,4 +1,4 @@
-import { sha256Hex } from "@loom/core";
+import { sha256Hex } from "@loomwork/core";
 import type { SensitiveMap } from "./types";
 
 const sortedUnique = (acc: Map<string, string[]>): SensitiveMap =>

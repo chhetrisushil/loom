@@ -59,12 +59,12 @@ up to the plugin repackaging** (example code stopped compiling).
 
 ## Docs — fixed vs remaining
 
-**Fixed:** package renames (`@loom/store-postgres`→`@loom/plugin-postgres`, etc.; `packages/…`→`plugins/…`; `@loom/testing/conformance`→`@loom/conformance`) across guides, spec, loom-2.0, and decks (excluding ADR/requirements, which document the migration); broken storage examples (`kind:"sqlite"`→`sqliteStorage()`) in the core guides + the `StorageConfig` type/table; **new root `README.md`**; architecture.md §6 plugins-tier note; regenerated `docs/spec/maturity.md`; fixed the P1–P11 and ADR-range strings.
+**Fixed:** package renames (`@loomwork/store-postgres`→`@loomwork/plugin-postgres`, etc.; `packages/…`→`plugins/…`; `@loomwork/testing/conformance`→`@loomwork/conformance`) across guides, spec, loom-2.0, and decks (excluding ADR/requirements, which document the migration); broken storage examples (`kind:"sqlite"`→`sqliteStorage()`) in the core guides + the `StorageConfig` type/table; **new root `README.md`**; architecture.md §6 plugins-tier note; regenerated `docs/spec/maturity.md`; fixed the P1–P11 and ADR-range strings.
 
 **Remaining (lower value / mechanical):**
 - Per-example **import lines** for the `sqliteStorage`/`postgresStorage` presets in some guide snippets.
 - **`docs/usage-cli.md`** — add the `loom plugin *` family (+ `optimize`/`profile`/`introspect`/`verify`/`compat`/`kernel-manifest`).
-- **`docs/api-reference.org`** — a plugins section + `@loom/conformance`/`@loom/plugin-kit` entries; fix the dead `platform-cloudrun/deploy.md` link.
+- **`docs/api-reference.org`** — a plugins section + `@loomwork/conformance`/`@loomwork/plugin-kit` entries; fix the dead `platform-cloudrun/deploy.md` link.
 - **`docs/adr/README.md`** — an index of all 44 ADRs (none exists).
 - **`docs/pdf/architecture.pdf`** — regenerate (`pnpm present`) after architecture.md settles.
 - **A "Plugins & Extensibility" deck** in `docs/presentation/` (prose already covered by `plugins.md`).

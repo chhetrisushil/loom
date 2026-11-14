@@ -1,5 +1,5 @@
-import type { ExecutableTask } from "@loom/core";
-import type { Effect, EffectContext } from "@loom/effect-runtime";
+import type { ExecutableTask } from "@loomwork/core";
+import type { Effect, EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { InMemoryDurableStateStore } from "./InMemoryDurableStateStore";

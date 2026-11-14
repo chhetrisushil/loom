@@ -16,7 +16,7 @@ lines / verdict tables); most fitness checks already existed as pinned tests but
 normative spec content existed scattered across `architecture.md` + `docs/loom-2.0/*`.
 
 So instead of four disconnected artifacts, the delivered design is **one machine-readable kernel
-manifest** (`@loom/spec`) that imports the real constants + a curated capability registry, with
+manifest** (`@loomwork/spec`) that imports the real constants + a curated capability registry, with
 **three views + one enforcer** over it: the compatibility matrix (view), the maturity badges
 (view), the spec (normative prose citing it), and the fitness suite (keeps it honest). The
 unification is the substantive amendment to the proposal.
@@ -25,10 +25,10 @@ unification is the substantive amendment to the proposal.
 
 | # | Proposal | Verdict | Shipped |
 |---|---|---|---|
-| 1 | Capability Maturity Model | **ACCEPT — with a correctness upgrade** | `@loom/spec` capability registry with **evidence-derived, drift-checked** levels (`spec.test.ts` fails if a badge claims a version constant / conformance test / bench it lacks). Generated `docs/spec/maturity.md`. |
+| 1 | Capability Maturity Model | **ACCEPT — with a correctness upgrade** | `@loomwork/spec` capability registry with **evidence-derived, drift-checked** levels (`spec.test.ts` fails if a badge claims a version constant / conformance test / bench it lacks). Generated `docs/spec/maturity.md`. |
 | 2 | Architectural Fitness Functions | **ACCEPT — consolidation + 2 real gaps** | Added `typecheck` + `lint` to CI (were missing) + a root `pnpm fitness`; a machine-stable **relative-ratio** G2 gate (`verify/src/g2ratio.test.ts`); `docs/spec/fitness-functions.md` mapping each of the 7 invariants to its enforcement site. |
 | 3 | Loom Kernel Specification | **ACCEPT — consolidation + binding narrative** | `docs/spec/loom-kernel-specification.md` — normative "what is guaranteed", every section anchored to a version constant / conformance test / SPI type / the manifest. |
-| 4 | Kernel Compatibility Matrix | **ACCEPT — build the mechanism; honest about lockstep** | `kernelManifest()` + `checkCompatibility()` in `@loom/spec`; `loom kernel-manifest --json` + `loom compat` (deployment gate); generated `docs/spec/compatibility-matrix.md`. |
+| 4 | Kernel Compatibility Matrix | **ACCEPT — build the mechanism; honest about lockstep** | `kernelManifest()` + `checkCompatibility()` in `@loomwork/spec`; `loom kernel-manifest --json` + `loom compat` (deployment gate); generated `docs/spec/compatibility-matrix.md`. |
 
 **None violate the invariants** — all read-only / derived / advisory or CI-gating; nothing touches
 execution semantics.
@@ -57,9 +57,9 @@ execution semantics.
 
 ## Delivered artifacts
 
-- **`@loom/spec`** — `kernelManifest()`, `checkCompatibility()`, the capability registry, render
+- **`@loomwork/spec`** — `kernelManifest()`, `checkCompatibility()`, the capability registry, render
   functions; `spec.test.ts` (drift-checked badges + compat).
-- **`@loom/cli`** — `loom kernel-manifest [--json] [--emit-docs]`, `loom compat …`.
+- **`@loomwork/cli`** — `loom kernel-manifest [--json] [--emit-docs]`, `loom compat …`.
 - **CI + fitness** — `.github/workflows/ci.yml` gains `typecheck`+`lint`; root `pnpm fitness`;
   `verify/src/g2ratio.test.ts`.
 - **Docs** — `docs/spec/loom-kernel-specification.md`, `docs/spec/fitness-functions.md`, generated

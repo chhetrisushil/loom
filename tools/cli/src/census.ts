@@ -1,8 +1,8 @@
-import { EffectRuntime } from "@loom/effect-runtime";
-import { isReservedStream } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime, orphanCensus } from "@loom/workflow-runtime";
-import type { LeaseCoverage, OrphanCensus } from "@loom/workflow-runtime";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { isReservedStream } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime, orphanCensus } from "@loomwork/workflow-runtime";
+import type { LeaseCoverage, OrphanCensus } from "@loomwork/workflow-runtime";
 import { UsageError } from "./args";
 import { humanizeDuration as humanize, parseDuration } from "./duration";
 import { relative, wakeAtOf } from "./ls";

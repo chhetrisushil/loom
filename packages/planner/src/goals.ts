@@ -8,7 +8,7 @@
 // The store is a plain async SPI (`GoalStore`) with two implementations here:
 //   - `InMemoryGoalStore` (tests, single process);
 //   - `DurableGoalStore`, over any compare-and-set keyed store. `DurableStateStore` from
-//     `@loom/plugin-durable-state` (SQLite/Postgres backends exist) satisfies `GoalKvStore`
+//     `@loomwork/plugin-durable-state` (SQLite/Postgres backends exist) satisfies `GoalKvStore`
 //     structurally, so this package takes no dependency on the plugin tier.
 //
 // Flow code never calls the store directly (a store read is not replayable). It goes through
@@ -339,7 +339,7 @@ export class InMemoryGoalStore implements GoalStore {
   }
 }
 
-/** A compare-and-set keyed store. `DurableStateStore` (`@loom/plugin-durable-state`) satisfies it. */
+/** A compare-and-set keyed store. `DurableStateStore` (`@loomwork/plugin-durable-state`) satisfies it. */
 export interface GoalKvStore {
   load(key: string): Promise<{ revision: number; payload: unknown } | null>;
   save(

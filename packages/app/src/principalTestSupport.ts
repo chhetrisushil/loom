@@ -1,5 +1,5 @@
-import type { PrincipalChain } from "@loom/effect-runtime";
-import type { PrincipalCodec } from "@loom/workflow-runtime";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import type { PrincipalCodec } from "@loomwork/workflow-runtime";
 import type { LoomConfig } from "./defineConfig";
 
 // Test support (not exported from the package): under `security.strict` / `security.compliance`

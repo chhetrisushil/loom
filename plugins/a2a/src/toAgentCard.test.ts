@@ -1,4 +1,4 @@
-import { agent$, tool$ } from "@loom/core";
+import { agent$, tool$ } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { toAgentCard } from "./toAgentCard";

@@ -1,6 +1,6 @@
-import { maskPaths } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
-import type { Projection } from "@loom/projection-runtime";
+import { maskPaths } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
+import type { Projection } from "@loomwork/projection-runtime";
 import { applySurfacePatches } from "./applyPatch";
 import { DEFAULT_SURFACE, SURFACE_PATCH } from "./types";
 import type { SurfacePatchPayload, SurfaceState } from "./types";

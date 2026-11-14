@@ -1,4 +1,4 @@
-import type { LlmResponse } from "@loom/llm";
+import type { LlmResponse } from "@loomwork/llm";
 import type { Script } from "../cassetteFiles";
 
 // ── The planner intents ───────────────────────────────────────────────────────

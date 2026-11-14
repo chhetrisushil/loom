@@ -22,7 +22,7 @@ From the repo root:
 
 #+begin_src bash
 pnpm build                              # build framework packages once (fresh clone)
-pnpm --filter @loom/playground dev      # start the Vite dev server (HMR)
+pnpm --filter @loomwork/playground dev      # start the Vite dev server (HMR)
 #+end_src
 
 Open http://localhost:5173 (or whichever port Vite picks).
@@ -32,9 +32,9 @@ Open http://localhost:5173 (or whichever port Vite picks).
 The composition root is one ~defineConfig~ call — no hand-built ~WorkflowRuntime~, stores, or ~onEvent~ wiring. See ~src/main.tsx~:
 
 #+begin_src typescript
-import { defineConfig } from "@loom/app";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { ConsoleTelemetryAdapter } from "@loom/telemetry";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
+import { ConsoleTelemetryAdapter } from "@loomwork/telemetry";
 
 // A projection runtime that also folds a domain projection; defineConfig registers
 // the A2UI "ui" surface and wires onEvent → handleEvent for you.
@@ -55,7 +55,7 @@ const state  = await handle.waitForCompletion();
 #+end_src
 
 To persist instead (so the ~loom~ CLI can inspect the log), swap one line:
-~storage: sqliteStorage({ dir: ".loom" })~ (from ~@loom/plugin-sqlite~) — then ~loom logs/debug/inspect --db .loom/events.db <id>~.
+~storage: sqliteStorage({ dir: ".loom" })~ (from ~@loomwork/plugin-sqlite~) — then ~loom logs/debug/inspect --db .loom/events.db <id>~.
 
 * Project layout
 
@@ -71,8 +71,8 @@ Edit any of them — Vite reloads on save.
 * A minimal flow (deterministic)
 
 #+begin_src typescript
-import { flow$, step$, handler$ } from "@loom/core";
-import type { RegisteredFlow, FlowRunner } from "@loom/workflow-runtime";
+import { flow$, step$, handler$ } from "@loomwork/core";
+import type { RegisteredFlow, FlowRunner } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 
 const GreetStep = step$({
@@ -103,12 +103,12 @@ export const HelloFlow = {
 
 | Package                | Use for                                                            |
 |------------------------+-------------------------------------------------------------------|
-| ~@loom/app~            | ~defineConfig~ — the composition root                             |
-| ~@loom/core~           | Builders: ~flow$~, ~step$~, ~handler$~, ~projection$~, ~blueprint$~ |
-| ~@loom/projection-runtime~ | ~InMemoryProjectionRuntime~ + custom projections               |
-| ~@loom/plugin-renderer-react~ | ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~   |
-| ~@loom/capability~ / ~@loom/intent~ | Expose a flow as a capability + route a goal to it   |
-| ~@loom/telemetry~      | Telemetry adapters (Console + a custom React adapter)             |
+| ~@loomwork/app~            | ~defineConfig~ — the composition root                             |
+| ~@loomwork/core~           | Builders: ~flow$~, ~step$~, ~handler$~, ~projection$~, ~blueprint$~ |
+| ~@loomwork/projection-runtime~ | ~InMemoryProjectionRuntime~ + custom projections               |
+| ~@loomwork/plugin-renderer-react~ | ~BlueprintRenderer~, ~LoomProvider~, ~useLoom~, ~useProjection~   |
+| ~@loomwork/capability~ / ~@loomwork/intent~ | Expose a flow as a capability + route a goal to it   |
+| ~@loomwork/telemetry~      | Telemetry adapters (Console + a custom React adapter)             |
 
 Need another package? Add it to ~package.json~ and run ~pnpm install~ from the repo root.
 
@@ -125,7 +125,7 @@ Once something works here:
 
 1. Move reusable builders/types to the appropriate ~packages/*~.
 2. Move flow/projection/blueprint code into an example in the sibling ~loom-examples~ repo — ~loom-starter~ (folder convention) or ~cloud-command-center~; see the [[file:../../docs/examples.md][examples catalogue]].
-3. Add tests with [[file:../../docs/user-guide.md][~@loom/testing~]] (~createTestApp~ / ~waitForPhase~).
+3. Add tests with [[file:../../docs/user-guide.md][~@loomwork/testing~]] (~createTestApp~ / ~waitForPhase~).
 4. Build from the repo root: ~pnpm build~.
 
 * Learn more

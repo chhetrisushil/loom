@@ -135,6 +135,6 @@ manifested states, so the runtime set cannot drift from the IR.
   (2.2.0 once its G2 work lands) and goes red when loom-ui bumps its `LOOM_REF` past this ADR. That is the intended signal: the same PR teaches loom-ui's
   hydration to publish `empty` (`upstream-empty`) and its Lit base to draw it.
 - `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0: a binding status is
-  projection STATE, not an event. `@loom/spec` lists this ADR in `NOT_A_CAPABILITY`, for the same
+  projection STATE, not an event. `@loomwork/spec` lists this ADR in `NOT_A_CAPABILITY`, for the same
   reason as 0096–0099: an IR contract and renderer behaviour, not a runtime subsystem to grade.
 - The next minor bump adds `2.3.0` to `IR_VERSIONS_READ_AS_IS`.

@@ -1,6 +1,6 @@
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { CustomStorage } from "@loom/plugin-kit";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { CustomStorage } from "@loomwork/plugin-kit";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { EXIT_USAGE } from "./args";
 import { run } from "./cli";

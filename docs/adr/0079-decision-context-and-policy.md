@@ -70,7 +70,7 @@ friends to this very event.
   surrounding policy has moved to a different context and version: the recorded choice is
   served and the decider is never re-consulted.
 - **The propensity is a contract, not a hint.** A policy that reports it wrongly biases every
-  later evaluation, and nothing downstream can detect that. The SPI in `@loom/learning`
+  later evaluation, and nothing downstream can detect that. The SPI in `@loomwork/learning`
   documents it as exact, and the reference 3P implementation tests its propensities sum to 1
   over the action set.
 - **Cost is paid per decision, on the durable path.** `context` is written to the log every

@@ -4,7 +4,7 @@ import {
   type WorkerLease,
   type WorkerRuntime,
   isSupersededRefusal,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import type { DispatchMetadata, DispatcherHealth, ExecutionDispatcher } from "./types";
 
 export interface LocalDispatcherOptions {

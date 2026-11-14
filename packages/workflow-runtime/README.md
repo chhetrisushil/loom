@@ -1,4 +1,4 @@
-# @loom/workflow-runtime
+# @loomwork/workflow-runtime
 
 The durable execution engine. `WorkflowRuntime` (also exported as `ExecutionRuntime`) runs a flow's
 runner function against an append-only event log: every step, effect and decision is recorded, so
@@ -18,13 +18,13 @@ infrastructure or tests that need a different composition.
 
 ## Install
 
-Not published to npm yet: use `"@loom/workflow-runtime": "workspace:*"` inside this repo, or a
+Not published to npm yet: use `"@loomwork/workflow-runtime": "workspace:*"` inside this repo, or a
 `link:` override from a sibling checkout (see [AGENTS.md](../../AGENTS.md)).
 
 ## Entry points
 
-- `@loom/workflow-runtime` - the runtime, runner types, errors and operational helpers.
-- `@loom/workflow-runtime/operator` - operator-only vocabulary (today `sealedDetailOf`,
+- `@loomwork/workflow-runtime` - the runtime, runner types, errors and operational helpers.
+- `@loomwork/workflow-runtime/operator` - operator-only vocabulary (today `sealedDetailOf`,
   `SealedDetail`), deliberately not re-exported from the main index.
 
 ## Example
@@ -33,9 +33,9 @@ A flow that parks on a human decision and is resumed later (the process could re
 
 ```ts
 import { z } from "zod";
-import { flow$, handler$, step$ } from "@loom/core";
-import { defineConfig } from "@loom/app";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import { defineConfig } from "@loomwork/app";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 
 const Decision = z.object({ approved: z.boolean(), approvedBy: z.string() });
 type Decision = z.infer<typeof Decision>;
@@ -95,11 +95,11 @@ await app.close();
   died: [operations.md sections 2 and 3](../../docs/operations.md#2-heartbeat-leases),
   [ADR 0130](../../docs/adr/0130-sealed-payload-delivery-guard.md).
 - **Storage** is pluggable behind the `EventStore` and `SnapshotStore` SPIs
-  ([`@loom/event-runtime`](../event-runtime/README.md)).
+  ([`@loomwork/event-runtime`](../event-runtime/README.md)).
 
 ## See also
 
-- [API reference: WorkflowRuntime](../../docs/api-reference.org) (`@loom/workflow-runtime`).
+- [API reference: WorkflowRuntime](../../docs/api-reference.org) (`@loomwork/workflow-runtime`).
 - [User guide, section 4: Suspend and resume](../../docs/user-guide.md#4-suspend--resume).
 - [Architecture](../../docs/architecture.md), [getting started](../../docs/getting-started.md).
-- [`@loom/core`](../core/README.md), [`@loom/app`](../app/README.md).
+- [`@loomwork/core`](../core/README.md), [`@loomwork/app`](../app/README.md).

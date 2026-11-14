@@ -1,4 +1,4 @@
-# @loom/conformance
+# @loomwork/conformance
 
 Portable conformance kits for loom's service provider interfaces (SPIs). A backend is conformant when it
 passes the kit, not when it looks right. Each `run<Spi>Conformance(factory)` registers a vitest
@@ -9,8 +9,8 @@ authorizers and sandboxes. `vitest` (2 or later) is a peer dependency, and the p
 
 ```ts
 // store.conformance.test.ts, in your backend's package
-import { runEventStoreConformance, runEventStoreDecoratorConformance } from "@loom/conformance";
-import { CoalescingEventStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { runEventStoreConformance, runEventStoreDecoratorConformance } from "@loomwork/conformance";
+import { CoalescingEventStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 
 // A backend: the factory returns a fresh, empty store on every call.
 runEventStoreConformance(() => new InMemoryAsyncEventStore(), "InMemoryAsyncEventStore");
@@ -59,7 +59,7 @@ runEventStoreDecoratorConformance("CoalescingEventStore", (inner) => new Coalesc
 
 ## See also
 
-- API reference: section "`@loom/conformance` — the portable SPI kits" in
+- API reference: section "`@loomwork/conformance` — the portable SPI kits" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [plugins](../../docs/plugins.md) (authoring a backend and proving it).
 - ADRs: [0033 SPI conformance contracts](../../docs/adr/0033-spi-conformance-contracts.md),

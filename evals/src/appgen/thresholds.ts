@@ -16,7 +16,7 @@ import type { Thresholds } from "../gate";
 // COVERAGE is a mean over cases of the recall of the expected items, so the smallest thing that can regress is ONE
 // item in the 5-item cases: 1/5 of a case = 0.02 of the mean. The margin is 0.015, deliberately under that, so losing
 // a single expected item fails (floor = measured - 0.015). The model arm was 0.9, not 1.0, until the delete gap was
-// closed (2026-10-17): the ChangeSpec prompt and schema of `@loom/appgen-model` used to offer create / extend / modify
+// closed (2026-10-17): the ChangeSpec prompt and schema of `@loomwork/appgen-model` used to offer create / extend / modify
 // and no delete, so `edit-remove-digest` ("remove the digest flow") scored 0 on the model arm. They now offer `delete`
 // (flow and step), the cassette script emits it, and the floor was raised from 0.885 to 0.985. See PROVENANCE.md.
 //

@@ -1,4 +1,4 @@
-import type { ExecutionHandle, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { ExecutionHandle, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { lexicalTerms } from "./lexicalTerms";
 import {
   type CapabilityDefinition,
@@ -24,7 +24,7 @@ export interface CapabilityCatalogOptions {
  *
  * Scoring is O(entries x terms) of substring searches, so the query is the multiplier;
  * past a few dozen terms the extra ones are noise rather than signal. Mirrors
- * `@loom/memory`'s `MAX_QUERY_TERMS` in intent — a query is an input, and an input has a
+ * `@loomwork/memory`'s `MAX_QUERY_TERMS` in intent — a query is an input, and an input has a
  * bound — without sharing a constant across packages that do not otherwise depend on each
  * other.
  */

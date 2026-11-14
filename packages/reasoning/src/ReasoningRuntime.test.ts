@@ -1,4 +1,4 @@
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { ReasoningRuntime } from "./ReasoningRuntime";
 import { validatorConfidence } from "./confidence";

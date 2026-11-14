@@ -1,14 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { step$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
 
-import type { ExecutionPackage } from "@loom/worker-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import type { ExecutionPackage } from "@loomwork/worker-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { LocalWorkerRuntime } from "./LocalWorkerRuntime";

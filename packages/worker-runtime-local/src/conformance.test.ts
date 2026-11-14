@@ -1,15 +1,15 @@
-import { runWorkerRuntimeConformance } from "@loom/conformance";
-import { flow$, handler$, step$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { runWorkerRuntimeConformance } from "@loomwork/conformance";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { ExecutionPackage, WorkerRuntime } from "@loomwork/worker-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import { LocalWorkerRuntime } from "./LocalWorkerRuntime";
 
-// Dogfood the WorkerRuntime conformance kit (@loom/conformance) against the reference
+// Dogfood the WorkerRuntime conformance kit (@loomwork/conformance) against the reference
 // LocalWorkerRuntime — a fresh in-memory runtime with a registered one-step flow, plus
 // a package that runs exactly that flow (their ids match).
 let n = 0;

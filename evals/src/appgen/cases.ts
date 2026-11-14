@@ -1,4 +1,4 @@
-import type { LlmResponse } from "@loom/llm";
+import type { LlmResponse } from "@loomwork/llm";
 import type { Script } from "../cassetteFiles";
 
 // ── The appgen intents ────────────────────────────────────────────────────────
@@ -274,7 +274,7 @@ export const APPGEN_CASES: readonly AppgenCase[] = [
     fixture: "support-desk",
     intent: "Remove the digest flow.",
     expected: { present: [], absent: ["flow:digest"] },
-    // The planner prompt and schema (`@loom/appgen-model`) offer `delete` (it used to offer create / extend / modify
+    // The planner prompt and schema (`@loomwork/appgen-model`) offer `delete` (it used to offer create / extend / modify
     // only, a measured gap the first S3 run recorded), so the scripted model answers with a flow-level delete,
     // exactly the ChangeSpec the deterministic arm produces for `remove <flow>`.
     script: turns(

@@ -14,7 +14,7 @@ export interface ProjectionConfig<TState> {
   initialState: TState;
   /**
    * The event-fold map (`{ [eventType]: (state, event) => state }`). Uncompiled it is
-   * inline; the `@loom/compiler` plugin rewrites it to a lazy `import()` ref so the fold
+   * inline; the `@loomwork/compiler` plugin rewrites it to a lazy `import()` ref so the fold
    * code lands in its own chunk, loaded on demand when a handled event first fires.
    */
   handlers: ProjectionHandlersSpec<TState>;

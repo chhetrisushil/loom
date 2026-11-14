@@ -5,7 +5,7 @@
 - Builds on: the reactive-graph resumability verdict ([ADR 0067](0067-reactive-graph-resumability-rejected.md)),
   live-query as a read-model (ADR 0040), plugin packaging (ADR 0043).
 - Part of: the kernel/1P/3P triage discipline (P10 — bias outward). **KERNEL_ABI unchanged (1.1.0);
-  EVENT_SCHEMA unchanged (1.17.0); no `@loom/spec` capability version bump** (additive method on an
+  EVENT_SCHEMA unchanged (1.17.0); no `@loomwork/spec` capability version bump** (additive method on an
   unversioned framework-agnostic mechanism interface).
 
 ## Context
@@ -43,7 +43,7 @@ subscribeSelector<TState, TSlice>(
 The runtime memoizes `selector(state)` per subscription and invokes `handler` only when the slice
 changes under `isEqual`. It takes a **selector function**, not a path string — so
 `projection-runtime` stays UI-agnostic (no path/binding semantics leak in); the caller supplies the
-projection: dot-path resolution via the newly-exported `resolvePath` from `@loom/blueprint-runtime`.
+projection: dot-path resolution via the newly-exported `resolvePath` from `@loomwork/blueprint-runtime`.
 Semantics mirror `subscribe`: **change-only** (no call on subscribe; `last` seeded from current
 state at subscribe time), and it participates in `coalesceNotifications` (a burst collapses to one
 call per changed slice per microtask). Whole-state `subscribe` keeps a zero-overhead fast path — the
@@ -72,7 +72,7 @@ per-surface diffing.
 
 - New public method on `ProjectionRuntime`; both implementors updated
   (`InMemoryProjectionRuntime`, `BroadcastingProjectionRuntime` — a one-line delegation).
-- `resolvePath(state, path)` exported from `@loom/blueprint-runtime` as the generic, null-safe
+- `resolvePath(state, path)` exported from `@loomwork/blueprint-runtime` as the generic, null-safe
   dot-path selector helper for surface authors (extracted from the existing `resolveWidgetValue`).
 - `KERNEL_ABI_VERSION` stays 1.1.0; `EVENT_SCHEMA_VERSION` stays 1.17.0; the generated maturity
   table is unchanged. Covered by unit tests (slice isolation, change-only, custom `isEqual`,

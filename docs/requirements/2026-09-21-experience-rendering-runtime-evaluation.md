@@ -39,26 +39,26 @@ loom through a narrow contract and owns no store of its own.
 ## 1. The decisive evidence: a consumer already voted
 
 `genUI` (sibling checkout, last commit 2026-09-16) is the only GenUI product built on loom that is
-past the demo stage. Its imports from loom, counted by `from "@loom/…"` occurrences across
+past the demo stage. Its imports from loom, counted by `from "@loomwork/…"` occurrences across
 `packages/` and `apps/`:
 
 | Package | Imports | Role |
 |---|---|---|
-| `@loom/core` | 70 | kernel |
-| `@loom/workflow-runtime` | 43 | kernel |
-| `@loom/plugin-mcp` | 33 | capabilities |
-| `@loom/effect-runtime` | 33 | kernel |
-| `@loom/plugin-sandbox` | 32 | reshaping scripts (ADR 0064) |
-| `@loom/llm` | 27 | planning |
-| `@loom/orchestration` | 17 | kernel |
-| `@loom/event-runtime` | 12 | log |
-| `@loom/plugin-postgres` | 10 | log |
-| `@loom/app` | 10 | config |
-| `@loom/agent-surface` | 10 | **the durable UI channel** (`createSurfaceEmitter`, `SURFACE_PATCH`) |
-| `@loom/plugin-a2ui` | 4 files | **catalogue + egress wire types** |
-| `@loom/blueprint-runtime` | **0** | declared in `apps/server/package.json`, never imported |
-| `@loom/plugin-renderer-react` | 0 | — |
-| `@loom/plugin-renderer-terminal` | 0 | — |
+| `@loomwork/core` | 70 | kernel |
+| `@loomwork/workflow-runtime` | 43 | kernel |
+| `@loomwork/plugin-mcp` | 33 | capabilities |
+| `@loomwork/effect-runtime` | 33 | kernel |
+| `@loomwork/plugin-sandbox` | 32 | reshaping scripts (ADR 0064) |
+| `@loomwork/llm` | 27 | planning |
+| `@loomwork/orchestration` | 17 | kernel |
+| `@loomwork/event-runtime` | 12 | log |
+| `@loomwork/plugin-postgres` | 10 | log |
+| `@loomwork/app` | 10 | config |
+| `@loomwork/agent-surface` | 10 | **the durable UI channel** (`createSurfaceEmitter`, `SURFACE_PATCH`) |
+| `@loomwork/plugin-a2ui` | 4 files | **catalogue + egress wire types** |
+| `@loomwork/blueprint-runtime` | **0** | declared in `apps/server/package.json`, never imported |
+| `@loomwork/plugin-renderer-react` | 0 | — |
+| `@loomwork/plugin-renderer-terminal` | 0 | — |
 
 What it built instead maps onto the TRD almost section for section:
 
@@ -92,7 +92,7 @@ execution model. The mapping, each verified against code:
 | §8 — intent immutable; §35 — hydrate without re-planning | *"composition is an event; rendering is a replay"* — `BLUEPRINT_COMPOSED` + a `sha256:` ContentStore ref ([composed-surfaces](../composed-surfaces.md)) |
 | §34 — serialize identity, graph, capability refs, policies; never DOM/Fiber | the same recipe; ADR 0067 D1 records serializing a reactive graph as a permanent non-goal |
 | §32 / §44 / I7 — UI mutation ≠ capability execution; layered authz | K2 `GrantTable` (runtime floor) + ADR 0084 effect classes (static ceiling) + execution-lifecycle authz (ADR 0039) |
-| §13 — Capability with schemas, permissions, risk, execution mode | `@loom/capability`, `@loom/plugin-mcp` (with canonical schema hash + drift channel, ADR 0063), effect classes |
+| §13 — Capability with schemas, permissions, risk, execution mode | `@loomwork/capability`, `@loomwork/plugin-mcp` (with canonical schema hash + drift channel, ADR 0063), effect classes |
 | §14 / §51 — data dependencies with cache/refresh; multi-layer caching | the transient hydration interpreter: a plan whose nodes pin an input-schema hash, a content-addressed reshape script and an expected output hash, walked through `invokeTransient` with **zero events on the read path**, recording `SCHEMA_REPAIRED` on drift (ADRs 0060–0066; Part II §8) |
 | §33 — lifecycle CREATED…SUSPENDED…RESUMED…DESTROYED | execution lifecycle, `ctx.suspend`/resume, long suspensions (ADR 0081) |
 | §26 / §37 — registry resolution; surface negotiation ("doesNotSupport interactive_chart") | `validateBlueprint` (composition → catalogue) and `catalogCoverage` (catalogue → renderer), ADR 0088 D1 — one surface today, generalises to N |
@@ -167,7 +167,7 @@ tested (§48.4) on its own.
 ### 3.5 A second Capability model means two authorization vocabularies
 
 §13 defines `Capability` with `permissions`, `risk` and `execution: local|remote|agent|workflow`.
-Loom already has `@loom/capability`, K2 grants, and ADR 0084 effect classes (which exist because a
+Loom already has `@loomwork/capability`, K2 grants, and ADR 0084 effect classes (which exist because a
 *granted* capability can still bust its class — the reconciliation lives in the finding text). I7
 ("UI mutation does not imply capability execution authorization") depends on there being **one**
 vocabulary that both the experience layer and the execution layer consult. Make the experience
@@ -204,8 +204,8 @@ starting state — the rule gates *loom's* surface, not a product's. **This asym
 the placement.** §43 (zero-cost-when-unused) also becomes true by construction in a separate repo
 and false by construction inside loom, where every user pays the name.
 
-Chat surfaces are additionally already half-covered at the edge: `@loom/plugin-a2ui` (egress) and
-`@loom/plugin-mcp-app` (MCP Apps host surfaces) exist as protocol adapters. A "Slack renderer"
+Chat surfaces are additionally already half-covered at the edge: `@loomwork/plugin-a2ui` (egress) and
+`@loomwork/plugin-mcp-app` (MCP Apps host surfaces) exist as protocol adapters. A "Slack renderer"
 should be an A2UI or MCP-app client, not a fourth renderer.
 
 ## 4. What is right, and should be kept as written
@@ -229,15 +229,15 @@ should be an A2UI or MCP-app client, not a fourth renderer.
 
 ### Kernel — nothing
 
-`KERNEL_ABI` and `EVENT_SCHEMA` unchanged. No `@loom/spec` capability entry.
+`KERNEL_ABI` and `EVENT_SCHEMA` unchanged. No `@loomwork/spec` capability entry.
 
 ### Loom 1P — keep, and hold thin
 
 | Keep | Why |
 |---|---|
-| `@loom/agent-surface` (`SURFACE_PATCH`, `by` provenance, `applySurfacePatches`) | the durable data channel; the one thing `genUI` imports from loom's UI layer |
+| `@loomwork/agent-surface` (`SURFACE_PATCH`, `by` provenance, `applySurfacePatches`) | the durable data channel; the one thing `genUI` imports from loom's UI layer |
 | the `BLUEPRINT_COMPOSED` + ContentStore recipe, `checkBlueprintPins` / `projectionVersions` (ADR 0095) | structure-as-a-logged-artifact; no package of its own, it is a documented pattern |
-| `@loom/plugin-a2ui`, `@loom/plugin-mcp-app` | protocol adapters at the edge; consumers exist |
+| `@loomwork/plugin-a2ui`, `@loomwork/plugin-mcp-app` | protocol adapters at the edge; consumers exist |
 | `ProjectionRuntime.subscribeSelector` (ADR 0068) | the read-model half of hydration; `genUI`'s ui-sdk consumes it |
 
 One **addition**, the only loom-side item this evaluation proposes: a conformance kit — the same
@@ -250,8 +250,8 @@ the UI, and it makes §6.3 checkable rather than aspirational.
 
 | Move | Evidence |
 |---|---|
-| `@loom/blueprint-runtime`'s widget vocabulary (`WidgetKind`, the eight builders, `RendererRegistry`, `builtinCatalog`) | the only serious consumer imports none of it; the kinds are visual, contradicting the TRD's §4.2 and the semantic direction loom itself argued for |
-| `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal` | 8 React renderers + a kind-blind terminal renderer for a vocabulary the consumer did not adopt; `genUI` ships its own Lit and terminal renderers |
+| `@loomwork/blueprint-runtime`'s widget vocabulary (`WidgetKind`, the eight builders, `RendererRegistry`, `builtinCatalog`) | the only serious consumer imports none of it; the kinds are visual, contradicting the TRD's §4.2 and the semantic direction loom itself argued for |
+| `@loomwork/plugin-renderer-react`, `@loomwork/plugin-renderer-terminal` | 8 React renderers + a kind-blind terminal renderer for a vocabulary the consumer did not adopt; `genUI` ships its own Lit and terminal renderers |
 
 `validateBlueprint`, `catalogCoverage`, `preservesNodes`, `stableId`, `traverseBlueprintAsync` are
 sound *as patterns* but are written against loom's `Widget`/`Layout` types, so they move with the
@@ -265,8 +265,8 @@ Sibling to `loom-examples` and `loom-plugins`, seeded by **extracting** `genUI`'
 `packages/ui-sdk`, `packages/widgets-lit` and `packages/renderer-terminal`. Day one it has an
 Experience Model, a Rendering Runtime with priority scheduling, two surfaces, and a live consumer.
 Its contract with loom is narrow and already exercised: `ctx.emit` (`SURFACE_PATCH`,
-`BLUEPRINT_COMPOSED`), `ctx.decide` (planning), the ContentStore (artifact refs), `@loom/agent-surface`,
-`@loom/plugin-a2ui`, `invokeTransient` (hydration), `subscribeSelector` (read side). It owns **no
+`BLUEPRINT_COMPOSED`), `ctx.decide` (planning), the ContentStore (artifact refs), `@loomwork/agent-surface`,
+`@loomwork/plugin-a2ui`, `invokeTransient` (hydration), `subscribeSelector` (read side). It owns **no
 event store and no persistence**.
 
 ## 6. Edits to make to the TRD before anyone builds from it
@@ -300,7 +300,7 @@ UI stays usable with no framework, and the framework *enhances* it. The
 [loom-ui design](2026-09-21-loom-ui-design.md) that followed makes the framework's Experience
 Model **compile to loom's `Blueprint`**, so loom's renderers draw the framework's output.
 
-Under that relationship the §5 "candidates to move out" — `@loom/blueprint-runtime`'s widget
+Under that relationship the §5 "candidates to move out" — `@loomwork/blueprint-runtime`'s widget
 vocabulary and the two renderer plugins — are the framework's *foundation*, not its competitor,
 and a compile target has to stay where its consumers can pin it. The list is withdrawn.
 What replaces it is [ADR 0096](../adr/0096-blueprint-stable-rendering-ir.md): the Blueprint gains

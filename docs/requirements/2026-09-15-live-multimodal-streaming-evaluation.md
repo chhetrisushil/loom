@@ -38,7 +38,7 @@ second. This evaluation does not reopen it.
 | The per-chunk economics are already understood | `agent/src/chunkDeltas.ts` — "a 4,000-token generation streamed per token is 4,000 permanently load-bearing events", with the semantic-boundary batcher that makes the advice followable |
 | Barge-in has a foundation | `EffectContext.signal` is a real `AbortSignal` (`effect-runtime/src/types.ts:71`), and ADR 0060's typed `InterruptedGeneration` failure **preserves the text produced before the abort** rather than discarding it |
 | Media artifacts have a durable home | ADR 0059 `ContentStore.putStream` — streamed address ≡ whole-buffer address, idempotent, conformance-pinned |
-| Live read-side already works | `@loom/live-query` re-folds and pushes state on every event, with no syscall and no new event type |
+| Live read-side already works | `@loomwork/live-query` re-folds and pushes state on every event, with no syscall and no new event type |
 
 Text streaming is solved end to end. Voice and video are a different problem, and the difference is
 not "more of the same bytes".

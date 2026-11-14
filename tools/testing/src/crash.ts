@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type AppendIfUnchangedResult,
   type DecoratorPlan,
@@ -6,7 +6,7 @@ import {
   type OptionalEventStoreMethod,
   type TipObservation,
   installOptional,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 
 export interface CrashingEventStoreOptions {
   /**

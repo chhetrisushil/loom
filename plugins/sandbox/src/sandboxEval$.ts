@@ -1,9 +1,9 @@
-import type { EffectRuntime } from "@loom/effect-runtime";
-import { SANDBOX_TOOL_ID, sandboxEval$ } from "@loom/sandbox";
+import type { EffectRuntime } from "@loomwork/effect-runtime";
+import { SANDBOX_TOOL_ID, sandboxEval$ } from "@loomwork/sandbox";
 import { SandboxEvalEffect } from "./SandboxEvalEffect";
 import type { SandboxSpec, ScriptReader } from "./types";
 
-// Moved to @loom/sandbox (ADR 0144); re-exported so existing imports keep working.
+// Moved to @loomwork/sandbox (ADR 0144); re-exported so existing imports keep working.
 export { SANDBOX_TOOL_ID, sandboxEval$ };
 
 /**

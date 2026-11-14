@@ -7,7 +7,7 @@ the packages themselves.
 
 ## Why they moved
 
-Every example depended on the workspace's `@loom/*` packages and added ~15 build
+Every example depended on the workspace's `@loomwork/*` packages and added ~15 build
 + test tasks to this repo. Loom is unpublished, so the examples resolve those
 packages from a sibling `../loom` checkout via `link:` (pnpm `overrides`) instead
 of `workspace:*`. See `../loom-examples/AGENTS.md` for the full mechanism.
@@ -17,13 +17,13 @@ of `workspace:*`. See `../loom-examples/AGENTS.md` for the full mechanism.
 ```
 workspace/
 ├── loom/            # this repo:            pnpm install && pnpm build
-└── loom-examples/   # git clone, then:      pnpm install   (resolves @loom/* from ../loom)
+└── loom-examples/   # git clone, then:      pnpm install   (resolves @loomwork/* from ../loom)
 ```
 
 ```bash
 git clone https://github.com/chhetrisushil/loom-examples.git
 cd loom-examples && pnpm install
-pnpm --filter @loom/db-observability start
+pnpm --filter @loomwork/db-observability start
 ```
 
 ## Evaluating usage patterns without cloning

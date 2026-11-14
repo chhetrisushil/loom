@@ -5,12 +5,12 @@
 ## Data-plane isolation & egress (K7)
 
 K2's grant table governs *which* effects run; in-process tool bodies still hold ambient
-authority. `@loom/isolate` turns the convention into a boundary — the tool runs in a pooled
+authority. `@loomwork/isolate` turns the convention into a boundary — the tool runs in a pooled
 **child process** at the effect position (innermost, so grants/metering/safety all stay on
 the kernel side where the isolate can't forge them):
 
 ```ts
-import { IsolatedToolEffect } from "@loom/isolate";
+import { IsolatedToolEffect } from "@loomwork/isolate";
 
 effectRuntime.register("fetch-metrics", new IsolatedToolEffect({
   id: "fetch-metrics",
@@ -38,8 +38,8 @@ brokered `ctx.fetch`: the allowlist is enforced **before any connection** (durab
 OS-layer sandboxing (netns/seccomp/container egress) around the worker.
 
 This boundary is for tool code you ship, not for code a model wrote. Model-written scripts run through
-`sandboxEval$` in a capability-empty engine: QuickJS-in-WASM by default (`@loom/plugin-sandbox`) or an
-isolation boundary you bring behind the sandbox backend SPI (`@loom/sandbox`,
+`sandboxEval$` in a capability-empty engine: QuickJS-in-WASM by default (`@loomwork/plugin-sandbox`) or an
+isolation boundary you bring behind the sandbox backend SPI (`@loomwork/sandbox`,
 [ADR 0144](../adr/0144-sandbox-backend-spi.md)).
 
 ## Untrusted content: the integrity axis (ADR 0085)
@@ -52,13 +52,13 @@ server returned it, and which one it is is only knowable at runtime.
 So taint is attached to the value, at ingress, by whoever acquired it:
 
 ```ts
-import { tainted, unwrapTainted } from "@loom/classify";
+import { tainted, unwrapTainted } from "@loomwork/classify";
 
 const doc = tainted(await fetchThirdPartyDoc(), "mcp:acme/fetch_doc");
 ```
 
 The wrapper is plain JSON, so it survives the log verbatim and **a replay hands back a value that is
-still tainted**. `@loom/llm`'s `guardRequest` then runs inside every `createLlmEffect`,
+still tainted**. `@loomwork/llm`'s `guardRequest` then runs inside every `createLlmEffect`,
 unconditionally: tainted content may appear only in a `user` message, and only fenced as
 `<untrusted-input origin="…">`. A system message, an assistant turn, or a tool name/description
 throws `UntrustedContentError`.
@@ -79,7 +79,7 @@ failing tool is `isError`). There is no `tool` role: each provider maps the one 
 (Anthropic content blocks, OpenAI `tool_calls` + `role: "tool"`, Gemini `functionCall` / `functionResponse`).
 
 ```ts
-import { mediaResult } from "@loom/agent";
+import { mediaResult } from "@loomwork/agent";
 
 // A tool hands the model an image by CLAIM-CHECK: store the bytes, return the address. The tool must be
 // declared by the operator — `tool$({ ..., returnsMedia: true })` — or its result is just data.
@@ -130,7 +130,7 @@ outside the delta validators).
 > with `textOf(content)` (text) or `toParts(content)` (structure), or branch on `typeof content === "string"`.
 > Provider-author checklist: (1) read content only through `textOf` / `toParts` / a `typeof` branch; (2) map every
 > part type you declare in `capabilities`, and refuse the rest; (3) run `runLlmProviderConformance` from
-> `@loom/conformance`, whose parts case fails a provider that string-coerces a parts message. Loom's own source is
+> `@loomwork/conformance`, whose parts case fails a provider that string-coerces a parts message. Loom's own source is
 > held to this by a type-aware fitness test (`packages/spec/src/rawMessageContent.test.ts`); a third-party package
 > has the conformance case and this checklist.
 

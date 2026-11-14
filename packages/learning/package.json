@@ -1,5 +1,5 @@
 {
-  "name": "@loom/learning",
+  "name": "@loomwork/learning",
   "version": "0.1.0",
   "description": "The learning substrate for Loom — mine the durable log into trajectories, evaluate a candidate policy against real production traffic before shipping it, and gate promotion on the result. Read-only over the log; the learning algorithm itself is third-party.",
   "main": "./dist/index.js",
@@ -20,17 +20,17 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/analytics": "workspace:^",
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/verify": "workspace:^"
+    "@loomwork/analytics": "workspace:^",
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/verify": "workspace:^"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/plugin-postgres": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/plugin-postgres": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

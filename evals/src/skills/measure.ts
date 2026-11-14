@@ -3,8 +3,8 @@ import {
   type SkillSearchHit,
   type ToolRankerFactory,
   ToolSearchSession,
-} from "@loom/agent";
-import { type SkillDefinition, instructions$, skill$ } from "@loom/core";
+} from "@loomwork/agent";
+import { type SkillDefinition, instructions$, skill$ } from "@loomwork/core";
 import { type Scores, type Thresholds, toRows } from "../gate";
 import { hitAtK, mean } from "../metrics";
 import type { MetricRow } from "../scoreboard";

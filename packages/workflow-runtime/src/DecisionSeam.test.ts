@@ -1,7 +1,7 @@
-import { step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
@@ -191,7 +191,7 @@ describe("ADR 0079 — context + policy on the decision seam", () => {
   });
 });
 
-// ADR 0124 follow-up — `@loom/learning` fills the `policy` stamp from INSIDE the decider (so a
+// ADR 0124 follow-up — `@loomwork/learning` fills the `policy` stamp from INSIDE the decider (so a
 // replay consults no policy). That relies on `opts` being read at commit, after the decider
 // settles, and on a served decision reading no `opts` at all. Pin both here, in the kernel, so a
 // refactor that snapshots `opts` up front fails in this package rather than as a learning bug.

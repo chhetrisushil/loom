@@ -51,7 +51,7 @@ before any implementation planning:
 | Requirements claim | Reality | Consequence |
 |---|---|---|
 | K11.1: "`RUN_STARTED` MUST record…" | The event is **`EXECUTION_STARTED`** and its payload is `{ input }` only (`WorkflowRuntime.ts:152`) — no `RUN_STARTED` exists | K11.1 re-targets `EXECUTION_STARTED`; hash is a **payload extension** to a pinned type (see K5 rule below) |
-| K11.1: "the `@loom/compiler` manifest hash already exists" | The manifest has `version` + per-step chunk hashes only — **no flow content hash exists** | The hash must be *built* — over compiler-normalized manifest content, not bundler output (see K11 amendments) |
+| K11.1: "the `@loomwork/compiler` manifest hash already exists" | The manifest has `version` + per-step chunk hashes only — **no flow content hash exists** | The hash must be *built* — over compiler-normalized manifest content, not bundler output (see K11 amendments) |
 | K8 gap: "Nothing can terminate an in-flight effect or execution" | `ExecutionHandle.cancel(reason)` **exists** and emits `EXECUTION_CANCELLED` (`WorkflowRuntime.ts:464-472`); `STEP_CANCELLED` is emitted on an aborted signal; `EffectContext` already carries `signal?: AbortSignal` | K8 *completes* an existing seam. Real gaps: provider signal forwarding, cancel-by-`executionId` cross-process, enforced deadlines, mid-flight budget, cross-dispatch propagation |
 | K8.4: abort "a streaming LLM effect" mid-stream | **No streaming effects exist** — no provider streams; `ctx.stream` is a side-channel emit; middleware sees only final results | K8.4 becomes conditional: it binds when streaming effects land, and cannot be middleware (see K8 amendments) |
 | K9.2: key "`executionId:stepId:attempt`-derived, stable across recovery replays of the same attempt" | `attempts` increments on **every** `STEP_STARTED` fold (`eventHandlers.ts:38`); crash-recovery re-execution appends a new `STEP_STARTED` | An attempt-suffixed key **changes in exactly the crash case idempotency exists for** — unimplementable as written; corrected in K9 amendments |
@@ -64,7 +64,7 @@ Premises verified **true**: recovery re-executes the in-flight tail (at-least-on
 `recovery.test.ts:128-129`); `flow$` already requires `version`; `fold(snapshot, suffix)` is
 already how resume works; `EventStore` has the optional-method precedent (`readRange?`,
 `copyPrefix?`) for additive SPI growth; deploy-sim is a pure fold gate reusable as K11.3's
-replay-check engine; `@loom/testing` has no crash injection (K9.5 is genuinely new); the A2A
+replay-check engine; `@loomwork/testing` has no crash injection (K9.5 is genuinely new); the A2A
 server is ~112 LOC of HTTP and a plausible T2 carrier.
 
 ---
@@ -132,7 +132,7 @@ one budget-evasion loophole closed.*
 
 ### K9 — Effect delivery contract: idempotency & fencing — Accept with amendments
 
-*Genericity ✅. DX ✅ (`tool$({ idempotent })`; crash harness fits `@loom/testing`). Perf ✅
+*Genericity ✅. DX ✅ (`tool$({ idempotent })`; crash harness fits `@loomwork/testing`). Perf ✅
 (key = string concat; fencing = one predicate on append; SQLite exempt). Security ✅ —
 highest-ROI item; P0 endorsed.*
 

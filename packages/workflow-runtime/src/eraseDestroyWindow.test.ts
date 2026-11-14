@@ -1,12 +1,12 @@
-import { EraseCoordinator, SubjectIndex } from "@loom/compliance";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { type EventStore, INBOX_STREAM_PREFIX, isKeyUnavailable } from "@loom/event-runtime";
+import { EraseCoordinator, SubjectIndex } from "@loomwork/compliance";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { type EventStore, INBOX_STREAM_PREFIX, isKeyUnavailable } from "@loomwork/event-runtime";
 import {
   EncryptingSnapshotStore,
   InMemoryKeyStore,
   ShredIncompleteError,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
 

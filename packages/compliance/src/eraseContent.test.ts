@@ -1,12 +1,12 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   brandPayloadShredded,
   buildReservedSegment,
   buildSegment,
-} from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
+} from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
 import { describe, expect, it, vi } from "vitest";
 import { SubjectIndex } from "./SubjectIndex";
 import {

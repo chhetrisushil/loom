@@ -1,7 +1,7 @@
-import { step$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+import { step$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
+import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createTestApp } from "./createTestApp";
@@ -136,10 +136,10 @@ describe("VCR llm provider", () => {
 
 describe("resumeWith under a fail-closed runtime (R3)", () => {
   it("forwards options, so a strict app can be driven with a principal", async () => {
-    const { WorkflowRuntime, executionAccessPolicy } = await import("@loom/workflow-runtime");
-    const { EffectRuntime } = await import("@loom/effect-runtime");
-    const { InMemoryAsyncEventStore } = await import("@loom/event-runtime");
-    const { InMemoryAsyncSnapshotStore } = await import("@loom/snapshot-runtime");
+    const { WorkflowRuntime, executionAccessPolicy } = await import("@loomwork/workflow-runtime");
+    const { EffectRuntime } = await import("@loomwork/effect-runtime");
+    const { InMemoryAsyncEventStore } = await import("@loomwork/event-runtime");
+    const { InMemoryAsyncSnapshotStore } = await import("@loomwork/snapshot-runtime");
     const effects = new EffectRuntime();
     effects.register("metrics-tool", new ToolEffect(async () => ({ cpu: 1 })));
     const runtime = new WorkflowRuntime({

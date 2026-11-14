@@ -30,7 +30,7 @@ Loom's renderer contract is framework-agnostic: `{ widget, value, onAction }`.
 
 So the render layer should be **the only thing that changes** between UIs.
 
-- React version → `@loom/plugin-renderer-react` (`BlueprintRenderer`, fiber)
+- React version → `@loomwork/plugin-renderer-react` (`BlueprintRenderer`, fiber)
 - **This version → native Custom Elements**, ~150 lines of `src/dom/`
 
 Everything upstream of the pixels is identical.
@@ -159,7 +159,7 @@ Everything else is just the DOM.
 ## Run it & verify
 
 ```bash
-pnpm --filter @loom/db-command-center-wc dev        # http://localhost:5173
+pnpm --filter @loomwork/db-command-center-wc dev        # http://localhost:5173
 ```
 
 Try the same two goals as the React app — identical behavior, identical agents,

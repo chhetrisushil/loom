@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { build } from "./__tests__/r2Harness";
 import { DISCARD_WAIT_ID, type QuarantineEntry, inboxDeliverable, staleInboxBatch } from "./inbox";

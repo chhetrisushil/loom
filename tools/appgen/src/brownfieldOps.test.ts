@@ -110,14 +110,14 @@ describe("wireGrants → config.ts", () => {
       model
     );
     const edit = plan.edits.find((e) => e.path.endsWith("config.ts"));
-    expect(edit?.after).toContain('import { GrantTable } from "@loom/effect-runtime";');
+    expect(edit?.after).toContain('import { GrantTable } from "@loomwork/effect-runtime";');
     expect(edit?.after).toContain("authorizer: new GrantTable({");
     expect(edit?.after).toContain('"planner": ["metrics-tool"]');
   });
 
   it("does not double-wire when an authorizer already exists", () => {
     const src = [
-      'import { defineConfig } from "@loom/app";',
+      'import { defineConfig } from "@loomwork/app";',
       "export const app = defineConfig({",
       '  storage: { kind: "memory" },',
       "  authorizer: existing,",

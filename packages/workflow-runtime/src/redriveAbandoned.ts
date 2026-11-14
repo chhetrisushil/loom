@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { readRangeOf } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { readRangeOf } from "@loomwork/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { placementOf } from "./placement";

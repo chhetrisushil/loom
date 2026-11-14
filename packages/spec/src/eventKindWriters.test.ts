@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { EVENT_KIND_CLASS } from "@loom/event-runtime";
-import { knownEventTypes } from "@loom/replay-vm";
+import { EVENT_KIND_CLASS } from "@loomwork/event-runtime";
+import { knownEventTypes } from "@loomwork/replay-vm";
 import { describe, expect, it } from "vitest";
 
 // W2-0 fitness (Wave 2 design §3): the fold's handler table, the type-level kind list and the

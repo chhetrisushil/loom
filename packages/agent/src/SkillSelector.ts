@@ -1,5 +1,5 @@
-import { guardRequest } from "@loom/llm";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import { guardRequest } from "@loomwork/llm";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
 import type { SkillRegistry } from "./SkillRegistry";
 import type { AgentInput } from "./types";
 import { assertContextIsClean } from "./untrustedContext";
@@ -62,7 +62,7 @@ export function deterministicSkillSelector(maxSkills = 3): SkillSelector {
 //
 //  - `llmSkillSelector(provider, max)` calls `provider.complete` DIRECTLY. No authorizer sees
 //    it, no metering or quota, no kill switch (`guardRequest` does run). It remains for back-compat; under
-//    `@loom/app`'s strict profile prefer the form below.
+//    `@loomwork/app`'s strict profile prefer the form below.
 //
 //  - `llmSkillSelector({ toolId, maxSkills })` resolves the call through the EffectRuntime by
 //    `toolId` (register `createAgentModelEffect(provider)` under it), so every one of those

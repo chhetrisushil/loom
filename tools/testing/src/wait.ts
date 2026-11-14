@@ -1,12 +1,12 @@
-import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { EventStore } from "@loomwork/event-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import type {
   ExecutionHandle,
   ResumeEvent,
   RunOptions,
   WorkflowRuntime,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 
 export interface WaitOptions {
   timeoutMs?: number;

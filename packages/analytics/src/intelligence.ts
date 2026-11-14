@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type Analytics,
   analyze,
@@ -11,7 +11,7 @@ import { rankFromOutcomes } from "./outcomes";
 // ── Self-optimization (M10) ──────────────────────────────────────────────────
 //
 // Derive a model ranking from historical logs (how often each model was the chosen
-// route). Feed it to `rankedRouter` (@loom/reasoning) to prefer proven models — an
+// route). Feed it to `rankedRouter` (@loomwork/reasoning) to prefer proven models — an
 // EXPLICIT, opt-in optimizer whose choices are logged via the decision seam (P9), so
 // it is auditable and override-able, never silently autonomous (P10).
 export function rankModels(events: EventEnvelope[]): Record<string, number> {

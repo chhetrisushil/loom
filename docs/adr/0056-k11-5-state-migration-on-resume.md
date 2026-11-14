@@ -16,7 +16,7 @@ recorded input no longer matches the evolved contract of the flow it must resume
 would hand the new runner the old-shaped input — the exact contract mismatch the requirements
 (§4 K11.5) demand be impossible. Deliberately specified as a general K11 amendment, not a
 chain/sentinel feature: schedule-driven agents barely need it (each wake starts fresh; carry-state
-migration is `@loom/plugin-durable-state`'s job), but any long-suspended execution has it.
+migration is `@loomwork/plugin-durable-state`'s job), but any long-suspended execution has it.
 
 ## Decision
 

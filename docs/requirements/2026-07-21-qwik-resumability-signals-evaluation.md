@@ -87,7 +87,7 @@ the *imperative* subscription graph Qwik has to serialize, because every subscri
 | Signal / serialize-the-reactive-graph **state model** | **REJECT — permanent non-goal** | Second, non-logged source of truth (render-plane twin of ST-R); violates P2. In-memory/single-process/lossy — weaker than the log for the durability it claims. JS/React-specific — worse for multi-surface. Recorded beside `finding$` / `rotate$` / ST-R. |
 | Execution / state resumability | **Nothing to adopt** | loom already has a *stronger* form (durable, crash-recoverable, cross-node, verifiable event-sourced replay). Qwik's is the in-memory, single-process, unverifiable version of the same idea. |
 | Lazy / event-delegated / virtualized widget hydration | **Ordinary `plugin-renderer-react` perf item — already permitted (ADR 0043), benchmark-gated. NOT a Qwik adoption.** | A renderer-plugin internal refactor: no kernel, no event-schema, no compiler-manifest, no fold. Byte-identical-when-unwired. Stands purely on an N-widget boot benchmark; needs none of Qwik's signal model, closure serialization, or QRL lexical-capture. Kept *separate* so the dead state-model is not re-litigated on every read. |
-| Kernel / event-schema change | **None** | KERNEL_ABI stays 1.1.0; EVENT_SCHEMA stays 1.17.0; no `@loom/spec` capability entry. See below. |
+| Kernel / event-schema change | **None** | KERNEL_ABI stays 1.1.0; EVENT_SCHEMA stays 1.17.0; no `@loomwork/spec` capability entry. See below. |
 
 **No kernel/event-schema sliver.** The candidate — a "UI-continuation event" / "serialized-graph
 snapshot" event kind so a UI resumes mid-run on another device — is exactly **ST-R on the render

@@ -1,4 +1,4 @@
-import { Priority } from "@loom/scheduler";
+import { Priority } from "@loomwork/scheduler";
 import { describe, expect, it } from "vitest";
 import { createFairScheduler } from "./fairScheduler";
 

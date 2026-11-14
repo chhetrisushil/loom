@@ -1,8 +1,8 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 
 /**
  * SPI version for the {@link SnapshotStore} contract (ADR 0033). Pinned by
- * `runSnapshotStoreConformance` in `@loom/testing`.
+ * `runSnapshotStoreConformance` in `@loomwork/testing`.
  *
  * 1.1.0: added optional `loadLatestSealed()` (ADR 0106 — the latest snapshot as stored at
  *   rest, readable after a crypto-shred destroyed the subject's key).
@@ -104,7 +104,7 @@ export interface SnapshotStore {
 
 /**
  * The names of the OPTIONAL {@link SnapshotStore} methods, derived from the interface (see
- * `OptionalEventStoreMethod` in `@loom/event-runtime`). Snapshot decorators declare a
+ * `OptionalEventStoreMethod` in `@loomwork/event-runtime`). Snapshot decorators declare a
  * `DecoratorPlan` over this whole union.
  */
 export type OptionalSnapshotStoreMethod = {

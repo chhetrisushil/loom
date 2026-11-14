@@ -1,5 +1,5 @@
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { ReplayVM } from "@loom/replay-vm";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { ReplayVM } from "@loomwork/replay-vm";
 import { describe, expect, it } from "vitest";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { UNKNOWN_OWNER_REASON, executionAccessPolicy } from "./executionAccessPolicy";

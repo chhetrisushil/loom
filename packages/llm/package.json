@@ -1,5 +1,5 @@
 {
-  "name": "@loom/llm",
+  "name": "@loomwork/llm",
   "version": "0.1.0",
   "description": "Provider-agnostic LLM abstraction for Loom workflows",
   "main": "./dist/index.js",
@@ -20,9 +20,9 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

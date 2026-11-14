@@ -1,8 +1,8 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
-import type { Effect, EffectContext } from "@loom/effect-runtime";
-import { knownEventTypes } from "@loom/replay-vm";
+import type { Effect, EffectContext } from "@loomwork/effect-runtime";
+import { knownEventTypes } from "@loomwork/replay-vm";
 import { EgressDeniedError, brokeredFetch } from "./broker";
 import {
   type ChildToParent,

@@ -1,6 +1,6 @@
-import { isReservedStream, iterateExecutionIds } from "@loom/event-runtime";
-import { awaitedByParent } from "@loom/orchestration";
-import { LogLifecycle, type RetentionPolicy } from "@loom/workflow-runtime";
+import { isReservedStream, iterateExecutionIds } from "@loomwork/event-runtime";
+import { awaitedByParent } from "@loomwork/orchestration";
+import { LogLifecycle, type RetentionPolicy } from "@loomwork/workflow-runtime";
 import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
 

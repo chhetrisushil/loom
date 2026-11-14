@@ -35,7 +35,7 @@ const wireTransfer = new ToolEffect(sendWire, { idempotent: false }); // park, n
 // The execution suspends with { on: "EffectInDoubtResolved", correlationKey: stepId }.
 // An operator checks the provider, then settles it with a standard resume:
 await runtime.resume(executionId, {
-  eventType: EFFECT_INDOUBT_RESOLVED, // from @loom/workflow-runtime
+  eventType: EFFECT_INDOUBT_RESOLVED, // from @loomwork/workflow-runtime
   payload: { stepId: "wire", resolution: "completed-with-result", output: { txId: "…" } },
   // or { stepId: "wire", resolution: "retry-fresh" }   → re-run as a NEW logical attempt (fresh key `…:r1`)
   // or { stepId: "wire", resolution: "fail", error: "…" } → settle the step as failed
@@ -43,7 +43,7 @@ await runtime.resume(executionId, {
 ```
 
 Undeclared tools keep the legacy automatic re-run byte-identically. Prove your tools' semantics
-in CI with the crash-injection harness — `crashingEventStore` in `@loom/testing` kills the
+in CI with the crash-injection harness — `crashingEventStore` in `@loomwork/testing` kills the
 execution exactly between the effect and its completion append.
 
 **3. Fencing tokens (K9.4).** On a multi-node store, a re-dispatched execution must be safe
@@ -80,7 +80,7 @@ recorded hash against the registered flow and refuses a mismatch loudly:
 FlowCodeMismatchError: flow code changed under in-flight execution "…":
 Exits: (1) PIN — deploy/register the original flow code and resume on it;
        (2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying
-           fold-compatibility (loom deploy check / @loom/deploy-sim);
+           fold-compatibility (loom deploy check / @loomwork/deploy-sim);
        (3) DRAIN — cancel() the execution and restart it on the new code.
 ```
 
@@ -117,7 +117,7 @@ or dropped `ctx.run`) leaves the hash unchanged while the new body walks a diffe
 over the old log. Old frames are orphaned and an effect that already ran under one id runs again
 under another. Three things close that, none of which hashes `toString()`:
 
-1. **The hash can be SHA-256** (`sha256:<hex>`, a small pure-JS digest in `@loom/core`; no
+1. **The hash can be SHA-256** (`sha256:<hex>`, a small pure-JS digest in `@loomwork/core`; no
    `node:crypto`). Both forms are always read: a log that recorded the old 32-bit `fnv1a:` value is
    compared against the legacy hash of the registered code. New starts keep recording `fnv1a:` until
    `kernel.features.sha256FlowHash` is on (a node that predates ADR 0113 refuses a `sha256:`
@@ -128,7 +128,7 @@ under another. Three things close that, none of which hashes `toString()`:
    a `FlowCodeMismatchError` (`kind: "code"`) unless the registered flow lists the recorded one in
    `compatibleWith: ["…"]`, your explicit assertion, reviewed in the diff that adds it, that the
    edit is replay-compatible. Absent on either side means "no fingerprint": nothing changes.
-   (`@loom/compiler` does not produce one yet.) A migration records the target's fingerprint
+   (`@loomwork/compiler` does not produce one yet.) A migration records the target's fingerprint
    (`toCodeHash`), so a migrated execution is held to the code it now runs, and a continuation's
    successor records the fingerprint of the code registered *now*, so `continueAsNew` is the clean
    re-version point.
@@ -251,7 +251,7 @@ owned by a healthy node elsewhere is byte-identical to an orphaned one — the d
 fact about your cluster, not about the execution. So the pass takes the decision from you:
 
 ```ts
-import { recoverAbandoned } from "@loom/workflow-runtime";
+import { recoverAbandoned } from "@loomwork/workflow-runtime";
 
 // Run this from a cron, a Kubernetes Job, or a leader-elected ticker — it is a
 // maintenance pass you schedule, not a service that runs itself.
@@ -281,7 +281,7 @@ node claims an execution before waking it, renewing while the wake is in flight;
 then answers "who stopped saying they were alive" as a *fact*, not a guess about a clock:
 
 ```ts
-import { SqliteLeaseStore } from "@loom/plugin-sqlite"; // PostgresLeaseStore for multi-node
+import { SqliteLeaseStore } from "@loomwork/plugin-sqlite"; // PostgresLeaseStore for multi-node
 
 const app = defineConfig({
   storage: { /* … */ },

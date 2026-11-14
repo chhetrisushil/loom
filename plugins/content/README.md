@@ -1,19 +1,19 @@
-# @loom/plugin-content
+# @loomwork/plugin-content
 
 The content-addressed blob seam. A large value leaves the log by reference: the log keeps a thin, ordered
 authority and the bytes live in a `ContentStore`, addressed by the hash of the bytes (`sha256:<hex>`).
 Use it when payloads are too big or too sensitive to keep inline, when forks should share blobs, or when
-you need to reclaim stored bytes safely. The durable store here is `SqliteContentStore` (`@loom/plugin-sqlite`);
-`@loom/plugin-crypto` has an `EncryptingContentStore`, and you can implement the SPI for another backend.
+you need to reclaim stored bytes safely. The durable store here is `SqliteContentStore` (`@loomwork/plugin-sqlite`);
+`@loomwork/plugin-crypto` has an `EncryptingContentStore`, and you can implement the SPI for another backend.
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   ContentResolvingEventStore,
   InMemoryContentStore,
   sweepUnpinnedContent,
-} from "@loom/plugin-content";
+} from "@loomwork/plugin-content";
 
 const content = new InMemoryContentStore();
 const inner = new InMemoryAsyncEventStore();
@@ -79,7 +79,7 @@ export async function sweep(now: number) {
 
 ## See also
 
-- API reference: section "`@loom/plugin-content` — the content-addressed blob seam" in
+- API reference: section "`@loomwork/plugin-content` — the content-addressed blob seam" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [operations](../../docs/operations.md), [plugins](../../docs/plugins.md).
 - ADRs: [0046 content store seam](../../docs/adr/0046-content-store-seam-thin-authoritative-log.md),

@@ -1,5 +1,5 @@
 {
-  "name": "@loom/worker-runtime-local",
+  "name": "@loomwork/worker-runtime-local",
   "version": "0.1.0",
   "description": "In-process WorkerRuntime for Loom — runs an ExecutionPackage on the local WorkflowRuntime. The zero-cloud reference implementation of the Platform SPI",
   "main": "./dist/index.js",
@@ -20,21 +20,21 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/worker-runtime": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/worker-runtime": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8",
-    "@loom/plugin-sqlite": "workspace:*",
-    "@loom/conformance": "workspace:*",
-    "@loom/dispatcher": "workspace:*"
+    "@loomwork/plugin-sqlite": "workspace:*",
+    "@loomwork/conformance": "workspace:*",
+    "@loomwork/dispatcher": "workspace:*"
   },
   "license": "Apache-2.0",
   "repository": {

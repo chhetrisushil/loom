@@ -1,15 +1,15 @@
-# @loom/plugin-worker-remote — run an execution on another process over HTTP
+# @loomwork/plugin-worker-remote — run an execution on another process over HTTP
 
 `RemoteWorkerRuntime` is a `WorkerRuntime` that sends an `ExecutionPackage` to a worker's
 `POST /execute` endpoint and returns the `ExecutionResult`. The package carries resume coordinates
 (execution id, flow id, input or resume event), never code, so the worker has to have the same flows
 registered and must read the same event and snapshot stores. It is the client half; the server half
-is `@loom/plugin-worker-server`, and `@loom/plugin-cloudrun` builds placement on top of this class.
+is `@loomwork/plugin-worker-server`, and `@loomwork/plugin-cloudrun` builds placement on top of this class.
 Use it when a dispatcher should run executions off-box.
 
 ```ts
-import { LocalDispatcher } from "@loom/dispatcher";
-import { RemoteWorkerRuntime } from "@loom/plugin-worker-remote";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { RemoteWorkerRuntime } from "@loomwork/plugin-worker-remote";
 
 const worker = new RemoteWorkerRuntime("https://worker.internal:8080");
 const dispatcher = new LocalDispatcher(worker);
@@ -38,7 +38,7 @@ console.log(result.status); // "completed" | "suspended" | "failed"
   names this execution id, so an unrelated `409` from a proxy stays an ordinary failure. Any other
   non-2xx response throws an error carrying the status and body.
 - **Redispatch is the dispatcher's decision.** This class makes one request per `execute`; retry and
-  superseded handling are in `@loom/dispatcher`.
+  superseded handling are in `@loomwork/dispatcher`.
 - **The worker keeps no execution state between requests.** It rebuilds from the shared event and snapshot
   stores on each call, so those stores must be reachable from every worker (the Cloud Run deploy guide
   advises against a local SQLite file in a container).
@@ -50,6 +50,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 - [ADR 0001](../../docs/adr/0001-execution-dispatcher-and-worker-runtime.md) and
   [ADR 0002](../../docs/adr/0002-http-worker-and-remote-worker-runtime.md): the dispatcher and the HTTP worker.
-- API reference: section "`@loom/plugin-worker-remote` — the HTTP client side" in
+- API reference: section "`@loomwork/plugin-worker-remote` — the HTTP client side" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/scaling.md](../../docs/scaling.md), [docs/user-guide.md](../../docs/user-guide.md).

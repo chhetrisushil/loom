@@ -1,13 +1,13 @@
-# @loom/conversation — a durable dialogue as one chained execution
+# @loomwork/conversation — a durable dialogue as one chained execution
 
-A chat is not a request; it is a long-lived thing that is answered turn by turn, interrupted, resumed after a restart and rotated so it never grows without bound. `@loom/conversation` assembles that from parts the kernel already has — the inbox (ADR 0110), `agentLoop$` (ADR 0121) and `continueAsNew` (ADR 0109) — and adds nothing to the kernel (ADR 0122).
+A chat is not a request; it is a long-lived thing that is answered turn by turn, interrupted, resumed after a restart and rotated so it never grows without bound. `@loomwork/conversation` assembles that from parts the kernel already has — the inbox (ADR 0110), `agentLoop$` (ADR 0121) and `continueAsNew` (ADR 0109) — and adds nothing to the kernel (ADR 0122).
 
 ```ts
-import { agent$ } from "@loom/core";
-import { createAgentModelEffect } from "@loom/agent";
+import { agent$ } from "@loomwork/core";
+import { createAgentModelEffect } from "@loomwork/agent";
 import {
   ConversationHub, conversation$, createConversations, inboxBargeIn,
-} from "@loom/conversation";
+} from "@loomwork/conversation";
 
 const hub = new ConversationHub();
 effects.register("model", createAgentModelEffect(hub.wrapProvider(provider), {
@@ -36,7 +36,7 @@ const page = await conversations.history(conversationId, { principal, direction:
 The effect receives `{ messages: { role, content }[] }` and returns `{ summary: string }`. Like `agentLoop$` `compaction.toolId` (whose input also carries wrappers: failed tool calls, MCP results and origin-bearing history are tainted, in text parts and `tool_result` content), the user's words (and the previous summary) arrive with `content` as a **tainted wrapper** `{ __loomTainted: { origin }, value }` - untrusted data, neither a string nor parts; assistant replies are plain strings. `textOf(m.content)` on a wrapper throws `TaintedContentError` (it used to be an obscure `TypeError` that failed the step and killed the conversation at its first rotation). Read messages with `summarizerText`, which unwraps every level (top level, text parts, `tool_result` content) and so serves both effects:
 
 ```ts
-import { summarizerText } from "@loom/conversation";
+import { summarizerText } from "@loomwork/conversation";
 const transcript = input.messages.map((m) => `${m.role}: ${summarizerText(m.content)}`).join("\n");
 ```
 
@@ -47,7 +47,7 @@ The text is **untrusted data**: summarize or quote it, never put it in a system 
 To start work once a reply exists (a title, an index entry, something composed from the answer), observe the runtime's durable writes. The listener is called once per settled turn of ANY conversation of the flow, after the closing record is in the log:
 
 ```ts
-import { turnSettledObserver } from "@loom/conversation";
+import { turnSettledObserver } from "@loomwork/conversation";
 
 const runtime = new WorkflowRuntime({
   ...deps,
@@ -79,7 +79,7 @@ const runtime = new WorkflowRuntime({
 `sendTurn` builds and signs the envelope for you. A test, or a trusted server-side bridge that writes to the inbox itself, can sign one with the conversation's key:
 
 ```ts
-import { CONVERSATION_TOPIC, signInboxEnvelope } from "@loom/conversation";
+import { CONVERSATION_TOPIC, signInboxEnvelope } from "@loomwork/conversation";
 
 await runtime.send(conversationId, {
   topic: CONVERSATION_TOPIC,
@@ -113,6 +113,6 @@ Anything holding the host's system grant can bypass the client API and write str
 runtime.send(conversationId, { topic: CONVERSATION_TOPIC, payload }, runtime.systemOptions());
 ```
 
-`conversations.send` is the intended door; this raw path skips it. What still defends the conversation is the envelope check in the body, not the caller's good manners: the payload must be a host-signed, conversation-bound, single-use envelope (a forged or unsigned one is dropped), it must be above the replay floor (an old or replayed envelope is dropped), and in shared mode its author must pass the participant check. **A host must never expose this path** to users, to a route handler that forwards a client-supplied `executionId` or payload, or to a plugin it does not trust, and must keep `CONVERSATION_KEY` out of anything that can send. Expose conversations only through `createConversations` (or `@loom/plugin-conversation-sse`, which does) ([ADR 0122](../../docs/adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md) D10).
+`conversations.send` is the intended door; this raw path skips it. What still defends the conversation is the envelope check in the body, not the caller's good manners: the payload must be a host-signed, conversation-bound, single-use envelope (a forged or unsigned one is dropped), it must be above the replay floor (an old or replayed envelope is dropped), and in shared mode its author must pass the participant check. **A host must never expose this path** to users, to a route handler that forwards a client-supplied `executionId` or payload, or to a plugin it does not trust, and must keep `CONVERSATION_KEY` out of anything that can send. Expose conversations only through `createConversations` (or `@loomwork/plugin-conversation-sse`, which does) ([ADR 0122](../../docs/adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md) D10).
 
-See [ADR 0122](../../docs/adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md) and, for the browser, [`@loom/plugin-conversation-sse`](../../plugins/conversation-sse/README.md).
+See [ADR 0122](../../docs/adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md) and, for the browser, [`@loomwork/plugin-conversation-sse`](../../plugins/conversation-sse/README.md).

@@ -4,7 +4,7 @@
 Two things were learned in the building and are recorded in §8.
 **Date:** 2026-09-16
 **Kernel baseline:** EVENT_SCHEMA 1.18.0, KERNEL_ABI 1.1.0, EventStore SPI 1.4.0, BranchRegistry SPI 1.2.0, LeaseStore SPI 1.1.0
-**Kernel change:** none. The work is `@loom/app` (composition) + `tools/cli` (resolution).
+**Kernel change:** none. The work is `@loomwork/app` (composition) + `tools/cli` (resolution).
 
 ---
 
@@ -54,7 +54,7 @@ It is wrong on loom's own terms. `defineConfig` takes `storage: { kind: "custom"
 snapshotStore, branchRegistry }`, ADR 0043 makes 1P and 3P backends symmetric, and the
 conformance kits exist so a third-party store is a *first-class* store. A CLI that recognises
 `postgres://` and a file path blesses exactly two backends and leaves every conforming store —
-a 3P DynamoDB EventStore, an in-house one, `loom-plugin-vector`'s neighbours — unreachable by
+a 3P DynamoDB EventStore, an in-house one, `@loomwork/plugin-vector`'s neighbours — unreachable by
 every diagnostic. The scheme sniff does not generalise; it just moves the wall.
 
 The generic answer is not *more backends the CLI knows about*. It is **the CLI knowing none of
@@ -163,15 +163,15 @@ discipline generalises to every capability a store may not have.
 
 ## 5. Staging
 
-Each stage is a branch and a PR, in order. S1 and S2 are `@loom/app`; S3–S5 are the CLI.
+Each stage is a branch and a PR, in order. S1 and S2 are `@loomwork/app`; S3–S5 are the CLI.
 
 | | stage | shape | verification |
 |---|---|---|---|
-| **S1** | Build-without-start seam (§6 D1) | `@loom/app` | a config whose `timers.schedules` contains an already-due occurrence is imported by the CLI path; assert the log is untouched and `TimerService` never polled |
+| **S1** | Build-without-start seam (§6 D1) | `@loomwork/app` | a config whose `timers.schedules` contains an already-due occurrence is imported by the CLI path; assert the log is untouched and `TimerService` never polled |
 | **S2** | Expose stores + the lease seam | `LoomStores.timerStore?`/`leaseStore?`, `timers.leases` | round-trip test: an app that configures a lease store exposes the SAME instance; an app that does not exposes `undefined` (absent ≠ empty). Plus: a `defineConfig`-composed app takes a leased timer wake — the assertion that has no caller today. Ships with the `docs/user-guide.md:1662` correction, since that passage recommends a signal it cannot reach |
 | **S3** | `resolveStores()` + `census`/`retention` | `tools/cli` | both commands run against a `kind: "custom"` config wired to a **non-SQLite** store — the in-memory stores are the cheapest proof that nothing SQLite-shaped is assumed |
 | **S4** | Remaining eight commands | `tools/cli` | mechanical; each keeps its `--db` path green |
-| **S5** | Docs + guard | `docs/usage-cli.md`, fitness test | a test asserting no file in `tools/cli/src` imports `@loom/plugin-sqlite` outside the `--db` shorthand resolver |
+| **S5** | Docs + guard | `docs/usage-cli.md`, fitness test | a test asserting no file in `tools/cli/src` imports `@loomwork/plugin-sqlite` outside the `--db` shorthand resolver |
 
 S5's guard is the point of the exercise: without it, the next command added goes straight back
 to `new SqliteEventStore(...)`, because that is what every neighbouring file does. The defect
@@ -203,7 +203,7 @@ shorthand's whole justification is a dev machine with loose files.
 
 ## 7. Placement verdict (ADR 0083)
 
-Not kernel — no syscall, no event, no SPI version bump. S1/S2 are `@loom/app`, the composition
+Not kernel — no syscall, no event, no SPI version bump. S1/S2 are `@loomwork/app`, the composition
 root, which is exactly where "what did this deployment wire" belongs. S3–S5 are the CLI.
 
 Second consumer for the `leases` seam is already on the table and unrelated to the CLI:

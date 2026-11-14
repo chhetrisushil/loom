@@ -7,8 +7,8 @@
 // return Promises and the runtime awaits them, a network store like this is a
 // first-class backend — no in-memory shim, no write-behind hacks.
 
-import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { EventStore } from "@loomwork/event-runtime";
 import type { Pool, PoolClient } from "pg";
 
 interface EventRow {

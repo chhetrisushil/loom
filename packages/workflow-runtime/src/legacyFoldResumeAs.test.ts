@@ -1,8 +1,8 @@
-import { step$ } from "@loom/core";
-import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
@@ -20,8 +20,8 @@ import type { FlowRunner } from "./types";
 
 const legacy = vi.hoisted(() => ({ on: false }));
 
-vi.mock("@loom/replay-vm", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@loom/replay-vm")>();
+vi.mock("@loomwork/replay-vm", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@loomwork/replay-vm")>();
   type Mutable = { state: ExecutionState };
   class ReplayVM extends actual.ReplayVM {
     constructor(events: EventEnvelope[], initial?: Partial<ExecutionState>) {

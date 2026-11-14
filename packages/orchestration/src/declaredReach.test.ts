@@ -1,5 +1,5 @@
-import { step$ } from "@loom/core";
-import { assertReachMatches, readReachDeclaration, recordReach } from "@loom/verify";
+import { step$ } from "@loomwork/core";
+import { assertReachMatches, readReachDeclaration, recordReach } from "@loomwork/verify";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { fanout$ } from "./fanout";

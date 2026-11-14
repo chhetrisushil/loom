@@ -9,7 +9,7 @@
   [ADR 0137](0137-agent-state-growth-warning-and-builtin-summarizer.md) (the state-growth warning),
   [ADR 0138](0138-compaction-archives-what-it-removes.md) (what the sweep scans),
   [ADR 0083](0083-second-consumer-rule.md).
-- Placement: **1P, `@loom/app` + `@loom/middleware`.** Kernel, KERNEL_ABI, EVENT_SCHEMA, every SPI unchanged.
+- Placement: **1P, `@loomwork/app` + `@loomwork/middleware`.** Kernel, KERNEL_ABI, EVENT_SCHEMA, every SPI unchanged.
   No new event, no new log field.
 
 ## Context
@@ -42,7 +42,7 @@ boot, before any loop exists.
 the recorded envelope as the tool result, never the resolved bytes (resolving would put them in the NEXT
 turn's journaled input, undoing the offload). A bare ref is unhelpful, so a tool WITHOUT a `digests[toolId]`
 entry gets a default digest `{ preview }`: the first `preview` characters (default **256**) of the result's
-JSON text, via the new `previewDigest(maxChars)` in `@loom/middleware`, wired as the new `defaultDigest`
+JSON text, via the new `previewDigest(maxChars)` in `@loomwork/middleware`, wired as the new `defaultDigest`
 option. A declared digest always wins (it replaces the preview, it is not merged); `preview: false` records
 `{ ref, size }` only. The preview is a head, not a summary, and costs about 110 KB at 200 turns (below). It
 is pure and deterministic, as a digest must be (ADR 0054 D2). **The model does NOT see an offloaded tool's result: only its digest/preview (ADR 0087).** Opting in changes what the model can read, so list only tools whose output the model does not need in full (a bulk export it only needs the row count of, say); a tool the model reasons over (a search whose hits it must read) stays inline, or declares a `digests` entry that carries what the model needs. The preview says when it is a head: `{ preview, truncated: true }` (absent when the preview is the whole text). **A result that carries an ADR 0085 taint
@@ -162,11 +162,11 @@ output per turn, cloning log, no compaction (folded state is what a resume reads
 
 ## Second consumer (ADR 0083)
 
-The sentinel preset (`@loom/plugin-sentinel`) wires the same middleware for telemetry; an agent app is the
+The sentinel preset (`@loomwork/plugin-sentinel`) wires the same middleware for telemetry; an agent app is the
 unrelated second. Both use the unchanged `claimCheckMiddleware`.
 
 ## Consequences
 
-Additive public API: `@loom/app` `execution.claimCheck`, `ClaimCheckConfig`, `DEFAULT_CLAIM_CHECK_CAP_BYTES`,
-`DEFAULT_CLAIM_CHECK_PREVIEW_CHARS`; `@loom/middleware` `ClaimCheckOptions.defaultDigest`/`retain`/`passThrough`/`envelopesAreData`, `ClaimCheckEnvelope.retain`, `previewDigest`,
-`PreviewDigest.truncated`; `@loom/effect-runtime` `EffectContext.taskKind`; `@loom/compliance` `ContentCopiesRemainError`, `ErasableContent`, `ClaimCheckedBlob`, `claimCheckRefsOf`, `EraseCoordinatorOptions.content`, `ExportSubjectOptions.content`; control events `ERASURE_CONTENT_DELETE_INTENDED` / `ERASURE_CONTENT_DELETED`. `@loom/app` gains `@loom/plugin-content` as a dev dependency (tests only).
+Additive public API: `@loomwork/app` `execution.claimCheck`, `ClaimCheckConfig`, `DEFAULT_CLAIM_CHECK_CAP_BYTES`,
+`DEFAULT_CLAIM_CHECK_PREVIEW_CHARS`; `@loomwork/middleware` `ClaimCheckOptions.defaultDigest`/`retain`/`passThrough`/`envelopesAreData`, `ClaimCheckEnvelope.retain`, `previewDigest`,
+`PreviewDigest.truncated`; `@loomwork/effect-runtime` `EffectContext.taskKind`; `@loomwork/compliance` `ContentCopiesRemainError`, `ErasableContent`, `ClaimCheckedBlob`, `claimCheckRefsOf`, `EraseCoordinatorOptions.content`, `ExportSubjectOptions.content`; control events `ERASURE_CONTENT_DELETE_INTENDED` / `ERASURE_CONTENT_DELETED`. `@loomwork/app` gains `@loomwork/plugin-content` as a dev dependency (tests only).

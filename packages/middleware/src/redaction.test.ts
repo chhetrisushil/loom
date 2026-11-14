@@ -1,6 +1,6 @@
-import { secret } from "@loom/classify";
-import { step$ } from "@loom/core";
-import type { EffectContext } from "@loom/effect-runtime";
+import { secret } from "@loomwork/classify";
+import { step$ } from "@loomwork/core";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {

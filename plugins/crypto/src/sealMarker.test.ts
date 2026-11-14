@@ -1,11 +1,11 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   InMemoryAsyncEventStore,
   KEY_UNAVAILABLE_CODE,
   KeyUnavailableError,
   type SealMarker,
-} from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { EncryptingEventStore } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
@@ -425,7 +425,9 @@ describe("deterministic cipher seam (testing subpath)", () => {
         sensitive: {},
         ivSource: ivSource as never,
       });
-    expect(mk(() => new Uint8Array(12))).toThrow(/must be minted by @loom\/plugin-crypto\/testing/);
+    expect(mk(() => new Uint8Array(12))).toThrow(
+      /must be minted by @loomwork\/plugin-crypto\/testing/
+    );
     expect(mk(Object.assign(() => new Uint8Array(12), { __loomTestingIvSource: true }))).toThrow(
       /must be minted/
     ); // a forged brand property is not the brand

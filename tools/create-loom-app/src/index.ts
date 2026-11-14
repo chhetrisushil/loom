@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { appFiles, isValidPackageName, packageNameFrom } from "@loom/scaffold";
+import { appFiles, isValidPackageName, packageNameFrom } from "@loomwork/scaffold";
 
 /**
  * The file map for a new Loom app (folder convention, wired via defineConfig).
- * Templates live in `@loom/scaffold`, shared with `loom new`. Re-exported here as
+ * Templates live in `@loomwork/scaffold`, shared with `loom new`. Re-exported here as
  * `scaffoldFiles` for backwards compatibility.
  */
 export const scaffoldFiles = appFiles;
@@ -13,7 +13,7 @@ export const scaffoldFiles = appFiles;
 const USAGE = `usage: create-loom-app <directory> [--loom-path <loom checkout>] [--name <package>] [--force]
 
   <directory>    new app folder; refused when it already has files (unless --force)
-  --loom-path    your built loom checkout. @loom/* is not published, so an app created
+  --loom-path    your built loom checkout. @loomwork/* is not published, so an app created
                  OUTSIDE the loom pnpm workspace links to it (link: + pnpm overrides).
                  Not needed inside the workspace (apps/<name> gets workspace:*).
   --name         npm package name, may be scoped (default: the folder name, which must be a valid one)
@@ -112,7 +112,7 @@ function readName(manifest: string): string | undefined {
 
 /**
  * Walk up from `target` for a `pnpm-workspace.yaml` whose globs include it. Inside the loom
- * checkout, `@loom/*` as `workspace:*` resolves; anywhere else it cannot.
+ * checkout, `@loomwork/*` as `workspace:*` resolves; anywhere else it cannot.
  */
 export function findWorkspace(target: string): WorkspaceContext {
   const abs = path.resolve(target);
@@ -128,7 +128,7 @@ export function findWorkspace(target: string): WorkspaceContext {
           !globs.some((g) => g.startsWith("!") && globToRegExp(g.slice(1)).test(rel)));
       if (member) {
         const isLoom =
-          readName(path.join(dir, "packages", "core", "package.json")) === "@loom/core";
+          readName(path.join(dir, "packages", "core", "package.json")) === "@loomwork/core";
         return { root: dir, isLoom };
       }
     }
@@ -138,7 +138,7 @@ export function findWorkspace(target: string): WorkspaceContext {
 
 // ── A loom checkout to link to ───────────────────────────────────────────────
 
-/** Every `@loom/*` package in a loom checkout: name → absolute directory. */
+/** Every `@loomwork/*` package in a loom checkout: name → absolute directory. */
 export function loomPackages(loomRoot: string): Map<string, string> {
   const out = new Map<string, string>();
   for (const tier of ["packages", "plugins", "tools"]) {
@@ -148,7 +148,7 @@ export function loomPackages(loomRoot: string): Map<string, string> {
       if (!entry.isDirectory()) continue;
       const dir = path.join(base, entry.name);
       const name = readName(path.join(dir, "package.json"));
-      if (name?.startsWith("@loom/")) out.set(name, dir);
+      if (name?.startsWith("@loomwork/")) out.set(name, dir);
     }
   }
   return out;
@@ -174,17 +174,19 @@ function resolveLoomPath(raw: string, cwd: string): string {
   }
   if (
     !fs.existsSync(path.join(root, "pnpm-workspace.yaml")) ||
-    readName(path.join(root, "packages", "core", "package.json")) !== "@loom/core"
+    readName(path.join(root, "packages", "core", "package.json")) !== "@loomwork/core"
   ) {
     throw new Refusal(
-      `--loom-path "${raw}" is not a loom checkout (no pnpm-workspace.yaml with packages/core = @loom/core). Clone https://github.com/chhetrisushil/loom.git and point at its root.`
+      `--loom-path "${raw}" is not a loom checkout (no pnpm-workspace.yaml with packages/core = @loomwork/core). Clone https://github.com/chhetrisushil/loom.git and point at its root.`
     );
   }
   const pkgs = loomPackages(root);
-  const unbuilt = ["@loom/core", "@loom/app", "@loom/cli", "@loom/testing"].filter((n) => {
-    const dir = pkgs.get(n);
-    return dir === undefined || !fs.existsSync(path.join(dir, "dist"));
-  });
+  const unbuilt = ["@loomwork/core", "@loomwork/app", "@loomwork/cli", "@loomwork/testing"].filter(
+    (n) => {
+      const dir = pkgs.get(n);
+      return dir === undefined || !fs.existsSync(path.join(dir, "dist"));
+    }
+  );
   if (unbuilt.length > 0) {
     throw new Refusal(
       `the loom checkout at ${root} is not built (no dist/ in ${unbuilt.join(", ")}). Run \`pnpm install && pnpm build\` there first.`
@@ -194,7 +196,7 @@ function resolveLoomPath(raw: string, cwd: string): string {
 }
 
 /**
- * Rewrite the scaffolded `package.json` for an app outside the loom workspace: `@loom/*`
+ * Rewrite the scaffolded `package.json` for an app outside the loom workspace: `@loomwork/*`
  * dependencies become `*`, and `pnpm.overrides` redirects EVERY loom package to a `link:` into
  * the checkout. All of them, not just the app's direct ones: a `link:` dependency does not bring
  * its own `workspace:*` dependencies, so each transitive one must be mapped too — the same wiring
@@ -207,7 +209,7 @@ export function linkPackageJson(json: string, appRoot: string, loomRoot: string)
     [k: string]: unknown;
   };
   for (const table of [pkg.dependencies, pkg.devDependencies]) {
-    for (const name of Object.keys(table)) if (name.startsWith("@loom/")) table[name] = "*";
+    for (const name of Object.keys(table)) if (name.startsWith("@loomwork/")) table[name] = "*";
   }
   const overrides: Record<string, string> = {};
   for (const [name, dir] of [...loomPackages(loomRoot)].sort(([a], [b]) => a.localeCompare(b))) {
@@ -288,7 +290,7 @@ export function assertNoLinkBelow(root: string, dest: string): void {
  * target is lstat-checked. (3) No spelled ancestor matches but the target's PHYSICAL parent chain
  * reaches the cwd: refuse (a spelling the walk cannot cover). (4) Otherwise the target is genuinely
  * outside the cwd and only its own final component is checked. A small copy of `containmentRootFor`
- * from @loom/appgen (create-loom-app depends only on @loom/scaffold; no new edge).
+ * from @loomwork/appgen (create-loom-app depends only on @loomwork/scaffold; no new edge).
  */
 export function assertTargetNotLinked(target: string, cwd: string): void {
   const stat = (p: string): fs.Stats | undefined => {
@@ -402,7 +404,7 @@ export function run(argv: string[], cwd: string): number {
     if (!ws.isLoom) {
       if (args.loomPath === undefined) {
         throw new Refusal(
-          `@loom/* packages are not published to npm yet, so an app outside the loom workspace must link to a built loom checkout.\n  create-loom-app ${shellQuote(target)} --loom-path <path to your loom checkout>\n(build it first: \`pnpm install && pnpm build\` there). Or scaffold inside it, e.g. <loom>/apps/<name>, which needs no flag.`
+          `@loomwork/* packages are not published to npm yet, so an app outside the loom workspace must link to a built loom checkout.\n  create-loom-app ${shellQuote(target)} --loom-path <path to your loom checkout>\n(build it first: \`pnpm install && pnpm build\` there). Or scaffold inside it, e.g. <loom>/apps/<name>, which needs no flag.`
         );
       }
       loomRoot = resolveLoomPath(args.loomPath, cwd);
@@ -439,8 +441,8 @@ export function run(argv: string[], cwd: string): number {
     }
     console.log(
       loomRoot !== undefined
-        ? `Linked @loom/* to ${loomRoot} (link: + pnpm overrides in package.json).`
-        : "Inside the loom workspace: @loom/* is workspace:* (run `pnpm install` from the repo root or this app)."
+        ? `Linked @loomwork/* to ${loomRoot} (link: + pnpm overrides in package.json).`
+        : "Inside the loom workspace: @loomwork/* is workspace:* (run `pnpm install` from the repo root or this app)."
     );
     const cd = target === "." ? "" : `cd ${shellQuote(target)} && `;
     console.log(`Next: ${cd}pnpm install && pnpm test && pnpm start`);

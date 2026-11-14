@@ -1,4 +1,4 @@
-import { fail } from "@loom/core";
+import { fail } from "@loomwork/core";
 import type { LlmResponse, LlmStreamChunk } from "./types";
 
 // ── The streamed-≡-completed contract ─────────────────────────────────────────
@@ -108,7 +108,7 @@ export interface CollectStreamOptions {
    * difference between paying for a runaway generation and stopping it.
    *
    * Deliberately generic — no budget vocabulary lives in this package.
-   * `@loom/middleware`'s `streamTokenBudget` builds the budget-shaped one.
+   * `@loomwork/middleware`'s `streamTokenBudget` builds the budget-shaped one.
    */
   guard?: (progress: StreamProgress) => void;
 }

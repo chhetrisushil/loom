@@ -3,7 +3,7 @@
 - Status: **Complete — all confirmed findings fixed** (commit series after PR #199;
   build 82/82, test 135/135, lint clean).
 - Scope: the GenUI/DE corrected series (69c9eae..PR #199) — typed failure channels,
-  step-identity guardrails, batched content resolution, `mcpInvoke$`, `@loom/plugin-sandbox`,
+  step-identity guardrails, batched content resolution, `mcpInvoke$`, `@loomwork/plugin-sandbox`,
   `fanout$`, `schemaHash` — audited by three independent passes (security, performance,
   memory/unbounded-growth), findings adversarially verified against source and, for the
   sandbox, against quickjs-emscripten 0.31 internals. A fourth pass audited DX reachability.
@@ -88,9 +88,9 @@ nothing invoked or populated them). Wired end-to-end:
   warnings (ADR 0061 text) **and** the structured `ManifestFlow.loopIdentity` field —
   visible through `loomPlugin()` builds and `loom check`.
 - `defineConfig({ verify: { lint: { nonDeterministicByFlow, loopIdentityByFlow } } })` —
-  both determinism-lint paths now reach `@loom/verify` at boot (`error` mode fails boot).
-- `@loom/sdk` barrel: `@loom/orchestration` (`fanout$`, `depthOf`, `awaitChild`) re-exported
-  (previously unreachable — nothing depended on the package); `@loom/sdk/sandbox` subpath
+  both determinism-lint paths now reach `@loomwork/verify` at boot (`error` mode fails boot).
+- `@loomwork/sdk` barrel: `@loomwork/orchestration` (`fanout$`, `depthOf`, `awaitChild`) re-exported
+  (previously unreachable — nothing depended on the package); `@loomwork/sdk/sandbox` subpath
   keeps the WASM dep out of the bare import.
 - `registerEffects` seam on `defineConfig` — `registerMcpInvoke`/`registerSandboxEval`
   compose declaratively at boot (discovery supplies metadata; the seam supplies runnable

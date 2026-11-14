@@ -1,5 +1,5 @@
-import { StorageWriteError, SuspendError } from "@loom/core";
-import type { StepDefinition } from "@loom/core";
+import { StorageWriteError, SuspendError } from "@loomwork/core";
+import type { StepDefinition } from "@loomwork/core";
 import {
   ExecutionCancelledError,
   ExecutionStoreUnavailableError,
@@ -7,8 +7,8 @@ import {
   LeaseHeldError,
   LeaseLostError,
   SealedPayloadUnreadableError,
-} from "@loom/workflow-runtime";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 
 // ── Saga / compensation ───────────────────────────────────────────────────────
 //

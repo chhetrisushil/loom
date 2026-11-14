@@ -163,11 +163,11 @@ The identical flow, steps, `ctx.suspend`, event log, and projections run under *
 
 | Layer | React — `cloud-command-center` | Angular — `angular-command-center` |
 |---|---|---|
-| Durable backend | `@loom/core` · `workflow-runtime` · `projection-runtime` | **same packages, unchanged** |
+| Durable backend | `@loomwork/core` · `workflow-runtime` · `projection-runtime` | **same packages, unchanged** |
 | Flow + suspend/resume | `flows/InvestigateIncident.ts` | `app/incident.flow.ts` — same primitives |
 | Runtimes wired by | `<LoomProvider>` React context | `@Injectable` Angular DI |
 | State exposed via | hooks — `useLoom` / `useState` / `useMemo` | signals — `signal()` / `computed()` / `inject()` |
-| UI rendered by | `@loom/plugin-renderer-react` + blueprints | native template `@if` / `@for` |
+| UI rendered by | `@loomwork/plugin-renderer-react` + blueprints | native template `@if` / `@for` |
 
 > The Angular app imports **nothing** from the React package — a standalone proof the runtime is UI-framework-agnostic. **BYOR: bring your own renderer.**
 
@@ -224,8 +224,8 @@ src/
 ## Run it
 
 ```bash
-pnpm --filter @loom/cloud-command-center dev        # React   — http://localhost:5173
-pnpm --filter @loom/angular-command-center dev      # Angular — same backend, zero React
+pnpm --filter @loomwork/cloud-command-center dev        # React   — http://localhost:5173
+pnpm --filter @loomwork/angular-command-center dev      # Angular — same backend, zero React
 ```
 
 1. Enter a goal (or click the example) → metrics cards fill, badge → `investigating`.

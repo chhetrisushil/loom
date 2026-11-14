@@ -6,7 +6,7 @@
 - Builds on: [ADR 0077](0077-typed-resume-payloads.md) (the resume payload is parsed before the
   append), [ADR 0087](0087-durable-agent-loop.md) (`agentLoop$` parks before the tool), the K12.2
   `ResumeAuthenticator` SPI, and R3/R9 (fail-closed execution authz, `security.strict`).
-- Placement: **1P** (`@loom/workflow-runtime`, `@loom/agent`, `@loom/app`, `@loom/scaffold`).
+- Placement: **1P** (`@loomwork/workflow-runtime`, `@loomwork/agent`, `@loomwork/app`, `@loomwork/scaffold`).
   **`KERNEL_ABI` and `EVENT_SCHEMA` are unchanged**: no event type or field is added. The one
   runtime-level addition is a pre-append check in the existing resume ingress gate
   (`assertResumable`), reading a field the suspend condition already carries verbatim. Number

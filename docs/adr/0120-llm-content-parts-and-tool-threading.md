@@ -6,8 +6,8 @@
   (ContentStore claim-checks), [ADR 0119](0119-decide-scope-streaming-deltas.md) (decide-scope deltas), R4 / R4b (tool
   menus and input schemas), R9 (`createLlmEffect({ stream })`).
 - Closes: finding #5 of the agentic-readiness evaluation ("the LLM SPI is text-only"); unblocks loom-ui U9 media widgets.
-- Placement: **1P, `@loom/llm` MAJOR** (the message `content` type widens, `LlmProvider` gains `capabilities`) plus the
-  shipped providers, `@loom/agent`, `@loom/reasoning` and the conformance kit. **Not a kernel change**: no syscall, no event
+- Placement: **1P, `@loomwork/llm` MAJOR** (the message `content` type widens, `LlmProvider` gains `capabilities`) plus the
+  shipped providers, `@loomwork/agent`, `@loomwork/reasoning` and the conformance kit. **Not a kernel change**: no syscall, no event
   kind, no payload field. `EVENT_SCHEMA` and `KERNEL_ABI` are unchanged; a model call is still a journaled `ctx.execute`
   frame whose input and output are ordinary JSON.
 
@@ -159,7 +159,7 @@ The ContentStore is content-addressed, so identical bytes are ONE blob however m
 
 ## Consequences
 
-- **Breaking for `@loom/llm` consumers**: see the CHANGELOG. A provider written against the old text-only `LlmMessage`
+- **Breaking for `@loomwork/llm` consumers**: see the CHANGELOG. A provider written against the old text-only `LlmMessage`
   that reads `m.content` as a string must use `textOf`; a media-capable provider declares `capabilities`.
 - The transcript an agent re-journals each turn is now bounded in bytes for media (addresses, not bytes) and still grows
   with turns; compaction remains the answer, now pair-aware.

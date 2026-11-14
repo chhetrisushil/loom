@@ -1,5 +1,5 @@
 {
-  "name": "@loom/agent-surface",
+  "name": "@loomwork/agent-surface",
   "version": "0.1.0",
   "description": "Agent-surface — Loom's native, event-sourced patch protocol for driving durable, replayable UI surfaces",
   "main": "./dist/index.js",
@@ -20,25 +20,25 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/projection-runtime": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/projection-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8"
   },
   "peerDependencies": {
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "peerDependenciesMeta": {
-    "@loom/workflow-runtime": {
+    "@loomwork/workflow-runtime": {
       "optional": true
     }
   },

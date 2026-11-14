@@ -1,6 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { type PrincipalChain, identityKeyOf } from "@loom/effect-runtime";
-import { DuplicateSequenceError, type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
+import { type PrincipalChain, identityKeyOf } from "@loomwork/effect-runtime";
+import {
+  DuplicateSequenceError,
+  type EventStore,
+  headOf,
+  readRangeOf,
+} from "@loomwork/event-runtime";
 
 // ── Who a conversation belongs to, and who else may take part (ADR 0122 D8, D10) ────────────────────
 //

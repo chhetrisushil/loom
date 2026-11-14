@@ -1,7 +1,7 @@
-import { openKnowledgeBase } from "@loom/knowledge";
-import { InMemoryMemoryStore, type MemoryStore, queryTerms } from "@loom/memory";
-import { PostgresMemoryStore } from "@loom/plugin-postgres";
-import { SqliteMemoryStore } from "@loom/plugin-sqlite";
+import { openKnowledgeBase } from "@loomwork/knowledge";
+import { InMemoryMemoryStore, type MemoryStore, queryTerms } from "@loomwork/memory";
+import { PostgresMemoryStore } from "@loomwork/plugin-postgres";
+import { SqliteMemoryStore } from "@loomwork/plugin-sqlite";
 import { type Scores, type Thresholds, toRows } from "../gate";
 import { mean, ndcgAtK, recallAtK } from "../metrics";
 import type { MetricRow } from "../scoreboard";

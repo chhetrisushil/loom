@@ -14,7 +14,7 @@ export interface FlowConfig<TIn, TOut> {
   policies?: PolicyDefinition[];
   /**
    * EF-1 — the flow's declared effect-class CEILING, from the app's
-   * `checks.effectClasses` ordering. `@loom/verify` fails composition when the
+   * `checks.effectClasses` ordering. `@loomwork/verify` fails composition when the
    * flow reaches a step classed above it (EF-2), composing conservatively as the
    * max over everything reachable (EF-3). Absent ⇒ the check skips this flow.
    */

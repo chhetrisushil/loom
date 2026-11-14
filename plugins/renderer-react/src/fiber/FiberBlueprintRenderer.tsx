@@ -1,6 +1,6 @@
-import type { Blueprint, RendererRegistry } from "@loom/blueprint-runtime";
-import { traverseBlueprint } from "@loom/blueprint-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { Blueprint, RendererRegistry } from "@loomwork/blueprint-runtime";
+import { traverseBlueprint } from "@loomwork/blueprint-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import type React from "react";
 import type { WidgetAction, WidgetRenderer } from "../RendererRegistry";
 import { defaultRegistry } from "../RendererRegistry";

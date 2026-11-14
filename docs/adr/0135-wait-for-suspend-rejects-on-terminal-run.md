@@ -2,7 +2,7 @@
 
 - Status: **Accepted** (2026-10-31) — owner decision on issue #710.
 - Date: 2026-10-31
-- Placement: **`@loom/workflow-runtime` public handle contract only. Kernel unchanged: KERNEL_ABI and
+- Placement: **`@loomwork/workflow-runtime` public handle contract only. Kernel unchanged: KERNEL_ABI and
   EVENT_SCHEMA unchanged** (no event, fold or syscall changes; the handle is not part of the kernel manifest).
 
 ## Context
@@ -16,7 +16,7 @@ Only the `continueAsNew` doc mentioned the behaviour ("never resolves `waitForSu
 ## Decision
 
 When the run terminates before parking, `waitForSuspend()` REJECTS with `ExecutionTerminatedError`
-(exported from `@loom/workflow-runtime`):
+(exported from `@loomwork/workflow-runtime`):
 
 - `state`: the folded state at the terminal (`completed`, `failed`, `cancelled`, `continued`); for a
   completion, the very state `waitForCompletion()` resolves with.

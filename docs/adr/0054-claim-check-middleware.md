@@ -1,6 +1,6 @@
 # ADR 0054 — Claim-check middleware: the reference is the recorded value
 
-- Status: **Accepted — shipped** (`claimCheckMiddleware` in `@loom/middleware` + `EffectContext.toolId`)
+- Status: **Accepted — shipped** (`claimCheckMiddleware` in `@loomwork/middleware` + `EffectContext.toolId`)
 - Date: 2026-07-15
 - Builds on: [ADR 0051 D3 (perpetual-agents placement)](0051-perpetual-agents-placement-schedule-remodel.md),
   the [requirements rewrite](../requirements/2026-07-15-perpetual-agents-sentinel-workloads.md) §3.2 (CC-1..4),
@@ -57,8 +57,8 @@ value is honored. Zero behavior change when unused (G2); useful to any per-tool 
 ### D4 — Structural store types; observability; read-side helper
 
 `ClaimCheckStore`/`ClaimCheckReader` are structural views of the ADR 0046 `put`/`get`
-contract, so `@loom/middleware` (kernel tier) takes **no plugin dependency** — the same idiom
-as `@loom/conformance`. `onOffload` (CC-3) reports `{ toolId, stepId, executionId, size,
+contract, so `@loomwork/middleware` (kernel tier) takes **no plugin dependency** — the same idiom
+as `@loomwork/conformance`. `onOffload` (CC-3) reports `{ toolId, stepId, executionId, size,
 contentAddress }` per offload so log-budget regressions surface in metrics, not replay
 latency. `resolveClaimCheck` (CC-4) is the sanctioned read-side path for use OUTSIDE the
 determinism boundary (UI evidence rendering, exports), surfacing the store's null-on-absence
@@ -79,7 +79,7 @@ contract as-is.
 [ADR 0140](0140-agent-claim-check-opt-in.md) wires this middleware for `agentLoop$` tools with one grouped
 option, `defineConfig({ execution: { claimCheck: { store, toolIds } } })` (off unless set). `claimCheckMiddleware`
 gains an optional `defaultDigest(result, toolId)`, used for an offloaded result whose tool has no `digests`
-entry (a declared digest always wins), and `@loom/middleware` exports `previewDigest(maxChars)`, a ready-made
+entry (a declared digest always wins), and `@loomwork/middleware` exports `previewDigest(maxChars)`, a ready-made
 one that records the head of the result's JSON text and nothing at all for a result carrying an ADR 0085 taint
 marker. Unset, `defaultDigest` changes nothing (D2's "`{ ref, size }` only" still holds).
 

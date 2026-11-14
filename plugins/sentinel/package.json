@@ -1,7 +1,7 @@
 {
-  "name": "@loom/plugin-sentinel",
+  "name": "@loomwork/plugin-sentinel",
   "version": "0.1.0",
-  "description": "The perpetual-agent pattern as one declaration (DX-1, db-copilot infra): sentinelPreset() bundles the schedule, contract-migratable carry state (@loom/plugin-durable-state), claim-checked telemetry (@loom/middleware), and the K10.6 pin policy — the five files of the db-sentinel example's harness, composition-time only (ADR 0043/0044).",
+  "description": "The perpetual-agent pattern as one declaration (DX-1, db-copilot infra): sentinelPreset() bundles the schedule, contract-migratable carry state (@loomwork/plugin-durable-state), claim-checked telemetry (@loomwork/middleware), and the K10.6 pin policy — the five files of the db-sentinel example's harness, composition-time only (ADR 0043/0044).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -19,17 +19,17 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/middleware": "workspace:^",
-    "@loom/plugin-content": "workspace:^",
-    "@loom/plugin-durable-state": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/middleware": "workspace:^",
+    "@loomwork/plugin-content": "workspace:^",
+    "@loomwork/plugin-durable-state": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

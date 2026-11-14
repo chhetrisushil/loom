@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import {
   type ClaimCheckEnvelope,

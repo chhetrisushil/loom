@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { beforeEach, describe, expect, it } from "vitest";
 import { indexByEventType, reconstructProjections } from "./projections";
 import type { ProjectionSource } from "./types";

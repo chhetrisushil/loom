@@ -1,6 +1,11 @@
-import { isTainted } from "@loom/classify";
-import { type SkillDefinition, type ToolDefinition, loadInstructions, sha256Hex } from "@loom/core";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import { isTainted } from "@loomwork/classify";
+import {
+  type SkillDefinition,
+  type ToolDefinition,
+  loadInstructions,
+  sha256Hex,
+} from "@loomwork/core";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import type { SkillRegistry } from "./SkillRegistry";
 import { isTerminalToolError } from "./toolFailure";

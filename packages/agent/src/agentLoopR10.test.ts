@@ -1,18 +1,18 @@
-import { isTainted as isTaintedValue, taintOf, tainted } from "@loom/classify";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { TypedFailure, agent$, tool$ } from "@loom/core";
-import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "@loom/llm";
-import { InMemoryMemoryStore, TieredMemory } from "@loom/memory";
-import { ReasoningRuntime } from "@loom/reasoning";
-import type { ReasoningCache } from "@loom/reasoning";
+import { isTainted as isTaintedValue, taintOf, tainted } from "@loomwork/classify";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { TypedFailure, agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, GrantTable, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "@loomwork/llm";
+import { InMemoryMemoryStore, TieredMemory } from "@loomwork/memory";
+import { ReasoningRuntime } from "@loomwork/reasoning";
+import type { ReasoningCache } from "@loomwork/reasoning";
 const taintOrigin = (v: unknown): string | undefined => taintOf(v)?.origin;
-import { sliceByVersion, trajectories } from "@loom/learning";
-import { ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime, answerApproval } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+import { sliceByVersion, trajectories } from "@loomwork/learning";
+import { ReplayVM } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime, answerApproval } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -999,7 +999,7 @@ function flakyOnce() {
 describe("P1-1 — safety stops are never fed back to the model", () => {
   it("a kill switch / quota / rate limit raised by a tool fails the run: no second model call", async () => {
     const { KillSwitchEngagedError, QuotaExceededError, RateLimitExceededError } = await import(
-      "@loom/middleware"
+      "@loomwork/middleware"
     );
     const cases: [string, () => Error][] = [
       [
@@ -1027,7 +1027,7 @@ describe("P1-1 — safety stops are never fed back to the model", () => {
   });
 
   it("a denial wrapped in another error (cause) is still terminal", async () => {
-    const { EffectModeViolationError } = await import("@loom/effect-runtime");
+    const { EffectModeViolationError } = await import("@loomwork/effect-runtime");
     const b = boot({
       tools: {
         t0: async () => {
@@ -1531,7 +1531,7 @@ describe("P3-5 — write-back through the ring, with provenance", () => {
   });
 
   it("a run that saw untrusted tool output stores its answer TAINTED, and recall fences it", async () => {
-    const { tainted: taint, isTainted } = await import("@loom/classify");
+    const { tainted: taint, isTainted } = await import("@loomwork/classify");
     const m = mem();
     const b = boot({
       provider: script([[call(0, "t0")]]),

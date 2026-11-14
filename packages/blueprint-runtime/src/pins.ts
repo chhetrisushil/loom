@@ -1,5 +1,5 @@
-import { checkVersionPins } from "@loom/core";
-import type { PinReport, VersionPins } from "@loom/core";
+import { checkVersionPins } from "@loomwork/core";
+import type { PinReport, VersionPins } from "@loomwork/core";
 import type { Blueprint } from "./types";
 
 // ── The blueprint spelling of the binding-semantics pin (ADR 0095) ────────────
@@ -15,7 +15,7 @@ import type { Blueprint } from "./types";
 // `latency` was edited, or its window moved from rolling to fixed, since the day it was
 // composed.
 //
-// The comparison itself is `@loom/core`'s `checkVersionPins`, over `id -> version` maps
+// The comparison itself is `@loomwork/core`'s `checkVersionPins`, over `id -> version` maps
 // rather than blueprints: its other consumer (`ReadModelService.checkPins`) has no tree.
 // These two functions are the blueprint case spelled once, the way `blueprintNodeIds` /
 // `preservesBlueprintNodes` spell it for identity.

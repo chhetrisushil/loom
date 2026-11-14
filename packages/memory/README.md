@@ -1,4 +1,4 @@
-# @loom/memory — agent memory
+# @loomwork/memory — agent memory
 
 Scoped memory for agents and flows: ordered lists of entries kept outside the event log, addressed by a
 memory id plus a scope (an execution, a conversation, a user). `MemoryRuntime` applies each memory's TTL
@@ -14,8 +14,8 @@ import {
   HashingEmbeddingProvider,
   InMemoryMemoryStore,
   TieredMemory,
-} from "@loom/memory";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+} from "@loomwork/memory";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 
 // Any MemoryStore works; wrapping one in EmbeddingMemoryStore makes `search` semantic.
 // HashingEmbeddingProvider is the offline reference (lexical overlap only): swap in a real model.
@@ -38,16 +38,16 @@ export async function relevantFacts(ctx: ExecutionContext, question: string) {
 ## Surface
 
 - **Runtime.** `MemoryRuntime` (`register`, `append`, `read`, `clear`, `remove`, `search`) keyed by
-  `(memoryId, scope)`; definitions come from `memory$({ id, name, ttlMs, maxEntries })` in `@loom/core`.
+  `(memoryId, scope)`; definitions come from `memory$({ id, name, ttlMs, maxEntries })` in `@loomwork/core`.
 - **Tiers.** `TieredMemory` (`remember`, `recall`, `recallRelevant`, `promote`, `summarize`, `forget`,
   `clear`) and `DEFAULT_TIERS`: `working` (`summarizeAfter: 20`), `episodic` (`maxEntries: 200`),
   `semantic` and `procedural` (no eviction). A tier policy is `ttlMs`, `maxEntries` or `summarizeAfter`.
 - **Stores.** `InMemoryMemoryStore` (default; lost on restart). Durable ones are `SqliteMemoryStore`
-  (`@loom/plugin-sqlite`) and `PostgresMemoryStore` (`@loom/plugin-postgres`).
+  (`@loomwork/plugin-sqlite`) and `PostgresMemoryStore` (`@loomwork/plugin-postgres`).
 - **Backend contract.** `MemoryStore` needs `append`, `read`, `clear`; `replace`, `search`, `remove` and
   `close` are optional. Also `MEMORY_STORE_SPI_VERSION` (2.1.0), `searchableText`, `tokenize`,
   `queryTerms` / `MAX_QUERY_TERMS`, `clampSearchLimit` with `DEFAULT_SEARCH_LIMIT` and `MAX_SEARCH_LIMIT`.
-  `runMemoryStoreConformance` in `@loom/conformance` proves a backend.
+  `runMemoryStoreConformance` in `@loomwork/conformance` proves a backend.
 - **Embeddings (ADR 0124).** `EmbeddingMemoryStore`, the `EmbeddingProvider` and `VectorIndex` interfaces,
   `InMemoryVectorIndex`, `HashingEmbeddingProvider`, `cosine`, `EmbeddingError`,
   `EmbeddingModelMismatchError`, `MemoryIndexTooLargeError`.
@@ -63,7 +63,7 @@ export async function relevantFacts(ctx: ExecutionContext, question: string) {
 - **`forget` and `clear` are not recorded.** Only recall goes through `decide`.
 - **Entry `id` is not indexed.** It is caller metadata that every backend must round-trip; `content` is
   what `searchableText` projects.
-- **A tier that evicts cannot hold a corpus.** `@loom/knowledge` refuses `ttlMs` / `maxEntries` tiers for
+- **A tier that evicts cannot hold a corpus.** `@loomwork/knowledge` refuses `ttlMs` / `maxEntries` tiers for
   that reason.
 - **An embedding failure on `append` to an already-indexed key means the append is not made**, so the
   store and its index do not silently disagree.
@@ -74,7 +74,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/memory` — agent memory" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/memory` — agent memory" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [user guide, section 16: tiered memory](../../docs/user-guide.md#16-tiered-memory), [reasoning and memory](../../docs/loom-2.0/02-reasoning-and-memory.md).
 - ADRs: [0033 SPI conformance](../../docs/adr/0033-spi-conformance-contracts.md), [0090 knowledge is retrieval over memory](../../docs/adr/0090-knowledge-is-retrieval-over-memory.md), [0124 learning lifecycle](../../docs/adr/0124-learning-lifecycle.md) (embeddings).
-- Source: `packages/memory/src`. Retrieval over documents: [`@loom/knowledge`](../knowledge/README.md).
+- Source: `packages/memory/src`. Retrieval over documents: [`@loomwork/knowledge`](../knowledge/README.md).

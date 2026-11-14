@@ -1,5 +1,5 @@
-import type { LlmProvider, LlmReasoning, LlmRequest, LlmStreamChunk } from "@loom/llm";
-import { assembleStream } from "@loom/llm";
+import type { LlmProvider, LlmReasoning, LlmRequest, LlmStreamChunk } from "@loomwork/llm";
+import { assembleStream } from "@loomwork/llm";
 import { expect } from "vitest";
 
 /**

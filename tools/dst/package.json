@@ -1,5 +1,5 @@
 {
-  "name": "@loom/dst",
+  "name": "@loomwork/dst",
   "version": "0.1.0",
   "description": "Deterministic Simulation Testing for Loom — a seeded virtual clock, fault-injecting store/network, and invariant checker that drive the kernel under adversarial schedules and reproduce any failure bit-for-bit. Test/dev-only; imported by no runtime package, so zero production overhead is structural.",
   "main": "./dist/index.js",
@@ -21,14 +21,14 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/snapshot-runtime": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/snapshot-runtime": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/conformance": "workspace:*",
+    "@loomwork/conformance": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

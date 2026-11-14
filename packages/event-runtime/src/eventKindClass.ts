@@ -1,4 +1,4 @@
-import { type EventEnvelope, type EventKind, KERNEL_EVENT_KINDS } from "@loom/core";
+import { type EventEnvelope, type EventKind, KERNEL_EVENT_KINDS } from "@loomwork/core";
 
 // ADR 0118 D1 — which kernel event kinds ANSWER a park.
 //
@@ -11,7 +11,7 @@ import { type EventEnvelope, type EventKind, KERNEL_EVENT_KINDS } from "@loom/co
 //
 // The map is a REQUIRED `Record<EventKind, ...>` with no default: adding a kind to
 // `KERNEL_EVENT_KINDS` without deciding is a compile error here. The fitness test in
-// `@loom/workflow-runtime` pins its keys equal to the fold's handler table.
+// `@loomwork/workflow-runtime` pins its keys equal to the fold's handler table.
 
 /** Whether an event of this kind, appended after a park, answers it. */
 export type EventKindClass = "answering" | "ignorable";

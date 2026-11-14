@@ -1,13 +1,13 @@
 # ADR 0030 — Decision materialization (`DecisionStore` / `DecisionGraph`)
 
-- Status: Accepted (2026-07-10) — accepted item #3 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: D1 richer `DECISION_RECORDED` payload (EVENT_SCHEMA_VERSION 1.9.0 → 1.10.0), D2 `decisionStore`, D3 `decisionGraph` in `@loom/analytics`. `getDecision` still returns only `choice` (P9 untouched).
+- Status: Accepted (2026-07-10) — accepted item #3 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: D1 richer `DECISION_RECORDED` payload (EVENT_SCHEMA_VERSION 1.9.0 → 1.10.0), D2 `decisionStore`, D3 `decisionGraph` in `@loomwork/analytics`. `getDecision` still returns only `choice` (P9 untouched).
 - Date: 2026-07-10
-- Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (M2 `ctx.decide` / `DECISION_RECORDED`), [ADR 0018](0018-learning-seam-outcome-recorded.md) (`OUTCOME_RECORDED`), `@loom/analytics`, `@loom/reasoning` (`rankedRouter`)
+- Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (M2 `ctx.decide` / `DECISION_RECORDED`), [ADR 0018](0018-learning-seam-outcome-recorded.md) (`OUTCOME_RECORDED`), `@loomwork/analytics`, `@loomwork/reasoning` (`rankedRouter`)
 
 ## Context
 
 Loom already **records** decisions: `ctx.decide` emits `DECISION_RECORDED`, folded to `_decisions`;
-outcomes emit `OUTCOME_RECORDED`; `@loom/analytics` mines both and feeds `rankedRouter`. The
+outcomes emit `OUTCOME_RECORDED`; `@loomwork/analytics` mines both and feeds `rankedRouter`. The
 requirements' "Decision Runtime" (P0) largely restates this. The genuine gaps are two:
 
 1. **No materialized, queryable read-model.** Decisions live only as folded state + raw events;
@@ -28,7 +28,7 @@ feeds the fold.
   *descriptive*, never inputs to the choice on replay (the recorded `choice` still wins, P9).
 - **D2 — `DecisionStore` read-model.** A read-only projection over `DECISION_RECORDED` +
   `OUTCOME_RECORDED` supporting query by `decisionId`, execution, source, and outcome. Built with
-  the same lens pattern as `@loom/analytics`; pluggable backend (in-memory / Postgres) via the
+  the same lens pattern as `@loomwork/analytics`; pluggable backend (in-memory / Postgres) via the
   existing store SPI.
 - **D3 — `DecisionGraph`.** Edges linking a decision to its recorded outcome and to decisions made
   later in the same (or forked) execution — the explainability spine ("why did it choose X, and how

@@ -1,4 +1,4 @@
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { CachingContentStore } from "./CachingContentStore";
 import { ContentResolvingEventStore } from "./ContentResolvingEventStore";

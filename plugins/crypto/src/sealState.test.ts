@@ -1,7 +1,7 @@
-import type { ExecutionState } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { Snapshot } from "@loom/snapshot-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { Snapshot } from "@loomwork/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";

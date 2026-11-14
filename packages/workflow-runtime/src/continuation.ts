@@ -5,7 +5,7 @@
 // `EXECUTION_CONTINUED` to the predecessor. Everything here is pure (no I/O) so the shapes the
 // fold, the runtime and the tests share cannot drift.
 
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import { storedPrincipalOf } from "./principal";
 
 /** The default kernel cap on a carry (ADR 0109 D1, decided by the user 2026-10-05): 1 MiB. */

@@ -4,13 +4,13 @@ import {
   type InterruptedAgentRun,
   agentLoop$,
   classifyModelCallFailure,
-} from "@loom/agent";
-import { TypedFailure, flow$, fnv1a64 } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import { readRangeOf } from "@loom/event-runtime";
-import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/agent";
+import { TypedFailure, flow$, fnv1a64 } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectRuntime, PrincipalChain } from "@loomwork/effect-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import { readRangeOf } from "@loomwork/event-runtime";
+import type { RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import {
   ENVELOPE_DOMAIN,

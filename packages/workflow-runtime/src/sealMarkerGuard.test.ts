@@ -1,11 +1,15 @@
 import {
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
-} from "@loom/conformance";
-import type { EventEnvelope } from "@loom/core";
-import { type EventStore, InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
-import { seededIvSource } from "@loom/plugin-crypto/testing";
+} from "@loomwork/conformance";
+import type { EventEnvelope } from "@loomwork/core";
+import {
+  type EventStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loomwork/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
+import { seededIvSource } from "@loomwork/plugin-crypto/testing";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { Latch, build, crashingStore, echo, flow, until } from "./__tests__/r2Harness";
@@ -322,7 +326,7 @@ describe("an unmarked stream behaves exactly as today (legacy streams must not b
   });
 
   it("a pre-marker fold ignores metadata.seal (documented non-protection of a 1.24 node)", async () => {
-    const { foldEvents } = await import("@loom/replay-vm");
+    const { foldEvents } = await import("@loomwork/replay-vm");
     const f = fleet(FULL);
     const { e } = await parked(f);
     const withMarker = await f.inner.read(e);

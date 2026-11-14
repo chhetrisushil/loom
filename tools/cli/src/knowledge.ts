@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { LoomApp } from "@loom/app";
-import type { KnowledgeBase, KnowledgeDoc, SyncResult } from "@loom/knowledge";
+import type { LoomApp } from "@loomwork/app";
+import type { KnowledgeBase, KnowledgeDoc, SyncResult } from "@loomwork/knowledge";
 
 // ── `loom knowledge` — operating a corpus from outside a flow ────────────────
 //

@@ -18,7 +18,7 @@
 
 ## Context
 
-K5 pins the event schema and `@loom/deploy-sim` ([ADR 0008](0008-evals-and-deploy-simulation.md))
+K5 pins the event schema and `@loomwork/deploy-sim` ([ADR 0008](0008-evals-and-deploy-simulation.md))
 *detects* divergence, but nothing *remediates* it: an execution suspended for three days is
 stranded when new flow code deploys — resuming it against changed code silently folds a log
 the new code never wrote. Long-lived executions are Loom's raison d'être, so this is a

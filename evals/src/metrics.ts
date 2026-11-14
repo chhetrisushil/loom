@@ -1,6 +1,6 @@
 // ── Retrieval metrics (ADR 0131 D3) ───────────────────────────────────────────
 //
-// Small pure functions over a RANKED list of ids (best first). They live here, not in `@loom/eval`:
+// Small pure functions over a RANKED list of ids (best first). They live here, not in `@loomwork/eval`:
 // promoting them is a separate decision under ADR 0083 once a third consumer exists.
 //
 // Conventions, each pinned by `metrics.test.ts`:

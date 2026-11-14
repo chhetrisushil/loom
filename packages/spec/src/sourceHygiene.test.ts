@@ -20,7 +20,7 @@ import { describe, expect, it } from "vitest";
 // one introduced while fixing #306 and caught only because the diff went binary
 // in review — is enough for a class that no reviewer can be expected to spot.
 //
-// Design notes, carried from the guards in `@loom/verify` and `@loom/scaffold`:
+// Design notes, carried from the guards in `@loomwork/verify` and `@loomwork/scaffold`:
 //   - Walk the tree; never keep a list of files to check beside the check.
 //   - The detector is exercised on synthetic content that MUST fail, below. A
 //     guard nobody has watched fail is indistinguishable from a comment.

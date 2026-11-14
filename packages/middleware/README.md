@@ -1,4 +1,4 @@
-# @loom/middleware
+# @loomwork/middleware
 
 Effect middleware: wrappers that run around every tool or model call. This package has the first-party
 ones: retry with backoff, token and cost metering with budgets, behavioural safety validators, secret
@@ -7,14 +7,14 @@ when a policy belongs on the effect path (before a call runs or after it returns
 flow. Wire it through `defineConfig` or `new EffectRuntime(middleware)`.
 
 ```ts
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 import {
   denyPatterns,
   llmUsageTokens,
   meteringMiddleware,
   retryMiddleware,
   safetyMiddleware,
-} from "@loom/middleware";
+} from "@loomwork/middleware";
 
 const app = defineConfig({
   storage: { kind: "memory" },
@@ -71,7 +71,7 @@ const app = defineConfig({
 
 ## See also
 
-- API reference: section "`@loom/middleware` — effect middleware" in
+- API reference: section "`@loomwork/middleware` — effect middleware" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [quotas, supervision and cancellation](../../docs/user-guide/quotas-supervision-and-cancellation.md).
 - ADRs: [0054 claim-check](../../docs/adr/0054-claim-check-middleware.md),

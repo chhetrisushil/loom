@@ -1,4 +1,4 @@
-# @loom/plugin-crypto
+# @loomwork/plugin-crypto
 
 **K10.2 — crypto-shredding.** Field-level payload encryption wrappers over any
 `EventStore`/`SnapshotStore`, so an append-only log can satisfy GDPR erasure by
@@ -16,7 +16,7 @@ ciphertext.
 ```ts
 import {
   EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore, shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 
 const keys = new InMemoryKeyStore(); // tests only — `loom doctor` FAILS this in an app
 const eventStore = new EncryptingEventStore(innerEvents, keys, {

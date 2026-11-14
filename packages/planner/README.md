@@ -1,4 +1,4 @@
-# @loom/planner — goals to capability plans
+# @loomwork/planner — goals to capability plans
 
 Turns a goal into a plan over a [`CapabilityCatalog`](../capability/README.md), in two generations. The
 original `PlannerRuntime.plan` returns a flat ordered list of capability ids and is not journaled. The newer
@@ -10,8 +10,8 @@ keyword heuristic, or with a `reasoning` runtime (preferred) or a `provider`.
 
 ```ts
 import { z } from "zod";
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import { PlannerRuntime, validatePlanGraph, type PlanGraph } from "@loom/planner";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
+import { PlannerRuntime, validatePlanGraph, type PlanGraph } from "@loomwork/planner";
 import { helloFlow } from "./config"; // a registered flow, reused here for both capabilities
 
 const input = z.object({ name: z.string() });
@@ -76,7 +76,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/capability` / `@loom/intent` / `@loom/planner`" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/capability` / `@loomwork/intent` / `@loomwork/planner`" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [user guide, section 8: intent, planner and memory](../../docs/user-guide.md#8-intent-planner--memory).
 - ADRs: [0123 planning depth: plan graphs, replanning and goals](../../docs/adr/0123-planning-depth-plan-graphs-replanning-and-goals.md), [0085 untrusted content](../../docs/adr/0085-untrusted-content-integrity-axis.md).
 - Source: `packages/planner/src`.

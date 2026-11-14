@@ -1,7 +1,7 @@
 # Three-Direction Arc — Codebase Audit & Fixes (2026-07-11)
 
 Phase 6 of the three-direction kernel arc: a targeted audit of the seven new/changed packages
-(`@loom/dst`, `audit-chain`, `fair-scheduler`, `live-query`, `orchestration`, `saga`, and the C.1
+(`@loomwork/dst`, `audit-chain`, `fair-scheduler`, `live-query`, `orchestration`, `saga`, and the C.1
 `WorkflowRuntime` changes) for **DS&A hot-path efficiency, memory leaks, and vulnerabilities**, run
 as three parallel focused reviews and triaged strict-gatekeeper (fix real issues; reject overstated
 ones with a reason).
@@ -46,7 +46,7 @@ ones with a reason).
   configured but no principal is present would break principal-less kernel-internal calls
   (TimerService, recovery). Instead, the `executionAuthorizer` dep doc now states the integrator's
   security contract explicitly (the edge MUST authenticate every external call).
-- **splitmix64 "not crypto".** Correct and by design — `@loom/dst` is test-only; the PRNG is never
+- **splitmix64 "not crypto".** Correct and by design — `@loomwork/dst` is test-only; the PRNG is never
   used where crypto-randomness is required.
 - Confirmed sound: timing-safe HMAC compare (length-guarded), canonicalize key-ordering & type
   distinction, genesis handling, no secret leakage, `foldState` gating, no prototype pollution in the

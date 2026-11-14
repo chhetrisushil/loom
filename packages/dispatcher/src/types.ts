@@ -1,12 +1,12 @@
-import type { ExecutionPackage, ExecutionResult } from "@loom/worker-runtime";
+import type { ExecutionPackage, ExecutionResult } from "@loomwork/worker-runtime";
 
 /**
  * SPI version for the {@link ExecutionDispatcher} contract (ADR 0033). Pinned by
- * `runExecutionDispatcherConformance` in `@loom/testing`.
+ * `runExecutionDispatcherConformance` in `@loomwork/testing`.
  *
  * 1.1.0 (L20, ADR 0004 amendment) — a dispatcher MUST NOT retry or redispatch when the worker
  * was refused because another holder owns the execution (`isSupersededRefusal` from
- * `@loom/worker-runtime`); it settles the dispatch with that refusal. MINOR: no method changed,
+ * `@loomwork/worker-runtime`); it settles the dispatch with that refusal. MINOR: no method changed,
  * a non-retrying dispatcher already conforms, and the kit case runs only when the caller opts in
  * with `overWorker`, so no 1.0 dispatcher newly fails the kit.
  *

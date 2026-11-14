@@ -1,6 +1,6 @@
-import { tainted } from "@loom/classify";
-import { agent$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
+import { tainted } from "@loomwork/classify";
+import { agent$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { TEST_KEY, boot, messages, signRaw, until } from "./__fixtures__/harness";
 import {

@@ -20,7 +20,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Codebase guide](codebase-guide.md)** | Where to start reading loom and loom-ui, the package map, and walkthroughs of the data and control flow. |
 | **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |
-| **[ADRs](adr/)** | Read the full decision history (0001–0147), one record per decision — including rejections (e.g. ADR 0067). |
+| **[ADRs](adr/)** | Read the full decision history (0001–0148), one record per decision — including rejections (e.g. ADR 0067). |
 | **[Requirements](requirements/)** | Recorded requirement sets — the kernel-hardening series [K7–K12, T1–T2](requirements/2026-07-10-kernel-hardening-k7-k12-t1-t2.md) and its code-grounded [evaluation & amendments](requirements/2026-07-10-kernel-hardening-evaluation.md) (all eight accepted with amendments, all implemented). |
 
 ## Loom 2.0 — the execution kernel
@@ -49,22 +49,22 @@ and off-log advisory pre-warming ([ADR 0027](adr/0027-advisory-pre-warming.md)).
 Then the **[Kernel Governance Layer](spec/loom-kernel-specification.md)**
 ([ADR 0035](adr/0035-kernel-governance-layer.md)) added the normative spec, evidence-derived
 [maturity badges](spec/maturity.md), and the [compatibility matrix](spec/compatibility-matrix.md),
-all generated from one manifest (`@loom/spec`). Then the **three-direction arc**
+all generated from one manifest (`@loomwork/spec`). Then the **three-direction arc**
 ([ADRs 0036–0041](adr/)) added three frontiers as opt-in packages over the stable syscall surface —
-**simulation testing** (`@loom/dst`), **multi-tenant isolation** (`@loom/plugin-audit-chain`,
-`@loom/fair-scheduler`, execution-lifecycle authorization), and **coordination primitives**
-(`@loom/live-query`, `@loom/orchestration`, `@loom/saga`) — landing `EVENT_SCHEMA_VERSION 1.12.0`
+**simulation testing** (`@loomwork/dst`), **multi-tenant isolation** (`@loomwork/plugin-audit-chain`,
+`@loomwork/fair-scheduler`, execution-lifecycle authorization), and **coordination primitives**
+(`@loomwork/live-query`, `@loomwork/orchestration`, `@loomwork/saga`) — landing `EVENT_SCHEMA_VERSION 1.12.0`
 (`+EXECUTION_DENIED`) with `KERNEL_ABI` unchanged. See [§5.8 of the
 architecture](architecture.md#58-the-three-direction-arc--simulation-testing-coordination-multi-tenant-isolation).
 Then the **perpetual-agents series** ([ADRs 0051–0057](adr/)) made logically perpetual,
 schedule-driven agents a first-class pattern: typed, contract-migratable carry state
-(`@loom/plugin-durable-state`), claim-checked bulk effect data (`claimCheckMiddleware` — the log
+(`@loomwork/plugin-durable-state`), claim-checked bulk effect data (`claimCheckMiddleware` — the log
 records `{ ref, size, digest }` as the value), the K10.6 retention pin seam + pinned content GC,
 K11.5 contract-versioned state migration on `resumeAs`, opt-in `validateInput`, and a fix for the
 multi-gate suspend replay bug — landing `EVENT_SCHEMA_VERSION 1.16.0` with `KERNEL_ABI` unchanged,
 proven by a DST-simulated year in `db-sentinel` (in the sibling [`loom-examples`](examples.md)
 repo). Its **db-copilot infrastructure follow-on** ([ADRs 0058–0059](adr/)) added durable
-cross-execution read models (`@loom/plugin-read-model` — the institutional-memory query engine),
+cross-execution read models (`@loomwork/plugin-read-model` — the institutional-memory query engine),
 paged store enumeration (EventStore SPI 1.2.0), streaming content ingestion (`putStream` +
 stream-typed claim-check), the `loom sweep content` operator CLI with the first durable content
 backend, and `sentinelPreset()`/`loom new sentinel`.
@@ -82,13 +82,13 @@ append-once flow emits (`1.19.0`), then on to `1.26.0` ([ADR 0138](adr/0138-comp
   than re-runs. Around it, in userspace: the step-identity/interpreter contract
   ([0061](adr/0061-step-identity-interpreter-guardrails.md)), batched content resolution
   (`getMany`), MCP **dynamic dispatch** with schema-hash pinning
-  ([0063](adr/0063-mcp-dynamic-dispatch.md)), the QuickJS `@loom/plugin-sandbox`
+  ([0063](adr/0063-mcp-dynamic-dispatch.md)), the QuickJS `@loomwork/plugin-sandbox`
   ([0064](adr/0064-sandbox-eval-plugin.md)), and the `invokeTransient` façade
   ([0066](adr/0066-transient-effect-invocation-facade.md)) — see
   [the transient-interpreter guide](transient-interpreter.md).
   [ADR 0067](adr/0067-reactive-graph-resumability-rejected.md) records what was *rejected* here.
-- **Agent surfaces on the wire** ([ADRs 0068–0070](adr/)) — `subscribeSelector`, and `@loom/plugin-a2ui`: Loom agent surfaces projected onto the Google A2UI protocol, including `callFunction` bidirectional RPC, where the client's *result* re-enters as a recorded fact under a deterministic `callId` — which is what keeps a client-invoked function inside the replay grain.
-- **Replay inspection** ([ADR 0071](adr/0071-read-only-replay-inspector.md)) — `@loom/replay-inspector`, a strictly read-only lens over a stored log.
+- **Agent surfaces on the wire** ([ADRs 0068–0070](adr/)) — `subscribeSelector`, and `@loomwork/plugin-a2ui`: Loom agent surfaces projected onto the Google A2UI protocol, including `callFunction` bidirectional RPC, where the client's *result* re-enters as a recorded fact under a deterministic `callId` — which is what keeps a client-invoked function inside the replay grain.
+- **Replay inspection** ([ADR 0071](adr/0071-read-only-replay-inspector.md)) — `@loomwork/replay-inspector`, a strictly read-only lens over a stored log.
 - **MCP Apps** ([ADRs 0072–0073](adr/)) — ingress fidelity for the `io.modelcontextprotocol/ui`
   extension, an MCP **server** (`createMcpServer`) that exposes Loom flows to any host, and `ui://`
   egress as **one static content-pinned template** rather than per-flow generated HTML. The host
@@ -116,7 +116,7 @@ append-once flow emits (`1.19.0`), then on to `1.26.0` ([ADR 0138](adr/0138-comp
   [0078](adr/0078-exploration-in-the-routing-seam.md) fixed a learned router that collapsed onto
   whichever arm got lucky first; [0079](adr/0079-decision-context-and-policy.md) added `context` and
   `policy.propensity` to `DECISION_RECORDED` (the one quantity that cannot be reconstructed later),
-  and [0080](adr/0080-learning-substrate.md) built `@loom/learning` on top: trajectories, SNIPS
+  and [0080](adr/0080-learning-substrate.md) built `@loomwork/learning` on top: trajectories, SNIPS
   off-policy evaluation against real traffic, and a promotion gate — while the learning *algorithm*
   stays third-party behind a one-method SPI. Then the Companion workload arrived asking for two
   kernel promotions and got neither: [0081](adr/0081-long-lived-suspensions-no-promotion.md) found
@@ -134,17 +134,17 @@ append-once flow emits (`1.19.0`), then on to `1.26.0` ([ADR 0138](adr/0138-comp
 - **Two axes that only existed on paper** ([ADRs 0085–0086](adr/)) —
   [0085](adr/0085-untrusted-content-integrity-axis.md) added the **integrity** axis beside
   classification's confidentiality one: integrity is a property of a *value*, not a field, so
-  `tainted()` wraps third-party bytes at ingress and `@loom/llm`'s `guardRequest` refuses them in
+  `tainted()` wraps third-party bytes at ingress and `@loomwork/llm`'s `guardRequest` refuses them in
   every instruction position, fencing them in a `user` message. The refusal is structural; the
   fence is only a label, and the doc says which is which. Then
   [0086](adr/0086-runner-body-reach-analysis.md) closed the *"reachable = declared steps"* bound
-  that limited three `@loom/verify` rules — and populating `suspension-safety`'s never-fed input
+  that limited three `@loomwork/verify` rules — and populating `suspension-safety`'s never-fed input
   proved two of its three checks wrong, one of which would have errored on the majority of
   correct code. A check whose input nothing populates is also a check nobody can see is wrong.
 
 - **Loom as an agent runtime** ([ADR 0087](adr/0087-durable-agent-loop.md)) — a placement
   evaluation asked whether Loom could host an agent runtime without touching the kernel, and
-  answered that at the kernel layer it already is one: the gap was that `@loom/agent` ran the ReAct
+  answered that at the kernel layer it already is one: the gap was that `@loomwork/agent` ran the ReAct
   loop on the wrong side of two boundaries — inside a step handler, so it had no syscalls, and
   outside the `EffectRuntime`, so it had no protection ring. **Nine gaps, all 1P, kernel unchanged.**
   `agentLoop$` runs the loop from a *runner body*: one durable frame per turn, ids minted per the
@@ -180,13 +180,13 @@ append-once flow emits (`1.19.0`), then on to `1.26.0` ([ADR 0138](adr/0138-comp
   implementations of one conformance kit. [0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)
   then corrected its own premise: a corpus is **mutable**, `search` ranks within one key while a
   *document* is a subset of it, so entry identity plus `remove` (MemoryStore SPI 2.x) and
-  `@loom/knowledge` for the document↔passage mapping. [0092](adr/0092-adaptive-operator-profiles-placement.md)
+  `@loomwork/knowledge` for the document↔passage mapping. [0092](adr/0092-adaptive-operator-profiles-placement.md)
   placed adaptive per-operator UI entirely in userland — with the expiry that would have made a fold
   impure moved into an event — and [0093](adr/0093-read-model-row-purge.md) made erasing one subject
   from a read model cost one subject rather than a whole-model rebuild (measured at 68×).
 
 - **Folded-state read models** — [0132](adr/0132-folded-state-read-model.md) added durable per-execution folded-state read models with a sensitive-state guard and a bounded live-path cache.
-- **Model reasoning as audit evidence** — [0133](adr/0133-model-reasoning-audit-capture.md) (Accepted) captures provider reasoning at the `@loom/llm` seam into an erasable sidecar store, referenced by a userspace event the fold ignores; signatures ride inline for tool-loop continuation.
+- **Model reasoning as audit evidence** — [0133](adr/0133-model-reasoning-audit-capture.md) (Accepted) captures provider reasoning at the `@loomwork/llm` seam into an erasable sidecar store, referenced by a userspace event the fold ignores; signatures ride inline for tool-loop continuation.
 
 ## The one-paragraph version
 
@@ -200,7 +200,7 @@ all just *lenses on it*.
 ## Also in this folder
 
 - [`api-reference.org`](api-reference.org) — per-package API reference: each package's main public surface.
-- [`usage-compiler.org`](usage-compiler.org) — the optional `@loom/compiler` (build-time `handler$` extraction, resumability).
+- [`usage-compiler.org`](usage-compiler.org) — the optional `@loomwork/compiler` (build-time `handler$` extraction, resumability).
 - [`cheatsheet-features.md`](cheatsheet-features.md) — Card I: the kernel's syscalls, the builders, and the subsystems on the log. Printable.
 - [`cheatsheet-dx.md`](cheatsheet-dx.md) — Card II: the CLI, the scaffolds, the tests, the operator passes, and what bites. Printable.
 - [`plugins.md`](plugins.md) — authoring a plugin: the seam list, `loom plugin new`, and the 1P/3P split.
@@ -215,9 +215,9 @@ The runnable example apps live in the sibling **`loom-examples`** repo
 (`https://github.com/chhetrisushil/loom-examples.git`); this repo keeps the framework
 packages. See the **[examples catalogue](examples.md)** for what each teaches and
 the APIs/ADRs it exercises, then read the source in `../loom-examples/examples/<name>/`
-(check `loom-examples` out beside `loom`; run one with `pnpm --filter @loom/<name> start`).
+(check `loom-examples` out beside `loom`; run one with `pnpm --filter @loomwork/<name> start`).
 
-- **`loom-starter`** — **start here.** The canonical new-architecture example: `defineConfig` + folder convention (`loom gen`) + effect middleware + `@loom/testing` + evals + deploy-sim + the compute seam, in one compact release-approval app.
+- **`loom-starter`** — **start here.** The canonical new-architecture example: `defineConfig` + folder convention (`loom gen`) + effect middleware + `@loomwork/testing` + evals + deploy-sim + the compute seam, in one compact release-approval app.
 - `agent-network` — the full agentic pipeline (LLM, ReAct agent, MCP, A2A, intent, planner, memory).
 - `db-command-center` — intent → planner → A2A dispatch → durable human approval (same backend rendered in React, Web Components, and Angular).
 - `db-sentinel` — the perpetual-agent pattern (ADRs 0051–0057): a `schedule$`-driven sentinel with durable carry state, claim-checked telemetry, findings as domain events, and pinned retention — all ten acceptance criteria proven over a DST-simulated year.

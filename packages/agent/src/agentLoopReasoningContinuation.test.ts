@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import type {
   LlmMessage,
   LlmProvider,
@@ -10,13 +10,13 @@ import type {
   LlmRequest,
   LlmResponse,
   ReasoningStore,
-} from "@loom/llm";
-import { MAX_INLINE_TOTAL_BYTES } from "@loom/llm";
-import { ReasoningRuntime } from "@loom/reasoning";
-import { ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+} from "@loomwork/llm";
+import { MAX_INLINE_TOTAL_BYTES } from "@loomwork/llm";
+import { ReasoningRuntime } from "@loomwork/reasoning";
+import { ReplayVM } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {

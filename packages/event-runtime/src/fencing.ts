@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 /**
  * K9.4 — a fenced store rejected an append carrying a stale (or missing)

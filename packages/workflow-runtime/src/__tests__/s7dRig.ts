@@ -2,8 +2,8 @@ import {
   InMemoryAsyncEventStore,
   InMemoryLeaseStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import type { WorkflowRuntime } from "../WorkflowRuntime";
 import type { HeartbeatOptions } from "../driverLease";
 import { Latch, build, flow, slow, until } from "./r2Harness";

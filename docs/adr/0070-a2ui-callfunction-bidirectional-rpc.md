@@ -13,7 +13,7 @@
 
 ## Context
 
-ADR 0069 shipped `@loom/plugin-a2ui` as egress + inbound-`action` only and **deferred** the A2UI
+ADR 0069 shipped `@loomwork/plugin-a2ui` as egress + inbound-`action` only and **deferred** the A2UI
 bidirectional-RPC surface — `callFunction` (the agent asks the client to invoke a named catalog function
 and answer with a `functionResponse`) — on the grounds it "requires a synchronous request/response
 correlation layer that fights Loom's append-only, replayable event grain," gated on a **"second consumer"
@@ -41,7 +41,7 @@ blocking sync RPC in the log.
 
 ## Decision
 
-Promote `callFunction`/`functionResponse` in `@loom/plugin-a2ui` as **transport-agnostic primitives**, and
+Promote `callFunction`/`functionResponse` in `@loomwork/plugin-a2ui` as **transport-agnostic primitives**, and
 build **two consumption grains** on top. Kernel untouched.
 
 ### Primitives (the plugin)
@@ -93,7 +93,7 @@ That is a distinct, stateful concern; nothing here depends on it.
   sync RPC in the log. No new event types; `EVENT_SCHEMA` and `KERNEL_ABI` unchanged.
 - This **supersedes the "Deferred" section of ADR 0069** for `callFunction`/`functionResponse`; the
   "second consumer" gate is satisfied.
-- `@loom/plugin-a2ui` gains a `@loom/effect-runtime` dependency (types only) for the grain-B helper.
+- `@loomwork/plugin-a2ui` gains a `@loomwork/effect-runtime` dependency (types only) for the grain-B helper.
 
 ## Caveats (delivery contract on the callId)
 

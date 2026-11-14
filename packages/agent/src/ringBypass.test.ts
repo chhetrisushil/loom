@@ -1,21 +1,21 @@
-import { tainted } from "@loom/classify";
-import type { FlowDefinition } from "@loom/core";
-import { agent$, instructions$, skill$, tool$ } from "@loom/core";
-import { CapabilityDeniedError, EffectRuntime } from "@loom/effect-runtime";
-import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { UntrustedContentError } from "@loom/llm";
+import { tainted } from "@loomwork/classify";
+import type { FlowDefinition } from "@loomwork/core";
+import { agent$, instructions$, skill$, tool$ } from "@loomwork/core";
+import { CapabilityDeniedError, EffectRuntime } from "@loomwork/effect-runtime";
+import type { CapabilityAuthorizer, EffectMiddleware } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
+import { UntrustedContentError } from "@loomwork/llm";
 import {
   BudgetLedger,
   InMemoryKillSwitch,
   killSwitchMiddleware,
   nestedBudgetMiddleware,
-} from "@loom/middleware";
-import { ReasoningRuntime } from "@loom/reasoning";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+} from "@loomwork/middleware";
+import { ReasoningRuntime } from "@loomwork/reasoning";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";

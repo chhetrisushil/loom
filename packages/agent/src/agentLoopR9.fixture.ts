@@ -1,8 +1,8 @@
 // FROZEN COPY of packages/agent/src/agentLoop$.ts at origin/main d3fe58b3 (the pre-R10 loop; only the exported
 // name changed). It records the logs the in-flight compatibility tests resume under the R10 body. Never edit.
-import type { AgentDefinition, ToolDefinition } from "@loom/core";
-import { loadInstructions } from "@loom/core";
-import type { Effect } from "@loom/effect-runtime";
+import type { AgentDefinition, ToolDefinition } from "@loomwork/core";
+import { loadInstructions } from "@loomwork/core";
+import type { Effect } from "@loomwork/effect-runtime";
 import type {
   LlmContent,
   LlmContentPartInput,
@@ -11,12 +11,12 @@ import type {
   LlmToolCall,
   LlmToolResultPartInput,
   LlmToolSpecInput,
-} from "@loom/llm";
-import { MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@loom/llm";
-import type { TieredMemory } from "@loom/memory";
-import type { ModelInvoker, ReasoningRuntime } from "@loom/reasoning";
-import { approvalViewDigest } from "@loom/workflow-runtime";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+} from "@loomwork/llm";
+import { MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@loomwork/llm";
+import type { TieredMemory } from "@loomwork/memory";
+import type { ModelInvoker, ReasoningRuntime } from "@loomwork/reasoning";
+import { approvalViewDigest } from "@loomwork/workflow-runtime";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
@@ -31,7 +31,7 @@ import type { AgentInput, AgentOutput, AgentStep } from "./types";
 // handler receives `StepHandlerContext`: `emit`, and nothing else. No `execute`,
 // no `suspend`, no `decide`. Forty model calls and N tool calls are ONE frame, so
 // a crash at turn 39 re-runs all 39; approval has to be hoisted out of the agent
-// entirely; and routing choices are hand-emitted in a shape `@loom/learning`
+// entirely; and routing choices are hand-emitted in a shape `@loomwork/learning`
 // cannot evaluate. The kernel's entire agent-relevant surface was present and
 // unreachable from the agent.
 //
@@ -120,7 +120,7 @@ export interface AgentLoopConfig {
    * R9 — refuse to run any model call outside the effect ring. With this set, `agentLoop$`
    * throws up front when `reasoning` is configured without {@link reasoningToolId}, and when a
    * `skillSelector` calls a provider directly instead of being `effectBacked`.
-   * `@loom/app`'s strict profile CANNOT set this for you (it does not construct agents): pass it
+   * `@loomwork/app`'s strict profile CANNOT set this for you (it does not construct agents): pass it
    * at each call site. Without it, `agentLoop$` emits a one-time process warning
    * (`LOOM_AGENT_RING`) when `reasoning` is used with no `reasoningToolId`. Default `false`
    * keeps today's behaviour.

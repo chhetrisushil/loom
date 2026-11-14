@@ -6,7 +6,7 @@ import { camel, pascal } from "./codegen";
 // exports a preset `(opts) => Partial<LoomConfig>` (or a singleton like a
 // StorageConfig), imported statically and passed to `defineConfig`. See ADR 0043
 // and docs/plugins.md. This module emits a ready-to-fill package for a chosen
-// seam, in either first-party (`@loom/plugin-*`, in `plugins/`) or third-party
+// seam, in either first-party (`@loomwork/plugin-*`, in `plugins/`) or third-party
 // (`loom-plugin-*`, standalone) shape.
 
 /**
@@ -51,11 +51,11 @@ interface SeamDef {
    */
   wiring: string;
   /**
-   * `@loom/*` packages the generated source imports. Per seam: `@loom/core` is listed only where
+   * `@loomwork/*` packages the generated source imports. Per seam: `@loomwork/core` is listed only where
    * the template really imports it (`templateTypes.test.ts` checks the list against the imports).
    */
   spiDeps: string[];
-  /** `@loom/conformance` runners to pre-wire, if any. */
+  /** `@loomwork/conformance` runners to pre-wire, if any. */
   conformance: string[];
   /** `src/index.ts` body. */
   index: (name: string) => string;
@@ -77,7 +77,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "EventStore",
     title: "Durable storage backend (EventStore + SnapshotStore + ArchiveStore [+ BranchRegistry])",
     wiring: "storage: <name>Storage({ /* … */ })",
-    spiDeps: ["@loom/event-runtime", "@loom/snapshot-runtime", "@loom/plugin-kit"],
+    spiDeps: ["@loomwork/event-runtime", "@loomwork/snapshot-runtime", "@loomwork/plugin-kit"],
     conformance: [
       "runEventStoreConformance",
       "runSnapshotStoreConformance",
@@ -93,9 +93,9 @@ const SEAMS: Record<string, SeamDef> = {
         "  ArchiveSegmentHeader,",
         "  ArchiveStore,",
         "  EventStore,",
-        `} from "@loom/event-runtime";`,
-        `import type { SnapshotStore } from "@loom/snapshot-runtime";`,
-        `import type { CustomStorage } from "@loom/plugin-kit";`,
+        `} from "@loomwork/event-runtime";`,
+        `import type { SnapshotStore } from "@loomwork/snapshot-runtime";`,
+        `import type { CustomStorage } from "@loomwork/plugin-kit";`,
         "",
         `export interface ${joinNoun(P, "StorageOptions")} {`,
         "  /** Whatever your backend needs — a URL, a directory, a token. */",
@@ -106,7 +106,7 @@ const SEAMS: Record<string, SeamDef> = {
         "",
         "/**",
         " * `defineConfig({ storage })` preset. Returns a `custom` storage descriptor with",
-        " * your stores constructed — so `@loom/app` never learns your backend exists and a",
+        " * your stores constructed — so `@loomwork/app` never learns your backend exists and a",
         " * third-party backend wires exactly like a first-party one (ADR 0043).",
         " */",
         `export function ${joinNoun(c, "Storage")}(options: ${joinNoun(P, "StorageOptions")}): CustomStorage {`,
@@ -193,7 +193,7 @@ const SEAMS: Record<string, SeamDef> = {
         "//   runEventStoreConformance,",
         "//   runSnapshotStoreConformance,",
         "//   runArchiveStoreConformance,",
-        '// } from "@loom/conformance";',
+        '// } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "ArchiveStore")}, ${joinNoun(P, "EventStore")}, ${joinNoun(P, "SnapshotStore")} } from "./index";`,
         "//",
         `// runEventStoreConformance(() => new ${joinNoun(P, "EventStore")}(":memory:"));`,
@@ -222,7 +222,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "ExecutionDispatcher",
     title: "Compute placement (ExecutionDispatcher)",
     wiring: "execution: { dispatcher: new <Name>Dispatcher({ /* … */ }) }",
-    spiDeps: ["@loom/dispatcher"],
+    spiDeps: ["@loomwork/dispatcher"],
     conformance: ["runExecutionDispatcherConformance"],
     index: (name) => {
       const P = pascal(name);
@@ -233,7 +233,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  ExecutionDispatcher,",
         "  ExecutionPackage,",
         "  ExecutionResult,",
-        `} from "@loom/dispatcher";`,
+        `} from "@loomwork/dispatcher";`,
         "",
         `export interface ${joinNoun(P, "DispatcherOptions")} {`,
         "  /** Where/how this dispatcher places work. */",
@@ -263,7 +263,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your dispatcher with the conformance kit once dispatch() is real:",
-        '// import { runExecutionDispatcherConformance } from "@loom/conformance";',
+        '// import { runExecutionDispatcherConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "Dispatcher")} } from "./index";`,
         `// runExecutionDispatcherConformance(() => new ${joinNoun(P, "Dispatcher")}());`,
         "",
@@ -286,13 +286,13 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "TelemetryAdapter",
     title: "Telemetry adapter (flow/step lifecycle hooks)",
     wiring: "observability: { telemetry: [<name>Telemetry({ /* … */ })] }",
-    spiDeps: ["@loom/telemetry"],
+    spiDeps: ["@loomwork/telemetry"],
     conformance: [],
     index: (name) => {
       const P = pascal(name);
       const c = camel(name);
       return [
-        `import type { TelemetryAdapter } from "@loom/telemetry";`,
+        `import type { TelemetryAdapter } from "@loomwork/telemetry";`,
         "",
         `export interface ${joinNoun(P, "TelemetryOptions")} {`,
         "  /** e.g. a sink URL, a logger, a sampling rate. */",
@@ -350,13 +350,13 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "EffectMiddleware",
     title: "Effect middleware (wrap every effect execution)",
     wiring: "execution: { effectMiddleware: [<name>Middleware({ /* … */ })] }",
-    spiDeps: ["@loom/effect-runtime"],
+    spiDeps: ["@loomwork/effect-runtime"],
     conformance: [],
     index: (name) => {
       const P = pascal(name);
       const c = camel(name);
       return [
-        `import type { EffectMiddleware } from "@loom/effect-runtime";`,
+        `import type { EffectMiddleware } from "@loomwork/effect-runtime";`,
         "",
         `export interface ${joinNoun(P, "MiddlewareOptions")} {`,
         "  /** your knobs here */",
@@ -420,12 +420,12 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "TimerStore",
     title: "Durable timer store (T1 scheduled wakes)",
     wiring: "timers: { store: new <Name>TimerStore() }",
-    spiDeps: ["@loom/event-runtime"],
+    spiDeps: ["@loomwork/event-runtime"],
     conformance: ["runTimerStoreConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { TimerRecord, TimerStore } from "@loom/event-runtime";',
+        'import type { TimerRecord, TimerStore } from "@loomwork/event-runtime";',
         "",
         "/** A `TimerStore` — the findable half of `ctx.sleep`. Wire as `timers: { store }`. */",
         `export class ${joinNoun(P, "TimerStore")} implements TimerStore {`,
@@ -449,7 +449,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your timer store with the conformance kit once the methods are real:",
-        '// import { runTimerStoreConformance } from "@loom/conformance";',
+        '// import { runTimerStoreConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "TimerStore")} } from "./index";`,
         `// runTimerStoreConformance(() => new ${joinNoun(P, "TimerStore")}());`,
         "",
@@ -471,12 +471,12 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "LeaseStore",
     title: "Execution ownership leases (#380 — claim before waking)",
     wiring: 'timers: { store, leases: { store: new <Name>LeaseStore(), owner: "node-1" } }',
-    spiDeps: ["@loom/event-runtime"],
+    spiDeps: ["@loomwork/event-runtime"],
     conformance: ["runLeaseStoreConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { Lease, LeaseStore } from "@loom/event-runtime";',
+        'import type { Lease, LeaseStore } from "@loomwork/event-runtime";',
         "",
         "/**",
         " * A `LeaseStore` — who owns an execution right now.",
@@ -539,7 +539,7 @@ const SEAMS: Record<string, SeamDef> = {
         "// Prove your lease store with the conformance kit once the methods are real. Do not",
         "// skip it: the kit covers the concurrent cases (two owners racing, renewal after",
         "// expiry, release by a non-owner) that a hand-written test usually misses.",
-        '// import { runLeaseStoreConformance } from "@loom/conformance";',
+        '// import { runLeaseStoreConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "LeaseStore")} } from "./index";`,
         `// runLeaseStoreConformance(() => new ${joinNoun(P, "LeaseStore")}());`,
         "",
@@ -561,12 +561,12 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "ContentStore",
     title: "Content-addressed blob store (claim-check payloads)",
     wiring: "claimCheckMiddleware({ store: new <Name>ContentStore(), inlineCapBytes: 16 * 1024 })",
-    spiDeps: ["@loom/plugin-content"],
+    spiDeps: ["@loomwork/plugin-content"],
     conformance: ["runContentStoreConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { ContentRef, ContentStore } from "@loom/plugin-content";',
+        'import type { ContentRef, ContentStore } from "@loomwork/plugin-content";',
         "",
         "/**",
         " * A `ContentStore` — where a claim-check payload actually lives (ADR 0046).",
@@ -615,7 +615,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove it with the kit once the methods are real — it covers the idempotence that",
         "// content addressing depends on (same bytes twice, delete twice, get after delete):",
-        '// import { runContentStoreConformance } from "@loom/conformance";',
+        '// import { runContentStoreConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "ContentStore")} } from "./index";`,
         `// runContentStoreConformance(() => new ${joinNoun(P, "ContentStore")}());`,
         "",
@@ -638,12 +638,12 @@ const SEAMS: Record<string, SeamDef> = {
     title: "Carry state across executions (compare-and-set)",
     wiring:
       'durableState({ id: "carry", version: 1, schema, store: new <Name>DurableStateStore() })',
-    spiDeps: ["@loom/plugin-durable-state"],
+    spiDeps: ["@loomwork/plugin-durable-state"],
     conformance: ["runDurableStateStoreConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { DurableStateRecord, DurableStateStore } from "@loom/plugin-durable-state";',
+        'import type { DurableStateRecord, DurableStateStore } from "@loomwork/plugin-durable-state";',
         "",
         "/**",
         " * A `DurableStateStore` — state that OUTLIVES one execution (a sentinel's carry).",
@@ -682,7 +682,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// The kit covers the concurrent compare-and-set cases a hand-written test misses:",
-        '// import { runDurableStateStoreConformance } from "@loom/conformance";',
+        '// import { runDurableStateStoreConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "DurableStateStore")} } from "./index";`,
         `// runDurableStateStoreConformance(() => new ${joinNoun(P, "DurableStateStore")}());`,
         "",
@@ -704,7 +704,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "ReadModelStore",
     title: "Durable cross-execution query layer (ADR 0058)",
     wiring: "new ReadModelService(new <Name>ReadModelStore())",
-    spiDeps: ["@loom/plugin-read-model"],
+    spiDeps: ["@loomwork/plugin-read-model"],
     conformance: ["runReadModelStoreConformance"],
     index: (name) => {
       const P = pascal(name);
@@ -714,7 +714,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  ReadModelQuery,",
         "  ReadModelRow,",
         "  ReadModelStore,",
-        '} from "@loom/plugin-read-model";',
+        '} from "@loomwork/plugin-read-model";',
         "",
         "/**",
         " * A `ReadModelStore` — the durable index behind cross-execution queries (ADR 0058).",
@@ -762,7 +762,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// The kit covers idempotent re-apply and watermark monotonicity — the two things a",
         "// read model is wrong about silently:",
-        '// import { runReadModelStoreConformance } from "@loom/conformance";',
+        '// import { runReadModelStoreConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "ReadModelStore")} } from "./index";`,
         `// runReadModelStoreConformance(() => new ${joinNoun(P, "ReadModelStore")}());`,
         "",
@@ -784,12 +784,12 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "KeyStore",
     title: "Per-subject encryption keys (K10 crypto-shredding)",
     wiring: "new EncryptingEventStore(inner, new <Name>KeyStore(), { sensitive })",
-    spiDeps: ["@loom/plugin-crypto"],
+    spiDeps: ["@loomwork/plugin-crypto"],
     conformance: ["runKeyStoreConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { KeyStore } from "@loom/plugin-crypto";',
+        'import type { KeyStore } from "@loomwork/plugin-crypto";',
         "",
         "/**",
         " * A `KeyStore` — one encryption key per subject, and therefore the erasure boundary.",
@@ -832,7 +832,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// The kit covers the irreversibility: get-after-destroy is null, and getOrCreate does",
         "// NOT resurrect a shredded subject.",
-        '// import { runKeyStoreConformance } from "@loom/conformance";',
+        '// import { runKeyStoreConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "KeyStore")} } from "./index";`,
         `// runKeyStoreConformance(() => new ${joinNoun(P, "KeyStore")}());`,
         "",
@@ -854,12 +854,12 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "MemoryStore",
     title: "Agent memory store (scoped entries, optional relevance search)",
     wiring: "memoryStore: new <Name>MemoryStore()",
-    spiDeps: ["@loom/memory"],
+    spiDeps: ["@loomwork/memory"],
     conformance: ["runMemoryStoreConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { MemoryEntry, MemoryStore } from "@loom/memory";',
+        'import type { MemoryEntry, MemoryStore } from "@loomwork/memory";',
         "",
         "/**",
         " * A `MemoryStore` — durable agent memory. Wire as `memoryStore`.",
@@ -887,7 +887,7 @@ const SEAMS: Record<string, SeamDef> = {
         " *   search(key, query, o)  relevance retrieval, best first — what separates memory",
         " *                          from the tail of a conversation. Index",
         " *                          `searchableText(entry)` and split terms with `tokenize`",
-        " *                          (both exported by @loom/memory), because what gets",
+        " *                          (both exported by @loomwork/memory), because what gets",
         " *                          indexed and what counts as a term are the contract.",
         " *   remove(key, ids)       delete named entries, survivors keeping append order.",
         " *                          Idempotent; an entry with NO id is never removed by any",
@@ -916,7 +916,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your memory store with the conformance kit once the methods are real:",
-        '// import { runMemoryStoreConformance } from "@loom/conformance";',
+        '// import { runMemoryStoreConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "MemoryStore")} } from "./index";`,
         `// runMemoryStoreConformance(() => new ${joinNoun(P, "MemoryStore")}());`,
         "",
@@ -938,13 +938,13 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "ProjectionRuntime",
     title: "Projection runtime (custom read-model backend)",
     wiring: "projectionRuntime: new <Name>ProjectionRuntime()",
-    spiDeps: ["@loom/core", "@loom/projection-runtime"],
+    spiDeps: ["@loomwork/core", "@loomwork/projection-runtime"],
     conformance: ["runProjectionRuntimeConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { EventEnvelope } from "@loom/core";',
-        'import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";',
+        'import type { EventEnvelope } from "@loomwork/core";',
+        'import type { Projection, ProjectionRuntime } from "@loomwork/projection-runtime";',
         "",
         "/** A `ProjectionRuntime` — folds events into read-models. Wire as `projectionRuntime`. */",
         `export class ${joinNoun(P, "ProjectionRuntime")} implements ProjectionRuntime {`,
@@ -989,7 +989,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your projection runtime with the conformance kit once methods are real:",
-        '// import { runProjectionRuntimeConformance } from "@loom/conformance";',
+        '// import { runProjectionRuntimeConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "ProjectionRuntime")} } from "./index";`,
         `// runProjectionRuntimeConformance(() => new ${joinNoun(P, "ProjectionRuntime")}());`,
         "",
@@ -1011,7 +1011,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "WorkerRuntime",
     title: "Worker runtime (run an execution on some compute)",
     wiring: "execution: { dispatcher: new LocalDispatcher(new <Name>Worker()) }",
-    spiDeps: ["@loom/worker-runtime"],
+    spiDeps: ["@loomwork/worker-runtime"],
     conformance: ["runWorkerRuntimeConformance"],
     index: (name) => {
       const P = pascal(name);
@@ -1022,7 +1022,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  WorkerLease,",
         "  WorkerRequest,",
         "  WorkerRuntime,",
-        '} from "@loom/worker-runtime";',
+        '} from "@loomwork/worker-runtime";',
         "",
         "/** A `WorkerRuntime` — runs an ExecutionPackage on some compute; wrap it in a dispatcher. */",
         `export class ${joinNoun(P, "Worker")} implements WorkerRuntime {`,
@@ -1044,7 +1044,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// Prove your worker with the conformance kit once execute() is real — it needs a",
         "// package your worker can run, so the factory returns { worker, pkg }:",
-        '// import { runWorkerRuntimeConformance } from "@loom/conformance";',
+        '// import { runWorkerRuntimeConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "Worker")} } from "./index";`,
         `// runWorkerRuntimeConformance(() => ({ worker: new ${joinNoun(P, "Worker")}(), pkg: /* runnable ExecutionPackage */ }));`,
         "",
@@ -1067,13 +1067,13 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "LlmProvider",
     title: "LLM provider (model backend)",
     wiring: "createLlmEffect({ provider: new <Name>Provider() })",
-    spiDeps: ["@loom/llm"],
+    spiDeps: ["@loomwork/llm"],
     conformance: ["runLlmProviderConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import { assertRequestSupported } from "@loom/llm";',
-        'import type { LlmCapabilities, LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";',
+        'import { assertRequestSupported } from "@loomwork/llm";',
+        'import type { LlmCapabilities, LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";',
         "",
         "/** An `LlmProvider` — wire via `createLlmEffect({ provider })` or an agent's `provider`. */",
         `export class ${joinNoun(P, "Provider")} implements LlmProvider {`,
@@ -1097,7 +1097,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your provider with the conformance kit once complete() is real:",
-        '// import { runLlmProviderConformance } from "@loom/conformance";',
+        '// import { runLlmProviderConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "Provider")} } from "./index";`,
         "//",
         "// A `toolRequest` this provider answers WITH a tool call is REQUIRED once it has",
@@ -1123,7 +1123,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "CapabilityAuthorizer",
     title: "Capability authorizer (allow/deny each effect)",
     wiring: "security: { authorizer: new <Name>Authorizer() }",
-    spiDeps: ["@loom/effect-runtime"],
+    spiDeps: ["@loomwork/effect-runtime"],
     conformance: ["runCapabilityAuthorizerConformance"],
     index: (name) => {
       const P = pascal(name);
@@ -1132,7 +1132,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  CapabilityAuthorizer,",
         "  CapabilityDecision,",
         "  CapabilityRequest,",
-        '} from "@loom/effect-runtime";',
+        '} from "@loomwork/effect-runtime";',
         "",
         "/** A `CapabilityAuthorizer` — allow/deny each effect. Wire as `authorizer`. */",
         `export class ${joinNoun(P, "Authorizer")} implements CapabilityAuthorizer {`,
@@ -1148,7 +1148,7 @@ const SEAMS: Record<string, SeamDef> = {
       const P = pascal(name);
       return [
         "// Prove your authorizer with the conformance kit (decision shape + determinism):",
-        '// import { runCapabilityAuthorizerConformance } from "@loom/conformance";',
+        '// import { runCapabilityAuthorizerConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "Authorizer")} } from "./index";`,
         `// runCapabilityAuthorizerConformance(() => new ${joinNoun(P, "Authorizer")}());`,
         "",
@@ -1176,7 +1176,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "ExecutionAuthorizer",
     title: "Execution-lifecycle authorizer (start/resume/cancel/query)",
     wiring: "security: { executionAuthorizer: new <Name>ExecutionAuthorizer() }",
-    spiDeps: ["@loom/workflow-runtime"],
+    spiDeps: ["@loomwork/workflow-runtime"],
     conformance: ["runExecutionAuthorizerConformance"],
     index: (name) => {
       const P = pascal(name);
@@ -1185,7 +1185,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  ExecutionAuthorizer,",
         "  ExecutionAuthzRequest,",
         "  ExecutionAuthzVerdict,",
-        '} from "@loom/workflow-runtime";',
+        '} from "@loomwork/workflow-runtime";',
         "",
         "/**",
         " * An `ExecutionAuthorizer` — gates the execution LIFECYCLE, where a",
@@ -1215,7 +1215,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// The kit checks every lifecycle op is answered, determinism, and that the verdict is",
         "// synchronous — un-comment once your policy is real:",
-        '// import { runExecutionAuthorizerConformance } from "@loom/conformance";',
+        '// import { runExecutionAuthorizerConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "ExecutionAuthorizer")} } from "./index";`,
         `// runExecutionAuthorizerConformance(() => new ${joinNoun(P, "ExecutionAuthorizer")}());`,
         "",
@@ -1242,7 +1242,7 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "ResumeAuthenticator",
     title: "Resume authority (K12.2 — may this event reopen an execution?)",
     wiring: "security: { resumeAuthenticator: new <Name>ResumeAuthenticator() }",
-    spiDeps: ["@loom/workflow-runtime"],
+    spiDeps: ["@loomwork/workflow-runtime"],
     conformance: ["runResumeAuthenticatorConformance"],
     index: (name) => {
       const P = pascal(name);
@@ -1251,7 +1251,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  ResumeAuthenticator,",
         "  ResumeEvent,",
         "  ResumeVerdict,",
-        '} from "@loom/workflow-runtime";',
+        '} from "@loomwork/workflow-runtime";',
         "",
         "/**",
         " * A `ResumeAuthenticator` — may this event REOPEN a suspended execution (K12.2)?",
@@ -1288,7 +1288,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// The kit checks the verdict is one of the three statuses, is deterministic, and that",
         "// a rejection carries a non-empty reason:",
-        '// import { runResumeAuthenticatorConformance } from "@loom/conformance";',
+        '// import { runResumeAuthenticatorConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "ResumeAuthenticator")} } from "./index";`,
         `// runResumeAuthenticatorConformance(() => new ${joinNoun(P, "ResumeAuthenticator")}());`,
         "",
@@ -1314,12 +1314,12 @@ const SEAMS: Record<string, SeamDef> = {
     spi: "TimerDispatcher",
     title: "Where a due wake runs (#392 placement for timers)",
     wiring: "timers: { store, dispatcher: new <Name>TimerDispatcher() }",
-    spiDeps: ["@loom/workflow-runtime"],
+    spiDeps: ["@loomwork/workflow-runtime"],
     conformance: ["runTimerDispatcherConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { TimerDispatcher } from "@loom/workflow-runtime";',
+        'import type { TimerDispatcher } from "@loomwork/workflow-runtime";',
         "",
         "/**",
         " * A `TimerDispatcher` — where a due wake RUNS (#392).",
@@ -1357,7 +1357,7 @@ const SEAMS: Record<string, SeamDef> = {
       return [
         "// The kit checks the two things a dispatcher is silently wrong about: an unknown",
         "// target must not strand the wake, and the resume event must pass through unchanged.",
-        '// import { runTimerDispatcherConformance } from "@loom/conformance";',
+        '// import { runTimerDispatcherConformance } from "@loomwork/conformance";',
         `// import { ${joinNoun(P, "TimerDispatcher")} } from "./index";`,
         `// runTimerDispatcherConformance(() => new ${joinNoun(P, "TimerDispatcher")}());`,
         "",
@@ -1384,12 +1384,12 @@ const SEAMS: Record<string, SeamDef> = {
     // `ctx.decide` — recorded, replayable, auditable.
     wiring:
       "decideWithPolicy(ctx, id, new <Name>Policy(), context, actions)  — flow code, NOT defineConfig",
-    spiDeps: ["@loom/learning"],
+    spiDeps: ["@loomwork/learning"],
     conformance: ["runPolicyConformance"],
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { Policy, PolicyChoice, PolicyContext } from "@loom/learning";',
+        'import type { Policy, PolicyChoice, PolicyContext } from "@loomwork/learning";',
         "",
         "/**",
         " * A `Policy` — given an observation, choose one of the offered actions.",
@@ -1428,7 +1428,7 @@ const SEAMS: Record<string, SeamDef> = {
     test: (name) => {
       const P = pascal(name);
       return [
-        'import { runPolicyConformance } from "@loom/conformance";',
+        'import { runPolicyConformance } from "@loomwork/conformance";',
         'import { describe, expect, it } from "vitest";',
         `import { ${joinNoun(P, "Policy")} } from "./index";`,
         "",
@@ -1458,11 +1458,11 @@ const SEAMS: Record<string, SeamDef> = {
     // the content store that holds the scripts is in hand (ADR 0144 D6).
     wiring:
       "registerSandboxBackend(effects, scripts, new <Name>SandboxBackend(), { … })  — flow code, NOT defineConfig",
-    spiDeps: ["@loom/sandbox"],
+    spiDeps: ["@loomwork/sandbox"],
     conformance: ["runSandboxBackendConformance"],
     readmeWire: (name, packageName) => [
       "```ts",
-      'import { registerSandboxBackend } from "@loom/sandbox";',
+      'import { registerSandboxBackend } from "@loomwork/sandbox";',
       `import { ${joinNoun(pascal(name), "SandboxBackend")} } from "${packageName}";`,
       "",
       "// Registered from flow code, next to the content store that holds the scripts.",
@@ -1506,7 +1506,7 @@ const SEAMS: Record<string, SeamDef> = {
       "  limit, or a separate process or instance); never run an uncapped backend inside your host.",
       "",
       "A non-JavaScript backend must pass its own `fixtures` to `runSandboxBackendConformance`",
-      "(model them on `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in `@loom/conformance`).",
+      "(model them on `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in `@loomwork/conformance`).",
       "",
       "A backend that cold-starts an instance per run cannot finish the kit's `fresh per run` case",
       "(16 sequential runs plus 8 concurrent) inside the default 60 s per-test timeout. Pass a larger",
@@ -1521,7 +1521,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  SandboxBackendCapabilities,",
         "  SandboxOutcome,",
         "  SandboxRequest,",
-        '} from "@loom/sandbox";',
+        '} from "@loomwork/sandbox";',
         "",
         `export interface ${joinNoun(P, "SandboxBackendOptions")} {`,
         "  /** Whatever your backend needs — a service URL, an image, a token source. */",
@@ -1544,7 +1544,7 @@ const SEAMS: Record<string, SeamDef> = {
         "  readonly capabilities: SandboxBackendCapabilities = {",
         '    // "javascript" runs the kit\'s built-in fixtures. A backend for any OTHER language must',
         "    // pass its own `fixtures` (one script per case) to runSandboxBackendConformance in",
-        "    // index.test.ts — model them on `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in @loom/conformance.",
+        "    // index.test.ts — model them on `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in @loomwork/conformance.",
         '    language: "javascript",',
         '    network: "open",',
         '    wallClock: "soft",',
@@ -1595,14 +1595,14 @@ const SEAMS: Record<string, SeamDef> = {
     test: (name) => {
       const P = pascal(name);
       return [
-        'import { runSandboxBackendConformance } from "@loom/conformance";',
+        'import { runSandboxBackendConformance } from "@loomwork/conformance";',
         `import { ${joinNoun(P, "SandboxBackend")} } from "./index";`,
         "",
         "// The SPI kit: runs ADR 0064's security list through SandboxEffect — echo, throw, syntax",
         "// error, runaway loop, allocation bomb, no network, fresh per run, abort, outcome hygiene.",
         "// It fails until evaluate() is real.",
         "// - A language other than JavaScript: pass `fixtures` (one script per case), modelled on",
-        "//   `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in @loom/conformance.",
+        "//   `SandboxFixtures` / `JAVASCRIPT_FIXTURES` in @loomwork/conformance.",
         "// - A backend that cold-starts per run: pass a larger `timeoutMs` (e.g. 300_000) — the",
         "//   `fresh per run` case makes 16 sequential + 8 concurrent runs under one timeout.",
         `runSandboxBackendConformance(() => new ${joinNoun(P, "SandboxBackend")}(), { label: "${joinNoun(P, "SandboxBackend")}" });`,
@@ -1646,7 +1646,7 @@ function pluginPackageJson(seam: SeamDef, packageName: string, firstParty: boole
   for (const d of spi) deps[d] = version;
 
   const devDeps: Record<string, string> = {};
-  if (seam.conformance.length > 0) devDeps["@loom/conformance"] = version;
+  if (seam.conformance.length > 0) devDeps["@loomwork/conformance"] = version;
   devDeps["@types/node"] = "^22.0.0";
   devDeps.typescript = "^5.6.3";
   devDeps.vitest = "^2.1.8";
@@ -1748,7 +1748,7 @@ function pluginTsconfigTest(): string {
 function pluginTsconfig(seam: SeamDef, firstParty: boolean): string {
   if (firstParty) {
     const refs = [...new Set(seam.spiDeps)].map(
-      (d) => `    { "path": "../../packages/${d.replace("@loom/", "")}" }`
+      (d) => `    { "path": "../../packages/${d.replace("@loomwork/", "")}" }`
     );
     return [
       "{",
@@ -1797,7 +1797,7 @@ function pluginReadme(
       ? seam.readmeWire(name, packageName)
       : [
           "```ts",
-          'import { defineConfig } from "@loom/app";',
+          'import { defineConfig } from "@loomwork/app";',
           `// import { … } from "${packageName}";`,
           "",
           `export const app = defineConfig({ ${wire} });`,
@@ -1817,7 +1817,7 @@ function pluginReadme(
     "",
     "- Implement the SPI; keep the preset a pure function.",
     "- Contribute only to existing seams — no kernel hook, no reducer into the replay fold.",
-    "- Prove it with `@loom/conformance` (see `src/index.test.ts`).",
+    "- Prove it with `@loomwork/conformance` (see `src/index.test.ts`).",
     firstParty
       ? "- First-party: lives in `plugins/`, conformance-gated in Loom CI."
       : "- Third-party: publish under `loom-plugin-*`, keyword `loom-plugin`; you own the supply-chain trust.",
@@ -1850,7 +1850,7 @@ export function pluginFiles(
     );
   }
   const dir = opts.firstParty ? `plugins/${name}` : `loom-plugin-${name}`;
-  const packageName = opts.firstParty ? `@loom/plugin-${name}` : `loom-plugin-${name}`;
+  const packageName = opts.firstParty ? `@loomwork/plugin-${name}` : `loom-plugin-${name}`;
   return {
     [`${dir}/package.json`]: pluginPackageJson(seam, packageName, opts.firstParty),
     [`${dir}/tsconfig.json`]: pluginTsconfig(seam, opts.firstParty),
@@ -1865,7 +1865,7 @@ export function pluginFiles(
 /**
  * The "next:" guidance `loom plugin new` prints, derived from what was generated so it cannot
  * drift from it: whether the conformance test is live or commented out is read from the test file
- * itself, and a third-party author is told which `@loom/*` packages need resolving.
+ * itself, and a third-party author is told which `@loomwork/*` packages need resolving.
  */
 export function pluginNextSteps(
   files: Record<string, string>,
@@ -1891,7 +1891,7 @@ export function pluginNextSteps(
         [
           ...Object.keys(pkg.peerDependencies ?? {}),
           ...Object.keys(pkg.devDependencies ?? {}),
-        ].filter((d) => d.startsWith("@loom/"))
+        ].filter((d) => d.startsWith("@loomwork/"))
       ),
     ].sort();
     lines.push(
@@ -1899,7 +1899,7 @@ export function pluginNextSteps(
       `this plugin depends on: ${loom.join(", ")}`,
       "      If you consume an unpublished Loom checkout, your workspace needs a pnpm override",
       "      (a `link:` path into your Loom checkout) for each of them, e.g.",
-      '      "@loom/<name>": "link:../loom/packages/<dir>" under pnpm.overrides in the root package.json.'
+      '      "@loomwork/<name>": "link:../loom/packages/<dir>" under pnpm.overrides in the root package.json.'
     );
   }
   return lines;

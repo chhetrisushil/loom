@@ -1,4 +1,4 @@
-# @loom/graph-executor — distributed fan-out
+# @loomwork/graph-executor — distributed fan-out
 
 `executeGraph` runs a set of nodes as independent executions and joins their results. Each node becomes
 its own execution (its own id, so exactly one writer per log), dispatched through an
@@ -9,10 +9,10 @@ is a flow of its own (the agent-swarm example does this); for fan-out inside one
 `ctx.parallel`.
 
 ```ts
-import { LocalDispatcher } from "@loom/dispatcher";
-import { InMemoryBranchRegistry } from "@loom/event-runtime";
-import { executeGraph } from "@loom/graph-executor";
-import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { InMemoryBranchRegistry } from "@loomwork/event-runtime";
+import { executeGraph } from "@loomwork/graph-executor";
+import { LocalWorkerRuntime } from "@loomwork/worker-runtime-local";
 import { app } from "./config"; // your defineConfig({ storage, flows, ... }) result
 
 const dispatcher = new LocalDispatcher(new LocalWorkerRuntime(app.runtime));
@@ -62,7 +62,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/graph-executor` — distributed fan-out" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/graph-executor` — distributed fan-out" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [user guide, section 13: where executions run](../../docs/user-guide.md#13-where-executions-run-compute); the `agent-swarm` example in [examples](../../docs/examples.md).
 - ADR: [0005 distributed graph fork-join](../../docs/adr/0005-distributed-graph-fork-join.md).
-- Source: `packages/graph-executor/src`. Concurrency comes from [`@loom/scheduler`](../scheduler/README.md)'s `parallelLimit`.
+- Source: `packages/graph-executor/src`. Concurrency comes from [`@loomwork/scheduler`](../scheduler/README.md)'s `parallelLimit`.

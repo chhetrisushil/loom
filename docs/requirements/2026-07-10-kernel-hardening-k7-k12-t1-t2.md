@@ -117,7 +117,7 @@ single most dangerous ambiguity in the system.
 - **K9.4** Worker leases MUST carry a monotonic **fencing token**; the journal MUST reject
   appends bearing a stale token, so a network-partitioned "zombie" worker cannot write after
   its execution was re-dispatched (extends D3 single-writer to the failure domain).
-- **K9.5** `@loom/testing` SHOULD provide a crash-injection harness (kill between effect
+- **K9.5** `@loomwork/testing` SHOULD provide a crash-injection harness (kill between effect
   completion and event append) so applications can prove their tools' idempotency in CI.
 
 **Acceptance criteria.** Under injected crashes, an idempotent tool converges to one logical
@@ -166,7 +166,7 @@ not an application concern.
 
 **Requirements.**
 
-- **K11.1** `RUN_STARTED` MUST record the flow's content hash (the `@loom/compiler` manifest
+- **K11.1** `RUN_STARTED` MUST record the flow's content hash (the `@loomwork/compiler` manifest
   hash already exists); resume MUST compare recorded vs. registered hash and MUST NOT
   silently resume across a mismatch.
 - **K11.2** The kernel MUST support **pinned resumption**: a registry MAY hold multiple

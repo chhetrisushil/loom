@@ -1,11 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StorageWriteError, step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { SqliteBranchRegistry } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { StorageWriteError, step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { SqliteBranchRegistry } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
@@ -66,7 +66,7 @@ afterEach(() => {
 });
 
 function makeRuntime(opts?: {
-  failAppendWhen?: (e: import("@loom/core").EventEnvelope) => boolean;
+  failAppendWhen?: (e: import("@loomwork/core").EventEnvelope) => boolean;
   onStorageError?: (id: string, err: unknown) => void;
   latencyMs?: number;
 }) {

@@ -1,4 +1,4 @@
-import type { Snapshot } from "@loom/snapshot-runtime";
+import type { Snapshot } from "@loomwork/snapshot-runtime";
 import { decryptValue, envelopeAad } from "./crypto";
 
 // The whole-state sealing format of EncryptingSnapshotStore (`sealState: true`), in a module of its

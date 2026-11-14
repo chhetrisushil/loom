@@ -1,4 +1,4 @@
-# @loom/classify — what a value is, on two axes
+# @loomwork/classify — what a value is, on two axes
 
 The vocabulary other packages use to say how a piece of data must be handled. **Confidentiality** is a
 property of a field, so you declare it once on the schema (`sensitive()`, `secret()`, `internal()`) and
@@ -12,7 +12,7 @@ import { z } from "zod";
 import {
   collectClassifiedPaths, isTainted, maskPaths, pathsOfClass, scanTaint,
   secret, sensitive, tainted, unwrapTainted,
-} from "@loom/classify";
+} from "@loomwork/classify";
 
 // Confidentiality: declared once, on the schema.
 const Signup = z.object({
@@ -68,7 +68,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/classify` — what a value IS, on two axes" in [docs/api-reference.org](../../docs/api-reference.org). It lists `classify(schema)` as returning paths; in the source that is `collectClassifiedPaths`.
+- API reference: section "`@loomwork/classify` — what a value IS, on two axes" in [docs/api-reference.org](../../docs/api-reference.org). It lists `classify(schema)` as returning paths; in the source that is `collectClassifiedPaths`.
 - Guides: [data classification](../../docs/data-classification.md), [data protection patterns](../../docs/data-protection-patterns.md), [isolation and untrusted content](../../docs/user-guide/isolation-and-untrusted-content.md).
 - ADRs: [0085 untrusted-content integrity axis](../../docs/adr/0085-untrusted-content-integrity-axis.md), [0046 content store seam](../../docs/adr/0046-content-store-seam-thin-authoritative-log.md).
 - Source: `packages/classify/src`.

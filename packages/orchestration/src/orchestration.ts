@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { EventEnvelope } from "@loom/core";
-import { fail } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
-import { signDelegation, verifyDelegation } from "@loom/effect-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { fail } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import { signDelegation, verifyDelegation } from "@loomwork/effect-runtime";
 import {
   type EventStore,
   type ExecutionEnumerable,
@@ -12,8 +12,8 @@ import {
   isReservedStream,
   iterateExecutionIds,
   readRangeOf,
-} from "@loom/event-runtime";
-import { declareReach } from "@loom/verify";
+} from "@loomwork/event-runtime";
+import { declareReach } from "@loomwork/verify";
 import {
   ChainHopLimitError,
   ResumeContendedError,
@@ -25,7 +25,7 @@ import {
   sameLineage,
   scheduleRedrive,
   successorIdOf,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import type {
   ExecutionContext,
   LineageGrant,
@@ -36,7 +36,7 @@ import type {
   RegisteredFlow,
   SystemGrant,
   WorkflowRuntime,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 
 // ── Cross-execution orchestration (child workflows) ───────────────────────────
 //
@@ -119,7 +119,7 @@ export function depthOf(executionId: string): number {
 
 /**
  * R9 — the autonomy envelope for child spawning. Both bounds are OFF when unset (today's
- * behaviour); `@loom/app`'s strict profile sets them. A spawn is the one place a runaway
+ * behaviour); `@loomwork/app`'s strict profile sets them. A spawn is the one place a runaway
  * agent multiplies itself, so the caps are enforced at BOTH ends:
  *   - parent side ({@link boundOrchestration}), before anything durable happens, so the
  *     calling flow fails loudly at the call site; and
@@ -797,7 +797,7 @@ const AWAITED_WARNED_MEMORY = 1024;
 
 /**
  * What an event says about whether its execution is live, by the SAME rules as
- * `terminalEndOf` / `wasReopened` in `@loom/plugin-content` (`executionEnd.ts`, ADR 0146): a
+ * `terminalEndOf` / `wasReopened` in `@loomwork/plugin-content` (`executionEnd.ts`, ADR 0146): a
  * RESUMED / SUSPENDED / STARTED event means live (`resumeAs` re-opens a failed or completed
  * execution by appending EXECUTION_RESUMED, ADR 0104 D1 / 0110 D1); a kernel terminal event means
  * ended; every other event says nothing. Mirrored, not imported: that package is a plugin and this

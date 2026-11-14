@@ -14,7 +14,7 @@
   [ADR 0121](0121-one-canonical-agent-loop.md) (`agentLoop$`),
   [ADR 0122](0122-conversation-layer-streaming-transport-and-token-budgeting.md) (conversations, shared mode),
   [ADR 0083](0083-second-consumer-rule.md).
-- Placement: **1P (`@loom/llm`, `@loom/agent`, `@loom/conversation`, `@loom/plugin-conversation-sse`, `@loom/app`)**.
+- Placement: **1P (`@loomwork/llm`, `@loomwork/agent`, `@loomwork/conversation`, `@loomwork/plugin-conversation-sse`, `@loomwork/app`)**.
   **Kernel unchanged: KERNEL_ABI and EVENT_SCHEMA unchanged.** The audit fact is a userspace event emitted through
   `EffectContext.emit`, and the fold ignores it.
 
@@ -87,10 +87,10 @@ text. They are recorded inline.
 | Layer | Owns |
 |---|---|
 | Kernel | nothing new (userspace `ctx.emit` already carries durable facts the fold ignores) |
-| `@loom/llm` | the reasoning shapes, provider mapping both ways, the conformance rule, capture in `createLlmEffect`, `readReasoning` |
-| `@loom/agent` / `@loom/conversation` | carrying reasoning parts through the transcript, and dropping them on any history edit (D5) |
-| `@loom/plugin-conversation-sse` | the live reasoning stream (D6) |
-| `@loom/app` | the config and the boot warning (D7) |
+| `@loomwork/llm` | the reasoning shapes, provider mapping both ways, the conformance rule, capture in `createLlmEffect`, `readReasoning` |
+| `@loomwork/agent` / `@loomwork/conversation` | carrying reasoning parts through the transcript, and dropping them on any history edit (D5) |
+| `@loomwork/plugin-conversation-sse` | the live reasoning stream (D6) |
+| `@loomwork/app` | the config and the boot warning (D7) |
 | Application | whether to capture, the retention schedule, who may read, whether to show it live |
 
 Application-owned capture was rejected: it is impossible today without bypassing the provider seam, evidence the
@@ -184,7 +184,7 @@ Properties:
   `registerReasoningRoutes` passes the route id).
 - **Replay** serves the recorded step value (parts with refs and signatures), runs no effect, emits nothing and reads
   no blob. The event already in the log is ignored by the fold.
-- **Tamper evidence.** With `@loom/audit-chain`, the event and the step value are hash-chained, digests included. An
+- **Tamper evidence.** With `@loomwork/audit-chain`, the event and the step value are hash-chained, digests included. An
   altered blob fails its digest; a dropped event breaks the chain.
 - **Erasure.** Deleting a blob leaves the ref and digest. The audit reader reports `erased`; replay never notices;
   continuation drops the part (D5).
@@ -210,7 +210,7 @@ Properties:
 
 ### D4 — Reading it back: an audit reader, not a flow API
 
-`readReasoning(log, store, { executionId, stepId? })` in `@loom/llm` joins `LLM_REASONING_CAPTURED` events to their
+`readReasoning(log, store, { executionId, stepId? })` in `@loomwork/llm` joins `LLM_REASONING_CAPTURED` events to their
 blobs, checks each digest and returns `{ parts, status: "ok" | "redacted" | "erased" | "digest-mismatch" }` per part (`redacted` is a block the vendor withheld: opaque, never text, not `ok`). Readable
 text is returned **wrapped as untrusted content** (ADR 0085, origin `llm-reasoning:<stepId>`), so putting it into a
 prompt is refused in every instruction position. `ctx` gets no reasoning accessor. A flow that calls `readReasoning`
@@ -316,7 +316,7 @@ renders text deltas sees reasoning by accident.
   with the increment still wrapped as untrusted content. `ConversationHub.reasoningSink()` is that sink and
   unwraps at its own edge, into a bounded in-progress buffer (the same cap as the reply, head dropped) that is
   superseded together with the reply (one `reset` on a re-run; `endTurn` when the durable message lands).
-- **Transport.** `@loom/plugin-conversation-sse` gains an opt-in `reasoning` option (`true`, or `{ live, store }`)
+- **Transport.** `@loomwork/plugin-conversation-sse` gains an opt-in `reasoning` option (`true`, or `{ live, store }`)
   with `reasoning` and `reasoning-partial` SSE event types and, with a `store`,
   `GET /conversations/:id/reasoning?cursor=<the reply's history cursor>`. The endpoint reads only the reply's
   turn (`stepPrefix`, applied before any blob is fetched) and is bounded: at most 256 parts and 1 MiB of readable
@@ -349,7 +349,7 @@ continuation)"*. `reasoning: false` is the explicit, silent opt-out for effects 
 that configured its own `store` or `capture` keeps it entirely (the app-wide `false` is a default, never an
 override).
 
-**Implemented as.** `@loom/app` cannot see providers on its own, but every LLM effect built by `createLlmEffect`
+**Implemented as.** `@loomwork/app` cannot see providers on its own, but every LLM effect built by `createLlmEffect`
 exposes a small hook (`Effect.reasoning`: `capable`, `posture()`, `adopt()`), and `defineConfig` walks
 `EffectRuntime.entries()` right after `execution.registerEffects`: the nearest point at which it sees both the
 registered effects and their providers' declared capabilities. It hands the config to each effect (the effect's own
@@ -371,7 +371,7 @@ call. `observability.reasoning: false` silences the warning. Default stays a war
 app-wide default is process-wide state and is deliberately **fail-closed**. A non-global channel is not
 feasible: the direct path has no effect, so there is nothing for `defineConfig` to adopt onto (the loop holds a
 caller-built `ReasoningRuntime`, which `defineConfig` never sees). So the slot is keyed on a global symbol (a
-duplicate copy of `@loom/agent` shares it instead of configuring a copy the loop never reads), the refusal is
+duplicate copy of `@loomwork/agent` shares it instead of configuring a copy the loop never reads), the refusal is
 **monotonic** (once any `defineConfig` in the process sets `requireContinuation: true`, a later one without it
 cannot clear it; only a loop's own `requireReasoningContinuation: false`, or the test-only
 `resetAgentLoopDefaults()`, overrides), and `observability.onWarn` is installed only when the app **gave** one
@@ -427,8 +427,8 @@ decision, and any compliance deployment on a reasoning model.
 
 ## Consequences
 
-- `@loom/llm` minor bump: optional fields and parts, provider mapping both ways, `readReasoning`, conformance rules.
-  `@loom/agent`, `@loom/conversation`, `@loom/plugin-conversation-sse`, `@loom/app`, `@loom/effect-runtime` (the guarded reasoning channel, `Effect.reasoningSink`, the `Effect.reasoning` hook, `EffectRuntime.entries()`) and `@loom/conformance` (the parity rule) minor bumps. No breaking change.
+- `@loomwork/llm` minor bump: optional fields and parts, provider mapping both ways, `readReasoning`, conformance rules.
+  `@loomwork/agent`, `@loomwork/conversation`, `@loomwork/plugin-conversation-sse`, `@loomwork/app`, `@loomwork/effect-runtime` (the guarded reasoning channel, `Effect.reasoningSink`, the `Effect.reasoning` hook, `EffectRuntime.entries()`) and `@loomwork/conformance` (the parity rule) minor bumps. No breaking change.
 - Kernel, KERNEL_ABI and EVENT_SCHEMA unchanged.
 - `docs/data-classification.md` gains a row: reasoning blobs are classified at least as high as the request that
   produced them.

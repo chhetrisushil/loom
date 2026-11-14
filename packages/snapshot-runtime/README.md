@@ -1,4 +1,4 @@
-# @loom/snapshot-runtime — the SnapshotStore contract and its reference stores
+# @loomwork/snapshot-runtime — the SnapshotStore contract and its reference stores
 
 A snapshot is a saved fold of an execution's state, so a resume reads one snapshot plus a short log
 tail instead of the whole log. This package defines the `SnapshotStore` interface (the SPI), an
@@ -8,7 +8,7 @@ and `sqliteStorage({ dir })` and `postgresStorage({ url })` bring their own dura
 write a store, wrap one, or read snapshot sizes.
 
 ```ts
-import { InMemoryAsyncSnapshotStore, ProfilingSnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore, ProfilingSnapshotStore } from "@loomwork/snapshot-runtime";
 
 const store = new ProfilingSnapshotStore(new InMemoryAsyncSnapshotStore({ codec: "zstd" }), {
   largeThresholdBytes: 512 * 1024,
@@ -25,9 +25,9 @@ console.log(store.profile().largest); // top executions by latest snapshot size
 - **Contract.** `SnapshotStore` (`save`, `loadLatest`, `loadAt`, `loadLatestBefore`, `close`), with
   optional `deleteExecution`, `loadLatestSealed`, `pruneSnapshots` and `listSequences`.
   `SNAPSHOT_STORE_SPI_VERSION` is `1.3.0`. A third-party store proves itself with
-  `runSnapshotStoreConformance` from `@loom/conformance`.
+  `runSnapshotStoreConformance` from `@loomwork/conformance`.
 - **Stores and wrappers.** `InMemoryAsyncSnapshotStore` (also importable from
-  `@loom/snapshot-runtime/memory`), `TenantScopedSnapshotStore(inner, tenant)` and
+  `@loomwork/snapshot-runtime/memory`), `TenantScopedSnapshotStore(inner, tenant)` and
   `ProfilingSnapshotStore(inner, options)`.
 - **Codec.** `encodeState` and `decodeState` frame the state as JSON, optionally zstd-compressed
   (ADR 0141). `zstdAvailable()` says whether this Node can write zstd; asking for it on one that cannot
@@ -57,6 +57,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 - [ADR 0033](../../docs/adr/0033-spi-conformance-contracts.md): SPI conformance contracts.
 - [ADR 0134](../../docs/adr/0134-snapshot-pruning.md): pruning, and
   [ADR 0141](../../docs/adr/0141-snapshot-zstd-codec.md): the zstd codec.
-- API reference: section "`@loom/snapshot-runtime` — bounded-tail replay" in
+- API reference: section "`@loomwork/snapshot-runtime` — bounded-tail replay" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

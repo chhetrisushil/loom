@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { LoomApp } from "@loom/app";
-import { type VerificationReport, formatReport } from "@loom/verify";
+import type { LoomApp } from "@loomwork/app";
+import { type VerificationReport, formatReport } from "@loomwork/verify";
 import { loadLoomApp as loadModuleForVerify } from "./stores";
 
 /**
@@ -163,7 +163,7 @@ export async function cmdVerify(
   if (lint?.runnerReachByFlow === undefined || Object.keys(lint.runnerReachByFlow).length === 0) {
     const why =
       resolved === undefined ? "none found" : `${resolved} carries no runner-body analysis`;
-    banner += `[manifest] ${why} — runner bodies were not analysed, so suspend points and undeclared \`ctx.run\` targets are invisible to three rules (ADR 0086). Build with @loom/compiler, or pass --manifest <loom-manifest.json>.\n`;
+    banner += `[manifest] ${why} — runner bodies were not analysed, so suspend points and undeclared \`ctx.run\` targets are invisible to three rules (ADR 0086). Build with @loomwork/compiler, or pass --manifest <loom-manifest.json>.\n`;
   }
 
   const report = app.verify(lint !== undefined ? { lint } : undefined);

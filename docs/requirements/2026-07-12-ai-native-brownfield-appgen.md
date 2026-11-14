@@ -2,7 +2,7 @@
 
 - Date: 2026-07-12
 - Status: Accepted; implemented across PRs #111, #112, and the completeness follow-up.
-- Owner: DX / `@loom/appgen`
+- Owner: DX / `@loomwork/appgen`
 - Related: [ADR 0042](../adr/0042-ai-native-brownfield-appgen.md), evaluation doc
   [`2026-07-12-ai-native-brownfield-appgen-evaluation.md`](2026-07-12-ai-native-brownfield-appgen-evaluation.md)
 
@@ -23,9 +23,9 @@ plans a change against it, previews the change, and applies it safely — option
 
 ## Non-negotiable constraints
 
-1. **DX layer only.** No edits to `@loom/core`, `@loom/compiler`, `@loom/workflow-runtime`,
-   `@loom/effect-runtime`, `@loom/app`, `@loom/reasoning`, or any runtime/kernel package. All work
-   lives in `@loom/appgen` (offline, near-zero-dep), a new optional `@loom/appgen-model`, and the CLI.
+1. **DX layer only.** No edits to `@loomwork/core`, `@loomwork/compiler`, `@loomwork/workflow-runtime`,
+   `@loomwork/effect-runtime`, `@loomwork/app`, `@loomwork/reasoning`, or any runtime/kernel package. All work
+   lives in `@loomwork/appgen` (offline, near-zero-dep), a new optional `@loomwork/appgen-model`, and the CLI.
 2. **NL understanding in exactly one stage.** Only the *plan* stage interprets natural language, and
    it emits a structured `ChangeSpec`. Codegen never sees raw NL (P5, P11).
 3. **Deterministic and offline by default.** The default path uses no model and is reproducible.
@@ -67,9 +67,9 @@ Every apply records the accepted `ChangeSpec` to `.loom/appgen/<timestamp>.spec.
 `--from-spec <file>` replays it byte-for-byte with no model (the appgen equivalent of a golden log).
 
 ### R7 — Optional local model
-`@loom/appgen-model` swaps a small on-device Gemma model into the plan stage:
+`@loomwork/appgen-model` swaps a small on-device Gemma model into the plan stage:
 - Grammar-constrained JSON (constrained to the `ChangeSpec` JSON schema) via node-llama-cpp.
-- The cheap-first **elevation ladder** from `@loom/reasoning` with a *validator* confidence signal,
+- The cheap-first **elevation ladder** from `@loomwork/reasoning` with a *validator* confidence signal,
   logging elevations (P9) into the lockfile.
 - Loaded/disposed per invocation (transient footprint); prompt carries only the compact `AppModel`
   summary; bounded generation.

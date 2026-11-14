@@ -1,11 +1,11 @@
-import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
 import {
   InMemoryAsyncEventStore,
   brandPayloadShredded,
   isPayloadShredded,
-} from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   type FlowRunner,
   LogLifecycle,
@@ -13,7 +13,7 @@ import {
   WorkflowRuntime,
   deepestGeneration,
   routeKeepSet,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { awaitChild, awaitedByParent, superviseChildren } from "./index";

@@ -1,7 +1,7 @@
 # ADR 0060 — Typed failure channels: `errors:` contracts + replay substitution
 
 - Status: **Accepted — shipped** (`errors:` on step$/tool$/Effect, `TypedFailure`/
-  `fail()` in `@loom/core`, substitution at the execute seam, EVENT_SCHEMA 1.17.0)
+  `fail()` in `@loomwork/core`, substitution at the execute seam, EVENT_SCHEMA 1.17.0)
 - Date: 2026-07-19
 - Builds on: [DE-series evaluation](../requirements/2026-07-19-dynamic-execution-de-series-evaluation.md)
   (DE-4), the K9.3 declared-idempotence idiom, the saga precedent (spec capability

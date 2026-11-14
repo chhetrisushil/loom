@@ -1,12 +1,12 @@
-import { unwrapTainted } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+import { unwrapTainted } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type EventStore,
   InMemoryAsyncEventStore,
   InMemoryLeaseStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+} from "@loomwork/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { RedriveExhaustedError, TimerService } from "./TimerService";
 import { Latch, build, flow, slow, until } from "./__tests__/r2Harness";

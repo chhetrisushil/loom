@@ -1,10 +1,10 @@
-# ADR 0037 — Tamper-Evident Audit Chain (`@loom/audit-chain`)
+# ADR 0037 — Tamper-Evident Audit Chain (`@loomwork/audit-chain`)
 
 - Status: Accepted (2026-07-11)
 - Date: 2026-07-11
 - Builds on: the `EventStore` SPI + composable store wrappers (`TenantScopedEventStore`, fencing —
   [ADR 0033](0033-spi-conformance-contracts.md)), the K2/K12 durable audit facts, and the HMAC-SHA256
-  helper already used for signed delegation (`@loom/effect-runtime` `authz.ts`).
+  helper already used for signed delegation (`@loomwork/effect-runtime` `authz.ts`).
 - Part of: the three-direction kernel arc, multi-tenant isolation (Direction C), Phase 1.
 
 ## Context
@@ -17,7 +17,7 @@ leave no trace. For a hostile-multi-tenant or compliance setting that is a real 
 
 ## Decision
 
-Add **`@loom/audit-chain`**, a composable `EventStore` wrapper. On each append it stamps, in the
+Add **`@loomwork/audit-chain`**, a composable `EventStore` wrapper. On each append it stamps, in the
 event's `metadata.auditChain`:
 
 - `prevHash` — the previous event's hash for that execution (genesis = `""`);
@@ -90,13 +90,13 @@ signed it is correct, so rotation is a `keyId` and there is no revocation proble
   verifiable across a rotation; an unsigned entry is flagged; a chain checked with neither a
   secret nor a verifier reports `signaturesChecked: false`; and an ambiguous
   `hmacSecret` + `signer` configuration is refused.
-- `@loom/audit-chain` tests (11): genesis-rooted chain verifies; a tampered payload is caught at the
+- `@loomwork/audit-chain` tests (11): genesis-rooted chain verifies; a tampered payload is caught at the
   right sequence; a dropped event breaks `prevHash`; with a secret, a re-chained forgery fails on the
   signature; the chain continues across a cold start (recovery reads the durable tail); the
   payload/sequence/eventType stream is unchanged versus an unchained store (fold-invisible), only
   metadata grows; optional store capabilities are forwarded.
-- A **DST integrity property** (`@loom/dst`): compose `runtime → faultInjectingStore → hash chain →
+- A **DST integrity property** (`@loomwork/dst`): compose `runtime → faultInjectingStore → hash chain →
   base`, crash at seed-chosen points, recover, and assert `verifyChain` holds across the whole
   crash-schedule space (crashes really fire; the surviving log is always an intact, signed chain — no
   fork, gap, or forgery).
-- `@loom/spec` registers the `audit-chain` capability at L2.
+- `@loomwork/spec` registers the `audit-chain` capability at L2.

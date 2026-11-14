@@ -12,7 +12,7 @@ suspension with a deploy in the middle, and an idempotency-protected refund.
 Scaffold the skeleton with:
 
 #+begin_src sh
-pnpm --filter @loom/create-loom-app build
+pnpm --filter @loomwork/create-loom-app build
 node tools/create-loom-app/dist/index.js acme-support
 #+end_src
 
@@ -23,14 +23,14 @@ the roadmap (evals, deploy-simulation) it is marked *(Tier 3)*.
 
 | File            | Builder / API                    | Role                                   |
 |-----------------+----------------------------------+----------------------------------------|
-| =config.ts=     | =defineConfig= (@loom/app)       | the whole app, declared once           |
+| =config.ts=     | =defineConfig= (@loomwork/app)       | the whole app, declared once           |
 | =agent.ts=      | =agent$= / =toAgentCard=         | the support agent + its card           |
 | =tools.ts= (×2) | =tool$=                          | =lookup-customer=, =issue-refund=      |
 | =steps.ts= (×2) | =step$= + =handler$=             | durable units with recorded outputs    |
 | =flow.ts=       | =flow$=                          | the resolve-ticket flow                |
 | =ui.ts=         | =a2uiSurfaceProjection=          | the A2UI surface catalog               |
-| =middleware.ts= | =retryMiddleware= (@loom/middleware) | cross-cutting effect concerns      |
-| =eval.test.ts=  | =@loom/eval= *(Tier 3)*          | log-as-fixture regression + scoring    |
+| =middleware.ts= | =retryMiddleware= (@loomwork/middleware) | cross-cutting effect concerns      |
+| =eval.test.ts=  | =@loomwork/eval= *(Tier 3)*          | log-as-fixture regression + scoring    |
 
 * config.ts — the composition root, in ~10 lines
 
@@ -40,9 +40,9 @@ surfaces, telemetry, the =WorkflowRuntime=, your flows, and the in-process A2A
 bus — and returns them. It never builds your conductor logic.
 
 #+begin_src ts
-import { defineConfig } from "@loom/app";
-import { sqliteStorage } from "@loom/plugin-sqlite";
-import { retryMiddleware } from "@loom/middleware";
+import { defineConfig } from "@loomwork/app";
+import { sqliteStorage } from "@loomwork/plugin-sqlite";
+import { retryMiddleware } from "@loomwork/middleware";
 import { ResolveTicketFlow } from "./flow";
 import { catalog } from "./agent";
 
@@ -93,7 +93,7 @@ const runner = async (ctx, input) => {
   for transient failures — retries are in-memory and never touch a completed step,
   a suspend, or a cancellation, so the log stays deterministic.
 - *A2A child run.* Calling Acme's remote "legal review" agent is one effect. The
-  entire A2A layer is a single adapter, =LoomAgentExecutor= (@loom/plugin-a2a): its task
+  entire A2A layer is a single adapter, =LoomAgentExecutor= (@loomwork/plugin-a2a): its task
   lifecycle maps one-to-one onto Loom states — submit→=start=, input-required→a
   suspend, provideInput→=resume=, completed/failed→terminal. The server is a thin,
   *stateless* transport (it rebuilds status from the log via =loadState=), so it
@@ -130,7 +130,7 @@ Because effect outputs live in the log, a recorded run replays deterministically
 with no live LLM/tool calls:
 
 #+begin_src ts
-import { replayAsFixture, diffRuns, scoreRun } from "@loom/eval";
+import { replayAsFixture, diffRuns, scoreRun } from "@loomwork/eval";
 // replay a captured run and assert it reaches the recorded outputs;
 // diff against a golden log; score the folded state for quality.
 #+end_src
@@ -142,9 +142,9 @@ runtime, your regression fixtures, and your pre-deploy compatibility check.
 
 | Concern              | Home                                                   |
 |----------------------+--------------------------------------------------------|
-| composition          | =defineConfig= (@loom/app)                             |
-| retries/logging/etc. | effect middleware (@loom/middleware)                   |
-| remote agents        | =LoomAgentExecutor= (@loom/plugin-a2a)                        |
+| composition          | =defineConfig= (@loomwork/app)                             |
+| retries/logging/etc. | effect middleware (@loomwork/middleware)                   |
+| remote agents        | =LoomAgentExecutor= (@loomwork/plugin-a2a)                        |
 | durability / resume  | event log + snapshots (the runtime)                    |
-| regression / scoring | =@loom/eval= *(Tier 3)*                                |
+| regression / scoring | =@loomwork/eval= *(Tier 3)*                                |
 | safe deploys         | =simulateDeploy= *(Tier 3)*                            |

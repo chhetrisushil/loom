@@ -53,10 +53,10 @@ retroactive check, not a policy change.
 | Cost | Measurement |
 |---|---|
 | **Names to learn** | 72 packages. Eight are under 200 LOC: `plugin-kit` 44, `registry` 45, `live-query` 94, `orchestrator` 105, `saga` 109, `plugin-sentinel` 110, `graph-executor` 110, `worker-runtime-local` 163. Each costs a `package.json`, a tsconfig, a build task, an api-reference section, a docs row, a version — and a name |
-| **"Start here" costs ten names** | `loom-starter`, described as *"the smallest example that shows the way you build a Loom app today"*, is **186 lines of source importing 10 `@loom/*` packages** (32 on disk after closure), and teaches Cloud Run placement, remote workers and SQLite along the way |
-| **The barrel nobody uses** | `@loom/sdk` re-exports 205 values from 20+ packages so that an app depends on one name instead of a dozen. **Zero examples import it** — including the starter. The device built to collapse the surface is maintained for no one |
-| **Six inert libraries** | `isolate` (643 LOC, K7 data-plane isolation — referenced outside itself only in *comments*; no code path wires it) · `replay-inspector` (1,039 LOC, while `loom inspect` ships its **own** inspector in `tools/cli/src/inspector.ts`) · `fair-scheduler` (302 LOC, a drop-in implementation of `@loom/scheduler`'s own interface, no consumer) · `saga` (109) · `plugin-sentinel` (110) · `sdk` |
-| **An advertised consumer that does not exist** | `docs/examples.md` states that `db-sentinel` uses `sentinelPreset`. It does not: the example imports ten packages and `@loom/plugin-sentinel` is not among them. The only named consumer of that plugin is fiction — which is the [vacuous-check pattern](../adr/0083-second-consumer-rule.md) wearing a catalogue entry |
+| **"Start here" costs ten names** | `loom-starter`, described as *"the smallest example that shows the way you build a Loom app today"*, is **186 lines of source importing 10 `@loomwork/*` packages** (32 on disk after closure), and teaches Cloud Run placement, remote workers and SQLite along the way |
+| **The barrel nobody uses** | `@loomwork/sdk` re-exports 205 values from 20+ packages so that an app depends on one name instead of a dozen. **Zero examples import it** — including the starter. The device built to collapse the surface is maintained for no one |
+| **Six inert libraries** | `isolate` (643 LOC, K7 data-plane isolation — referenced outside itself only in *comments*; no code path wires it) · `replay-inspector` (1,039 LOC, while `loom inspect` ships its **own** inspector in `tools/cli/src/inspector.ts`) · `fair-scheduler` (302 LOC, a drop-in implementation of `@loomwork/scheduler`'s own interface, no consumer) · `saga` (109) · `plugin-sentinel` (110) · `sdk` |
+| **An advertised consumer that does not exist** | `docs/examples.md` states that `db-sentinel` uses `sentinelPreset`. It does not: the example imports ten packages and `@loomwork/plugin-sentinel` is not among them. The only named consumer of that plugin is fiction — which is the [vacuous-check pattern](../adr/0083-second-consumer-rule.md) wearing a catalogue entry |
 | **Confusable pairs** | `orchestrator` (approval decisions + `dispatchPlan`) vs `orchestration` (child executions) — unrelated jobs, one letter apart; a previous audit already had to record *"not a typo"*, which is itself the cost. `scheduler` vs `fair-scheduler` |
 | **Config surface** | **26 top-level `defineConfig` keys** (47 including the nested `security`/`observability`/`durability`/`execution`/`checks` groups), of which **7 are `*Modules` twins** of keys that already exist (`flows`/`flowModules`, `memories`/`memoryModules`, `projections`/`projectionModules`, …) |
 | **Authoring constructs** | 11 builders (`flow$ step$ handler$ tool$ agent$ skill$ memory$ policy$ projection$ schedule$ instructions$`) |
@@ -82,8 +82,8 @@ Stated explicitly, because a surface-area audit is the easiest place to manufact
 1. **`\b` does not bound a `$`.** A dead-export sweep using `grep '\bflow$\b'` reports every
    builder — `flow$`, `blueprint$`, `agentLoop$` — as unused. The first run of this audit said
    74 dead values; with fixed-string matching for `$`-suffixed names it is 39.
-2. **`dependencies` alone under-counts consumers.** `@loom/conformance`, `@loom/testing` and
-   `@loom/dst` are devDependencies everywhere they are used; counting only runtime deps makes
+2. **`dependencies` alone under-counts consumers.** `@loomwork/conformance`, `@loomwork/testing` and
+   `@loomwork/dst` are devDependencies everywhere they are used; counting only runtime deps makes
    three healthy packages look orphaned.
 
 ---
@@ -104,7 +104,7 @@ Each stage stands alone. Nothing here removes a capability.
 
 ### Stage 1 — Make the barrel real *(no API change; the biggest DX win)*
 
-Point `loom-starter` and the quick-start at `@loom/sdk`: the first thing anyone reads goes from
+Point `loom-starter` and the quick-start at `@loomwork/sdk`: the first thing anyone reads goes from
 **ten package names to one**. Split the starter so compute placement moves to
 `compute-cloudrun`, where it is the subject rather than the background.
 
@@ -113,9 +113,9 @@ finding now; if it is, nothing justifies the starter importing ten packages by h
 
 ### Stage 2 — Fold the micro-packages into their natural parents *(re-export; no capability loss)*
 
-`fair-scheduler` → `@loom/scheduler` (it implements that package's interface) · `worker-runtime-local`
-→ `@loom/worker-runtime` (the reference implementation of that SPI) · `plugin-kit` + `registry` →
-`@loom/app` · resolve `orchestrator`'s name against `orchestration`. Roughly **72 → 64 names**,
+`fair-scheduler` → `@loomwork/scheduler` (it implements that package's interface) · `worker-runtime-local`
+→ `@loomwork/worker-runtime` (the reference implementation of that SPI) · `plugin-kit` + `registry` →
+`@loomwork/app` · resolve `orchestrator`'s name against `orchestration`. Roughly **72 → 64 names**,
 with every export still reachable.
 
 ### Stage 3 — Retire the inert *(needs a decision per package)*
@@ -152,12 +152,12 @@ before any of it is written. Stage 1 and Stage 5 are additive and could proceed 
 - **Inventory** (LOC, exports, in-repo dependents, example imports per package): walk
   `packages|plugins|tools`, count non-test `.ts` lines, parse `dist/index.d.ts` for exported
   names, build the dependent map from `dependencies` **and** `devDependencies`, and grep the
-  examples repo for `@loom/<name>`.
+  examples repo for `@loomwork/<name>`.
 - **Orphans**: a package with zero in-repo dependents, zero example files and zero 3P-plugin
   files. Exclude binaries (`cli`, `create-loom-app`, `bench-throughput`).
 - **Dead values**: `Object.keys(require(dist))` per package — runtime exports only, since types
   cannot be "implicitly used" — then grep the workspace, the examples, the 3P plugins and `docs/`
   for each name, matching `$`-suffixed names as fixed strings.
 - **Growth**: `git log --diff-filter=A --format=%ad -1 -- <pkg>/package.json`, bucketed by month.
-- **Closure**: transitive `@loom/*` `dependencies` from an entry point — `@loom/app` pulls 23,
-  `@loom/sdk` 31, `loom-starter`'s ten direct imports reach 32.
+- **Closure**: transitive `@loomwork/*` `dependencies` from an entry point — `@loomwork/app` pulls 23,
+  `@loomwork/sdk` 31, `loom-starter`'s ten direct imports reach 32.

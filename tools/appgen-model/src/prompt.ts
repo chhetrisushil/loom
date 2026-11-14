@@ -1,4 +1,4 @@
-import type { AppModel } from "@loom/appgen";
+import type { AppModel } from "@loomwork/appgen";
 
 // The planner prompt. The model's whole job is: read the intent + a COMPACT summary of
 // the existing app, and emit a ChangeSpec (create/extend/modify/delete). It never sees raw file

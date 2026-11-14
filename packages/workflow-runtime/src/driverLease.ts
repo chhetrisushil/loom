@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { LeaseStore } from "@loom/event-runtime";
+import type { LeaseStore } from "@loomwork/event-runtime";
 import {
   type AcquireOutcome,
   LeaseKeeper,

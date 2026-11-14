@@ -1,4 +1,4 @@
-import { formatProfile, profile } from "@loom/analytics";
+import { formatProfile, profile } from "@loomwork/analytics";
 import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
 /**

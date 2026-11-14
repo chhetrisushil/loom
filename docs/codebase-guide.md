@@ -25,14 +25,14 @@ The one idea to hold while reading either repo: **the log is the source of truth
 | Path | `~/workspace/loom` | `~/workspace/loom-ui` |
 | What it is | Kernel + first-party packages, plugins, dev tools | Experience Model, compiler to Blueprint, hydration, planner, renderers |
 | Size | ~76 workspace packages, ~1,450 source files | 9 packages, ~500 source files |
-| Package scopes | `@loom/*` (`packages/`, `plugins/`, `tools/`, `apps/`) | `@loom-ui/*` (`packages/`) |
+| Package scopes | `@loomwork/*` (`packages/`, `plugins/`, `tools/`, `apps/`) | `@loomwork/ui-*` (`packages/`) |
 | Build | pnpm 9.14.4 + turbo, TypeScript, CommonJS | pnpm 9.14.4, `pnpm -r`, CommonJS (renderer-lit is ESM) |
 | Lint / test | biome, vitest | biome, vitest (renderer-lit under happy-dom) |
 | Orientation files | `AGENTS.md`, `README.org`, `docs/architecture.md`, `docs/adr/` (147 ADRs) | `AGENTS.md`, `README.md`, `docs/guides/`, `docs/reference/` |
 
 ### How the repos relate
 
-loom-ui depends on loom, never the reverse. loom is an unpublished monorepo, so loom-ui's `package.json` redirects every `@loom/*` dependency through `pnpm.overrides` to `link:../loom/packages/<name>` (or `../loom/plugins/<name>`). That means:
+loom-ui depends on loom, never the reverse. loom is an unpublished monorepo, so loom-ui's `package.json` redirects every `@loomwork/*` dependency through `pnpm.overrides` to `link:../loom/packages/<name>` (or `../loom/plugins/<name>`). That means:
 
 - `../loom` must be checked out beside `loom-ui`, installed and **built** (`pnpm install && pnpm build`) before anything in loom-ui resolves.
 - loom-ui tests and typechecks read loom's built `dist` and `.d.ts`. Edit loom, rebuild loom, then test loom-ui.
@@ -66,7 +66,7 @@ These come from `loom/docs/architecture.md` section 2; almost every odd-looking 
 | P8 Isomorphic core | Storage, compute, models and renderers are interfaces with adapters. |
 | P9 Logged non-determinism | Model routing, learning and other choices go through `ctx.decide` and become `DECISION_RECORDED` facts. |
 | P10 Minimal kernel | Everything smart is an opt-in advisory module; an unwired ring is byte-identical to no ring. |
-| P11 NL compiles to code | `@loom/appgen` turns intent into ordinary source at build time, never at runtime. |
+| P11 NL compiles to code | `@loomwork/appgen` turns intent into ordinary source at build time, never at runtime. |
 
 ### Kernel hardening rings
 
@@ -87,7 +87,7 @@ Line numbers below are approximate (as of loom `29890224`); search for the symbo
 | Path | What lives there |
 | --- | --- |
 | `packages/` | The kernel (mechanism and ABI), SPI-contract packages, and optional advisory modules. ~45 packages. |
-| `plugins/` | First-party adapters for a specific external system, published as `@loom/plugin-*` (SQLite, Postgres, MCP, A2A, renderers, crypto, workers). A CI layering guard forbids any kernel package from depending on a plugin. |
+| `plugins/` | First-party adapters for a specific external system, published as `@loomwork/plugin-*` (SQLite, Postgres, MCP, A2A, renderers, crypto, workers). A CI layering guard forbids any kernel package from depending on a plugin. |
 | `tools/` | Dev-time leaf packages: `cli`, `compiler`, `appgen`, `eval`, `testing`, `dst`, `deploy-sim`, `scaffold`, `create-loom-app`. Never imported by runtime code. |
 | `apps/playground` | A development playground. |
 | `docs/` | `architecture.md` (start here), `adr/` (147 ADRs), `api-reference.org`, `loom-2.0/`, `requirements/` (design docs, including loom-ui's), `user-guide/`. |
@@ -98,29 +98,29 @@ Line numbers below are approximate (as of loom `29890224`); search for the symbo
 
 | Package | Read first | Role |
 | --- | --- | --- |
-| `@loom/core` | `src/builders/*.ts`, `src/types/definitions.ts`, `src/types/execution.ts` | Authoring builders (`step$`, `flow$`, `tool$`, `agent$`, `projection$`, `schedule$`, `policy$`, `skill$`, `memory$`) and shared types. Pure declarations, no runtime. Also `flowHash.ts` (the `flowContentHash` that pins in-flight executions to code). |
-| `@loom/workflow-runtime` | `src/WorkflowRuntime.ts` (`start` ~L3620, `resume` ~L3908, `resumeAs` ~L7244, `loadState` ~L7532, `fork` ~L7812, private `execute` ~L8873) | Drives executions: bootstraps, authorizes, builds the journal and context, runs the flow, handles suspend, cancel, deadlines, leases, inbox and continue-as-new. 9,750 lines; read by method, not top to bottom. |
+| `@loomwork/core` | `src/builders/*.ts`, `src/types/definitions.ts`, `src/types/execution.ts` | Authoring builders (`step$`, `flow$`, `tool$`, `agent$`, `projection$`, `schedule$`, `policy$`, `skill$`, `memory$`) and shared types. Pure declarations, no runtime. Also `flowHash.ts` (the `flowContentHash` that pins in-flight executions to code). |
+| `@loomwork/workflow-runtime` | `src/WorkflowRuntime.ts` (`start` ~L3620, `resume` ~L3908, `resumeAs` ~L7244, `loadState` ~L7532, `fork` ~L7812, private `execute` ~L8873) | Drives executions: bootstraps, authorizes, builds the journal and context, runs the flow, handles suspend, cancel, deadlines, leases, inbox and continue-as-new. 9,750 lines; read by method, not top to bottom. |
 | | `src/WorkflowContext.ts` (`execute` L754, `run` L1134, `decide` L1142, `parallel` L1324, `suspend` L1763, `continueAsNew` L1806, `receive`/`select` L1869, `sleep` L2404; also `sleepUntil`, `emit`, `stream`, `ui`, `negotiateBudget`) | The syscall surface a flow sees as `ctx`. Each call is either served from the log or executed live and journaled. |
 | | `src/ExecutionJournal.ts` | The single sequence allocator and the only caller of `eventStore.append`. Folds synchronously, writes asynchronously on a FIFO tail. |
 | | `src/abi.ts`, `src/types.ts` | `KERNEL_ABI` (the versioned syscall ABI, K1) and the runtime's public types (`RegisteredFlow`, `FlowRunner`, `RunOptions`, `ExecutionHandle`). |
 | | `TimerService.ts`, `inbox.ts`, `leaseKeeper.ts`, `driverLease.ts`, `LogLifecycle.ts`, `recoverAbandoned.ts` | Durable timers (T1), inbox messaging, driver leases and fencing (K9), retention and shredding (K10), crash recovery. |
-| `@loom/replay-vm` | `src/foldEvents.ts`, `src/ReplayVM.ts`, `src/eventHandlers.ts` | Pure fold: one handler per event type, `(state, event) => state`, copy-on-write. `ReplayVM` wraps a fold you can keep applying events to and query (`hasCompleted`, `getOutput`, `getTypedFailure`). |
-| `@loom/event-runtime` | `src/types.ts` | The `EventStore` SPI plus in-memory, sharded, tenant-scoped and coalescing stores, `BranchRegistry` (git-style refs for forks), leases, timers. |
-| `@loom/snapshot-runtime` | `src/` | `SnapshotStore` SPI: checkpoints so a resume folds only the tail. |
-| `@loom/effect-runtime` | `src/EffectRuntime.ts` (`execute` L60), `authz.ts`, `policy.ts`, `effects/*` | The side-effect boundary keyed by `toolId`. Authorizer first (K2, `EFFECT_DENIED`), then the middleware chain (`middleware[0]` outermost), then the effect (`ToolEffect`, `LlmEffect`, `HumanEffect`, `LazyEffect`). |
-| `@loom/middleware` | `src/` | Reference middleware: retry, metering (K3), safety (K6), redaction (K10), claim-check (large results stored by reference). |
-| `@loom/app` | `src/defineConfig.ts` (`LoomConfig` L1104, `LoomApp` L1456, `defineConfig` L1914) | The composition root. Turns one static config into a wired `WorkflowRuntime`, `EffectRuntime`, `ProjectionRuntime`, stores, A2A bus, timers, memory and schedules. |
-| `@loom/sdk` | `src/index.ts` | The public re-export barrel. |
+| `@loomwork/replay-vm` | `src/foldEvents.ts`, `src/ReplayVM.ts`, `src/eventHandlers.ts` | Pure fold: one handler per event type, `(state, event) => state`, copy-on-write. `ReplayVM` wraps a fold you can keep applying events to and query (`hasCompleted`, `getOutput`, `getTypedFailure`). |
+| `@loomwork/event-runtime` | `src/types.ts` | The `EventStore` SPI plus in-memory, sharded, tenant-scoped and coalescing stores, `BranchRegistry` (git-style refs for forks), leases, timers. |
+| `@loomwork/snapshot-runtime` | `src/` | `SnapshotStore` SPI: checkpoints so a resume folds only the tail. |
+| `@loomwork/effect-runtime` | `src/EffectRuntime.ts` (`execute` L60), `authz.ts`, `policy.ts`, `effects/*` | The side-effect boundary keyed by `toolId`. Authorizer first (K2, `EFFECT_DENIED`), then the middleware chain (`middleware[0]` outermost), then the effect (`ToolEffect`, `LlmEffect`, `HumanEffect`, `LazyEffect`). |
+| `@loomwork/middleware` | `src/` | Reference middleware: retry, metering (K3), safety (K6), redaction (K10), claim-check (large results stored by reference). |
+| `@loomwork/app` | `src/defineConfig.ts` (`LoomConfig` L1104, `LoomApp` L1456, `defineConfig` L1914) | The composition root. Turns one static config into a wired `WorkflowRuntime`, `EffectRuntime`, `ProjectionRuntime`, stores, A2A bus, timers, memory and schedules. |
+| `@loomwork/sdk` | `src/index.ts` | The public re-export barrel. |
 
 ### Around the kernel
 
-- **UI and projections.** `@loom/projection-runtime` (`src/types.ts`: `Projection`, `ProjectionRuntime.handleEvent/subscribe`) folds events into read models. `@loom/agent-surface` (`applyPatch.ts`, `AgentSurfaceRuntime.ts`) is the native surface patch protocol behind `surface(ctx).set/merge/append`. `@loom/blueprint-runtime` (`types.ts`, `catalog.ts`, `widgets.ts`, `irVersion.ts`) defines the Blueprint IR (`Widget`, `DataBinding`, `BindingStatus`, `WidgetSource`; `BLUEPRINT_IR_VERSION` 2.5.0) that loom-ui compiles to. Renderers live in `plugins/renderer-react`, `renderer-dom`, `renderer-terminal`; `plugins/a2ui` and `plugins/mcp-app` project surfaces onto external protocols.
-- **Agentic layer.** `@loom/llm` (provider-agnostic `LlmProvider`: Anthropic, OpenAI, Gemini, VCR), `@loom/agent` (the canonical `agentLoop$`), `@loom/reasoning` (routing and elevation through `ctx.decide`), `@loom/planner`, `@loom/intent`, `@loom/capability`, `@loom/memory`, `@loom/knowledge`, `@loom/conversation`, plus `plugins/mcp` and `plugins/a2a`.
-- **Compute and distribution.** `@loom/dispatcher` decides where an execution runs; `@loom/worker-runtime` is the SPI, `worker-runtime-local` the in-process reference; `plugins/worker-remote`, `worker-server` and `cloudrun` are remote placements. `@loom/graph-executor` fans out per-node executions; `@loom/scheduler` and `fair-scheduler` are ephemeral schedulers.
+- **UI and projections.** `@loomwork/projection-runtime` (`src/types.ts`: `Projection`, `ProjectionRuntime.handleEvent/subscribe`) folds events into read models. `@loomwork/agent-surface` (`applyPatch.ts`, `AgentSurfaceRuntime.ts`) is the native surface patch protocol behind `surface(ctx).set/merge/append`. `@loomwork/blueprint-runtime` (`types.ts`, `catalog.ts`, `widgets.ts`, `irVersion.ts`) defines the Blueprint IR (`Widget`, `DataBinding`, `BindingStatus`, `WidgetSource`; `BLUEPRINT_IR_VERSION` 2.5.0) that loom-ui compiles to. Renderers live in `plugins/renderer-react`, `renderer-dom`, `renderer-terminal`; `plugins/a2ui` and `plugins/mcp-app` project surfaces onto external protocols.
+- **Agentic layer.** `@loomwork/llm` (provider-agnostic `LlmProvider`: Anthropic, OpenAI, Gemini, VCR), `@loomwork/agent` (the canonical `agentLoop$`), `@loomwork/reasoning` (routing and elevation through `ctx.decide`), `@loomwork/planner`, `@loomwork/intent`, `@loomwork/capability`, `@loomwork/memory`, `@loomwork/knowledge`, `@loomwork/conversation`, plus `plugins/mcp` and `plugins/a2a`.
+- **Compute and distribution.** `@loomwork/dispatcher` decides where an execution runs; `@loomwork/worker-runtime` is the SPI, `worker-runtime-local` the in-process reference; `plugins/worker-remote`, `worker-server` and `cloudrun` are remote placements. `@loomwork/graph-executor` fans out per-node executions; `@loomwork/scheduler` and `fair-scheduler` are ephemeral schedulers.
 - **Storage backends.** `plugins/sqlite` (embedded, zero-server) and `plugins/postgres` (horizontal scale, `LISTEN/NOTIFY` live subscribe) implement every store SPI. `plugins/crypto`, `audit-chain` and `content` wrap stores.
-- **Coordination.** `@loom/orchestration` (spawn and await children), `@loom/saga` (compensation), `@loom/live-query` (subscribe to in-flight state).
-- **Read-only lenses.** `@loom/replay-inspector`, `@loom/analytics`, `@loom/verify`, `@loom/learning`, `@loom/compliance`. None of these write to the log.
-- **Governance.** `@loom/spec` is the kernel manifest (every version constant) and also hosts repo-wide fitness tests (`testTiming.test.ts`, `testServerBinding.test.ts`, `testTypecheckCoverage.test.ts`, `kernelBudget.test.ts`). `@loom/conformance` holds SPI conformance kits for third-party backends.
+- **Coordination.** `@loomwork/orchestration` (spawn and await children), `@loomwork/saga` (compensation), `@loomwork/live-query` (subscribe to in-flight state).
+- **Read-only lenses.** `@loomwork/replay-inspector`, `@loomwork/analytics`, `@loomwork/verify`, `@loomwork/learning`, `@loomwork/compliance`. None of these write to the log.
+- **Governance.** `@loomwork/spec` is the kernel manifest (every version constant) and also hosts repo-wide fitness tests (`testTiming.test.ts`, `testServerBinding.test.ts`, `testTypecheckCoverage.test.ts`, `kernelBudget.test.ts`). `@loomwork/conformance` holds SPI conformance kits for third-party backends.
 
 ### What a minimal app looks like
 
@@ -153,7 +153,7 @@ Start with `docs/getting-started.md` (every code block there is a tested snippet
 
 | Path | What lives there |
 | --- | --- |
-| `packages/` | The nine `@loom-ui/*` packages. |
+| `packages/` | The nine `@loomwork/ui-*` packages. |
 | `docs/getting-started.md`, `user-guide.md`, `cheatsheet.md` | The walkthrough, the task index and a one-page reference card. |
 | `docs/guides/` | One guide per task: composing, hydration, rendering, writing a renderer, planners and learning, lineage and changes, sensitivity and audiences, troubleshooting. |
 | `docs/reference/` | Exact contracts: composition (ops, placement, refusal codes), hydration, rendering, audience, planning, theming. |
@@ -164,23 +164,23 @@ Start with `docs/getting-started.md` (every code block there is a tested snippet
 
 | Package | Side | Read first | Role |
 | --- | --- | --- | --- |
-| `@loom-ui/core` | Pure, isomorphic | `experience.ts` (`Experience`, `ProviderSpec`, `genesis`), `node.ts`, `operations.ts` (`Operation` union L57, `apply` L433, `applyAt` L920, `replay` L937), `catalog.ts` (`defineSemanticCatalog`, `resolveSurface`, `validateExperience`), `compile.ts` (`compile` L244), `log.ts` (`seal`, `mintVersionHash`) | The Experience Model, operations with deterministic replay, the closed semantic catalogue and the compiler to loom's `Blueprint`. Also `merge.ts` (three-way merge), `change.ts` (`describeChange`), `kindValues.ts` (value contracts per kind), `media.ts`, `chat*.ts`, `messages.ts` (i18n keys). Subpath entries: `./log` (Node crypto), `./browser`, `./chat`, `./chat-ui`, `./media`, `./messages`, `./signals`. |
-| `@loom-ui/hydration` | Server root; `./client` for browsers | `controller.ts` (`HydrationController.load` L352, `recompose` L449, `markVisible`), `projection.ts` (`HydrationStore`, `hydrationProjection`), `provider.ts`, `dataProvider.ts`, `split/server.ts` + `split/client.ts` | Resolves the handles an Experience binds by calling `invokeTransient` (never the durable log) and publishes values and statuses as ONE loom projection that renderers read. Read-only: drift is reported via `onDrift`, never repaired here. |
-| `@loom-ui/planner` | Server | `spi.ts` (`ComposeInput`, `ReviseInput`, `PlannerModel`, `DecideContext`), `reference.ts` (`ReferencePlanner`), `materialize.ts`, `prompt.ts`, `drift.ts`, `conformance.ts` | Turns intent + catalogue + capabilities into OPERATIONS (never an Experience), with every model call inside loom's `ctx.decide` so replay never re-calls a model. Imports no LLM provider or effect runtime. |
-| `@loom-ui/renderer-lit` | Browser, ESM | `dom/renderBlueprintDom.ts` (L152), `dom/tree.ts`, `dom/reconcile.ts`, `widgets/*.ts` (`lu-*` elements), `define/` + `elements/` + `register.ts` | A framework-free DOM adapter plus Lit widgets. `handle.update(next)` patches the live DOM by widget id, keeping focus and typed text. Nothing registers on import. |
-| `@loom-ui/renderer-terminal` | Node | `registry.ts`, `interactive.ts`, `watch.ts`, `status.ts` | String renderers for every framework kind, merged over loom's terminal registry; `renderExperience` and `watch(blueprint, store, onFrame)`. |
-| `@loom-ui/renderer-conformance` | Test kit | `checks.ts`, `adapter.ts`, `src/speech.test-support.ts` (a ~100-line reference third-party renderer) | One set of contract checks any renderer runs through a small `RendererAdapter`. |
-| `@loom-ui/lineage` | Server, optional | `lineage.ts` (`Lineage`), `store.ts`, `seen.ts`, `seenCrypto.ts`, `seenGc.ts` | A head per experience advanced by compare-and-set; revert, undo and branch as new versions verified by replay; the per-viewer "what was seen" log with crypto-shred erasure. |
-| `@loom-ui/changes` | Server, optional | `feed.ts`, `cursor.ts`, `signal.ts` | A `ChangeFeed` over lineage events, unread cursors, polling and push head signals. |
-| `@loom-ui/learning` | Server, optional | `ingest.ts`, `ledger.ts`, `rewards.ts`, `evaluate.ts` | Untrusted viewer signals folded to one bounded vote per viewer, late rewards to the planner decision, off-policy comparison via `@loom/learning`. |
+| `@loomwork/ui-core` | Pure, isomorphic | `experience.ts` (`Experience`, `ProviderSpec`, `genesis`), `node.ts`, `operations.ts` (`Operation` union L57, `apply` L433, `applyAt` L920, `replay` L937), `catalog.ts` (`defineSemanticCatalog`, `resolveSurface`, `validateExperience`), `compile.ts` (`compile` L244), `log.ts` (`seal`, `mintVersionHash`) | The Experience Model, operations with deterministic replay, the closed semantic catalogue and the compiler to loom's `Blueprint`. Also `merge.ts` (three-way merge), `change.ts` (`describeChange`), `kindValues.ts` (value contracts per kind), `media.ts`, `chat*.ts`, `messages.ts` (i18n keys). Subpath entries: `./log` (Node crypto), `./browser`, `./chat`, `./chat-ui`, `./media`, `./messages`, `./signals`. |
+| `@loomwork/ui-hydration` | Server root; `./client` for browsers | `controller.ts` (`HydrationController.load` L352, `recompose` L449, `markVisible`), `projection.ts` (`HydrationStore`, `hydrationProjection`), `provider.ts`, `dataProvider.ts`, `split/server.ts` + `split/client.ts` | Resolves the handles an Experience binds by calling `invokeTransient` (never the durable log) and publishes values and statuses as ONE loom projection that renderers read. Read-only: drift is reported via `onDrift`, never repaired here. |
+| `@loomwork/ui-planner` | Server | `spi.ts` (`ComposeInput`, `ReviseInput`, `PlannerModel`, `DecideContext`), `reference.ts` (`ReferencePlanner`), `materialize.ts`, `prompt.ts`, `drift.ts`, `conformance.ts` | Turns intent + catalogue + capabilities into OPERATIONS (never an Experience), with every model call inside loom's `ctx.decide` so replay never re-calls a model. Imports no LLM provider or effect runtime. |
+| `@loomwork/ui-renderer-lit` | Browser, ESM | `dom/renderBlueprintDom.ts` (L152), `dom/tree.ts`, `dom/reconcile.ts`, `widgets/*.ts` (`lu-*` elements), `define/` + `elements/` + `register.ts` | A framework-free DOM adapter plus Lit widgets. `handle.update(next)` patches the live DOM by widget id, keeping focus and typed text. Nothing registers on import. |
+| `@loomwork/ui-renderer-terminal` | Node | `registry.ts`, `interactive.ts`, `watch.ts`, `status.ts` | String renderers for every framework kind, merged over loom's terminal registry; `renderExperience` and `watch(blueprint, store, onFrame)`. |
+| `@loomwork/ui-renderer-conformance` | Test kit | `checks.ts`, `adapter.ts`, `src/speech.test-support.ts` (a ~100-line reference third-party renderer) | One set of contract checks any renderer runs through a small `RendererAdapter`. |
+| `@loomwork/ui-lineage` | Server, optional | `lineage.ts` (`Lineage`), `store.ts`, `seen.ts`, `seenCrypto.ts`, `seenGc.ts` | A head per experience advanced by compare-and-set; revert, undo and branch as new versions verified by replay; the per-viewer "what was seen" log with crypto-shred erasure. |
+| `@loomwork/ui-changes` | Server, optional | `feed.ts`, `cursor.ts`, `signal.ts` | A `ChangeFeed` over lineage events, unread cursors, polling and push head signals. |
+| `@loomwork/ui-learning` | Server, optional | `ingest.ts`, `ledger.ts`, `rewards.ts`, `evaluate.ts` | Untrusted viewer signals folded to one bounded vote per viewer, late rewards to the planner decision, off-policy comparison via `@loomwork/learning`. |
 
-Dependency direction: `core` depends only on loom's `blueprint-runtime`, `classify`, `core` and `plugin-content`. `hydration`, `planner`, `lineage`, the renderers and the optional packages depend on `@loom-ui/core`; `planner` and the terminal renderer also depend on `hydration`.
+Dependency direction: `core` depends only on loom's `blueprint-runtime`, `classify`, `core` and `plugin-content`. `hydration`, `planner`, `lineage`, the renderers and the optional packages depend on `@loomwork/ui-core`; `planner` and the terminal renderer also depend on `hydration`.
 
 ### Rules that shape the code
 
 - **The catalogue is closed at runtime.** A planner may only name catalogue entries; a gap is a finding, not an extension.
 - **Findings, not exceptions.** `apply`, `compile` and hydration return typed findings (`{ ok: false, finding }`, `CompileResult.findings`); the full op refusal-code list is in `AGENTS.md` and `docs/reference/composition.md`, and `refusalCodesDocs.test.ts` keeps them in sync.
-- **Client graphs stay clean.** `@loom-ui/hydration/client` may not reach the sandbox, MCP, effect runtime or any server module; `lineage`, `changes` and `learning` never enter a client graph. `clientEntry.test.ts` walks the built graph to enforce it.
+- **Client graphs stay clean.** `@loomwork/ui-hydration/client` may not reach the sandbox, MCP, effect runtime or any server module; `lineage`, `changes` and `learning` never enter a client graph. `clientEntry.test.ts` walks the built graph to enforce it.
 - **Adding a framework kind touches five places at once:** its zod contract in `kindValueContracts` and name in `FRAMEWORK_KINDS` (core), its `lu-*` element, `litRegistry` and `frameworkKindContracts` entries (renderer-lit), and its `loomUiTerminalRegistry` renderer. Parity tests fail if one is missing.
 - **Genericity.** No consumer names anywhere in the packages or docs (`genericity.test.ts`); theme tokens are `--lu-*`, elements `lu-*`.
 - **Never `.register()` on a loom default registry** (`defaultTerminalRegistry`, React `defaultRegistry`, `litRegistry`); build your own and `.merge()`.
@@ -229,7 +229,7 @@ Only the top row writes anything durable. Hydration never touches the event log:
 1. **Start a lineage.** `genesis({ experienceId, intent, meta })` (`core/src/experience.ts` L202) returns an empty Experience whose root is a 12-column grid.
 2. **Plan.** A planner's `compose(input, ctx)` (`planner/src/spi.ts`, reference impl in `reference.ts`) calls the model through `PlannerModel.complete` inside `ctx.decide`, parses the reply and materializes it (`materialize.ts`) into a list of `Operation`s. A human or app can produce the same operations by hand.
 3. **Apply.** `apply(exp, op)` / `replay(exp, ops)` (`core/src/operations.ts` L433 / L937) validate each op against the schema, the tree and the catalogue, returning `{ ok: false, finding }` on refusal. Provider ops (`remapProvider`, `bindProvider`) attach data handles and fold sticky confidentiality classes.
-4. **Seal.** `seal(exp)` (`core/src/log.ts` L56) mints `versionHash`, the content address. With `@loom-ui/lineage`, `Lineage.advance` (`lineage.ts` ~L711) moves the head by compare-and-set and refuses a version whose ops do not replay to its hash.
+4. **Seal.** `seal(exp)` (`core/src/log.ts` L56) mints `versionHash`, the content address. With `@loomwork/ui-lineage`, `Lineage.advance` (`lineage.ts` ~L711) moves the head by compare-and-set and refuses a version whose ops do not replay to its hash.
 5. **Compile.** `compile(exp, { surface, catalog, viewer, audience, hydrationProjectionId, ... })` (`core/src/compile.ts` L244) resolves each semantic node to a widget kind for the surface, redacts what the viewer may not see (opaque placeholder ids), resolves labels, and emits a `Blueprint` whose widgets bind to `values.<handle>` and `status.<handle>` in the hydration projection. Results are memoized by a key that includes the audience.
 6. **Hydrate.** `new HydrationController({ invoker, store, reshapers, ... }).load(exp)` (`hydration/src/controller.ts` L352) schedules handles by priority (P0 now, P1 batched, P2 on `markVisible`), runs each provider's step graph via `invokeTransient`, reshapes and contract-checks the output, and writes `setValue` / `setStatus` into the `HydrationStore` (`projection.ts` L138), which is a loom projection keyed by experience (and principal, and audience).
 7. **Render.** A renderer reads the Blueprint plus the projection: `watch(blueprint, store, onFrame)` in the terminal, `renderBlueprintDom(host, blueprint, { projectionRuntime, executionId, registry })` on the web (`renderer-lit/src/dom/renderBlueprintDom.ts` L152), or loom's React `BlueprintRenderer`.
@@ -239,7 +239,7 @@ Only the top row writes anything durable. Hydration never touches the event log:
 - **Revise in place.** A new Experience version is compiled and handed to `handle.update(next)`; the DOM adapter reconciles by widget id inside its container, so focus, selection and typed text survive. `controller.recompose(next)` re-plans hydration in the same step.
 - **Drift.** If a tool's input schema or output shape no longer matches its pin, hydration marks the handle and calls `onDrift`; it never repairs. The app's durable flow applies `remapOperation` (`hydration/src/repair.ts`) or asks the planner via `reviseForDrift` (`planner/src/drift.ts` L279), and the result is a new recorded version.
 - **User actions.** Widgets emit stamped actions (`SUBMIT_TEXT`, `SELECT`, `SELECT_MANY`, ...). The host validates them server-side (`acceptChatSubmit`, `createWriteBack` in `core/src/chatHost.ts`) and routes them to a conversation, a `resume`, or new params. Layout edits go through `interpretAction` (`planner/src/interaction.ts`) to operations, which re-enter at step 3.
-- **Split hydration.** Across a trust boundary the server holds the Experience and providers (`hydration/src/split/server.ts`) and ships only a handle inventory; the browser entry `@loom-ui/hydration/client` loads values over a JSON loader and never sees a provider.
+- **Split hydration.** Across a trust boundary the server holds the Experience and providers (`hydration/src/split/server.ts`) and ships only a handle inventory; the browser entry `@loomwork/ui-hydration/client` loads values over a JSON loader and never sees a provider.
 
 ## 6. Build, test and dev workflow
 
@@ -272,8 +272,8 @@ pnpm typecheck && pnpm typecheck:tests && pnpm lint
 - **Tests import siblings' built `dist`, in both repos.** Edit a dependency's source and the dependent's tests will not see it until you rebuild; sourcemaps still point at `src` with pre-edit line numbers, so the failure reads as a mystery.
 - **`pnpm typecheck` does not see tests.** Every package `tsconfig.json` excludes `*.test.ts`; `typecheck:tests` is the separate gate.
 - **`clean` must remove `tsconfig.tsbuildinfo` too.** Deleting `dist` alone lets `tsc --build` skip emit.
-- **The `link:` coupling.** A new `@loom/*` dependency in loom-ui needs a `link:` override for it AND for every `@loom/*` package it depends on. loom-ui CI checks loom out at `LOOM_REF`; bump it in the PR that adapts to a loom change.
-- **Flaky tests are bugs.** loom's `@loom/spec` enforces the test rules: wait on a condition, never a fixed sleep; no wall-clock ratios outside `*.perf.test.ts`; test servers bind `127.0.0.1` explicitly.
+- **The `link:` coupling.** A new `@loomwork/*` dependency in loom-ui needs a `link:` override for it AND for every `@loomwork/*` package it depends on. loom-ui CI checks loom out at `LOOM_REF`; bump it in the PR that adapts to a loom change.
+- **Flaky tests are bugs.** loom's `@loomwork/spec` enforces the test rules: wait on a condition, never a fixed sleep; no wall-clock ratios outside `*.perf.test.ts`; test servers bind `127.0.0.1` explicitly.
 - **CI minutes are budgeted.** CI runs once per ready PR; open PRs as drafts and iterate against the full local verify.
 
 ## 7. Suggested reading order and glossary

@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore, inboxChainOf, quarantineStreamId } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore, inboxChainOf, quarantineStreamId } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { InMemoryKeyStore } from "./keystore";

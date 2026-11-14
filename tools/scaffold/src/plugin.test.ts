@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { SEAM_KEYS, joinNoun, listSeams, pluginFiles, pluginNextSteps } from "./plugin";
 
 describe("pluginFiles", () => {
-  it("scaffolds a first-party store plugin under plugins/ with the @loom/plugin- name", () => {
+  it("scaffolds a first-party store plugin under plugins/ with the @loomwork/plugin- name", () => {
     const files = pluginFiles("store", "acme", { firstParty: true });
     expect(Object.keys(files).sort()).toEqual([
       "plugins/acme/README.md",
@@ -14,8 +14,8 @@ describe("pluginFiles", () => {
       "plugins/acme/vitest.config.ts",
     ]);
     const pkg = JSON.parse(files["plugins/acme/package.json"]!);
-    expect(pkg.name).toBe("@loom/plugin-acme");
-    expect(pkg.dependencies["@loom/event-runtime"]).toBe("workspace:*");
+    expect(pkg.name).toBe("@loomwork/plugin-acme");
+    expect(pkg.dependencies["@loomwork/event-runtime"]).toBe("workspace:*");
     // first-party references the workspace SPI packages
     expect(files["plugins/acme/tsconfig.json"]).toContain("../../packages/event-runtime");
   });
@@ -25,7 +25,7 @@ describe("pluginFiles", () => {
     const pkg = JSON.parse(files["loom-plugin-redis/package.json"]!);
     expect(pkg.name).toBe("loom-plugin-redis");
     expect(pkg.keywords).toContain("loom-plugin");
-    expect(pkg.peerDependencies["@loom/snapshot-runtime"]).toBe("*");
+    expect(pkg.peerDependencies["@loomwork/snapshot-runtime"]).toBe("*");
     expect(pkg.dependencies).toBeUndefined();
   });
 
@@ -87,7 +87,7 @@ describe("pluginFiles", () => {
     expect(index).toContain("implements Policy<A>");
     expect(index).toContain("propensity");
     expect(files["loom-plugin-foo/src/index.test.ts"]).toContain("runPolicyConformance");
-    expect(files["loom-plugin-foo/package.json"]).toContain("@loom/learning");
+    expect(files["loom-plugin-foo/package.json"]).toContain("@loomwork/learning");
   });
 
   it("scaffolds a memory plugin wired to the conformance kit", () => {
@@ -95,7 +95,7 @@ describe("pluginFiles", () => {
     const index = files["loom-plugin-foo/src/index.ts"]!;
     expect(index).toContain("implements MemoryStore");
     expect(files["loom-plugin-foo/src/index.test.ts"]).toContain("runMemoryStoreConformance");
-    expect(files["loom-plugin-foo/package.json"]).toContain("@loom/memory");
+    expect(files["loom-plugin-foo/package.json"]).toContain("@loomwork/memory");
   });
 
   it("scaffolds the lease store's OPTIONAL batch methods as prose, and passes no spiVersion", () => {
@@ -175,10 +175,10 @@ describe("pluginFiles", () => {
       expect(index).toContain("EARNED");
       expect(readme).toMatch(/memory: false.*cpu: false.*exhaust the host/s);
       expect(test).toContain("runSandboxBackendConformance(");
-      expect(JSON.stringify(pkg)).toContain("@loom/sandbox");
+      expect(JSON.stringify(pkg)).toContain("@loomwork/sandbox");
       // Registered from flow code: the README must not invent a defineConfig key.
       expect(readme).toContain("registerSandboxBackend");
-      expect(readme).not.toContain("@loom/app");
+      expect(readme).not.toContain("@loomwork/app");
       for (const item of [
         "No service account",
         "Egress denied",
@@ -301,12 +301,12 @@ describe("pluginNextSteps", () => {
     expect(sandbox).toContain("already wired");
   });
 
-  it("names the @loom/* packages a third-party plugin needs overridden, and not for first-party", () => {
+  it("names the @loomwork/* packages a third-party plugin needs overridden, and not for first-party", () => {
     const tp = pluginNextSteps(pluginFiles("sandbox", "x", { firstParty: false }), {
       firstParty: false,
       root: "r",
     }).join("\n");
-    expect(tp).toMatch(/depends on: .*@loom\/conformance.*@loom\/sandbox/);
+    expect(tp).toMatch(/depends on: .*@loomwork\/conformance.*@loomwork\/sandbox/);
     expect(tp).toContain("override");
     expect(tp).toContain("link:");
     const fp = pluginNextSteps(pluginFiles("sandbox", "x", { firstParty: true }), {

@@ -1,15 +1,15 @@
-# @loom/capability — flows as intent-addressable capabilities
+# @loomwork/capability — flows as intent-addressable capabilities
 
 A capability is a flow wrapped with the metadata a caller needs to find it: an `id`, a natural-language
 `intent`, `tags`, an input schema, and optional `version`, `dependencies` and `aliases`.
 `CapabilityCatalog` holds them, keyword-searches them, registers their flows into a `WorkflowRuntime`, and
-starts one by id, optionally behind an invoke authorizer. It is the menu that `@loom/intent` routes over
-and `@loom/planner` composes plans from. Use it when something other than your own code (a user's words, a
+starts one by id, optionally behind an invoke authorizer. It is the menu that `@loomwork/intent` routes over
+and `@loomwork/planner` composes plans from. Use it when something other than your own code (a user's words, a
 planner, another agent) has to choose which flow to run.
 
 ```ts
 import { z } from "zod";
-import { CapabilityCatalog, capability$ } from "@loom/capability";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
 import { app, helloFlow } from "./config"; // your defineConfig result and a registered flow
 
 const greet = capability$({
@@ -62,7 +62,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/capability` / `@loom/intent` / `@loom/planner`" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/capability` / `@loomwork/intent` / `@loomwork/planner`" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [user guide, section 8: intent, planner and memory](../../docs/user-guide.md#8-intent-planner--memory), [section 20: capabilities, versioning, dependencies and authorization](../../docs/user-guide.md#20-capabilities-versioning-dependencies--authorization).
 - ADRs: [0123 planning depth](../../docs/adr/0123-planning-depth-plan-graphs-replanning-and-goals.md), [0085 untrusted content](../../docs/adr/0085-untrusted-content-integrity-axis.md), [0125 tool search](../../docs/adr/0125-tool-search.md) (`aliases`).
-- Source: `packages/capability/src`. Routing: [`@loom/intent`](../intent/README.md); planning: [`@loom/planner`](../planner/README.md).
+- Source: `packages/capability/src`. Routing: [`@loomwork/intent`](../intent/README.md); planning: [`@loomwork/planner`](../planner/README.md).

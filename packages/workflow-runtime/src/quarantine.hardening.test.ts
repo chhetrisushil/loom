@@ -3,8 +3,8 @@ import {
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
   quarantineStreamId,
-} from "@loom/event-runtime";
-import { InMemoryKeyStore } from "@loom/plugin-crypto";
+} from "@loomwork/event-runtime";
+import { InMemoryKeyStore } from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import {
   OP,
@@ -295,7 +295,7 @@ describe("P2-1: fork verifies every held copy before writing, and leaves no orph
 // ── P3-2: the fold's cap ───────────────────────────────────────────────────────────────────────────
 describe("P3-2: concurrent quarantiners at the fold's cap", () => {
   it("the loser gets a typed refusal; a hold the fold would drop is never reported as done", async () => {
-    const { QUARANTINE_FOLD_CAP } = await import("@loom/replay-vm");
+    const { QUARANTINE_FOLD_CAP } = await import("@loomwork/replay-vm");
     const raw = memRaw();
     const keys = new InMemoryKeyStore();
     const sealed = sealingStore(raw.eventStore, keys);

@@ -1,4 +1,4 @@
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { SealGuardedSnapshotStore, opaqueToQuarantineFold } from "./sealGuard";
 import { assertNotTransientFold, isTransientFold, markTransientFold } from "./transientFold";

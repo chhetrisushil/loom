@@ -1,18 +1,18 @@
-# @loom/plugin-sentinel — a perpetual agent as one declaration
+# @loomwork/plugin-sentinel — a perpetual agent as one declaration
 
 A sentinel is an agent that wakes on a cron schedule, does a bounded piece of work, remembers
 something for the next wake, and goes back to sleep. `sentinelPreset()` assembles the pieces for that
 from existing packages and returns them as values you wire into `defineConfig`: a `schedule$`
-definition, carry state from `@loom/plugin-durable-state`, claim-check middleware that stores large tool
+definition, carry state from `@loomwork/plugin-durable-state`, claim-check middleware that stores large tool
 results by reference, and a pin policy so runs that recorded findings survive cleanup. It adds no
 runtime behaviour of its own (ADR 0043, ADR 0044), so each piece can be replaced independently.
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { InMemoryTimerStore } from "@loom/event-runtime";
-import { InMemoryContentStore } from "@loom/plugin-content";
-import { InMemoryDurableStateStore } from "@loom/plugin-durable-state";
-import { sentinelPreset } from "@loom/plugin-sentinel";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryTimerStore } from "@loomwork/event-runtime";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
+import { InMemoryDurableStateStore } from "@loomwork/plugin-durable-state";
+import { sentinelPreset } from "@loomwork/plugin-sentinel";
 import { z } from "zod";
 
 const preset = sentinelPreset({
@@ -73,6 +73,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
   [ADR 0053](../../docs/adr/0053-durable-state-plugin.md) and
   [ADR 0054](../../docs/adr/0054-claim-check-middleware.md): the schedule, carry state, claim check.
 - The `db-sentinel` example in `loom-examples` is the same pattern written out piece by piece.
-- API reference: section "`@loom/plugin-sentinel` — the perpetual-agent preset" in
+- API reference: section "`@loomwork/plugin-sentinel` — the perpetual-agent preset" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/plugins.md](../../docs/plugins.md), [docs/user-guide.md](../../docs/user-guide.md).

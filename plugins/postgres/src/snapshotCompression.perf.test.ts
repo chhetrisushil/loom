@@ -4,7 +4,7 @@ import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 import { migrate } from "./schema";
 
 // ADR 0136 evidence (issue #707). NOT part of `pnpm test` (see vitest.shared.ts): run with
-// `LOOM_TEST_PERF=1 LOOM_TEST_POSTGRES_URL=... pnpm --filter @loom/plugin-postgres test`.
+// `LOOM_TEST_PERF=1 LOOM_TEST_POSTGRES_URL=... pnpm --filter @loomwork/plugin-postgres test`.
 // It PRINTS the numbers the ADR quotes (bytes on disk by pg_column_size, resume-path loadLatest,
 // save, and the events payload column). It asserts nothing about time: wall clock is noise.
 const PG_URL = process.env.LOOM_TEST_POSTGRES_URL;

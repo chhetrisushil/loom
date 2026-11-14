@@ -1,4 +1,4 @@
-# @loom/spec — the kernel manifest and the repo's fitness guards
+# @loomwork/spec — the kernel manifest and the repo's fitness guards
 
 Two things live here. The library is a read-only manifest of the kernel and SPI version constants, a
 compatibility validator, a maturity registry (`CAPABILITIES`) and a layering checker. It builds the
@@ -7,10 +7,10 @@ out of sync with them. Second, `src/*.test.ts` is the repository's governance su
 the build when docs, READMEs, exports, test conventions or package layering drift from the code. One of them, `kernelBudget.test.ts`, holds the kernel package to a
 per-file budget of code lines (`kernel-budget.json`), so the kernel grows only by a recorded decision. Nothing
 here touches execution semantics, and it is not something an app imports. You read it to see what a
-version means, and you run it (`pnpm --filter @loom/spec test`) to find out which convention you broke.
+version means, and you run it (`pnpm --filter @loomwork/spec test`) to find out which convention you broke.
 
 ```ts
-import { CAPABILITIES, checkCompatibility, kernelManifest, renderCompatibilityMatrix } from "@loom/spec";
+import { CAPABILITIES, checkCompatibility, kernelManifest, renderCompatibilityMatrix } from "@loomwork/spec";
 
 const manifest = kernelManifest(); // built by importing the real version constants
 console.log(manifest.eventSchema.version, manifest.spis.memoryStore); // "1.26.0" "2.1.0"
@@ -59,7 +59,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/spec` — the kernel manifest, badges and layering" in [docs/api-reference.org](../../docs/api-reference.org). It types `readWorkspaceGraph` as returning a `WorkspaceGraph` and `findLayeringViolations` as taking one; in the source they return a `Map` and take a `root` path.
+- API reference: section "`@loomwork/spec` — the kernel manifest, badges and layering" in [docs/api-reference.org](../../docs/api-reference.org). It types `readWorkspaceGraph` as returning a `WorkspaceGraph` and `findLayeringViolations` as taking one; in the source they return a `Map` and take a `root` path.
 - Generated: [compatibility matrix](../../docs/spec/compatibility-matrix.md), [maturity](../../docs/spec/maturity.md), [fitness functions](../../docs/spec/fitness-functions.md), [kernel specification](../../docs/spec/loom-kernel-specification.md).
 - ADRs: [0033 SPI conformance contracts](../../docs/adr/0033-spi-conformance-contracts.md), [0043 plugin packaging and 1P/3P separation](../../docs/adr/0043-plugin-packaging-and-1p-3p-separation.md), [0114 `ctx.ui` leaves the kernel](../../docs/adr/0114-ctx-ui-leaves-the-kernel.md) (the closed kernel set).
 - Source: `packages/spec/src`.

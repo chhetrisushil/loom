@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { LlmProvider } from "@loom/llm";
+import type { LlmProvider } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { TASKS } from "./agentLoop/tasks";
 import { APPGEN_CASES } from "./appgen/cases";

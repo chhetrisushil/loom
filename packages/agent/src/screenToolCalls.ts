@@ -1,5 +1,5 @@
-import type { LlmToolCall } from "@loom/llm";
-import { TOOL_INPUT_NODE_CAP, exceedsNodeCap } from "@loom/llm";
+import type { LlmToolCall } from "@loomwork/llm";
+import { TOOL_INPUT_NODE_CAP, exceedsNodeCap } from "@loomwork/llm";
 
 /**
  * The refusal fed back for a model-emitted tool call whose input is too large to hold.

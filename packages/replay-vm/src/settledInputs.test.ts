@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { ReplayVM } from "./ReplayVM";
 import { foldEvents, normalizeSnapshotState } from "./foldEvents";

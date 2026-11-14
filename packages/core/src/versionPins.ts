@@ -79,7 +79,7 @@ function declared(pins: VersionPins | undefined, id: string): string | undefined
  * Maps rather than blueprints, because the second consumer's pins come from a service's
  * registered definitions and not from a tree (`ReadModelService.pins()`) — the same reason
  * `preservesNodes` takes id sets. `blueprintPins` / `checkBlueprintPins` in
- * `@loom/blueprint-runtime` spell the blueprint case.
+ * `@loomwork/blueprint-runtime` spell the blueprint case.
  *
  * It reports and never throws. `FlowCodeMismatchError` throws because the kernel is about to
  * fold a log with the wrong code, which has no correct outcome; a drifted binding does — the

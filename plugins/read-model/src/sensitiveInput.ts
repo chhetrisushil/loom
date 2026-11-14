@@ -1,5 +1,5 @@
-import { REDACTED, expandPaths, maskPaths } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+import { REDACTED, expandPaths, maskPaths } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   GUARD_WALK_BUDGET,
   type Lifted,

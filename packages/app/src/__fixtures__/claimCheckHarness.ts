@@ -1,13 +1,13 @@
-import { agentLoop$, createAgentModelEffect } from "@loom/agent";
-import { agent$, tool$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import type { EffectMiddleware } from "@loom/effect-runtime";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
-import { InMemoryContentStore } from "@loom/plugin-content";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { agentLoop$, createAgentModelEffect } from "@loomwork/agent";
+import { agent$, tool$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectMiddleware } from "@loomwork/effect-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import { type ClaimCheckConfig, type LoomConfig, defineConfig } from "../defineConfig";
 

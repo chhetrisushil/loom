@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // ── T3 — the subject index (data-subject rights) ──────────────────────────────
 //

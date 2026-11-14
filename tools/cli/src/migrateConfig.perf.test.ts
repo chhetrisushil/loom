@@ -1,4 +1,4 @@
-import { GROUPED_OPTIONS } from "@loom/app";
+import { GROUPED_OPTIONS } from "@loomwork/app";
 import { describe, expect, it } from "vitest";
 import { analyzeConfig } from "./migrateConfig";
 
@@ -9,7 +9,7 @@ describe("migrate-config analysis scales linearly", () => {
     let body = "";
     for (let i = 0; i < n; i++)
       body += `  ${options[i % options.length]}: {\n    n: ${i},\n  },\n  custom${i}: ${i},\n`;
-    return `import { defineConfig } from "@loom/app";\n\nexport default defineConfig({\n${body}});\n`;
+    return `import { defineConfig } from "@loomwork/app";\n\nexport default defineConfig({\n${body}});\n`;
   };
   const time = (n: number) => {
     const src = config(n);

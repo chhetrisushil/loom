@@ -41,24 +41,24 @@ describe("loom new flow --template", () => {
   for (const [template, marker, dep] of [
     ["approval", "resumeSchemas", undefined],
     ["timer", "ctx.sleep(", undefined],
-    ["saga", "withSaga(", "@loom/saga"],
+    ["saga", "withSaga(", "@loomwork/saga"],
   ] as const) {
     it(`${template}: writes the flow and a sibling test`, async () => {
       const app = join(root, "app");
       writeFileSync(
         join(root, "package.json"),
-        JSON.stringify({ dependencies: { "@loom/core": "workspace:*", zod: "^3.23.8" } })
+        JSON.stringify({ dependencies: { "@loomwork/core": "workspace:*", zod: "^3.23.8" } })
       );
       expect(await run(["new", "flow", "t1", "--template", template, "--dir", app])).toBe(0);
       expect(readFileSync(join(app, "flows/t1/flow.ts"), "utf8")).toContain(marker);
       const test = readFileSync(join(app, "flows/t1/flow.test.ts"), "utf8");
-      expect(test).toContain('from "@loom/testing"');
+      expect(test).toContain('from "@loomwork/testing"');
       if (template !== "saga") expect(test).toContain("advanceTime");
       // The W1 missing-dependency hint covers what the template imports.
       const hint = out.join("\n");
       if (dep !== undefined) expect(hint).toContain(`"${dep}": "workspace:*"`);
-      else expect(hint).not.toContain("@loom/saga");
-      expect(hint).toContain('"@loom/testing"');
+      else expect(hint).not.toContain("@loomwork/saga");
+      expect(hint).toContain('"@loomwork/testing"');
       expect(hint).toContain(`note - ${template}:`); // the wiring the template cannot do for you
     });
   }

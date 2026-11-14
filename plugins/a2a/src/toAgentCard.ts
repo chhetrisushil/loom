@@ -1,4 +1,4 @@
-import type { AgentDefinition } from "@loom/core";
+import type { AgentDefinition } from "@loomwork/core";
 import type { AgentCard } from "./types";
 
 // Options for deriving an AgentCard from an agent$ definition. Everything here is

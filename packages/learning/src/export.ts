@@ -1,5 +1,5 @@
-import { isTainted, taintOf } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+import { isTainted, taintOf } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import { stableKey, trajectories } from "./trajectories";
 import type { Trajectory, TrajectoryOptions, TrajectoryStep } from "./types";
 import { canonicalJson } from "./versions";

@@ -12,13 +12,13 @@ export interface ManifestFlow {
   warnings: string[];
   /**
    * ADR 0061 — structured loop step-identity findings for this flow's module
-   * (also rendered into `warnings`). Feed to `@loom/verify` via
+   * (also rendered into `warnings`). Feed to `@loomwork/verify` via
    * `FlowSpec.loopIdentityCalls`; additive manifest field.
    */
   loopIdentity?: Array<{ callee: string; loopKind: string; reason: string; location?: string }>;
   /**
    * Issue #82 — non-deterministic calls in this flow's module, and whether each
-   * sits inside a `ctx.decide`/`ctx.execute` boundary. Feed to `@loom/verify`
+   * sits inside a `ctx.decide`/`ctx.execute` boundary. Feed to `@loomwork/verify`
    * via `FlowSpec.nonDeterministicCalls`; additive manifest field.
    */
   nonDeterministic?: Array<{ callee: string; insideDecide: boolean; location?: string }>;
@@ -51,7 +51,7 @@ export interface ManifestFlow {
   };
   /**
    * The source module that declared this flow (relative to the project root).
-   * Enables tooling and `@loom/app`'s manifest cross-check to know where a flow
+   * Enables tooling and `@loomwork/app`'s manifest cross-check to know where a flow
    * lives. Registration itself stays a static import (see `registerFlowsFrom`) —
    * this is metadata, never a dynamic-import target, so wiring stays
    * deterministic/replay-safe.
@@ -121,7 +121,7 @@ export function buildManifest(
     }
 
     // ADR 0061 — surface loop step-identity findings as warnings (rendered) AND
-    // structurally (for @loom/verify's determinism rule via loopIdentityCalls).
+    // structurally (for @loomwork/verify's determinism rule via loopIdentityCalls).
     for (const f of flow.loopIdentityFindings ?? []) {
       warnings.push(
         `Flow "${flowId}": ctx.${f.callee} inside ${f.loopKind} uses a step id that cannot vary per iteration (${f.reason}) — frames are keyed by id, so later iterations replay iteration 0's output. Mint \`\${id}#\${index}\` (ADR 0061).`

@@ -1,21 +1,21 @@
-import { tainted } from "@loom/classify";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { agent$, tool$ } from "@loom/core";
-import type { EffectContext } from "@loom/effect-runtime";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { tainted } from "@loomwork/classify";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { agent$, tool$ } from "@loomwork/core";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import type {
   LlmContentPart,
   LlmProvider,
   LlmRequest,
   LlmResponse,
   LlmToolResultPart,
-} from "@loom/llm";
-import { UnsupportedModalityError } from "@loom/llm";
-import { ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+} from "@loomwork/llm";
+import { UnsupportedModalityError } from "@loomwork/llm";
+import { ReplayVM } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";

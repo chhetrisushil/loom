@@ -1,10 +1,10 @@
-import { step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { ExecutionPackage } from "@loom/worker-runtime";
-import { LeaseHeldError, StartLeaseHeldError, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { ExecutionPackage } from "@loomwork/worker-runtime";
+import { LeaseHeldError, StartLeaseHeldError, WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LocalWorkerRuntime } from "./LocalWorkerRuntime";

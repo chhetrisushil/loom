@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import { Pool, type PoolClient } from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";

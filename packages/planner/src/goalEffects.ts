@@ -1,5 +1,5 @@
-import type { CapabilityCatalog } from "@loom/capability";
-import { tainted } from "@loom/classify";
+import type { CapabilityCatalog } from "@loomwork/capability";
+import { tainted } from "@loomwork/classify";
 import {
   type Effect,
   type EffectContext,
@@ -7,8 +7,8 @@ import {
   ToolEffect,
   principalBlocked,
   principalIdentityKey,
-} from "@loom/effect-runtime";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+} from "@loomwork/effect-runtime";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import { claimId } from "./claim";
 import { type ExecutePlanConfig, type PlanRun, executePlan } from "./executePlan";
 import {

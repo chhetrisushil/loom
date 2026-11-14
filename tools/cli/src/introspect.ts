@@ -1,4 +1,4 @@
-import { formatIntrospection, introspect } from "@loom/analytics";
+import { formatIntrospection, introspect } from "@loomwork/analytics";
 import { UsageError } from "./args";
 import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   CustomDimensionTracker,
   type CustomDimensionsReport,
@@ -328,7 +328,7 @@ export function dependencyGraph(opts: IntrospectOptions): DependencyGraph {
 /**
  * The unified facade. Log-derived graphs (executions / tasks / decisions / resources)
  * come straight from `events`; placement and dependency graphs are added when the
- * caller supplies the static app projections in `opts` (e.g. from `@loom/app`'s
+ * caller supplies the static app projections in `opts` (e.g. from `@loomwork/app`'s
  * `resolveVerifyInput` sources — `PlacementDispatcher.targetNames`, `GrantTable.view()`).
  */
 export function introspect(

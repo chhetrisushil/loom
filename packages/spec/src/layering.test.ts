@@ -50,17 +50,20 @@ describe("kernel/plugin layering guard (ADR 0043)", () => {
     try {
       for (const [name, deps] of [
         ["core", {}],
-        ["workflow-runtime", { "@loom/core": "workspace:*", "@loom/agent-surface": "workspace:*" }],
-        ["agent-surface", { "@loom/core": "workspace:*" }],
+        [
+          "workflow-runtime",
+          { "@loomwork/core": "workspace:*", "@loomwork/agent-surface": "workspace:*" },
+        ],
+        ["agent-surface", { "@loomwork/core": "workspace:*" }],
       ] as const) {
         mkdirSync(join(root, "packages", name), { recursive: true });
         writeFileSync(
           join(root, "packages", name, "package.json"),
-          JSON.stringify({ name: `@loom/${name}`, dependencies: deps })
+          JSON.stringify({ name: `@loomwork/${name}`, dependencies: deps })
         );
       }
       expect(findKernelClosureViolations(root)).toEqual([
-        { from: "@loom/workflow-runtime", dependsOn: "@loom/agent-surface" },
+        { from: "@loomwork/workflow-runtime", dependsOn: "@loomwork/agent-surface" },
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });

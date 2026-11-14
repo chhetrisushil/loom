@@ -41,7 +41,7 @@ keyed state outside workflow history is not idiomatic there. Loom shares neither
 it has first-class schedules and (with D2) contract-validated durable state. See ADR 0052 for
 the deferred chaining draft and its evidence gate.
 
-### D2 — Typed carry state is a first-party plugin (`@loom/plugin-durable-state`), built as recorded effects
+### D2 — Typed carry state is a first-party plugin (`@loomwork/plugin-durable-state`), built as recorded effects
 
 Schedule-driven sentinels need state that survives across runs, validated on read, migratable
 on contract evolution. `memory$` cannot carry this: it is an agent/app-layer side channel —
@@ -134,7 +134,7 @@ Unwired = byte-identical (G2).
 
 - Kernel surface: two seams (D5 predicate hook, D6 transform hook) + one opt-in flag (D7).
   No new syscalls; KERNEL_ABI stays 1.1.0; EVENT_SCHEMA bumps once, additively, in D6.
-- New 1P packages: `@loom/plugin-durable-state`; claim-check lands in `@loom/middleware`
+- New 1P packages: `@loomwork/plugin-durable-state`; claim-check lands in `@loomwork/middleware`
   beside retry/redaction (same seam, same wiring discipline).
 - The copilot ships on today's kernel: D1 is a pattern, D2/D3 are plugins. Kernel items
   D5–D7 harden guarantees but do not block the sentinel workload.

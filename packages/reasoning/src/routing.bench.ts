@@ -1,4 +1,4 @@
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
 import { bench, describe } from "vitest";
 import { ReasoningRuntime } from "./ReasoningRuntime";
 import { tagRouter } from "./router";

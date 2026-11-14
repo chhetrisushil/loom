@@ -1,5 +1,5 @@
-import { INBOX_TOPIC_SEQ_BASE, inboxTopicStreamId } from "@loom/event-runtime";
-import type { LlmRequest, LlmStreamChunk } from "@loom/llm";
+import { INBOX_TOPIC_SEQ_BASE, inboxTopicStreamId } from "@loomwork/event-runtime";
+import type { LlmRequest, LlmStreamChunk } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import {
   Latch,

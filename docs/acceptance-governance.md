@@ -1,7 +1,7 @@
 # Acceptance-governed proactivity — the self-quieting loop
 
 *DX-3 of the db-copilot infrastructure series (issue #189). Assembles shipped parts —
-`OUTCOME_RECORDED` (P9), `@loom/analytics`, `@loom/reasoning` — into the pattern an ambient
+`OUTCOME_RECORDED` (P9), `@loomwork/analytics`, `@loomwork/reasoning` — into the pattern an ambient
 assistant needs: **suggestion categories that users ignore demote themselves**, trained by
 usage rather than configuration. No new seams; every step below is a logged fact.*
 
@@ -24,7 +24,7 @@ When the user accepts, dismisses, or ignores a suggestion, log it — one call, 
 fact (`variables._outcomes` in the fold):
 
 ```ts
-import { recordOutcome } from "@loom/analytics";
+import { recordOutcome } from "@loomwork/analytics";
 
 // In the flow (or any effect) handling the user's response:
 recordOutcome(ctx, {
@@ -40,7 +40,7 @@ recordOutcome(ctx, {
 ## 2. Mine acceptance from the log
 
 ```ts
-import { rankFromOutcomes } from "@loom/analytics";
+import { rankFromOutcomes } from "@loomwork/analytics";
 
 const events = await eventStore.read(executionId); // or aggregate across runs (below)
 const rankings = rankFromOutcomes(events);
@@ -48,13 +48,13 @@ const rankings = rankFromOutcomes(events);
 ```
 
 For the cross-run, months-of-history version, index `OUTCOME_RECORDED` with
-`@loom/plugin-read-model` (ADR 0058) and rank over the queried rows — the same
+`@loomwork/plugin-read-model` (ADR 0058) and rank over the queried rows — the same
 `rankFromOutcomes` shape, fed from the durable index instead of one log.
 
 ## 3. Route the next suggestion through the ranking
 
 ```ts
-import { rankedRouter } from "@loom/reasoning";
+import { rankedRouter } from "@loomwork/reasoning";
 
 const router = rankedRouter(rankings);
 // A "route" here is a suggestion channel; rank decides interrupt vs digest vs silence.
@@ -83,7 +83,7 @@ Two properties make this safe for an always-on agent:
 ## 4. The interruption budget
 
 Combine with `meteringMiddleware`-style admission if you want a hard cap: count interrupts
-per window in carry state (`@loom/plugin-durable-state`) and demote to `digest` when the
+per window in carry state (`@loomwork/plugin-durable-state`) and demote to `digest` when the
 budget is spent — a recorded, replayable outcome like everything else.
 
 ## Where to see it run

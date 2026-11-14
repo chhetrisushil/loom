@@ -15,38 +15,38 @@ const WORKSPACE_TIERS = ["packages", "plugins", "apps", "tools", "examples"] as 
  * package). See ADR 0043.
  */
 export const KERNEL_PACKAGES: readonly string[] = [
-  "@loom/core",
-  "@loom/event-runtime",
-  "@loom/snapshot-runtime",
-  "@loom/replay-vm",
-  "@loom/effect-runtime",
-  "@loom/workflow-runtime",
-  "@loom/scheduler",
-  "@loom/wire-abi",
+  "@loomwork/core",
+  "@loomwork/event-runtime",
+  "@loomwork/snapshot-runtime",
+  "@loomwork/replay-vm",
+  "@loomwork/effect-runtime",
+  "@loomwork/workflow-runtime",
+  "@loomwork/scheduler",
+  "@loomwork/wire-abi",
   // A zero-workspace-dependency vocabulary leaf (data-class paths, `zod` only) that `effect-runtime`
   // has always imported. Naming it here is what makes the closed-set rule below true without
   // pretending the edge is something else (ADR 0114 D4).
-  "@loom/classify",
+  "@loomwork/classify",
 ];
 
 /**
  * SPI-contract packages: they define a seam that adapters implement, plus (at most)
  * an in-memory reference implementation. Like the kernel, they must not reach into a
- * concrete adapter. (`@loom/dispatcher` keeps its interface + the `LocalDispatcher`
+ * concrete adapter. (`@loomwork/dispatcher` keeps its interface + the `LocalDispatcher`
  * reference; the placement/supervising policies are advisory, not adapters.)
  */
 export const SPI_PACKAGES: readonly string[] = [
-  "@loom/worker-runtime",
-  "@loom/projection-runtime",
-  "@loom/llm",
-  "@loom/blueprint-runtime",
-  "@loom/registry",
-  "@loom/telemetry",
-  "@loom/dispatcher",
+  "@loomwork/worker-runtime",
+  "@loomwork/projection-runtime",
+  "@loomwork/llm",
+  "@loomwork/blueprint-runtime",
+  "@loomwork/registry",
+  "@loomwork/telemetry",
+  "@loomwork/dispatcher",
   // Defines the `Policy` SPI (ADR 0080). Listed so `loom plugin check` holds a
   // policy plugin to the same peer-dependency rule as every other seam — without
   // it the check passes vacuously for the one seam consumed from flow code.
-  "@loom/learning",
+  "@loomwork/learning",
   // Defines the `MemoryStore` SPI (ADR 0090/0091) plus the in-memory reference. It was
   // missing here for as long as the seam has existed, so `loom plugin check` reported a
   // green "SPI packages are peer dependencies" to every memory backend while being unable
@@ -54,12 +54,12 @@ export const SPI_PACKAGES: readonly string[] = [
   // here, it is a duplicate CONTRACT: `searchableText`, `tokenize` and `clampSearchLimit`
   // decide what a backend indexes and what counts as a term, so a plugin carrying its own
   // copy can answer a different question than the app asked and still pass conformance.
-  "@loom/memory",
+  "@loomwork/memory",
   // Defines the `SandboxBackend` SPI (ADR 0144) plus the effect that owns every guarantee around
   // it. Listed so `loom plugin check` holds a sandbox backend to the peer-dependency rule: a
   // bundled copy is a duplicate CONTRACT (the limits, channels and replay form), not just a
   // duplicate type.
-  "@loom/sandbox",
+  "@loomwork/sandbox",
 ];
 
 /** Packages that must stay free of any `plugins/*` dependency (kernel ∪ SPI). */

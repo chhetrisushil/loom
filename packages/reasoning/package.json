@@ -1,5 +1,5 @@
 {
-  "name": "@loom/reasoning",
+  "name": "@loomwork/reasoning",
   "version": "0.1.0",
   "description": "Reasoning runtime for Loom — model routing, confidence-based elevation, and critique as composable stages, with route decisions logged (P9)",
   "main": "./dist/index.js",
@@ -21,8 +21,8 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/llm": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/llm": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

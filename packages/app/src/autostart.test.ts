@@ -1,8 +1,8 @@
-import { step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import { InMemoryLeaseStore, InMemoryTimerStore } from "@loom/event-runtime";
-import type { TimerRecord } from "@loom/event-runtime";
+import { step$ } from "@loomwork/core";
+import type { FlowDefinition } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryLeaseStore, InMemoryTimerStore } from "@loomwork/event-runtime";
+import type { TimerRecord } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";

@@ -1,4 +1,4 @@
-import type { EventEnvelope, ProjectionDefinition } from "@loom/core";
+import type { EventEnvelope, ProjectionDefinition } from "@loomwork/core";
 
 // ── RM (db-copilot infra, issue #183) — durable cross-execution read models ───
 //
@@ -162,7 +162,7 @@ export function parseQueryCursor(cursor: string): QueryCursor {
 /**
  * The read-model store SPI — a dumb indexed row store. All model knowledge
  * (kinds, extractors) lives above, in {@link ReadModelService}. Conformance:
- * `runReadModelStoreConformance` in `@loom/conformance`.
+ * `runReadModelStoreConformance` in `@loomwork/conformance`.
  */
 export interface ReadModelStore {
   /**

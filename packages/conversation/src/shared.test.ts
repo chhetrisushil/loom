@@ -47,7 +47,7 @@ describe("shared mode: the basics", () => {
 });
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────────
-import type { LlmRequest } from "@loom/llm";
+import type { LlmRequest } from "@loomwork/llm";
 import { Latch, lastUserText, sharedScript } from "./__fixtures__/harness";
 import { sign } from "./access";
 

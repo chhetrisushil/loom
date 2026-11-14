@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 import * as readline from "node:readline";
-import type { FilePlan } from "@loom/appgen";
+import type { FilePlan } from "@loomwork/appgen";
 
 // Everything below is imported on demand (`await import`) inside the command that needs it.
 // `loom help`, `loom --version` and `loom completion` must start in roughly node's own startup
@@ -60,7 +60,7 @@ validate
                                                   the named ones must have run)
   loom check --manifest <path> [--json]           static flow-graph checks (compiler manifest)
   loom lint claim-check [--dir .] [--json]        CC-5: flag claim-check reach-through inside flows
-  loom verify --config <module> [--manifest <path>] [--json]  pre-flight runtime verification (@loom/verify)
+  loom verify --config <module> [--manifest <path>] [--json]  pre-flight runtime verification (@loomwork/verify)
                                                   (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
   loom migrate-config [<file>...] [--config <file>] [--apply] [--json]  rewrite flat defineConfig options into their groups
                                                   (dry run prints a diff; --apply writes; refuses a
@@ -173,7 +173,7 @@ deploy
 help
   loom help [command]                             this summary, or one command's usage
   loom <command> --help                           same as \`loom help <command>\`
-  loom version                                    print the @loom/cli version (also --version)
+  loom version                                    print the @loomwork/cli version (also --version)
   loom completion <zsh|bash|fish>                 print a shell completion script
 
   <store-flags>  where a command reads storage — FLAGS, never a positional path (a bare path is refused;
@@ -581,7 +581,7 @@ async function dispatch(
       }
       const { cmdRetentionRun } = await import("./retention");
       let ttl: number;
-      let policy: import("@loom/workflow-runtime").RetentionPolicy | undefined;
+      let policy: import("@loomwork/workflow-runtime").RetentionPolicy | undefined;
       if (flags.policy !== undefined) {
         const { loadRetentionPolicy, overridePolicy, parseTtlFlag } = await import(
           "./retentionPolicy"
@@ -963,12 +963,12 @@ async function dispatch(
         const { cmdPluginNew } = await import("./plugin");
         const { dir: root, written, skipped } = cmdPluginNew(seam, name, { firstParty, dir });
         const lines = [
-          `plugin: ${firstParty ? "@loom/plugin-" : "loom-plugin-"}${name} (${seam}) → ${root}`,
+          `plugin: ${firstParty ? "@loomwork/plugin-" : "loom-plugin-"}${name} (${seam}) → ${root}`,
           ...written.map((p) => `  created ${p}`),
           ...skipped.map((p) => `  skipped ${p} (already exists)`),
         ];
         if (written.length > 0) {
-          const { pluginFiles, pluginNextSteps } = await import("@loom/scaffold");
+          const { pluginFiles, pluginNextSteps } = await import("@loomwork/scaffold");
           lines.push(
             ...pluginNextSteps(pluginFiles(seam, name, { firstParty }), { firstParty, root })
           );
@@ -988,7 +988,7 @@ async function dispatch(
       const check = flags.check === "true";
       const offline = flags.offline === "true";
       // `--model <spec>` plans with a model of your choice: anthropic:<model> / openai:<model>
-      // / gemini:<model> (API key from env), or a local .gguf path (optional @loom/appgen-model).
+      // / gemini:<model> (API key from env), or a local .gguf path (optional @loomwork/appgen-model).
       // `--model-big <spec>` is a stronger tier the reasoning ladder elevates to.
       const model =
         flags.model !== undefined && flags.model !== "true"

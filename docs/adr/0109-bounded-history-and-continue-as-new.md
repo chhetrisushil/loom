@@ -13,7 +13,7 @@
 - Amends on acceptance: ADR 0052 (D1's evidence gate is waived for Part R by the user's 2026-10-05
   ruling that a whitepaper-class workload counts; D2 becomes the specification below; D3 stands).
 - Placement: **kernel** for the syscall, the terminal fact and the replay contract;
-  **1P** (`@loom/orchestration`, `@loom/analytics`) for chain lineage queries and supervisor
+  **1P** (`@loomwork/orchestration`, `@loomwork/analytics`) for chain lineage queries and supervisor
   follow-through. Shares the single Wave 2 bump: **KERNEL_ABI 1.2.0 → 1.3.0**,
   **EVENT_SCHEMA 1.22.0 → 1.23.0** (design document §Version plan).
 - Revision: round 3 — the successor-shape bypass is derived (parent log exists) and the successor start is a
@@ -79,7 +79,7 @@ construction (effects have no `ctx`).
 
 There is no `shouldContinueAsNew()`. Temporal's suggestion flag is not replay-deterministic (it reads the
 history length at the time of the call, which differs on every re-run); capturing it would need a
-`decide`. A flow counts its own turns, which is a pure function of its logged state; `@loom/agent` ships
+`decide`. A flow counts its own turns, which is a pure function of its logged state; `@loomwork/agent` ships
 the 20-line helper (`continueEvery(n)`).
 
 ### D2 — Successor first, then the commit: `EXECUTION_CONTINUED`
@@ -248,7 +248,7 @@ predecessor costs a wake, never a message.
 ### D5 — Outstanding children at the commit
 
 A parent that continues cannot leave a child parked-on: the `CHILD_DONE` park belongs to the predecessor.
-The default, in `@loom/orchestration`, is the R9k cascade: on `EXECUTION_CONTINUED` the supervisor cancels
+The default, in `@loomwork/orchestration`, is the R9k cascade: on `EXECUTION_CONTINUED` the supervisor cancels
 the predecessor's non-terminal, non-`detached` children with `reason { kind: "cascade", parent }`, exactly
 as for `EXECUTION_CANCELLED` (ADR 0112 D5). A child that must outlive the rotation is spawned `detached`
 and its id travels in the `carry` (the successor then holds the handle and may `awaitChild` it, since the
@@ -258,8 +258,8 @@ children before calling `continueAsNew`.
 ### D6 — What stays 1P
 
 - **Chain lineage queries** (`chain(executionId)`, generations, "current head"): a projection over
-  `continuedFrom` / `_continuedTo`, in `@loom/analytics`. No SPI.
-- **The supervisor** (`@loom/orchestration`) follows `_continuedTo` when a child's or a parent's id is
+  `continuedFrom` / `_continuedTo`, in `@loomwork/analytics`. No SPI.
+- **The supervisor** (`@loomwork/orchestration`) follows `_continuedTo` when a child's or a parent's id is
   continued (a `"continued"` status is "look at the head", never a settled result), and cascades per D5.
 - **Retention.** The predecessor is an ordinary terminal execution; `LogLifecycle` archives or deletes it
   by the usual policy. `EXECUTION_CONTINUED` is a pinned kind (as ADR 0107's fork points), so a compacted
@@ -410,7 +410,7 @@ sequence 0.
 which every generation inherits) and re-enters itself on the head; the head authorizes again against the same
 owner. `ResumeEvent` is unchanged.
 
-**D5.** The cascade on `EXECUTION_CONTINUED` was built with R6 (`@loom/orchestration`); R1b adds its tests: an
+**D5.** The cascade on `EXECUTION_CONTINUED` was built with R6 (`@loomwork/orchestration`); R1b adds its tests: an
 attached child is cancelled with a `{ kind: "cascade", parent }` reason and a detached one survives. A parked
 parent cannot continue, so the case is a child whose park the operator answered by hand. **D6:** the supervisor
 keeps a `followed` map (successor id -> the child id the parent's park names); a continued child's successor's
@@ -419,8 +419,8 @@ terminal event settles the ORIGINAL slot, any number of rotations, live; `settle
 follows to the head (a live handle when the runtime drives it, else the log) and reports the HEAD's outcome under
 the dispatched id; `ExecutionOutcome` is NOT widened (no dispatcher or worker SPI change), the follow is routed (a flow that rotates
 ten times and completes is a `completed` dispatch), and an unreadable or unverifiable chain stays the fail-safe
-`failed`, never `completed`. `@loom/analytics` gains `chainLineage(events, id)` (a pure
-projection; chain identity read through the fold's rules, a fork is its own chain). `@loom/agent` gains
+`failed`, never `completed`. `@loomwork/analytics` gains `chainLineage(events, id)` (a pure
+projection; chain identity read through the fold's rules, a fork is its own chain). `@loomwork/agent` gains
 `continueEvery(n)` (the turn counter; created inside the flow body, per generation).
 
 **D7.** A fork of a chain member is detected from the parent's FOLDED `_chain` (the snapshot, no read) or its

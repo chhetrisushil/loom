@@ -3,12 +3,12 @@ import {
   SURFACE_PATCH,
   applySurfacePatches,
   getSurfaceValue,
-} from "@loom/agent-surface";
-import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
-import { preservesNodes } from "@loom/blueprint-runtime";
-import type { IdentityReport } from "@loom/blueprint-runtime";
-import { maskPaths } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+} from "@loomwork/agent-surface";
+import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loomwork/agent-surface";
+import { preservesNodes } from "@loomwork/blueprint-runtime";
+import type { IdentityReport } from "@loomwork/blueprint-runtime";
+import { maskPaths } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import { DEFAULT_CATALOG_ID, defaultCatalog } from "./catalog";
 import type { A2UICatalog } from "./catalog";
 import {
@@ -219,7 +219,7 @@ export class A2UISurfaceBridge {
    * cannot tell those apart. So it reports, exactly as `validateComponents` does, and the
    * caller decides.
    *
-   * Shares `preservesNodes` with `@loom/blueprint-runtime` rather than reimplementing the
+   * Shares `preservesNodes` with `@loomwork/blueprint-runtime` rather than reimplementing the
    * diff: the same question is asked of a composed Blueprint's widget ids
    * ([ADR 0094](../../../docs/adr/0094-blueprint-node-identity.md)), and one answer that
    * both surfaces agree on is the point.

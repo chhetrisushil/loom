@@ -1,14 +1,14 @@
-import { flow$, step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { type EventStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { flow$, step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { type EventStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   PostgresEventStore,
   PostgresSnapshotStore,
   migratePostgresStores,
-} from "@loom/plugin-postgres";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+} from "@loomwork/plugin-postgres";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { Pool } from "pg";
 import { z } from "zod";
 import { drive } from "./harness";

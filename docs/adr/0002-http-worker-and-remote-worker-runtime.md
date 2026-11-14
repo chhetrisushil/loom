@@ -17,7 +17,7 @@ separate concern.
 
 Two packages:
 
-- `@loom/worker-server` — `createWorkerServer(worker: WorkerRuntime, options)`,
+- `@loomwork/worker-server` — `createWorkerServer(worker: WorkerRuntime, options)`,
   a **stateless** `node:http` endpoint (borrowing A2AServer's `parseBody`/`json`
   mechanics, dropping its in-memory handle `Map`):
   - `POST /execute` with `{ "executionPackage": {...} }` → per request:
@@ -30,7 +30,7 @@ Two packages:
   (flows + effects) lives in the `WorkflowRuntime` inside the injected
   `LocalWorkerRuntime`. This is the container entrypoint for Step 3.
 
-- `@loom/worker-runtime-remote` — `RemoteWorkerRuntime(baseUrl)`, the HTTP client
+- `@loomwork/worker-runtime-remote` — `RemoteWorkerRuntime(baseUrl)`, the HTTP client
   impl of the SPI. `allocate`/`release` are trivial (no client-side state);
   `execute` POSTs the package to `{baseUrl}/execute` and parses the result.
   Fetch is injectable (`fetchImpl`) and typed structurally so the package needs

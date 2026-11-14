@@ -1,11 +1,11 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import {
   type DestructionProof,
   type EventStore,
   erasureWindowView,
   isPayloadShredded,
-} from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
+} from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
 import type { SubjectIndex } from "./SubjectIndex";
 import { claimCheckRefsOf } from "./eraseSubject";
 

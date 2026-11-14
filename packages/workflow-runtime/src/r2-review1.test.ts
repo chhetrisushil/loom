@@ -1,10 +1,10 @@
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { WorkflowRuntime } from "./WorkflowRuntime";

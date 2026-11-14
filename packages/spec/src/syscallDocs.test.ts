@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { KERNEL_SYSCALLS } from "@loom/workflow-runtime";
+import { KERNEL_SYSCALLS } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 
 // ── Fitness function: a doc that enumerates the syscall surface must enumerate it ──

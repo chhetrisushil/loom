@@ -4,13 +4,13 @@ import {
   InMemoryTimerStore,
   brandPayloadShredded,
   isPayloadShredded,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   InMemoryKeyStore,
   PayloadShreddedError,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { syntheticShredded } from "./WorkflowRuntime";
 import { build, echo, flow } from "./__tests__/r2Harness";

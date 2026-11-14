@@ -1,4 +1,4 @@
-import { assertReachMatches, readReachDeclaration, recordReach } from "@loom/verify";
+import { assertReachMatches, readReachDeclaration, recordReach } from "@loomwork/verify";
 import { describe, expect, it } from "vitest";
 import { recordOutcome } from "./outcomes";
 

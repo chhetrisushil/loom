@@ -34,7 +34,7 @@ export function skill$(config: SkillConfig): SkillDefinition {
 }
 
 // Marks a skill's instruction body for the compiler, analogous to handler$ for
-// step handlers. Uncompiled, it carries the text inline; the @loom/compiler
+// step handlers. Uncompiled, it carries the text inline; the @loomwork/compiler
 // plugin rewrites the call to a dynamic import so the body lands in its own
 // lazy chunk. Both forms are resolved by loadInstructions().
 export function instructions$(text: string): InstructionsRef {

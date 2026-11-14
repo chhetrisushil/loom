@@ -1,4 +1,4 @@
-# @loom/plugin-renderer-terminal — draw a Blueprint as plain text
+# @loomwork/plugin-renderer-terminal — draw a Blueprint as plain text
 
 Renders a Loom `Blueprint` (the widget layout that `blueprint$` builds) to a string, so the same view an
 app shows in a browser can be printed in a terminal, a log or a test snapshot. It walks the blueprint
@@ -7,8 +7,8 @@ pending, stale, error and empty widgets read the same way they do in the React a
 Use it for CLIs, TUIs and golden-file tests of a view.
 
 ```ts
-import { MetricCard, StatusBadge, blueprint$, stack } from "@loom/blueprint-runtime";
-import { defaultTerminalRegistry, renderBlueprintToString } from "@loom/plugin-renderer-terminal";
+import { MetricCard, StatusBadge, blueprint$, stack } from "@loomwork/blueprint-runtime";
+import { defaultTerminalRegistry, renderBlueprintToString } from "@loomwork/plugin-renderer-terminal";
 
 const bp = blueprint$({
   id: "ops",
@@ -63,7 +63,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 - [ADR 0097](../../docs/adr/0097-blueprint-ir-2.md), [ADR 0098](../../docs/adr/0098-blueprint-ir-placement-and-titles.md)
   and [ADR 0099](../../docs/adr/0099-blueprint-ir-layout-roles.md): the status matrix, placement, roles.
-- Siblings: [`@loom/plugin-renderer-react`](../renderer-react/README.md) and `@loom/plugin-renderer-dom`.
-- API reference: section "`@loom/plugin-renderer-terminal`" in
+- Siblings: [`@loomwork/plugin-renderer-react`](../renderer-react/README.md) and `@loomwork/plugin-renderer-dom`.
+- API reference: section "`@loomwork/plugin-renderer-terminal`" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "./types";
 
 export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnvelope) => void {

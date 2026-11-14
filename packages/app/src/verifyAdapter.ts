@@ -1,11 +1,11 @@
-import { collectUnreachableMarks } from "@loom/classify";
-import { flowContentHash } from "@loom/core";
-import type { ExecutionDispatcher } from "@loom/dispatcher";
-import { PlacementDispatcher } from "@loom/dispatcher";
-import type { CapabilityAuthorizer } from "@loom/effect-runtime";
-import { GrantTable } from "@loom/effect-runtime";
-import { EVENT_SCHEMA_VERSION } from "@loom/replay-vm";
-import { readReachDeclaration } from "@loom/verify";
+import { collectUnreachableMarks } from "@loomwork/classify";
+import { flowContentHash } from "@loomwork/core";
+import type { ExecutionDispatcher } from "@loomwork/dispatcher";
+import { PlacementDispatcher } from "@loomwork/dispatcher";
+import type { CapabilityAuthorizer } from "@loomwork/effect-runtime";
+import { GrantTable } from "@loomwork/effect-runtime";
+import { EVENT_SCHEMA_VERSION } from "@loomwork/replay-vm";
+import { readReachDeclaration } from "@loomwork/verify";
 import type {
   DeciderEffectRef,
   FlowSpec,
@@ -19,8 +19,8 @@ import type {
   UnresolvedReachRef,
   VerifyInput,
   VerifyMode,
-} from "@loom/verify";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/verify";
+import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
 
 /**
  * The `defineConfig({ verify })` key. A bare mode is the common case; the object form
@@ -29,14 +29,14 @@ import type { WorkflowRuntime } from "@loom/workflow-runtime";
  */
 /**
  * Compiler lint findings fed into the determinism rule (the object-form `lint` key).
- * Produce from `@loom/compiler`: `analyzeNonDeterminism` / `analyzeLoopIdentity` over
+ * Produce from `@loomwork/compiler`: `analyzeNonDeterminism` / `analyzeLoopIdentity` over
  * flow-runner source, or read the compiler manifest's per-flow `loopIdentity` field.
  */
 export interface VerifyLintInputs {
   readonly nonDeterministicByFlow?: Readonly<Record<string, readonly NonDeterministicCall[]>>;
   readonly loopIdentityByFlow?: Readonly<Record<string, readonly LoopIdentityCall[]>>;
   /**
-   * Runner-body reach analysis, from `@loom/compiler`'s `analyzeRunnerReach`.
+   * Runner-body reach analysis, from `@loomwork/compiler`'s `analyzeRunnerReach`.
    *
    * Supplies the two things the `FlowDefinition` structurally cannot: steps
    * invoked via `ctx.run` without being declared in `steps`, and the suspend
@@ -48,8 +48,8 @@ export interface VerifyLintInputs {
 }
 
 /**
- * Structural mirror of `@loom/compiler`'s `RunnerReach`. Declared here so
- * `@loom/app` does not depend on the compiler (which is a build-time tool), the
+ * Structural mirror of `@loomwork/compiler`'s `RunnerReach`. Declared here so
+ * `@loomwork/app` does not depend on the compiler (which is a build-time tool), the
  * same way `NonDeterministicCall` already arrives.
  */
 export interface RunnerReachInput {
@@ -99,7 +99,7 @@ export type VerifyConfig =
        * L32 — declared reach for code a flow hands its `ctx` to. Keys are the callee text
        * (`"planner.compose"`) or its leftmost identifier (`"planner"`) as written in the flow
        * source; values are the REAL objects (carrying a reach declaration, see `declareReach`
-       * in `@loom/verify`) or a plain `{ run?, transient? }` literal. A `ctx` handed to a callee
+       * in `@loomwork/verify`) or a plain `{ run?, transient? }` literal. A `ctx` handed to a callee
        * with no entry is reported unresolved.
        */
       readonly reach?: Readonly<Record<string, unknown>>;
@@ -140,13 +140,13 @@ export interface VerifyAdapterInputs {
   readonly meteredDimensions?: readonly string[];
   /**
    * Per-flow non-deterministic calls, feeding the determinism rule (issue #82). Produce these
-   * from `@loom/compiler`'s `analyzeNonDeterminism(runnerSource, flowId)` over the flow runner /
+   * from `@loomwork/compiler`'s `analyzeNonDeterminism(runnerSource, flowId)` over the flow runner /
    * orchestration source — NOT step `handler$` bodies, which are memoized (their output is logged
    * and served on replay, so non-determinism inside them is already safe).
    */
   readonly nonDeterministicByFlow?: Readonly<Record<string, readonly NonDeterministicCall[]>>;
   /**
-   * Per-flow runner-body reach, from `@loom/compiler`'s `analyzeRunnerReach`.
+   * Per-flow runner-body reach, from `@loomwork/compiler`'s `analyzeRunnerReach`.
    * Supplies steps invoked via `ctx.run` that the `FlowDefinition` does not
    * declare, the suspend points `FlowSpec.suspends` had no producer for, and the
    * targets the analysis could NOT resolve — which is what lets the reach-bounded
@@ -157,14 +157,14 @@ export interface VerifyAdapterInputs {
   readonly reachDeclarations?: Readonly<Record<string, unknown>>;
   /**
    * ADR 0061 — per-flow loop step-identity findings, feeding the determinism rule's
-   * loop-identity warnings. Produce from `@loom/compiler`'s `analyzeLoopIdentity` (or read
+   * loop-identity warnings. Produce from `@loomwork/compiler`'s `analyzeLoopIdentity` (or read
    * the compiler manifest's per-flow `loopIdentity` field, which carries the same shape).
    */
   readonly loopIdentityByFlow?: Readonly<Record<string, readonly LoopIdentityCall[]>>;
 }
 
 /**
- * Project a resolved runtime + config pieces into a `VerifyInput` for `@loom/verify`.
+ * Project a resolved runtime + config pieces into a `VerifyInput` for `@loomwork/verify`.
  *
  * What we can derive today, and the honest limits:
  * - **flows / flowHash / effects** — from the registered `FlowDefinition`s. Each step's
@@ -181,7 +181,7 @@ export interface VerifyAdapterInputs {
  *   satisfied by one that merely claims to have wired it.
  *
  * Non-determinism analysis is fed via `inputs.nonDeterministicByFlow` (from
- * `@loom/compiler`'s `analyzeNonDeterminism`, issue #82). Still not derivable from the
+ * `@loomwork/compiler`'s `analyzeNonDeterminism`, issue #82). Still not derivable from the
  * definition: per-flow `computeTarget` and budgets.
  *
  * **`FlowSpec.suspends` is populated from `runnerReachByFlow` (ADR 0086), and only from

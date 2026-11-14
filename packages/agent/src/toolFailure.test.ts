@@ -1,13 +1,13 @@
-import * as capability from "@loom/capability";
-import * as core from "@loom/core";
-import * as effectRuntime from "@loom/effect-runtime";
-import * as eventRuntime from "@loom/event-runtime";
-import * as isolate from "@loom/isolate";
-import * as llm from "@loom/llm";
-import * as middleware from "@loom/middleware";
-import * as orchestration from "@loom/orchestration";
-import * as workerRuntime from "@loom/worker-runtime";
-import * as workflowRuntime from "@loom/workflow-runtime";
+import * as capability from "@loomwork/capability";
+import * as core from "@loomwork/core";
+import * as effectRuntime from "@loomwork/effect-runtime";
+import * as eventRuntime from "@loomwork/event-runtime";
+import * as isolate from "@loomwork/isolate";
+import * as llm from "@loomwork/llm";
+import * as middleware from "@loomwork/middleware";
+import * as orchestration from "@loomwork/orchestration";
+import * as workerRuntime from "@loomwork/worker-runtime";
+import * as workflowRuntime from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import {
   classifyModelCallError,
@@ -155,16 +155,16 @@ function errorClasses(mod: Record<string, unknown>): [string, new (...a: never[]
 }
 
 const PACKAGES: Record<string, Record<string, unknown>> = {
-  "@loom/middleware": middleware,
-  "@loom/effect-runtime": effectRuntime,
-  "@loom/workflow-runtime": workflowRuntime,
-  "@loom/capability": capability,
-  "@loom/llm": llm,
-  "@loom/core": core,
-  "@loom/event-runtime": eventRuntime,
-  "@loom/worker-runtime": workerRuntime,
-  "@loom/isolate": isolate,
-  "@loom/orchestration": orchestration,
+  "@loomwork/middleware": middleware,
+  "@loomwork/effect-runtime": effectRuntime,
+  "@loomwork/workflow-runtime": workflowRuntime,
+  "@loomwork/capability": capability,
+  "@loomwork/llm": llm,
+  "@loomwork/core": core,
+  "@loomwork/event-runtime": eventRuntime,
+  "@loomwork/worker-runtime": workerRuntime,
+  "@loomwork/isolate": isolate,
+  "@loomwork/orchestration": orchestration,
 };
 
 describe("every exported error class is classified (fitness)", () => {

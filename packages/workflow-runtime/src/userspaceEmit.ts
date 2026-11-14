@@ -3,7 +3,7 @@ import {
   CUSTOM_DIMENSION_MAX,
   CUSTOM_DIMENSION_PATTERN,
   knownEventTypes,
-} from "@loom/replay-vm";
+} from "@loomwork/replay-vm";
 import { assertUnreservedDecisionId } from "./inDoubt";
 
 // ADR 0104 — what flow and effect code may append.
@@ -22,12 +22,12 @@ import { assertUnreservedDecisionId } from "./inDoubt";
 
 /** Kernel event types userspace may append: pure audit folds, each with a first-party writer. */
 export const USERSPACE_KERNEL_EVENTS: ReadonlySet<string> = new Set([
-  "RESOURCE_METERED", // @loom/middleware metering / nestedBudget
-  "QUOTA_EXCEEDED", // @loom/middleware metering / nestedBudget / streamTokenBudget
-  "SAFETY_BLOCKED", // @loom/middleware safety
-  "EGRESS_DENIED", // @loom/isolate
-  "EFFECT_DENIED", // @loom/effect-runtime authorization
-  "OUTCOME_RECORDED", // @loom/analytics recordOutcome (and loom-examples db-observability)
+  "RESOURCE_METERED", // @loomwork/middleware metering / nestedBudget
+  "QUOTA_EXCEEDED", // @loomwork/middleware metering / nestedBudget / streamTokenBudget
+  "SAFETY_BLOCKED", // @loomwork/middleware safety
+  "EGRESS_DENIED", // @loomwork/isolate
+  "EFFECT_DENIED", // @loomwork/effect-runtime authorization
+  "OUTCOME_RECORDED", // @loomwork/analytics recordOutcome (and loom-examples db-observability)
   "DECISION_RECORDED", // AgentRunner; reserved `__loom_` ids refused below
 ]);
 

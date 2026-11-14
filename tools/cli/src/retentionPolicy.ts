@@ -2,7 +2,7 @@ import {
   type RetentionPolicy,
   RetentionPolicyError,
   retentionPolicy,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { UsageError } from "./args";
 import { parseDuration } from "./duration";
 import { loadModuleExports } from "./stores";

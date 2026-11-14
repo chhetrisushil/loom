@@ -1,19 +1,19 @@
-import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
+import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loomwork/core";
 import {
   DelegationAuthorizer,
   EffectRuntime,
   GrantTable,
   ToolEffect,
   signDelegation,
-} from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   type FlowRunner,
   type RegisteredFlow,
   WorkflowRuntime,
   executionAccessPolicy,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {

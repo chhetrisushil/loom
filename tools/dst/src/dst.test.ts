@@ -1,8 +1,8 @@
-import { step$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { type EffectContext, ToolEffect } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { type EffectContext, ToolEffect } from "@loomwork/effect-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { ALL_INVARIANTS } from "./invariants";
@@ -108,7 +108,7 @@ describe("checkProperty — find, shrink, replay", () => {
 
 // ══ 2. Flagship: the K9 crash-recovery contract as a seeded DST property ═══════
 //
-// Generalizes @loom/testing's single-point crash test: instead of one hard-coded
+// Generalizes @loomwork/testing's single-point crash test: instead of one hard-coded
 // crash predicate, DST crashes the real WorkflowRuntime at seed-chosen points and
 // asserts the kernel's invariants survive AND an idempotent tool still converges to
 // one logical mutation — across a whole space of crash schedules, not one.

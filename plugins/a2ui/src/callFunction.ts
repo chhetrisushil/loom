@@ -25,7 +25,7 @@
 // and correlates the `functionResponse` back by `callId` (a WebSocket, an SSE +
 // POST pair, an in-process bus in tests — the plugin does not care).
 
-import type { Effect, EffectContext, EffectRuntime } from "@loom/effect-runtime";
+import type { Effect, EffectContext, EffectRuntime } from "@loomwork/effect-runtime";
 import type { CallFunctionPayload, FunctionResponsePayload } from "./messages";
 
 /** The default effect id under which the client-callFunction effect registers. */

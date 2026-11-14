@@ -1,7 +1,7 @@
-import { validateToolInput } from "@loom/agent";
-import type { CapabilityCatalog } from "@loom/capability";
-import { isTainted, taintOf, tainted } from "@loom/classify";
-import type { Taint, TaintedValue } from "@loom/classify";
+import { validateToolInput } from "@loomwork/agent";
+import type { CapabilityCatalog } from "@loomwork/capability";
+import { isTainted, taintOf, tainted } from "@loomwork/classify";
+import type { Taint, TaintedValue } from "@loomwork/classify";
 
 // ── R16 (ADR 0123) — a plan is a DAG of steps with arguments and bindings ──────────────────────
 //

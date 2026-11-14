@@ -8,13 +8,13 @@
   detection), [ADR 0120](0120-llm-content-parts-and-tool-threading.md) (tool_use / tool_result threading, the compaction
   virtual measure), R4 (tool menus; an authority denial is terminal), R9 (`reasoningToolId`, `requireEffectRing`), R13
   ([ADR 0117](0117-approvals-bound-to-what-the-approver-saw.md), bound approvals).
-- Placement: **1P, `@loom/agent` only.** Not a kernel change: no syscall, no event kind, no payload field.
+- Placement: **1P, `@loomwork/agent` only.** Not a kernel change: no syscall, no event kind, no payload field.
   `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are unchanged. Every new behaviour is built from `ctx.execute`, `ctx.decide`,
   `ctx.parallel` and `ctx.suspend` as they exist.
 
 ## Context
 
-`@loom/agent` shipped three ways to run the same ReAct loop:
+`@loomwork/agent` shipped three ways to run the same ReAct loop:
 
 1. `AgentRunner` — a class; the whole loop in ONE step handler (or an effect via `asEffect()`), `emit` and nothing else.
 2. `agentStep$` — a wrapper around (1) as a `step$`.
@@ -44,12 +44,12 @@ scope). What is NOT a tool failure and is never fed back, in either mode: a park
 switch, `QuotaExceededError`: not something the model can fix, and feeding it back lets it spin to `maxIterations`), a
 cancellation (`ExecutionCancelledError`, a scope's abort, a closed decide scope), a replay divergence, and a
 continuation. `isTerminalToolError` is that classification; the kernel's unexported control-flow errors are matched by
-`name`, and `@loom/middleware`'s two classes the same way (it stays a dev-only dependency).
+`name`, and `@loomwork/middleware`'s two classes the same way (it stays a dev-only dependency).
 
 *The classification is a hardened denylist, pinned by a fitness test.* `isTerminalToolError` matches along the whole prototype
 chain (so a subclass that sets its own `name`, `KillSwitchEngagedError`, is caught through `SafetyViolationError`), treats any
 error declaring `retryable === false` as terminal (the middleware's own rule for a decision rather than a fault) and walks
-`cause` to a bounded depth. `toolFailure.test.ts` enumerates EVERY exported error class of `@loom/middleware`,
+`cause` to a bounded depth. `toolFailure.test.ts` enumerates EVERY exported error class of `@loomwork/middleware`,
 `effect-runtime`, `workflow-runtime`, `capability`, `llm` and `core` and requires each to be classified terminal or feedback, so a
 new class fails loudly until someone decides. The first cut missed the kill switch, `RateLimitExceededError` and
 `CapabilityInvokeDeniedError`. `AgentRunner` now uses the same function (a safety fix: a kill switch, quota or park raised by a
@@ -104,7 +104,7 @@ routed call's RESPONSE is recorded as a decision, `<loop>#turn:<i>:response:<n>`
 `ReasoningRuntime` already offers: the decider re-checks the route's declared modalities, resolves content, and calls the
 route's provider. A replay serves the recorded answer: **zero provider calls for a completed turn**, and the
 `#turn:<i>:tool:<j>` ids cannot move under the log because the answer that fixed them is the recorded one. The route and
-elevation decisions stay where they were. The wrapper is a new `ReasonOptions.wrapCall` (not `invoke`): the runtime still guards the request, checks the route's modalities and consults its response cache (keyed on the request as written, per R5, and PARTITIONED by the principal identity when the runtime has one and by `ReasonOptions.cacheScope`, which `agentLoop$` forwards from `cacheScope`, so one tenant's identical prompt never hits another's entry; FAIL CLOSED (fix round 3): a runner body cannot read its principal, so `agentLoop$` with a runtime that has a response cache on the direct path REQUIRES `cacheScope` and throws `AgentLoopConfigError` without it. Sharing across tenants is therefore a decision: a constant `cacheScope` means every run using it shares entries; a per-tenant value is recommended. `cacheScope` is therefore a direct-path concern only: a ring user (`reasoningToolId`, or `requireEffectRing`) never reaches the response cache, is not required to set it, and setting it changes nothing there. The ring path bypasses the cache and needs none; a cache hit makes no provider call and so is not metered on the direct path, deliberately), and hands the host only the network part, so the cache survives the journal. The decision is stamped `source: "agent-response"` (the outcome and abort decisions `agent-outcome` / `agent-abort`) and `@loom/learning`'s `trajectories` excludes `RECORDED_FACT_SOURCES`, so the bookkeeping is neither an action nor a dilution of the terminal credit. The recorded response is bounded (256 K characters of JSON): over the cap the text is cut with a marker deterministically (what is recorded is what a replay serves); tool calls over the cap fail the run with a typed `ResponseTooLargeError`, are never truncated, and nothing is recorded (a resume re-asks). This is still OUTSIDE the ring (no K2
+elevation decisions stay where they were. The wrapper is a new `ReasonOptions.wrapCall` (not `invoke`): the runtime still guards the request, checks the route's modalities and consults its response cache (keyed on the request as written, per R5, and PARTITIONED by the principal identity when the runtime has one and by `ReasonOptions.cacheScope`, which `agentLoop$` forwards from `cacheScope`, so one tenant's identical prompt never hits another's entry; FAIL CLOSED (fix round 3): a runner body cannot read its principal, so `agentLoop$` with a runtime that has a response cache on the direct path REQUIRES `cacheScope` and throws `AgentLoopConfigError` without it. Sharing across tenants is therefore a decision: a constant `cacheScope` means every run using it shares entries; a per-tenant value is recommended. `cacheScope` is therefore a direct-path concern only: a ring user (`reasoningToolId`, or `requireEffectRing`) never reaches the response cache, is not required to set it, and setting it changes nothing there. The ring path bypasses the cache and needs none; a cache hit makes no provider call and so is not metered on the direct path, deliberately), and hands the host only the network part, so the cache survives the journal. The decision is stamped `source: "agent-response"` (the outcome and abort decisions `agent-outcome` / `agent-abort`) and `@loomwork/learning`'s `trajectories` excludes `RECORDED_FACT_SOURCES`, so the bookkeeping is neither an action nor a dilution of the terminal credit. The recorded response is bounded (256 K characters of JSON): over the cap the text is cut with a marker deterministically (what is recorded is what a replay serves); tool calls over the cap fail the run with a typed `ResponseTooLargeError`, are never truncated, and nothing is recorded (a resume re-asks). This is still OUTSIDE the ring (no K2
 authorization, metering, kill switch, in-doubt): `reasoningToolId` / `requireEffectRing` remain the way to get those, and the
 one-time `LOOM_AGENT_RING` warning stays (its text now says the response is journaled). Making `reasoningToolId` mandatory
 was rejected: it would fail every existing `reasoning` caller at start for a property (the ring) that is a separate axis

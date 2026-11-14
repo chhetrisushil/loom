@@ -1,16 +1,16 @@
-# @loom/isolate — your own tool code in a child process
+# @loomwork/isolate — your own tool code in a child process
 
 `IsolatedToolEffect` runs a tool you wrote and trust in a separate child process, instead of in the
 kernel's process with ambient authority. The child gets a scrubbed environment (only the credentials you
 declare for that tool, plus `PATH`), and its network goes through a kernel-side broker that checks a static
 `host:port` allowlist before any connection. It is **hardening, not OS confinement**: ADR 0019 and ADR 0144
 are explicit that a hostile tool can defeat the runner's guards, and that real confinement needs an
-OS-level layer. **Model-written code does not belong here.** Run that through `@loom/sandbox` (and
-`@loom/plugin-sandbox`), which is built for untrusted scripts. Use this package to keep a trusted tool off
+OS-level layer. **Model-written code does not belong here.** Run that through `@loomwork/sandbox` (and
+`@loomwork/plugin-sandbox`), which is built for untrusted scripts. Use this package to keep a trusted tool off
 your process's secrets and off the open network.
 
 ```ts
-import { IsolatedToolEffect } from "@loom/isolate";
+import { IsolatedToolEffect } from "@loomwork/isolate";
 import { app } from "./config"; // your defineConfig result
 
 app.effectRuntime.register(
@@ -75,7 +75,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/isolate` — data-plane isolation & brokered egress (K7)" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/isolate` — data-plane isolation & brokered egress (K7)" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [isolation and untrusted content](../../docs/user-guide/isolation-and-untrusted-content.md).
 - ADRs: [0019 K7 data-plane isolation and egress control](../../docs/adr/0019-k7-data-plane-isolation-and-egress-control.md), [0144 sandbox backend SPI](../../docs/adr/0144-sandbox-backend-spi.md) (why this stays separate from the sandbox), [0104](../../docs/adr/0104-recovery-never-answers-a-gate.md) (application events only).
 - Source: `packages/isolate/src`. For model-written code: `packages/sandbox` and `plugins/sandbox`.

@@ -1,12 +1,18 @@
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmContent, LlmMessageInput, LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { ExecutionContext, FlowRunner } from "@loom/workflow-runtime";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type {
+  LlmContent,
+  LlmMessageInput,
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+} from "@loomwork/llm";
+import { ReplayVM } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { ExecutionContext, FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { agentLoop$ } from "./agentLoop$";

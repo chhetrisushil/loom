@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type IvContext, type IvSource, brandIvSource } from "./crypto";
 
 // The deterministic cipher seam (ADR 0130 residuals D7, user ruling 2026-10-14). Exported ONLY from
-// this subpath (`@loom/plugin-crypto/testing`), never the main entry. A seeded simulation derives
+// this subpath (`@loomwork/plugin-crypto/testing`), never the main entry. A seeded simulation derives
 // each AES-GCM IV from `(seed, stream, sequence, path)` so two runs compare byte for byte. A reused
 // IV breaks GCM confidentiality, so the stores accept an `ivSource` ONLY if it was minted here
 // (a module-private brand; a plain function is refused) AND the process is a test run (NODE_ENV

@@ -1,8 +1,8 @@
-import { tainted, unwrapTainted } from "@loom/classify";
-import { jsonSchemaHash, tool$ } from "@loom/core";
-import type { ToolDefinition } from "@loom/core";
-import type { EffectRuntime } from "@loom/effect-runtime";
-import { ToolEffect } from "@loom/effect-runtime";
+import { tainted, unwrapTainted } from "@loomwork/classify";
+import { jsonSchemaHash, tool$ } from "@loomwork/core";
+import type { ToolDefinition } from "@loomwork/core";
+import type { EffectRuntime } from "@loomwork/effect-runtime";
+import { ToolEffect } from "@loomwork/effect-runtime";
 import { z } from "zod";
 import { refuseMalformedInput } from "./inputShape";
 import {
@@ -113,7 +113,7 @@ export interface ListToolsOptions {
   /** Throw {@link McpToolNamesSkippedError} (listing every skipped name) instead of skipping. */
   strictToolNames?: true;
   /**
-   * Wrap every result as untrusted (`@loom/classify`'s `tainted`), stamped with origin
+   * Wrap every result as untrusted (`@loomwork/classify`'s `tainted`), stamped with origin
    * `mcp:<serverHost>/<toolName>`, as `registerMcpInvoke` does (see its option for what that buys).
    * Off by default because it changes the step's output shape: consumers must `unwrapTainted()`.
    */
@@ -234,7 +234,7 @@ export class McpClient {
         tools: {},
         extensions: { [MCP_UI_EXTENSION_ID]: { mimeTypes: [MCP_UI_MIME_TYPE] } },
       },
-      clientInfo: { name: "@loom/plugin-mcp", version: "0.0.1" },
+      clientInfo: { name: "@loomwork/plugin-mcp", version: "0.0.1" },
     });
     // Negotiation, not assertion: adopt the server's choice for later requests.
     if (typeof result.protocolVersion === "string") {
@@ -453,7 +453,7 @@ export class McpClient {
       definition,
       effect,
       jsonInputSchema: mcpTool.inputSchema,
-      // ADR 0063 — the canonical pin (one hashing implementation, @loom/core).
+      // ADR 0063 — the canonical pin (one hashing implementation, @loomwork/core).
       schemaHash: jsonSchemaHash(mcpTool.inputSchema),
       ...(ui !== undefined && { ui }),
     };

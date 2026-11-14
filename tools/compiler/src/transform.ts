@@ -480,7 +480,7 @@ function collectImportLines(sourceFile: ts.SourceFile, text: string): string[] {
 
 function buildChunkSource(importLines: string[], fnText: string): string {
   return [
-    "// @loom/compiler — generated chunk (do not edit)",
+    "// @loomwork/compiler — generated chunk (do not edit)",
     ...importLines,
     "",
     `export default ${fnText};`,

@@ -12,11 +12,11 @@ Not legal advice.*
 | --- | --- | --- |
 | PII in query literals / tool inputs | `STEP_STARTED` payloads | `secretRef` + `redactionMiddleware` (K10.3): the log records a reference, the tool receives the value |
 | PII in tool outputs | `STEP_COMPLETED` payloads | `secret()`-mark output fields (K10-R1) → derived `redactOutput` (`secretOutputPathsByStep`); or `externalized()` → content store (ADR 0046) |
-| Sensitive fields that must stay queryable | event payloads at rest | crypto-shredding (`@loom/plugin-crypto`, K10.2): per-subject keys; erasure destroys the key, `PAYLOAD_SHREDDED` is loud |
+| Sensitive fields that must stay queryable | event payloads at rest | crypto-shredding (`@loomwork/plugin-crypto`, K10.2): per-subject keys; erasure destroys the key, `PAYLOAD_SHREDDED` is loud |
 | Bulk telemetry outliving its purpose | content store | claim-check (ADR 0054) + TTL sweep: `loom sweep content --ttl … --apply`; findings' evidence stays pinned (K10.6, ADR 0055) |
 | Whole runs outliving their purpose | event log | `loom retention run` (K10.1) with `retention: { archive, pinned }` — archive-before-delete, pins for designated events |
 | Cross-tenant reads in shared deployments | every store | `TenantScopedEventStore` (K12): scoping by construction — enumeration, reads, and the K10.6 sweep all see one tenant |
-| Subject-rights requests (GDPR Art. 15/17/20) | everywhere | `@loom/compliance` (T3): subject index, export, deferred erasure (`ERASURE_PENDING`) that never shreds a live fold |
+| Subject-rights requests (GDPR Art. 15/17/20) | everywhere | `@loomwork/compliance` (T3): subject index, export, deferred erasure (`ERASURE_PENDING`) that never shreds a live fold |
 
 ## Assembly order for a copilot-shaped app
 

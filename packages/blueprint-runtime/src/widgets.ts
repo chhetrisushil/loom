@@ -3,7 +3,7 @@ import type { DataBinding, Widget } from "./types";
 // A derived id, used when the caller supplies none. It is an IDENTITY, not a
 // content address: a 32-bit non-cryptographic hash, scoped to one blueprint.
 // Never treat it as an audit anchor for "which view was this" — use a real digest
-// (`contentAddress` in @loom/plugin-content) for that.
+// (`contentAddress` in @loomwork/plugin-content) for that.
 //
 // Because it is derived from the props, it CHANGES when any prop changes. That is
 // correct for a view that is authored once and wrong for one a composer revises,

@@ -1,5 +1,5 @@
 {
-  "name": "@loom/wire-abi",
+  "name": "@loomwork/wire-abi",
   "version": "0.1.0",
   "description": "T2 wire-level kernel ABI — a versioned JSON-RPC projection of the K1 syscalls (unary/channel), a carrier that drives executions over the wire, and language-agnostic fold-conformance vectors any client can run",
   "main": "./dist/index.js",
@@ -20,14 +20,14 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/replay-vm": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

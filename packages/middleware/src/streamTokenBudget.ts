@@ -1,4 +1,4 @@
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import type { Budget } from "./metering";
 import { QuotaExceededError } from "./metering";
 

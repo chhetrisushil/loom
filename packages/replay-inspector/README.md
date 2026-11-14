@@ -1,4 +1,4 @@
-# @loom/replay-inspector
+# @loomwork/replay-inspector
 
 Read-only replay inspector. Reconstruct an execution's state at any point in its log,
 see what each event did, read projection slices at that point, and do all of it under
@@ -21,7 +21,7 @@ top, *that* is the plugin (the `renderer-react` precedent).
 ## Quick start
 
 ```ts
-import { ReplayInspector, describePin } from "@loom/replay-inspector";
+import { ReplayInspector, describePin } from "@loomwork/replay-inspector";
 
 const inspector = new ReplayInspector({
   events: eventStore,        // read replica; scope it before it gets here
@@ -104,7 +104,7 @@ Defence in depth, not the access boundary — scope the store with
 `TenantScopedEventStore` before handing it over.
 
 ```ts
-import { pathsOfClass } from "@loom/classify";
+import { pathsOfClass } from "@loomwork/classify";
 
 new ReplayInspector({
   events,

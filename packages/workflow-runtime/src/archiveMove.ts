@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   ArchiveConflictError,
   ArchiveIncarnationError,
@@ -18,7 +18,7 @@ import {
   reservedLateOrigin,
   sameReservedEnvelope,
   segmentDigest,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   ArchiveGapError,
   ArchiveTenantMismatchError,

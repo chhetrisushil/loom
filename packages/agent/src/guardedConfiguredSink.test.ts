@@ -1,8 +1,8 @@
-import { agent$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider } from "@loom/llm";
-import { piiValidator, safetyMiddleware } from "@loom/middleware";
+import { agent$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { LlmProvider } from "@loomwork/llm";
+import { piiValidator, safetyMiddleware } from "@loomwork/middleware";
 import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "./AgentRunner";
 import { createAgentModelEffect } from "./createAgentModelEffect";

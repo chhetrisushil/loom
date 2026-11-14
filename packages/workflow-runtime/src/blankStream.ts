@@ -1,14 +1,14 @@
-import { canonicalJson } from "@loom/core";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { canonicalJson } from "@loomwork/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import {
   type EventStore,
   headOf,
   isReservedStream,
   iterateExecutionIds,
   readRangeOf,
-} from "@loom/event-runtime";
-import { ReplayVM, normalizeSnapshotState } from "@loom/replay-vm";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { ReplayVM, normalizeSnapshotState } from "@loomwork/replay-vm";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
 import { TIMER_FIRED } from "./types";
 
 // ── ADR 0107 — the blank stream the pre-0106 compaction bug wrote ─────────────
@@ -154,7 +154,7 @@ const statusOf = (s: Snapshot): ExecutionState["status"] => normalizeSnapshotSta
 
 /**
  * Whether `v` holds an object with `key` anywhere: the field-level ciphertext envelope
- * `@loom/plugin-crypto` writes (`__loomEnc`), or the placeholder a tolerant read leaves for a
+ * `@loomwork/plugin-crypto` writes (`__loomEnc`), or the placeholder a tolerant read leaves for a
  * destroyed key (`$shredded`).
  */
 function carriesKey(v: unknown, key: "__loomEnc" | "$shredded"): boolean {

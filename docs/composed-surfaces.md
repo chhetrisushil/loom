@@ -40,10 +40,10 @@ import {
   checkBlueprintPins,
   stack,
   validateBlueprint,
-} from "@loom/blueprint-runtime";
-import type { Blueprint } from "@loom/blueprint-runtime";
-import { decodeValue, encodeValue } from "@loom/plugin-content";
-import type { ContentRef, ContentStore } from "@loom/plugin-content";
+} from "@loomwork/blueprint-runtime";
+import type { Blueprint } from "@loomwork/blueprint-runtime";
+import { decodeValue, encodeValue } from "@loomwork/plugin-content";
+import type { ContentRef, ContentStore } from "@loomwork/plugin-content";
 
 const BLUEPRINT_COMPOSED = "BLUEPRINT_COMPOSED";
 
@@ -139,8 +139,8 @@ is retention deleting the execution that carries it. Name the event kind as an
 execution pin so the run, and with it the citation, stays:
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { sweepUnpinnedContent } from "@loom/plugin-content";
+import { defineConfig } from "@loomwork/app";
+import { sweepUnpinnedContent } from "@loomwork/plugin-content";
 
 const app = defineConfig({
   durability: {

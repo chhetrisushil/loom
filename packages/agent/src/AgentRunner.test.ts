@@ -1,8 +1,8 @@
-import { taintOf, tainted, unwrapTainted } from "@loom/classify";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import { taintOf, tainted, unwrapTainted } from "@loomwork/classify";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";
@@ -127,8 +127,8 @@ describe("AgentRunner", () => {
   });
 
   it("recalls and writes memory when the agent has a memoryId", async () => {
-    const { MemoryRuntime } = await import("@loom/memory");
-    const { memory$, agent$ } = await import("@loom/core");
+    const { MemoryRuntime } = await import("@loomwork/memory");
+    const { memory$, agent$ } = await import("@loomwork/core");
 
     const memory = new MemoryRuntime();
     memory.register(memory$({ id: "chat", name: "Chat" }));

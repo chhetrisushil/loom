@@ -1,4 +1,4 @@
-# ADR 0080 — `@loom/learning`: the substrate, not the learner
+# ADR 0080 — `@loomwork/learning`: the substrate, not the learner
 
 - Status: **Accepted** (2026-08-12)
 - Date: 2026-08-12
@@ -36,7 +36,7 @@ observation and the propensity too.
 
 ## Decision
 
-### `@loom/learning` (1P, new) — read-only over the log
+### `@loomwork/learning` (1P, new) — read-only over the log
 
 - **`Policy` SPI** — `{ id, version, select(context, actions) }`. One method. No training hook
   and no lifecycle: training is offline and produces a *new version*, so a policy object is
@@ -57,7 +57,7 @@ observation and the propensity too.
 
 ### 3P (sibling repo `../loom-plugins`)
 
-`loom-plugin-linucb` — disjoint LinUCB with Sherman–Morrison rank-1 updates (O(d²), no matrix
+`@loomwork/plugin-linucb` — disjoint LinUCB with Sherman–Morrison rank-1 updates (O(d²), no matrix
 inversion), optional ε-greedy layer with exactly-reported propensities. It is the reference
 consumer proving the SPI is sufficient for a real contextual learner.
 
@@ -97,8 +97,8 @@ deferred into the decider, which replay never calls. Tested directly.
 - **A learned policy still only acts through `ctx.decide`.** Non-negotiable, and the reason
   this is safe: every learned choice stays recorded, auditable, replayable, and override-able.
 - **Most users should not need this package.** For bandit routing over models, `ucb1` /
-  `epsilonGreedy` in `@loom/reasoning` (ADR 0078) are the whole answer with no offline
-  pipeline. `@loom/learning` earns its keep when the choice depends on the *observation*.
+  `epsilonGreedy` in `@loomwork/reasoning` (ADR 0078) are the whole answer with no offline
+  pipeline. `@loomwork/learning` earns its keep when the choice depends on the *observation*.
 - **Reward definition remains the user's problem**, and remains the hardest part. Loom makes
   reward cheap to attach and hard to attach wrongly; it cannot say what "good" means.
 - **Still not RL.** No sequential-credit machinery beyond discounted terminal assignment, no

@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import {
   type Snapshot,
   type SnapshotCodecName,
@@ -7,7 +7,7 @@ import {
   decodeState,
   encodeState,
   parseSnapshotCodec,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./snapshotSchema";
 

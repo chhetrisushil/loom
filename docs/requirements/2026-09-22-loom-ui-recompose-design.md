@@ -9,7 +9,7 @@ Made in review on 2026-09-22:
 | Question | Decision |
 |---|---|
 | Where does the example's form come from? | **An app-registered custom kind.** The example registers `NoteInput` through loom's `customWidget$` and a Lit renderer with a real `<textarea>`. 6a adds no framework vocabulary; slice 9 decides the vocabulary. |
-| How does an app hand the adapter a revised Blueprint? | **`handle.update(next)` on the existing mount.** `renderBlueprintDom` keeps returning a handle; the handle gains `update`. No new surface-controller object, no coupling of the adapter to `@loom-ui/hydration` (IR 2.0.0 just severed it). |
+| How does an app hand the adapter a revised Blueprint? | **`handle.update(next)` on the existing mount.** `renderBlueprintDom` keeps returning a handle; the handle gains `update`. No new surface-controller object, no coupling of the adapter to `@loomwork/ui-hydration` (IR 2.0.0 just severed it). |
 | How are nodes matched? | **Id-keyed reconcile per container, focus-aware** (approach A). Widgets by loom's widget id; containers by structural key. Not a whole-tree flat map (re-parents every widget, blurs focus), not a DOM morph (no keys, breaks on reorder, re-runs every renderer). |
 | Where does this spec live? | loom `docs/requirements/`, beside the two earlier loom-ui designs. |
 
@@ -91,7 +91,7 @@ Complexity: one pass per container, `O(children)` with a map; no renderer is re-
 
 ## 4. Hydration alignment
 
-Nothing changes in `@loom-ui/hydration`. The app's recompose is two lines and is documented in the README:
+Nothing changes in `@loomwork/ui-hydration`. The app's recompose is two lines and is documented in the README:
 
 ```ts
 controller.load(nextExperience);            // recompose: aborts/drops unbound handles, keeps shared ones
@@ -120,7 +120,7 @@ Two more tests: a revision that changes a node's kind remounts that node only (`
 - **loom** (this PR): the spec; the IR-2 design's §4 table row "Patch application preserving focus…" gains "→ this spec" once loom-ui's PR merges.
 - **loom-ui** PR: `renderBlueprintDom.update`, `DomWidgetHandle.patch`, tests, README "Recomposing" subsection with the two-line recipe, AGENTS rules: "a kept widget is never re-created within its container — identity is the widget id, and a focused subtree never leaves the DOM; a move across containers, a container ordinal shift, or a container retype re-creates it and is reported in `remounted`"; "user-entered state is DOM state: a renderer overwrites an input only when the bound value changes".
 - **loom-examples** PR: `examples/experience-recompose` + README row.
-- Each `--rebase`, on the maintainer's word; loom-ui first, then loom-examples (it links `@loom-ui/*` from `../loom-ui`).
+- Each `--rebase`, on the maintainer's word; loom-ui first, then loom-examples (it links `@loomwork/ui-*` from `../loom-ui`).
 
 ## 8. Non-goals
 

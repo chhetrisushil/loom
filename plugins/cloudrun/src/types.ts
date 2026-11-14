@@ -1,4 +1,4 @@
-import type { DispatchMetadata } from "@loom/dispatcher";
+import type { DispatchMetadata } from "@loomwork/dispatcher";
 
 /** A Cloud Run instance sizing. `memoryMb` in MiB; `cpu` in vCPU. */
 export interface CloudRunConfig {

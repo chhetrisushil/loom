@@ -1,4 +1,4 @@
-import type { EffectContext, EffectMiddleware, ResourceSnapshot } from "@loom/effect-runtime";
+import type { EffectContext, EffectMiddleware, ResourceSnapshot } from "@loomwork/effect-runtime";
 
 // ── Resource accounting & quotas (Loom 2.0 K3) ───────────────────────────────
 //
@@ -10,7 +10,7 @@ import type { EffectContext, EffectMiddleware, ResourceSnapshot } from "@loom/ef
 // the accounting and the enforcement are replay-safe (metered facts live in the log;
 // the running total is read from the deterministic fold via `ctx.resources`).
 
-import { BUILTIN_METER_DIMENSIONS, isVocabularyName } from "@loom/core";
+import { BUILTIN_METER_DIMENSIONS, isVocabularyName } from "@loomwork/core";
 
 export interface ResourceDelta {
   tokens?: number;
@@ -29,7 +29,7 @@ export interface ResourceDelta {
    * ADR 0115 — open dimensions (`gpu_seconds`, `credits`), by name. Folded into
    * `_resources.custom`; the kernel assigns no unit and no price, so converting these to money
    * is this pricing function's job. At most 32 names, each matching `VOCABULARY_NAME_PATTERN`
-   * (`@loom/core`), never a built-in name. A bad name (or value) makes `ctx.emit` throw AFTER the
+   * (`@loomwork/core`), never a built-in name. A bad name (or value) makes `ctx.emit` throw AFTER the
    * effect ran, like a built-in ceiling breach.
    */
   custom?: Readonly<Record<string, number>>;

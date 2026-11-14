@@ -3,39 +3,37 @@ import {
   SuspendError,
   flowContentHash,
   legacyFlowContentHash,
-} from "@loom/core";
-import type { EventEnvelope, ExecutionState, FlowDefinition, SuspendWait } from "@loom/core";
-import { LazyEffect } from "@loom/effect-runtime";
+} from "@loomwork/core";
+import type { EventEnvelope, ExecutionState, FlowDefinition, SuspendWait } from "@loomwork/core";
+import { LazyEffect } from "@loomwork/effect-runtime";
 import type {
   Effect,
   EffectRuntime,
   PrincipalChain,
   TransientInvokeOptions,
-} from "@loom/effect-runtime";
-import type { ArchiveStore, BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
+} from "@loomwork/effect-runtime";
+import type { ArchiveStore, BranchRegistry, EventStore, TimerStore } from "@loomwork/event-runtime";
 import {
+  QUARANTINE_STREAM_PREFIX,
   RESERVED_STREAM_PREFIX,
+  appendBatchOf,
   brandPayloadShredded,
   hasInboxStreamShape,
+  headOf,
   inboxChainOf,
+  inboxStreamsOfChain,
+  isAnsweringKind,
   isKeyUnavailable,
   isPayloadShredded,
   isReservedStream,
-  recordsErasureIntent,
-} from "@loom/event-runtime";
-import {
-  QUARANTINE_STREAM_PREFIX,
-  appendBatchOf,
-  headOf,
-  inboxStreamsOfChain,
-  isAnsweringKind,
   quarantineStreamId,
   readRangeOf,
-} from "@loom/event-runtime";
+  recordsErasureIntent,
+} from "@loomwork/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
-import { sliceBySequence } from "@loom/event-runtime/sequence";
+import { sliceBySequence } from "@loomwork/event-runtime/sequence";
 import {
   EVENT_SCHEMA_VERSION,
   FAILED_WHILE_PARKED,
@@ -45,8 +43,9 @@ import {
   ReplayVM,
   knownEventTypes,
   normalizeSnapshotState,
-} from "@loom/replay-vm";
-import { type Snapshot, type SnapshotStore, assertSnapshotIdentity } from "@loom/snapshot-runtime";
+} from "@loomwork/replay-vm";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
+import { assertSnapshotIdentity } from "@loomwork/snapshot-runtime";
 import { ulid } from "ulid";
 import { DivergenceGuard, type DivergenceMode } from "./DivergenceGuard";
 import { ExecutionJournal } from "./ExecutionJournal";
@@ -508,10 +507,10 @@ export interface WorkflowRuntimeDeps {
   errorClasses?: Record<string, ErrorClassCtor>;
   /**
    * ADR 0114 — the factory behind `ctx.ui`: `(emit) => accessor`. The kernel names no UI
-   * vocabulary, so a composed app passes `createSurfaceEmitter` from `@loom/agent-surface`
-   * (`defineConfig`, `@loom/testing` and the scaffold already do). Without it `ctx.ui` THROWS a
+   * vocabulary, so a composed app passes `createSurfaceEmitter` from `@loomwork/agent-surface`
+   * (`defineConfig`, `@loomwork/testing` and the scaffold already do). Without it `ctx.ui` THROWS a
    * message naming this dep — the deliberate "break now" for a bare `new WorkflowRuntime`. The
-   * documented spelling for new code is `surface(ctx)` from `@loom/agent-surface`.
+   * documented spelling for new code is `surface(ctx)` from `@loomwork/agent-surface`.
    */
   surface?: SurfaceFactory;
   /**
@@ -596,7 +595,7 @@ export interface WorkflowRuntimeDeps {
    * op only: since ADR 0111 the principal is durable, so the effects of these paths run as the
    * principal recorded when the execution started, never as the system.
    *
-   * Inert without an {@link executionAuthorizer}. `@loom/app` sets it under `security.strict`.
+   * Inert without an {@link executionAuthorizer}. `@loomwork/app` sets it under `security.strict`.
    */
   executionAuthz?: { requirePrincipal?: boolean };
   /**
@@ -6877,7 +6876,7 @@ export class WorkflowRuntime {
    * ADR 0130 D11 - does `executionId` have a sequence 0 (a real stream, as opposed to a ghost lease)?
    * Public so a worker runtime's `allocate` applies the same stand-down rule as `start`.
    *
-   * @internal System-only: a kernel-internal helper shared with `@loom/worker-runtime`, NOT public
+   * @internal System-only: a kernel-internal helper shared with `@loomwork/worker-runtime`, NOT public
    * API (ADR 0083) and deliberately absent from the api-reference. Do not build on it.
    */
   async hasSequenceZero(executionId: string): Promise<boolean> {
@@ -7254,7 +7253,7 @@ export class WorkflowRuntime {
    * NEW code). Strategies:
    *
    *  - `"replay-check"` — prove fold-compatibility first: every step recorded in
-   *    the log must still exist in the new flow (the same rule `@loom/deploy-sim`
+   *    the log must still exist in the new flow (the same rule `@loomwork/deploy-sim`
    *    enforces as `step-removed`); an orphaned recorded step refuses the
    *    migration with {@link FlowMigrationCheckError}.
    *  - `"operator-ack"` — the operator vouches; no check.

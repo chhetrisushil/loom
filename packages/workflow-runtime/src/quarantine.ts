@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
@@ -7,9 +7,9 @@ import {
   inboxTopicStreamId,
   quarantineStreamId,
   readRangeOf,
-} from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import { QUARANTINE_FOLD_CAP } from "@loom/replay-vm";
+} from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import { QUARANTINE_FOLD_CAP } from "@loomwork/replay-vm";
 import type { ReservedStreamArchive } from "./archiveMove";
 import { ReservedStreamArchiveRequiredError } from "./checkpointGuard";
 import {

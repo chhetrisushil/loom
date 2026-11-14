@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { pluginFiles } from "@loom/scaffold";
+import { pluginFiles } from "@loomwork/scaffold";
 import { describe, expect, it } from "vitest";
 import { resolveInside } from "./appgen";
 

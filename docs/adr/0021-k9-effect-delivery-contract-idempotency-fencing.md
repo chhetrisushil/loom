@@ -36,7 +36,7 @@ machinery to honor it:
 - Worker leases carry a monotonic **fencing token**; the journal rejects appends bearing a
   stale token, so a network-partitioned "zombie" worker cannot write after its execution was
   re-dispatched — extending the D3 single-writer invariant to the failure domain (K9.4).
-- `@loom/testing` provides a crash-injection harness (kill between effect completion and
+- `@loomwork/testing` provides a crash-injection harness (kill between effect completion and
   event append) so applications can prove their tools' idempotency in CI (K9.5).
 
 ## Acceptance criteria

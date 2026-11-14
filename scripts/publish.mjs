@@ -2,7 +2,7 @@
 // Publishes every public workspace package to npm under the `next` dist-tag.
 //
 //   node scripts/publish.mjs          # DRY RUN: packs each package and reports what would ship
-//   node scripts/publish.mjs --yes    # really publish (needs `npm login` with publish rights on @loom)
+//   node scripts/publish.mjs --yes    # really publish (needs `npm login` with publish rights on @loomwork)
 //
 // Preconditions (refused otherwise): a clean git tree, publish metadata current
 // (`node scripts/publish-metadata.mjs --check`), and every public package built (`dist/` present).

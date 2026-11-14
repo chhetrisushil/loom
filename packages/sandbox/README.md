@@ -1,15 +1,15 @@
-# @loom/sandbox
+# @loomwork/sandbox
 
 The seam for running **model-written code** inside an isolation boundary you choose (ADR 0144). A
 `SandboxBackend` is only the engine: it runs one verified script against one bounded input and reports
 what happened. `SandboxEffect` wraps any backend and supplies everything around it, so a Cloud Run,
 Firecracker, E2B or in-house backend gets the same limits, content-address check, typed failure
 channels and replay form as the default. Use this package to write or wire a backend; for the default
-engine, install `@loom/plugin-sandbox`. It is not for trusted tool code: that is `@loom/isolate`.
+engine, install `@loomwork/plugin-sandbox`. It is not for trusted tool code: that is `@loomwork/isolate`.
 
 ```ts
-import { EffectRuntime } from "@loom/effect-runtime";
-import { type SandboxBackend, registerSandboxBackend, sandboxEval$ } from "@loom/sandbox";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { type SandboxBackend, registerSandboxBackend, sandboxEval$ } from "@loomwork/sandbox";
 
 const backend: SandboxBackend = {
   // Declare the truth: the effect checks these claims and the conformance kit tests them.
@@ -37,12 +37,12 @@ Call `effect.warm()` at boot and `effect.close()` at shutdown.
 - **Failure channels.** `SANDBOX_ERRORS`: `scriptMissing`, `limitExceeded`, `shapeMismatch`,
   `scriptError`, `inputTooLarge`, `inputNotSerializable`.
 - **Helpers.** `shapeOf` / `shapeHash`, `boundText`, `validateOutcome`.
-- **Proof.** `runSandboxBackendConformance` in `@loom/conformance`; `loom plugin new sandbox <name>`
+- **Proof.** `runSandboxBackendConformance` in `@loomwork/conformance`; `loom plugin new sandbox <name>`
   scaffolds a backend with the most conservative capability claims.
 
 ## What the default backend does and does not isolate
 
-`@loom/plugin-sandbox` runs QuickJS compiled to WASM. A fresh runtime holds only what is injected: no
+`@loomwork/plugin-sandbox` runs QuickJS compiled to WASM. A fresh runtime holds only what is injected: no
 filesystem, network, process or timers exist in it, so there is no scrub list to keep complete. It
 sets a memory limit and an interrupt-based CPU budget, and it gives every run a fresh runtime. That is
 isolation from ambient authority, not an operating-system boundary:
@@ -74,7 +74,7 @@ isolation from ambient authority, not an operating-system boundary:
 
 ## See also
 
-- API reference: section "`@loom/sandbox` — the sandbox backend SPI" in
+- API reference: section "`@loomwork/sandbox` — the sandbox backend SPI" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - ADRs: [0144 backend SPI](../../docs/adr/0144-sandbox-backend-spi.md),
   [0064 sandbox effect](../../docs/adr/0064-sandbox-eval-plugin.md),

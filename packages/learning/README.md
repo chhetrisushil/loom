@@ -1,4 +1,4 @@
-# `@loom/learning`
+# `@loomwork/learning`
 
 **Loom does not ship reinforcement learning. It ships the substrate a learning loop needs and
 cannot build for itself.**
@@ -43,7 +43,7 @@ On top of that, `DECISION_RECORDED` carries (ADR 0079):
 ### 1. Make a decision learnable — one line
 
 ```ts
-import { decideWithPolicy } from "@loom/learning";
+import { decideWithPolicy } from "@loomwork/learning";
 
 const route = await decideWithPolicy(
   ctx, "route", policy,
@@ -60,7 +60,7 @@ cannot be evaluated later.
 ### 2. Score it
 
 ```ts
-import { recordOutcome } from "@loom/analytics";
+import { recordOutcome } from "@loomwork/analytics";
 
 recordOutcome(ctx, { key: route, score: quality, decisionId: "route" });
 ```
@@ -70,7 +70,7 @@ recordOutcome(ctx, { key: route, score: quality, decisionId: "route" });
 ### 3. Mine the log, offline and out of band
 
 ```ts
-import { trajectories, evaluatePolicy, promotionGate } from "@loom/learning";
+import { trajectories, evaluatePolicy, promotionGate } from "@loomwork/learning";
 
 const ts = trajectories(events, { discount: 0.9 });
 const report = evaluatePolicy(ts, candidatePolicy);
@@ -220,12 +220,12 @@ roll a candidate out and judge it on the traffic it actually saw:
 |---|---|
 | Learning algorithms (UCB, LinUCB, Thompson, PPO) | pure math over a dataset — third-party, behind the SPI |
 | Model training, fine-tuning, GPUs | not a framework concern; loom would lose to dedicated tooling |
-| Anything that writes to the log | this is a read lens, like `@loom/analytics` |
+| Anything that writes to the log | this is a read lens, like `@loomwork/analytics` |
 | Anything that changes behaviour implicitly | a learned policy influences a run **only** through `ctx.decide`, or auditability is gone |
 | Reward definition | only you know what "good" means; loom makes reward cheap to attach and hard to attach wrongly |
 
 For simple bandit routing over models you may not need this package at all — `ucb1` and
-`epsilonGreedy` in `@loom/reasoning` ([ADR 0078](../../docs/adr/0078-exploration-in-the-routing-seam.md))
+`epsilonGreedy` in `@loomwork/reasoning` ([ADR 0078](../../docs/adr/0078-exploration-in-the-routing-seam.md))
 cover that case without any offline pipeline.
 
 See [ADR 0080](../../docs/adr/0080-learning-substrate.md) for the placement reasoning, and the

@@ -16,7 +16,7 @@ export interface StepConfig<TIn, TOut> {
   /**
    * EF — the class of side effect this step's tool performs, from the app's
    * `checks.effectClasses` ordering (e.g. `"external-write"`). Descriptive
-   * metadata: read by `@loom/verify`'s `effect-class` rule at composition time,
+   * metadata: read by `@loomwork/verify`'s `effect-class` rule at composition time,
    * never by the runtime. Absent ⇒ the step is unclassified and the rule reports
    * the flow as only partially verified rather than passing it silently.
    */
@@ -31,7 +31,7 @@ export interface StepConfig<TIn, TOut> {
   /**
    * Capabilities this step can reach at run time without declaring each as a step —
    * an agent's tool menu, an A2A peer's skills. See {@link ReachableTool}. Read by
-   * `@loom/verify`; absent ⇒ nothing added, and the flow verifies exactly as before.
+   * `@loomwork/verify`; absent ⇒ nothing added, and the flow verifies exactly as before.
    */
   reachableTools?: readonly ReachableTool[];
 }

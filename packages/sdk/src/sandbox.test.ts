@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import * as spi from "@loom/sandbox";
+import * as spi from "@loomwork/sandbox";
 import { describe, expect, it } from "vitest";
 import {
   QuickJsSandboxBackend,
@@ -9,12 +9,12 @@ import {
   registerSandboxBackend,
 } from "./sandbox";
 
-// `@loom/sdk/sandbox` carries the backend SPI (ADR 0144) next to the QuickJS plugin, so an app
-// wiring its own backend imports one subpath. These are the SAME values as `@loom/sandbox`'s, not
+// `@loomwork/sdk/sandbox` carries the backend SPI (ADR 0144) next to the QuickJS plugin, so an app
+// wiring its own backend imports one subpath. These are the SAME values as `@loomwork/sandbox`'s, not
 // copies: a second `SandboxEffect` class would split `instanceof` across the two import paths.
 
-describe("@loom/sdk/sandbox", () => {
-  it("re-exports the backend SPI as the same values @loom/sandbox exports", () => {
+describe("@loomwork/sdk/sandbox", () => {
+  it("re-exports the backend SPI as the same values @loomwork/sandbox exports", () => {
     expect(SandboxEffect).toBe(spi.SandboxEffect);
     expect(registerSandboxBackend).toBe(spi.registerSandboxBackend);
     expect(SANDBOX_BACKEND_SPI_VERSION).toBe(spi.SANDBOX_BACKEND_SPI_VERSION);

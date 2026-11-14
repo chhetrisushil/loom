@@ -1,7 +1,7 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { beforeEach, describe, expect, it } from "vitest";
 import { anchorFor, reconstructAt, reconstructMany } from "./reconstruct";
 import type { ReadOnlyEventStore } from "./types";

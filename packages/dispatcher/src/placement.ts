@@ -1,4 +1,4 @@
-import type { ExecutionPolicy } from "@loom/core";
+import type { ExecutionPolicy } from "@loomwork/core";
 import type { DispatchMetadata, PlacementPolicy } from "./types";
 
 // Map the out-of-core ExecutionPolicy (the Loom 2.0 PCB sidecar) onto the advisory

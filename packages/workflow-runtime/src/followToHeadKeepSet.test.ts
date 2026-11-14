@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { Latch, build, flow, settle, slow, until } from "./__tests__/r2Harness";
 import type { Harness } from "./__tests__/r2Harness";

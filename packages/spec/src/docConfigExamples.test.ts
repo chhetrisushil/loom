@@ -146,7 +146,7 @@ function problemsIn(code: string): string[] {
     problems.push(message);
   };
   // Another tool's `defineConfig`, such as Vite's in the compiler guide, is not ours to check.
-  const foreign = /import\s*\{[^}]*\bdefineConfig\b[^}]*\}\s*from\s*["'](?!@loom\/)/.test(code);
+  const foreign = /import\s*\{[^}]*\bdefineConfig\b[^}]*\}\s*from\s*["'](?!@loomwork\/)/.test(code);
   const source = ts.createSourceFile("block.ts", code, ts.ScriptTarget.Latest, true);
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {

@@ -1,4 +1,4 @@
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import {
   EncryptingEventStore,
   InMemoryKeyStore,
@@ -6,7 +6,7 @@ import {
   PayloadShreddedError,
   isShredded,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
 import { build, eventsOf, flow, retirable, sealedSnapshots, until } from "./__tests__/r2Harness";

@@ -19,9 +19,9 @@ concrete payload:
 
 | sink | applier | effect |
 | --- | --- | --- |
-| telemetry / egress scrubbing (K10-R6) | `maskPaths` (`@loom/classify`) | replaces the value with `[redacted]` |
-| field-level encryption (K10.2) | `mapPaths` (`@loom/plugin-crypto`) | AES-256-GCM envelope at append |
-| content externalization (ADR 0046) | `mapPathsAsync` (`@loom/plugin-content`) | value → content-addressed ref |
+| telemetry / egress scrubbing (K10-R6) | `maskPaths` (`@loomwork/classify`) | replaces the value with `[redacted]` |
+| field-level encryption (K10.2) | `mapPaths` (`@loomwork/plugin-crypto`) | AES-256-GCM envelope at append |
+| content externalization (ADR 0046) | `mapPathsAsync` (`@loomwork/plugin-content`) | value → content-addressed ref |
 
 The walker descended objects only. A mark inside an array element — `z.array(z.object({ ssn:
 sensitive(z.string()) }))`, an entirely ordinary shape — produced **no path at all**, so all
@@ -127,5 +127,5 @@ which falls out of content addressing for free.
 The `classification-reachability` rule now fires only on genuinely unaddressable containers,
 so a passing build means something narrower and truer than it did.
 
-No public API is removed. `expandPaths` and `hasWildcard` are exported from `@loom/classify`
+No public API is removed. `expandPaths` and `hasWildcard` are exported from `@loomwork/classify`
 for anyone writing a fourth sink — the point being that they should not write a fourth walker.

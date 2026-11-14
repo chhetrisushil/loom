@@ -29,7 +29,7 @@ product from the implementation choices that are just TypeScript."
 **Build:** a durable execution kernel in `<target language>` — event-sourced, replay-deterministic,
 suspendable — that satisfies the *same normative contract* as Loom's kernel.
 
-**Do not build:** a port. A line-by-line translation of `@loom/*` will fail, because a third of
+**Do not build:** a port. A line-by-line translation of `@loomwork/*` will fail, because a third of
 Loom's surface is TypeScript-specific ergonomics (`$`-suffixed builders, bundler code-splitting,
 structural types) that solve problems the target language does not have.
 

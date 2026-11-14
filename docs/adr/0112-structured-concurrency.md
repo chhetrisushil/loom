@@ -7,7 +7,7 @@
   the fold's existing admission that a sibling can write after a park), K8 cancellation (ADR 0020),
   K9.4 fencing, [ADR 0110](0110-durable-inbox-and-receive-select.md) (scope identity keys waits).
 - Placement: **kernel** for scopes and the park barrier (`WorkflowContext`, `ExecutionJournal`).
-  **1P** (`@loom/orchestration`) for the cascade to child executions: the kernel does not know
+  **1P** (`@loomwork/orchestration`) for the cascade to child executions: the kernel does not know
   children, and the supervisor can already see its parent's terminal events. Shares the Wave 2 bump.
   The scope id is schema-visible through ADR 0110's `waitId`, and (round 1) the scope's outcome is
   journaled as `PARALLEL_COMPLETED` (D2), an EXISTING reserved kind that gains its first writer and a
@@ -121,7 +121,7 @@ step-identity rule exactly as today; the barrier makes the *recorded* order more
 ### D5 — The cancel cascade is 1P
 
 The kernel contributes the signal: an effect that starts a child execution (the supervisor's spawn
-effect) receives the execution's abort signal and must forward it. In `@loom/orchestration`:
+effect) receives the execution's abort signal and must forward it. In `@loomwork/orchestration`:
 
 - `superviseChildren` observes its parent's `EXECUTION_CANCELLED` (live `onEvent`, and the R8
   `recover()` sweep for a parent cancelled while no supervisor was up) and cancels every child it
@@ -162,7 +162,7 @@ completion and the park commit. Cascade: parent cancelled → children cancelled
 
 ## Implementation (as built)
 
-Accepted with R6 (kernel: `WorkflowContext`, `WorkflowRuntime`; 1P: `@loom/orchestration`). The `_scopes` fold key and the
+Accepted with R6 (kernel: `WorkflowContext`, `WorkflowRuntime`; 1P: `@loomwork/orchestration`). The `_scopes` fold key and the
 `metadata.kernel` marker (stamped by the journal) are used as reserved; the `PARALLEL_COMPLETED` payload was extended
 additively by the review round below. What the code does, and where it differs from the text above:
 
@@ -200,7 +200,7 @@ additively by the review round below. What the code does, and where it differs f
   written.
 - **`_failedWhileParked`** can no longer be produced by this kernel's own siblings; the fold keeps the flag for older logs
   (the ADR 0105 tests that produced it live now append the late `STEP_FAILED` by hand).
-- **Cascade (`@loom/orchestration`).** `awaitChild` / `awaitChildren` accept `detached` (per member for a group), recorded in the
+- **Cascade (`@loomwork/orchestration`).** `awaitChild` / `awaitChildren` accept `detached` (per member for a group), recorded in the
   spawn decision. `superviseChildren.onEvent`, on a parent's `EXECUTION_CANCELLED` (or kernel-stamped `EXECUTION_CONTINUED`),
   cancels every non-detached child named by the parent's recorded spawn decisions (read from its log) and by the supervisor's
   in-memory view, through `runtime.cancel(child, JSON.stringify({ kind: "cascade", parent }), systemOptions())` (the recorded

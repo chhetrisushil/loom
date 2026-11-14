@@ -2,13 +2,13 @@ import { randomBytes } from "node:crypto";
 import {
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
-} from "@loom/conformance";
-import type { EventEnvelope } from "@loom/core";
+} from "@loomwork/conformance";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   CoalescingEventStore,
   type EventStore,
   InMemoryAsyncEventStore,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";

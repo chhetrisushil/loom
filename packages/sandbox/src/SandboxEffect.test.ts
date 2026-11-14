@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
-import { TypedFailure } from "@loom/core";
-import type { EffectContext } from "@loom/effect-runtime";
+import { TypedFailure } from "@loomwork/core";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import {
   SANDBOX_BACKEND_SPI_VERSION,

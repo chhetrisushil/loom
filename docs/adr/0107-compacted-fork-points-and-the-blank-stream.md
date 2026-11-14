@@ -10,7 +10,7 @@
   [ADR 0071](0071-read-only-replay-inspector.md) (the inspector's `CompactedHistoryError`,
   whose exactness rule `fork` now shares), [ADR 0022](0022-k10-log-lifecycle-retention-redaction-encryption.md)
   (lifecycle facts on `__loom_lifecycle__`).
-- Placement: **kernel (`@loom/workflow-runtime`, `@loom/replay-vm`, `@loom/event-runtime`)**
+- Placement: **kernel (`@loomwork/workflow-runtime`, `@loomwork/replay-vm`, `@loomwork/event-runtime`)**
   plus one operator command (`loom repair blank-stream`). **KERNEL_ABI unchanged (1.1.0)**.
   **EVENT_SCHEMA 1.21.0 → 1.22.0** (additive MINOR): one new event kind, `EVENTS_REHOMED`.
   **No SPI change.** `isReservedStream("")` is now `true`.
@@ -231,13 +231,13 @@ No second consumer is claimed. This repairs a kernel defect's durable output and
 and no SPI method. Every new or changed public name:
 
 - `CompactedForkPointError` (`reason`, `forkableFrom`, `forkableThrough`), from
-  `@loom/workflow-runtime`;
+  `@loomwork/workflow-runtime`;
 - `LogLifecycle.blankStreamCensus()` and `LogLifecycle.rehomeBlankStream()`;
 - `REHOMED_FROM_KEY` and the types `BlankStreamCensus`, `BlankStreamSegment`,
   `BlankSegmentStatus`, `RehomeAssignment`, `RehomeProof`, `UnattributedRun`;
 - the `EVENTS_REHOMED` event kind, a kernel audit fact beside `EXECUTION_ARCHIVED`/`_DELETED`;
 - the `loom repair blank-stream` command;
-- a changed meaning: `isReservedStream("")` is now `true` (`@loom/event-runtime`), and
+- a changed meaning: `isReservedStream("")` is now `true` (`@loomwork/event-runtime`), and
   `shredSubject` refuses reserved ids among its `executionIds`.
 
 Each one is the operator surface of the repair or the error of the fix. None is vocabulary a

@@ -1,6 +1,6 @@
-# @loom/fair-scheduler — per-tenant fair scheduling
+# @loomwork/fair-scheduler — per-tenant fair scheduling
 
-A drop-in replacement for `@loom/scheduler`'s `createScheduler` that, when work queues behind a
+A drop-in replacement for `@loomwork/scheduler`'s `createScheduler` that, when work queues behind a
 concurrency cap, dispatches with **weighted round-robin across tenants** — so no single tenant can
 starve the others. It implements the same `Scheduler` interface, so it slots into any consumer.
 
@@ -8,7 +8,7 @@ starve the others. It implements the same `Scheduler` interface, so it slots int
 > preserved). See [ADR 0038](../../docs/adr/0038-per-tenant-fair-scheduler.md).
 
 ```ts
-import { createFairScheduler } from "@loom/fair-scheduler";
+import { createFairScheduler } from "@loomwork/fair-scheduler";
 
 const scheduler = createFairScheduler({ concurrency: 8 });
 

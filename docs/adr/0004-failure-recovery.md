@@ -77,7 +77,7 @@ fold distinguishes them, because the difference is not a fact about the executio
 fact about the cluster. Only the deployment knows.
 
 **What ships.** `recoverAbandoned(runtime, { source, isAbandoned })` in
-`@loom/workflow-runtime`: a maintenance pass that enumerates via the shared
+`@loomwork/workflow-runtime`: a maintenance pass that enumerates via the shared
 `iterateExecutionIds` loop, filters to `running`/`pending`, asks the caller's predicate, and
 resumes what it claims through the **same** `EXECUTION_RECOVERED` path the worker uses under
 redispatch. It re-checks status immediately before acting, so an execution that settled
@@ -121,7 +121,7 @@ effect ran 5 times (sequence-0 race) or 6 (duplicate dispatch after the bootstra
 `SupervisingDispatcher({ maxRestarts: 2 })` over them, 18. The bound this ADR states — *the
 single interrupted step may run twice* — held only at `maxAttempts: 1`.
 
-**Decision.** `isSupersededRefusal(err, executionId)` in `@loom/worker-runtime` names that
+**Decision.** `isSupersededRefusal(err, executionId)` in `@loomwork/worker-runtime` names that
 refusal, and a dispatcher MUST NOT retry or redispatch on it (Dispatcher SPI **1.1.0**, a
 conformance-kit case enabled by `runExecutionDispatcherConformance(…, { overWorker })`).
 `LocalDispatcher` rethrows it on the attempt that saw it; `SupervisingDispatcher` rethrows it

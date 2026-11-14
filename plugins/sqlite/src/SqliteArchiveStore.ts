@@ -5,7 +5,7 @@ import {
   type ArchiveStore,
   assertReplaceable,
   classifyAppend,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import Database from "better-sqlite3";
 
 // ADR 0138 — the SQLite compaction archive. One row per segment, keyed (execution_id, from_seq).

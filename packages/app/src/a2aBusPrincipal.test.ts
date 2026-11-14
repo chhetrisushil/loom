@@ -1,7 +1,7 @@
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime, executionAccessPolicy } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { InProcessA2ABus, unsafeAutoApprove } from "./InProcessA2ABus";

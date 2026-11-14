@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { AgentLoopConfigError, agentLoop$, resetAgentLoopDefaults } from "@loom/agent";
-import type { EffectReasoningDefaults } from "@loom/effect-runtime";
-import { createLlmEffect } from "@loom/llm";
-import type { LlmProvider, ReasoningStore } from "@loom/llm";
-import type { RegisteredFlow } from "@loom/workflow-runtime";
+import { AgentLoopConfigError, agentLoop$, resetAgentLoopDefaults } from "@loomwork/agent";
+import type { EffectReasoningDefaults } from "@loomwork/effect-runtime";
+import { createLlmEffect } from "@loomwork/llm";
+import type { LlmProvider, ReasoningStore } from "@loomwork/llm";
+import type { RegisteredFlow } from "@loomwork/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineConfig } from "./defineConfig";
 
@@ -159,7 +159,7 @@ describe("observability.reasoning.requireContinuation (ADR 0133 D7)", () => {
   beforeEach(() => resetAgentLoopDefaults());
   const direct = (capable: boolean) => ({
     definition: { id: "a", name: "A", tools: [] } as never,
-    // Only the route list is read by the configuration check (app has no @loom/reasoning dependency).
+    // Only the route list is read by the configuration check (app has no @loomwork/reasoning dependency).
     reasoning: { availableRoutes: [{ id: "r1", provider: thinker(capable), tier: 0 }] } as never,
   });
   const ctx = {} as never; // the configuration check runs before the context is touched

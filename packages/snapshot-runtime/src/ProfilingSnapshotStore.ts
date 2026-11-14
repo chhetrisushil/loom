@@ -1,4 +1,4 @@
-import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
+import { type DecoratorPlan, installOptional } from "@loomwork/event-runtime";
 import { BoundedTopN } from "./BoundedTopN";
 import { encodeState } from "./snapshotCodec";
 import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "./types";

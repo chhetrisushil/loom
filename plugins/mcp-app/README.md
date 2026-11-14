@@ -1,17 +1,17 @@
-# @loom/plugin-mcp-app — serve a Loom agent surface as an MCP App
+# @loomwork/plugin-mcp-app — serve a Loom agent surface as an MCP App
 
 Projects a Loom agent surface onto the MCP Apps extension (SEP-1865, `io.modelcontextprotocol/ui`), so
 an MCP host that supports it can render a Loom-driven UI. It is the server half only. Loom serves one
 static, content-pinned HTML template (`ui://loom/surface-host`) that renders a declarative A2UI
 component tree, and a hidden cursor tool the rendered view polls for changes. Hosting the view, meaning
 the iframe, its CSP and `postMessage`, is out of scope (ADR 0072). Use it with `createMcpServer` from
-`@loom/plugin-mcp`.
+`@loomwork/plugin-mcp`.
 
 ```ts
-import { column, text, bind } from "@loom/plugin-a2ui";
-import { createMcpServer } from "@loom/plugin-mcp";
-import { surfaceCursorTool, surfaceHostPin, surfaceHostResource } from "@loom/plugin-mcp-app";
-import type { EventStore } from "@loom/event-runtime";
+import { column, text, bind } from "@loomwork/plugin-a2ui";
+import { createMcpServer } from "@loomwork/plugin-mcp";
+import { surfaceCursorTool, surfaceHostPin, surfaceHostResource } from "@loomwork/plugin-mcp-app";
+import type { EventStore } from "@loomwork/event-runtime";
 
 declare const eventStore: EventStore;
 
@@ -65,6 +65,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 - [ADR 0072](../../docs/adr/0072-mcp-apps-ui-extension-placement.md): placement and the host-role boundary.
 - [ADR 0069](../../docs/adr/0069-a2ui-egress-adapter.md): the A2UI component model it reuses.
-- API reference: section "`@loom/plugin-mcp-app` — MCP Apps (SEP-1865) egress" in
+- API reference: section "`@loomwork/plugin-mcp-app` — MCP Apps (SEP-1865) egress" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

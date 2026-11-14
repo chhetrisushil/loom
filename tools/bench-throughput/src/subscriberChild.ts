@@ -1,4 +1,4 @@
-import { PostgresEventStore } from "@loom/plugin-postgres";
+import { PostgresEventStore } from "@loomwork/plugin-postgres";
 
 /**
  * A subscriber "node" for scenario H, run as its own PROCESS.

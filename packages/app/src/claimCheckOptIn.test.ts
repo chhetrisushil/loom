@@ -1,14 +1,14 @@
-import { isTainted, taintOf, tainted } from "@loom/classify";
-import type { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { isTainted, taintOf, tainted } from "@loomwork/classify";
+import type { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   InMemorySecretResolver,
   claimCheckMiddleware,
   isClaimCheck,
   previewDigest,
   redactionMiddleware,
-} from "@loom/middleware";
-import { ArchiveStoresRequiredError, sweepUnpinnedContent } from "@loom/plugin-content";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+} from "@loomwork/middleware";
+import { ArchiveStoresRequiredError, sweepUnpinnedContent } from "@loomwork/plugin-content";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import {
   CloningEventStore,

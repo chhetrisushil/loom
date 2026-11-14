@@ -1,5 +1,5 @@
 {
-  "name": "@loom/sandbox",
+  "name": "@loomwork/sandbox",
   "version": "0.1.0",
   "description": "Sandbox backend SPI for Loom — bring your own isolation boundary for model-written code, keep loom's limits, channels and replay rules (ADR 0144)",
   "main": "./dist/index.js",
@@ -20,8 +20,8 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {

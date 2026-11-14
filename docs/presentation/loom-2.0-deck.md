@@ -154,7 +154,7 @@ Logged recall → replay serves the **same** recalled set even if the store late
 
 1.0's durable backend was single-node SQLite. Horizontal scale needs a network store.
 
-`@loom/plugin-postgres` — same interfaces as SQLite:
+`@loomwork/plugin-postgres` — same interfaces as SQLite:
 
 - `PostgresEventStore` / `SnapshotStore` / `BranchRegistry` (JSONB payloads, server-side `copyPrefix`)
 - **Cross-node live subscribe** via `LISTEN/NOTIFY` (each store ignores its own NOTIFYs)
@@ -186,14 +186,14 @@ The first six rings governed *who/how-much/what's-safe*. The second series close
 
 | Ring | Mechanism |
 |---|---|
-| **K7 Data-plane isolation** | `@loom/isolate` — untrusted tool code behind a child-process boundary + **brokered egress** (`EGRESS_DENIED`) |
+| **K7 Data-plane isolation** | `@loomwork/isolate` — untrusted tool code behind a child-process boundary + **brokered egress** (`EGRESS_DENIED`) |
 | **K8 Cancellation & deadlines** | non-cooperative kill path; enforced deadlines; bounded in-flight effects |
 | **K9 Delivery contract** | idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing tokens |
-| **K10 Log lifecycle** | retention, **crypto-shredding** (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/plugin-crypto`) |
+| **K10 Log lifecycle** | retention, **crypto-shredding** (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loomwork/plugin-crypto`) |
 | **K11 Flow-code versioning** | `flowContentHash` pins or migrates in-flight executions (`EXECUTION_MIGRATED`) — never silent |
 | **K12 Identity & tenancy** | principal chain · verified approvals (`APPROVAL_GRANTED`) · delegated authority · tenant-scoped stores |
 | **T1 Durable timers** | `ctx.sleep`/`sleepUntil` + scheduled executions (`TIMER_FIRED`, `schedule$` cron) |
-| **T2 Wire-level ABI** | `@loom/wire-abi` — a versioned JSON-RPC projection of K1 for language neutrality |
+| **T2 Wire-level ABI** | `@loomwork/wire-abi` — a versioned JSON-RPC projection of K1 for language neutrality |
 
 > Each is **opt-in** and **byte-identical to Loom 1.x when unwired** (P10); every verdict is a folded event (P9). One ADR per item ([0019–0026](../adr/)).
 

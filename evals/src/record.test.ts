@@ -1,4 +1,4 @@
-import type { LlmProvider, LlmRequest } from "@loom/llm";
+import type { LlmProvider, LlmRequest } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { TASKS } from "./agentLoop/tasks";
 import { MODEL_ENV, type RecordDeps, judgeRecording, runRecord } from "./record";

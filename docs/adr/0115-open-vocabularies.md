@@ -19,7 +19,7 @@ Three closed enums in the kernel name one application style.
 - `EffectKind = "tool" | "llm" | "human" | "a2a"` (`core/src/types/definitions.ts`). The only
   *semantic* use in the kernel is `kindOf(...) === "human"`, which changes replay (a human step parks
   and its answer is a resume, `WorkflowContext.execute`, the stray-passthrough scanner). `llm` and
-  `a2a` are labels; `a2a` is a named external protocol, and `A2AEffect` lives in `@loom/effect-runtime`.
+  `a2a` are labels; `a2a` is a named external protocol, and `A2AEffect` lives in `@loomwork/effect-runtime`.
   A `"sensor"`, `"robot"` or `"payment"` effect cannot declare its kind without a core edit.
 - `TaskKind` adds `agent`, `ui`, `memory`, `plan`: the vocabulary of one way of building agents.
 - `ResourceDimension = "tokens" | "costUsd" | "ms" | "memBytes" | "wallMs" | "netBytes"` and a fixed
@@ -38,7 +38,7 @@ parks the flow for an external answer.* Every other value is advisory metadata (
 compatibility, analytics, authorization displays). A custom kind must match
 `/^[a-z][a-z0-9._-]{0,63}$/`, so a kind is safe to use as a map key and a metrics label.
 
-`A2AEffect` and the `"a2a"` literal move to `@loom/plugin-a2a`; `@loom/effect-runtime` keeps a
+`A2AEffect` and the `"a2a"` literal move to `@loomwork/plugin-a2a`; `@loomwork/effect-runtime` keeps a
 deprecated re-export for one minor. `"ui"` leaves `TaskKind`'s documented set with ADR 0114.
 
 ### D2 — Custom metering dimensions
@@ -108,9 +108,9 @@ bad keys folds to the same state on two replicas); fold equality on every existi
   ceiling override, the consumers (quota, `negotiateBudget`, middleware) and the descriptive map below.
 - **D1.** `KnownEffectKind` / `KnownTaskKind` document the first-party names; `EffectKind` /
   `TaskKind` are `Known | (string & {})`. The pattern is `VOCABULARY_NAME_PATTERN` (exported from
-  `@loom/core`, one constant for kinds and dimensions). `EffectRuntime.register` refuses a kind that fails
+  `@loomwork/core`, one constant for kinds and dimensions). `EffectRuntime.register` refuses a kind that fails
   it. `"ui"` left `KnownTaskKind` (ADR 0114). `"human"` is pinned by a test: a custom effect declaring
-  `kind: "human"` parks. `A2AEffect` is now defined in `@loom/plugin-a2a`; `@loom/effect-runtime` keeps a
+  `kind: "human"` parks. `A2AEffect` is now defined in `@loomwork/plugin-a2a`; `@loomwork/effect-runtime` keeps a
   deprecated **copy**, not a re-export (a re-export would make a kernel-adjacent package depend on a plugin
   that depends on it). The copy is removed with the next effect-runtime major.
 - **D2 ceilings.** `WorkflowRuntimeDeps.meterCeilings` (and `defineConfig({ kernel: { meterCeilings } })`)
@@ -137,7 +137,7 @@ bad keys folds to the same state on two replicas); fold equality on every existi
   built-in ceiling breach does. Summed custom totals can exceed 2^53 (a single increment is capped at 1e15 and
   the fold is deterministic), so treat a very large total as approximate.
 - **Not done.** No unit or price registry (as designed).
-- **Analytics (follow-up, done).** `@loom/analytics` attributes `RESOURCE_METERED.custom` like the built-ins:
+- **Analytics (follow-up, done).** `@loomwork/analytics` attributes `RESOURCE_METERED.custom` like the built-ins:
   `analyze(...).cost.custom` / `costAnalytics` (per execution) and `resourceGraph` / `introspect`
   (`total.custom`, `byStep[].custom`; `loom introspect` prints them), in the same single pass. Absent when
   nothing custom was metered, so built-in output is unchanged. Bounded per report: at most 32 distinct names,
@@ -153,4 +153,4 @@ bad keys folds to the same state on two replicas); fold equality on every existi
 
 ## Update 2026-10-11 — the deprecated `A2AEffect` copy is removed
 
-`@loom/effect-runtime` no longer exports `A2AEffect` (the deprecated copy described in D1 above was deleted ahead of the "next major" it was scheduled for; user request). Import it from `@loom/plugin-a2a`. A search of this repo and the sibling repos found no source import of it from `@loom/effect-runtime`; the plugin's copy-parity test was deleted with the copy.
+`@loomwork/effect-runtime` no longer exports `A2AEffect` (the deprecated copy described in D1 above was deleted ahead of the "next major" it was scheduled for; user request). Import it from `@loomwork/plugin-a2a`. A search of this repo and the sibling repos found no source import of it from `@loomwork/effect-runtime`; the plugin's copy-parity test was deleted with the copy.

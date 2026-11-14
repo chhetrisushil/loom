@@ -14,15 +14,15 @@ import {
   scanApp,
   typecheck,
   writeLockfile,
-} from "@loom/appgen";
-import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
-import { generateRegistration } from "@loom/scaffold";
+} from "@loomwork/appgen";
+import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loomwork/llm";
+import { generateRegistration } from "@loomwork/scaffold";
 import { unifiedDiff } from "./diff";
 import { discoverFlows } from "./gen";
 import { containmentRootFor } from "./gen";
 import { assertNoSymlinkPath, safeWriteFile } from "./safeWrite";
 
-/** A structural view of a `@loom/reasoning` ModelRoute — avoids a hard dep here. */
+/** A structural view of a `@loomwork/reasoning` ModelRoute — avoids a hard dep here. */
 type ModelRoute = { id: string; provider: unknown; tier: number; tags?: string[] };
 
 /** Env var carrying each API provider's key — checked upfront for a clear error. */
@@ -34,11 +34,11 @@ const KEY_ENV: Record<string, string> = {
 
 /**
  * Resolve a `--model` provider spec into a reasoning `ModelRoute`:
- *   `anthropic:<model>` / `openai:<model>` / `gemini:<model>` → the `@loom/llm` API provider
+ *   `anthropic:<model>` / `openai:<model>` / `gemini:<model>` → the `@loomwork/llm` API provider
  *     (key from the provider's env var), or
  *   `gemma:<path>` / `local:<path>` / a bare `<path>.gguf`     → the local Gemma provider
- *     (`m.gemmaRoute`, from the optional `@loom/appgen-model`).
- * `m` is the lazily-loaded `@loom/appgen-model` (its `gemmaRoute`/`DEFAULT_TIER` are used only
+ *     (`m.gemmaRoute`, from the optional `@loomwork/appgen-model`).
+ * `m` is the lazily-loaded `@loomwork/appgen-model` (its `gemmaRoute`/`DEFAULT_TIER` are used only
  * for the local case). Provider-agnostic: the planner reasons over whichever model is named.
  */
 export function routeFromSpec(
@@ -138,7 +138,7 @@ export interface AppgenOptions {
    * Plan with a model of your choice instead of the deterministic grammar parser. `spec` is a
    * provider spec — `anthropic:<model>`, `openai:<model>`, `gemini:<model>` (API key from the
    * provider's env var), or a local `.gguf` path / `gemma:<path>` (via the optional
-   * `@loom/appgen-model` package). `bigSpec` is an optional stronger tier the reasoning ladder
+   * `@loomwork/appgen-model` package). `bigSpec` is an optional stronger tier the reasoning ladder
    * elevates to. Falls back to deterministic if the provider/model is unavailable. Ignored when
    * `offline` is set.
    */
@@ -163,24 +163,24 @@ export interface AppgenOptions {
 export type Planner = "deterministic" | "model";
 export type Elevation = { from: string; to: string; reason: string };
 
-// biome-ignore lint/suspicious/noExplicitAny: @loom/appgen-model is an optional, lazily-loaded peer.
+// biome-ignore lint/suspicious/noExplicitAny: @loomwork/appgen-model is an optional, lazily-loaded peer.
 type AppgenModelModule = any;
 
 // A genuine dynamic `import()` preserved through `new Function`. tsc under `module:
 // CommonJS` would down-level `import()` to `require()`, which cannot load an ESM-only
-// package (@loom/appgen-model pulls in node-llama-cpp, an ESM/top-level-await module).
+// package (@loomwork/appgen-model pulls in node-llama-cpp, an ESM/top-level-await module).
 const esmImport = new Function("s", "return import(s)") as (
   s: string
 ) => Promise<AppgenModelModule>;
 
 /**
- * Load the optional `@loom/appgen-model` package. Resolution order:
+ * Load the optional `@loomwork/appgen-model` package. Resolution order:
  *  1. from the target project (`dir`) — the intended UX is
- *     `pnpm add @loom/appgen-model node-llama-cpp` in your app;
+ *     `pnpm add @loomwork/appgen-model node-llama-cpp` in your app;
  *  2. from the CLI itself (when hoisted into the CLI's own node_modules);
- *  3. as a sibling of `@loom/appgen` (which the CLI always resolves) — `appgen-model`
+ *  3. as a sibling of `@loomwork/appgen` (which the CLI always resolves) — `appgen-model`
  *     sits next to `appgen` both in the source monorepo (`packages/*`) and in an
- *     installed layout (`node_modules/@loom/*`), so in-repo dev works without a
+ *     installed layout (`node_modules/@loomwork/*`), so in-repo dev works without a
  *     per-app install;
  *  4. the bare specifier.
  */
@@ -189,16 +189,16 @@ async function loadAppgenModel(dir: string): Promise<AppgenModelModule> {
   const { pathToFileURL } = await esmImport("node:url");
   for (const anchor of [path.join(path.resolve(dir), "package.json"), __filename]) {
     try {
-      const resolved = createRequire(anchor).resolve("@loom/appgen-model");
+      const resolved = createRequire(anchor).resolve("@loomwork/appgen-model");
       return await esmImport(pathToFileURL(resolved).href);
     } catch {
       // try the next anchor
     }
   }
   try {
-    // @loom/appgen resolves to `<base>/appgen/dist/index.js`; its sibling is
-    // `<base>/appgen-model/dist/index.js` in both packages/* and node_modules/@loom/*.
-    const appgenMain = createRequire(__filename).resolve("@loom/appgen");
+    // @loomwork/appgen resolves to `<base>/appgen/dist/index.js`; its sibling is
+    // `<base>/appgen-model/dist/index.js` in both packages/* and node_modules/@loomwork/*.
+    const appgenMain = createRequire(__filename).resolve("@loomwork/appgen");
     const sibling = path.resolve(
       path.dirname(appgenMain),
       "..",
@@ -211,12 +211,12 @@ async function loadAppgenModel(dir: string): Promise<AppgenModelModule> {
   } catch {
     // fall through to the bare specifier
   }
-  return await esmImport("@loom/appgen-model");
+  return await esmImport("@loomwork/appgen-model");
 }
 
 /**
  * Plan the change: a local model when `--model` is set and the optional
- * `@loom/appgen-model` package is installed, otherwise the deterministic parser. The
+ * `@loomwork/appgen-model` package is installed, otherwise the deterministic parser. The
  * model path itself also falls back to deterministic internally on any model failure, so
  * this always resolves to a valid ChangeSpec.
  */
@@ -246,7 +246,7 @@ async function planChange(
       process.stderr.write(
         `appgen: model planner unavailable (${
           err instanceof Error ? err.message : String(err)
-        }); using the deterministic parser. For an API model set its key (e.g. ANTHROPIC_API_KEY); for a local .gguf install @loom/appgen-model + node-llama-cpp.\n`
+        }); using the deterministic parser. For an API model set its key (e.g. ANTHROPIC_API_KEY); for a local .gguf install @loomwork/appgen-model + node-llama-cpp.\n`
       );
     }
   }

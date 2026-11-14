@@ -1,4 +1,4 @@
-import type { TimerRecord, TimerStore } from "@loom/event-runtime";
+import type { TimerRecord, TimerStore } from "@loomwork/event-runtime";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 

@@ -1,6 +1,6 @@
-import { type TaintedValue, isTainted, tainted, unwrapTainted } from "@loom/classify";
-import { VOCABULARY_NAME_PATTERN, isVocabularyName } from "@loom/core";
-import { Priority, type Scheduler } from "@loom/scheduler";
+import { type TaintedValue, isTainted, tainted, unwrapTainted } from "@loomwork/classify";
+import { VOCABULARY_NAME_PATTERN, isVocabularyName } from "@loomwork/core";
+import { Priority, type Scheduler } from "@loomwork/scheduler";
 import {
   type CapabilityAuthorizer,
   CapabilityDeniedError,
@@ -467,7 +467,7 @@ export class EffectRuntime {
 
   /**
    * A registered effect's declared determinism-boundary mode (ADR 0073), for tooling —
-   * `@loom/verify` reads it to flag a `journaled` effect reached from a `ctx.decide`
+   * `@loomwork/verify` reads it to flag a `journaled` effect reached from a `ctx.decide`
    * scope, which the transient seam refuses. `undefined` when undeclared or unregistered.
    */
   modeOf(toolId: string): Effect["mode"] | undefined {

@@ -16,8 +16,8 @@
   `EVENT_SCHEMA` and every other SPI are unchanged. New additive options on existing stores and presets, a new
   `durability.snapshots` config group, a new `loom snapshot show` command, a new nullable column and a `NOT VALID` CHECK on
   Postgres `snapshots` that exist only when the operator opts in (`state` stays `NOT NULL`).
-- Placement: **1P**, in `@loom/snapshot-runtime` (the codec), `@loom/plugin-sqlite`, `@loom/plugin-postgres`,
-  `@loom/plugin-crypto`, `@loom/app` (config) and the CLI. Kernel untouched. Reviewed as storage + schema
+- Placement: **1P**, in `@loomwork/snapshot-runtime` (the codec), `@loomwork/plugin-sqlite`, `@loomwork/plugin-postgres`,
+  `@loomwork/plugin-crypto`, `@loomwork/app` (config) and the CLI. Kernel untouched. Reviewed as storage + schema
   migration + a security boundary (the sealed path).
 
 ## Context
@@ -43,7 +43,7 @@ stores `JSON.stringify(state)` verbatim (compressed) is MORE faithful than the c
 
 ### D1 — The frame: one format byte, then JSON or zstd of JSON
 
-`@loom/snapshot-runtime` `encodeState` / `decodeState`. A frame is `[format byte][payload]`:
+`@loomwork/snapshot-runtime` `encodeState` / `decodeState`. A frame is `[format byte][payload]`:
 
 | byte | payload |
 |---|---|

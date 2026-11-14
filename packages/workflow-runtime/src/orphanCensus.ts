@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import {
   type ExecutionEnumerable,
   type Lease,
@@ -6,12 +6,12 @@ import {
   isPayloadShredded,
   isReservedStream,
   iterateExecutionIds,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { isSealedUnreadable } from "./sealGuard";
 
 /**
  * All a census needs: the folding read. Structural, so a `WorkflowRuntime` satisfies it and a
- * caller that only has stores does not have to build one — the same shape `@loom/live-query`
+ * caller that only has stores does not have to build one — the same shape `@loomwork/live-query`
  * takes, and for the same reason.
  */
 export interface CensusStateReader {

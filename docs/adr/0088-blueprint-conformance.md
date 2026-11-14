@@ -20,12 +20,12 @@ viewer is whatever validates it on the way out.
 
 Nothing did, on either path:
 
-- `@loom/blueprint-runtime` widens `Widget.kind` to `string` so custom renderers can register any
+- `@loomwork/blueprint-runtime` widens `Widget.kind` to `string` so custom renderers can register any
   kind. `customWidget$` and `RendererRegistry.register` accept anything. There was no validator.
 - `plugins/a2ui` has a real, schema-typed catalogue (`defineCatalog`) and `A2UISurfaceBridge`
   stamps `catalogId` on every `createSurface` **without checking a component against it**.
 
-Neither `@loom/verify` nor the compiler knows the word "blueprint". A declared vocabulary that
+Neither `@loomwork/verify` nor the compiler knows the word "blueprint". A declared vocabulary that
 enforces nothing reads as coverage while checking nothing — the failure mode
 [ADR 0083](0083-second-consumer-rule.md) and the classification-reachability work both exist to
 prevent — and it fails per viewer, at render time, once the surface is already open.
@@ -188,15 +188,15 @@ that most callers would leave off.
 
 ## Consequences
 
-- `@loom/blueprint-runtime` gains `validateBlueprint`, `catalogCoverage`, `defineWidgetCatalog`,
+- `@loomwork/blueprint-runtime` gains `validateBlueprint`, `catalogCoverage`, `defineWidgetCatalog`,
   `builtinCatalog`, `BUILTIN_CATALOG_ID` and their types. No existing signature changed.
-- `@loom/plugin-renderer-react` gains three renderers and a coverage test that fails the build if
+- `@loomwork/plugin-renderer-react` gains three renderers and a coverage test that fails the build if
   a kind is added to `builtinCatalog` without one.
-- `@loom/plugin-a2ui` gains `validateComponents`, `validateFunctionCall`, `describeFindings`,
+- `@loomwork/plugin-a2ui` gains `validateComponents`, `validateFunctionCall`, `describeFindings`,
   `A2UISurfaceBridge.recompose()` and a `catalog` option. **Two breaking changes, both loud:**
   passing `catalogId` for a catalogue you do not supply now throws at construction, and
   `callFunction` throws for a name the catalogue does not declare. Neither can fail silently.
-- `@loom/agent-surface` gains `PatchProvenance`, `surfaceProvenanceProjection`, `provenanceOf` and
+- `@loomwork/agent-surface` gains `PatchProvenance`, `surfaceProvenanceProjection`, `provenanceOf` and
   `SurfaceEmitter.as`. All additive; a log written without `by` folds identically.
 - Every check is verified by its **negative** case — each was individually disabled and the suite
   went red for it — because a declared check and an enforced one look identical in a green suite.
@@ -253,7 +253,7 @@ key equals its own `component.const`, and every `functions` entry's key equals i
 every later check indexes `catalog.components` by key, so a mis-keyed entry would silently never
 match the instances it exists to validate.
 
-**`@loom/plugin-mcp-app` never validated at all.** `surfacePayload` reused `ComponentInstance` with
+**`@loomwork/plugin-mcp-app` never validated at all.** `surfacePayload` reused `ComponentInstance` with
 no `validateComponents` call, and the template's renderer (`template.ts`) returns `null` for an
 unknown component type — a silent hole in the rendered view, one transport binding away from the
 defect D5 closed on the A2UI egress path. `SurfacePayloadOptions` gains `catalog?: A2UICatalog`
@@ -268,10 +268,10 @@ JSON-Schema engine plus `$ref` resolution, deferred until a consumer ships a cat
 values (loom-ui is the likelier home). `callFunction` argument validation is deferred with it, for
 the same reason.
 
-- `@loom/plugin-a2ui` gains `validateCatalog` and the four finding codes above; `ValidateComponentsOptions`
+- `@loomwork/plugin-a2ui` gains `validateCatalog` and the four finding codes above; `ValidateComponentsOptions`
   gains `knownComponents?: ReadonlyMap<string, ComponentInstance>`. Additive — no existing signature
   changed, and every existing conformant tree still validates.
-- `@loom/plugin-mcp-app` gains `SurfacePayloadOptions.catalog`. **One breaking change, loud:**
+- `@loomwork/plugin-mcp-app` gains `SurfacePayloadOptions.catalog`. **One breaking change, loud:**
   `surfacePayload` now throws for a tree it previously passed through unexamined.
 - No new event type, no syscall, no fold change. **KERNEL_ABI unchanged (1.1.0); EVENT_SCHEMA
   unchanged (1.18.0).**

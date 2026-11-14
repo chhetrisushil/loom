@@ -1,13 +1,13 @@
-import { unwrapTainted } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+import { unwrapTainted } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   INBOX_LAYOUT_STREAM,
   INBOX_TOPIC_SEQ_BASE,
   inboxRegistryStreamId,
   inboxStreamsOfChain,
   inboxTopicStreamId,
-} from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { inboxBackends } from "./__tests__/r2Backends";

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { isTainted, unwrapTainted } from "@loom/classify";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectContext, EffectDelta, EffectMiddleware } from "@loom/effect-runtime";
+import { isTainted, unwrapTainted } from "@loomwork/classify";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectContext, EffectDelta, EffectMiddleware } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { createLlmEffect } from "./createLlmEffect";
 import { assistantMessageOf } from "./parts";

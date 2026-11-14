@@ -1,6 +1,6 @@
 // ── Publishing the template as a served resource ─────────────────────────────
 
-import type { McpServedResource } from "@loom/plugin-mcp";
+import type { McpServedResource } from "@loomwork/plugin-mcp";
 import {
   SURFACE_HOST_MIME_TYPE,
   SURFACE_HOST_TEMPLATE,

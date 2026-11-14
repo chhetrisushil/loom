@@ -15,7 +15,7 @@ export const settle = (): Promise<void> => new Promise((resolve) => setTimeout(r
  *    is the `INSERT OR IGNORE` shape that loses a re-cited blob to a concurrent sweep.
  * Resolves for a store with none of the three (an SPI 1.2 store) and for a conforming one.
  * Internal to the kit: exported from THIS module only so the kit's own negative tests can
- * prove it fires. It is not part of `@loom/conformance`'s public surface (ADR 0083: no second
+ * prove it fires. It is not part of `@loomwork/conformance`'s public surface (ADR 0083: no second
  * consumer).
  */
 export async function checkContentStoreTouchContract(store: ContentStoreLike): Promise<void> {

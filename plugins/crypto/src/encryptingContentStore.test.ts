@@ -1,12 +1,12 @@
 import { createDecipheriv, createHmac } from "node:crypto";
-import { runContentStoreConformance } from "@loom/conformance";
-import { isKeyUnavailable, isPayloadShredded } from "@loom/event-runtime";
+import { runContentStoreConformance } from "@loomwork/conformance";
+import { isKeyUnavailable, isPayloadShredded } from "@loomwork/event-runtime";
 import {
   type ContentRef,
   type ContentStore,
   InMemoryContentStore,
   contentAddress,
-} from "@loom/plugin-content";
+} from "@loomwork/plugin-content";
 import { describe, expect, it } from "vitest";
 import { EncryptingContentStore } from "./EncryptingContentStore";
 import {

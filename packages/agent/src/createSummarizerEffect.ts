@@ -1,7 +1,7 @@
-import { tainted } from "@loom/classify";
-import type { LlmEffect } from "@loom/effect-runtime";
-import { createLlmEffect } from "@loom/llm";
-import type { LlmProvider } from "@loom/llm";
+import { tainted } from "@loomwork/classify";
+import type { LlmEffect } from "@loomwork/effect-runtime";
+import { createLlmEffect } from "@loomwork/llm";
+import type { LlmProvider } from "@loomwork/llm";
 import { summarizerText } from "./summarizerText";
 
 /** The taint origin the built-in summarizer re-wraps the transcript under (it is untrusted DATA to the model). */
@@ -39,7 +39,7 @@ type SummarizerInput = { messages: { role: string; content?: unknown }[] };
 
 /**
  * ADR 0137 - a ready-made summarizer for `agentLoop$({ compaction: { toolId, afterBytes } })`:
- * `{ messages } -> { summary }`, the same contract `@loom/conversation`'s `budget.summarizerToolId`
+ * `{ messages } -> { summary }`, the same contract `@loomwork/conversation`'s `budget.summarizerToolId`
  * takes, so ONE registered effect serves both.
  *
  * You supply the model (a provider, or a route's `provider` from a `ReasoningRuntime`); the effect

@@ -1,4 +1,4 @@
-import { type CaseRun, type Grader, exactMatch, jsonSchema, regexMatch } from "@loom/eval";
+import { type CaseRun, type Grader, exactMatch, jsonSchema, regexMatch } from "@loomwork/eval";
 import { z } from "zod";
 import type { TaskOutput } from "./subject";
 import type { Expected } from "./tasks";

@@ -1,9 +1,9 @@
-import { MetricCard, blueprint$, stack } from "@loom/blueprint-runtime";
+import { MetricCard, blueprint$, stack } from "@loomwork/blueprint-runtime";
 import { describe, expect, it } from "vitest";
 import { renderBlueprintToDom } from "./renderBlueprint";
 
 // Characterisation (ADR 0127 residual): the DOM markup for every status state and combination,
-// pinned BEFORE the marker decision moved into @loom/blueprint-runtime.
+// pinned BEFORE the marker decision moved into @loomwork/blueprint-runtime.
 
 const f = (message: string) => ({ code: "c", message });
 const degraded = [

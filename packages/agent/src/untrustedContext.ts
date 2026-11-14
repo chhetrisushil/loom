@@ -1,4 +1,4 @@
-import { nestedTaintOrigin } from "@loom/classify";
+import { nestedTaintOrigin } from "@loomwork/classify";
 
 /**
  * A tainted value was passed as an agent's `context`. The context is flattened with `JSON.stringify`

@@ -4,7 +4,7 @@ import type {
   WorkerLease,
   WorkerRequest,
   WorkerRuntime,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { type WorkerServer, createWorkerServer } from "./createWorkerServer";
 

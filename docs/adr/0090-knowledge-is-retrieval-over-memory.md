@@ -15,7 +15,7 @@
 
 ## Context
 
-`@loom/memory` looked finished. Four tiers with per-tier eviction and summarization, promotion
+`@loomwork/memory` looked finished. Four tiers with per-tier eviction and summarization, promotion
 between them, and — the part most frameworks get wrong — `recall` routed through `ctx.decide`, so
 a memory-driven prompt is a recorded fact and a replay rebuilds the prompt that actually ran.
 
@@ -109,7 +109,7 @@ throwing optional method would not be a starting point, it would be a bug with a
 
 ### D5 — Knowledge is application code plus third-party plugins
 
-**Rejected: a `knowledge$` construct in `@loom/core`.** It would encode a vocabulary — documents,
+**Rejected: a `knowledge$` construct in `@loomwork/core`.** It would encode a vocabulary — documents,
 chunks, sources, citations — rather than a mechanism, which is what ADR 0083 gates. `tool$` and
 `memory$` already span it.
 
@@ -143,7 +143,7 @@ rather than implying coverage it lacks.
 
 `runMemoryStoreConformance` (25 cases) is run by **four** independent implementations: the
 in-memory reference (IDF scorer), SQLite (FTS5), Postgres (`tsvector`), and the third-party
-`loom-plugin-vector` (cosine over embeddings) — which passes it **unmodified**, and is what makes
+`@loomwork/plugin-vector` (cosine over embeddings) — which passes it **unmodified**, and is what makes
 "the seam is a contract, not a description of an inverted index" a result rather than a hope.
 
 Two second consumers were built rather than imagined, and each found defects that every package
@@ -155,7 +155,7 @@ involved was green through:
   loom's own docs — lost its receiver; `agentLoop$` carried a private workaround at two call sites
   with a comment telling readers to copy it), and that a tainted value's `origin` was being indexed
   as searchable text, so one term matched an entire ingested corpus.
-- **`loom-plugin-vector`** (loom-plugins) — the unlike backend, which produced the floor finding
+- **`@loomwork/plugin-vector`** (loom-plugins) — the unlike backend, which produced the floor finding
   above and, via `loom plugin check`, the discovery that the scaffold was still minting the
   ESM-unreachable exports map that had just been swept out of 49 packages.
 

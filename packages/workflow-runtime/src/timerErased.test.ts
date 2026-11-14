@@ -1,14 +1,14 @@
-import { step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { step$ } from "@loomwork/core";
+import type { FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   type EventStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
   isPayloadShredded,
-} from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore, shredSubject } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore, shredSubject } from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { TimerService } from "./TimerService";

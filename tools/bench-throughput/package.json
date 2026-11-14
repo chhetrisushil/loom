@@ -1,5 +1,5 @@
 {
-  "name": "@loom/bench-throughput",
+  "name": "@loomwork/bench-throughput",
   "version": "0.0.1",
   "private": true,
   "description": "Sustained-throughput harness for Loom's durable write path \u2014 measures events/sec and executions/sec against a real Postgres under concurrency, plus the appendBatch counterfactual and the pg_notify fan-out cost. Test/dev-only; imported by no runtime package.",
@@ -19,17 +19,17 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/plugin-postgres": "workspace:*",
-    "@loom/plugin-sqlite": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/core": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/plugin-postgres": "workspace:*",
+    "@loomwork/plugin-sqlite": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "pg": "^8.13.0",
     "zod": "^3.23.8",
-    "@loom/middleware": "workspace:*",
-    "@loom/replay-vm": "workspace:*"
+    "@loomwork/middleware": "workspace:*",
+    "@loomwork/replay-vm": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

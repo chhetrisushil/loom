@@ -1,4 +1,4 @@
-import type { LlmStreamChunk } from "@loom/llm";
+import type { LlmStreamChunk } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { Latch, boot, lastUserText, messages } from "./__fixtures__/harness";
 import { ConversationHub, type LiveEvent, SubscriberLimitError, withTurnScope } from "./index";

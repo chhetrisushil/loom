@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IsolatedToolEffect, IsolatedToolStartupError } from "./IsolatedToolEffect";
 import type { IsolatedToolSpec } from "./types";

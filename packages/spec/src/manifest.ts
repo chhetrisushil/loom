@@ -1,18 +1,18 @@
-import { COMPILER_MANIFEST_VERSION } from "@loom/compiler";
-import { DISPATCHER_SPI_VERSION } from "@loom/dispatcher";
+import { COMPILER_MANIFEST_VERSION } from "@loomwork/compiler";
+import { DISPATCHER_SPI_VERSION } from "@loomwork/dispatcher";
 import {
   ARCHIVE_STORE_SPI_VERSION,
   BRANCH_REGISTRY_SPI_VERSION,
   EVENT_STORE_SPI_VERSION,
   LEASE_STORE_SPI_VERSION,
-} from "@loom/event-runtime";
-import { MEMORY_STORE_SPI_VERSION } from "@loom/memory";
-import { CONTENT_STORE_SPI_VERSION } from "@loom/plugin-content";
-import { EVENT_SCHEMA_VERSION, knownEventTypes } from "@loom/replay-vm";
-import { SANDBOX_BACKEND_SPI_VERSION } from "@loom/sandbox";
-import { SNAPSHOT_STORE_SPI_VERSION } from "@loom/snapshot-runtime";
-import { WIRE_ABI_VERSION } from "@loom/wire-abi";
-import { KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "@loom/workflow-runtime";
+} from "@loomwork/event-runtime";
+import { MEMORY_STORE_SPI_VERSION } from "@loomwork/memory";
+import { CONTENT_STORE_SPI_VERSION } from "@loomwork/plugin-content";
+import { EVENT_SCHEMA_VERSION, knownEventTypes } from "@loomwork/replay-vm";
+import { SANDBOX_BACKEND_SPI_VERSION } from "@loomwork/sandbox";
+import { SNAPSHOT_STORE_SPI_VERSION } from "@loomwork/snapshot-runtime";
+import { WIRE_ABI_VERSION } from "@loomwork/wire-abi";
+import { KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "@loomwork/workflow-runtime";
 
 // ── The Loom Kernel Manifest ─────────────────────────────────────────────────
 //
@@ -36,11 +36,11 @@ export interface KernelManifest {
     leaseStore: string;
     dispatcher: string;
     memoryStore: string;
-    /** `@loom/plugin-content` — the blob seam 3P backends implement (ADR 0046/0062/0055). */
+    /** `@loomwork/plugin-content` — the blob seam 3P backends implement (ADR 0046/0062/0055). */
     contentStore: string;
-    /** `@loom/event-runtime` — where `LogLifecycle.compact` MOVES the events it removes (ADR 0138). */
+    /** `@loomwork/event-runtime` — where `LogLifecycle.compact` MOVES the events it removes (ADR 0138). */
     archiveStore: string;
-    /** `@loom/sandbox` — the engine seam a sandbox backend implements (ADR 0144). */
+    /** `@loomwork/sandbox` — the engine seam a sandbox backend implements (ADR 0144). */
     sandboxBackend: string;
   };
   /** The compiler manifest schema version. */

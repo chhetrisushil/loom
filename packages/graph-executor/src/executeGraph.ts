@@ -1,7 +1,7 @@
-import type { DispatchMetadata, ExecutionDispatcher } from "@loom/dispatcher";
-import type { BranchRegistry } from "@loom/event-runtime";
-import { parallelLimit } from "@loom/scheduler";
-import type { ExecutionPackage, ExecutionResult } from "@loom/worker-runtime";
+import type { DispatchMetadata, ExecutionDispatcher } from "@loomwork/dispatcher";
+import type { BranchRegistry } from "@loomwork/event-runtime";
+import { parallelLimit } from "@loomwork/scheduler";
+import type { ExecutionPackage, ExecutionResult } from "@loomwork/worker-runtime";
 
 /** One node of the execution graph — an independent sub-execution. */
 export interface GraphNode {
@@ -60,7 +60,7 @@ export interface GraphExecution {
  *
  * The join is the barrier: results are returned only once all branches settle.
  *
- * A node whose dispatch is SUPERSEDED (`isSupersededRefusal` from `@loom/worker-runtime` — its
+ * A node whose dispatch is SUPERSEDED (`isSupersededRefusal` from `@loomwork/worker-runtime` — its
  * executionId is already owned by another holder, e.g. a duplicate graph run) rejects the join
  * like any other dispatch error; this function has no store to await it by id. A caller that
  * re-runs graphs with deterministic ids should catch it and await that node by id.

@@ -7,7 +7,7 @@ import {
   specStructureIssues,
   textIssues,
   textListIssues,
-} from "@loom/appgen";
+} from "@loomwork/appgen";
 
 // Semantic validation of a model-produced ChangeSpec against the scanned app. The
 // grammar already guarantees the JSON is well-formed and on-schema; this catches the

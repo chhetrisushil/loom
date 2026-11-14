@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { canonicalJson } from "@loom/core";
-import type { ExecutionState } from "@loom/core";
+import { canonicalJson } from "@loomwork/core";
+import type { ExecutionState } from "@loomwork/core";
 import type { ResumeEvent } from "./types";
 
 /**

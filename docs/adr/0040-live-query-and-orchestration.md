@@ -1,4 +1,4 @@
-# ADR 0040 — Live Query & Child-Workflow Orchestration (`@loom/live-query`, `@loom/orchestration`)
+# ADR 0040 — Live Query & Child-Workflow Orchestration (`@loomwork/live-query`, `@loomwork/orchestration`)
 
 - Status: Accepted (2026-07-11)
 - Date: 2026-07-11
@@ -16,13 +16,13 @@ belong in userspace, not the kernel (P10).
 
 ## Decision
 
-**`@loom/live-query`.** `liveQuery({ eventStore, reader })` → `snapshot(id)` (= `loadState`) and
+**`@loomwork/live-query`.** `liveQuery({ eventStore, reader })` → `snapshot(id)` (= `loadState`) and
 `subscribe(id, onState)` which pushes the current state immediately and re-folds on every subsequent
 event via `EventStore.subscribe`. Updates are **coalesced** (one re-fold in flight; a burst triggers
 exactly one more, latest-wins) so a subscriber never sees stale-then-newer out of order. No syscall,
 no event type — a read-model.
 
-**`@loom/orchestration`.** `awaitChild(ctx, { key, flowId, input })` (parent-side) durably fixes the
+**`@loomwork/orchestration`.** `awaitChild(ctx, { key, flowId, input })` (parent-side) durably fixes the
 child's id + spec with `ctx.decide` (replay-safe — a resume/recovery re-run never starts a second
 child) and then `suspend({ on: CHILD_DONE, correlationKey: childId })`. A **supervisor**
 (`superviseChildren({ runtime, flows })`, wired into `WorkflowRuntimeDeps.onEvent`) correlates purely
@@ -50,12 +50,12 @@ event-schema change** — the fullest P10 outcome.
 
 ## Verification
 
-- `@loom/live-query` (3): `snapshot` folds on demand (null for unknown); `subscribe` pushes the
+- `@loomwork/live-query` (3): `snapshot` folds on demand (null for unknown); `subscribe` pushes the
   current state then again on resume→complete; delivery stops after unsubscribe.
-- `@loom/orchestration` (3): parent⇄child id round-trip; end-to-end spawn→suspend→child-run→parent-
+- `@loomwork/orchestration` (3): parent⇄child id round-trip; end-to-end spawn→suspend→child-run→parent-
   resume yields the child's output on the parent (`{ fromChild: 10 }` from a child that doubled 5);
   replay-safety — a completed run started the child exactly once.
-- `@loom/spec` registers `live-query` and `orchestration` at L2. No `abi.test`/`eventSchema.test`
+- `@loomwork/spec` registers `live-query` and `orchestration` at L2. No `abi.test`/`eventSchema.test`
   change (nothing was added to either contract).
 
 ## Amendment (2026-09-27) — incremental fold: O(N) rows over an execution's lifetime, not O(N²)
@@ -77,7 +77,7 @@ transient sink.
 **Fix.** `subscribe` now folds incrementally: `reader.loadState` runs exactly ONCE per
 subscription (establishing `state` and the last-folded sequence, `tip`), and every later
 wake-up reads only `eventStore.readFrom(id, tip + 1)` — a bounded, indexed read — and folds
-that delta onto the kept `state` with `@loom/replay-vm`'s `foldEvents`. This is **no new fold
+that delta onto the kept `state` with `@loomwork/replay-vm`'s `foldEvents`. This is **no new fold
 and no new version**: `foldEvents`/`ReplayVM(tail, state)` is the same fold `foldState` already
 uses for its snapshot-plus-tail path, and `fold(snapshot, suffix) === fold(events)` was already
 load-bearing there and in `LogLifecycle.compact`. Total I/O drops from O(N²) to O(N).
@@ -101,5 +101,5 @@ subscribe deliveries; a `ContentResolvingEventStore` case with an unresolvable r
 state never carries a `__loomContent` ref (the failure surfaces via `onError` from the read
 path); the pre-existing terminal-state and `onError` tests stay green (the background-failure
 ones now inject the failure into the store's `readFrom`, since the background fold no longer
-calls the reader). Placement unchanged (1P, `@loom/live-query`, no kernel/syscall/ABI change);
-one new dependency, `@loom/replay-vm` (already a transitive kernel package — no new 1P surface).
+calls the reader). Placement unchanged (1P, `@loomwork/live-query`, no kernel/syscall/ABI change);
+one new dependency, `@loomwork/replay-vm` (already a transitive kernel package — no new 1P surface).

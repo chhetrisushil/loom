@@ -99,7 +99,7 @@ Three backends ship **[code]** (`InMemoryAsyncEventStore`, `SqliteEventStore`,
 | `TenantScopedEventStore` | key-prefix isolation | none |
 | `EncryptingEventStore` | field-level crypto (retention/compaction guarded by the ADR 0022 key rule) | none |
 | `ContentResolvingEventStore` | payload externalization | none |
-| `hashChainedEventStore` | tamper-evident chain (`@loom/plugin-audit-chain`) | `truncatePrefix` and `truncatePrefixKeeping`, because a compacted log fails `verifyChain` |
+| `hashChainedEventStore` | tamper-evident chain (`@loomwork/plugin-audit-chain`) | `truncatePrefix` and `truncatePrefixKeeping`, because a compacted log fails `verifyChain` |
 | `CoalescingEventStore` / `ShardedEventStore` / `ProfilingEventStore` | batching, partitioning, write profiling (section 3) | none |
 | `TenantScopedSnapshotStore` / `ProfilingSnapshotStore` | snapshot key-prefix isolation, snapshot size profiling (below) | none |
 
@@ -112,7 +112,7 @@ batching. A bring-your-own decorator proves itself with the same kit.
 
 That pattern is the lever. `defineConfig` accepts `storage: { kind: "custom", eventStore,
 snapshotStore, branchRegistry? }` **[code]**, so anything satisfying the `EventStore`
-interface composes in without touching `@loom/app`, the kernel, or the ABI. Every scaling
+interface composes in without touching `@loomwork/app`, the kernel, or the ABI. Every scaling
 change in section 3 is a decorator, not a kernel change — which is the placement answer
 Loom's own triage discipline (P10, bias outward) demands.
 
@@ -315,7 +315,7 @@ them. That is fine while fencing is rare. If fencing is common in your deploymen
 `maxBatch`.
 
 **Are your snapshots even big?** Wrap your `SnapshotStore` in `ProfilingSnapshotStore`
-(`@loom/snapshot-runtime`) before building anything for snapshot growth. `profile()` reports
+(`@loomwork/snapshot-runtime`) before building anything for snapshot growth. `profile()` reports
 saves, total and max bytes, a power-of-two `histogram` and `largest` (the top N executions by
 their latest snapshot size); `onLargeSnapshot(executionId, bytes)` fires once when an
 execution first crosses `largeThresholdBytes`. Placement decides the question: wrapped OUTSIDE
@@ -581,7 +581,7 @@ resolve `stepId` (or stay on `"full"`).
 ## Re-measuring
 
 ```bash
-LOOM_TEST_POSTGRES_URL=postgres://… pnpm --filter @loom/bench-throughput bench
+LOOM_TEST_POSTGRES_URL=postgres://… pnpm --filter @loomwork/bench-throughput bench
 ```
 
 See `tools/bench-throughput/README.md`. Absolute numbers are host-relative — compare

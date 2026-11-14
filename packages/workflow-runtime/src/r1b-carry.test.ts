@@ -1,4 +1,4 @@
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import { describe, expect, it } from "vitest";
 import { build, eventsOf, flow, kinds, settle, until } from "./__tests__/r2Harness";
 import type { Harness } from "./__tests__/r2Harness";

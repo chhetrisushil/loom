@@ -1,8 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { LeaseStore } from "@loom/event-runtime";
-import type { CustomStorage } from "@loom/plugin-kit";
-import type { SnapshotCodecName } from "@loom/snapshot-runtime";
+import type { LeaseStore } from "@loomwork/event-runtime";
+import type { CustomStorage } from "@loomwork/plugin-kit";
+import type { SnapshotCodecName } from "@loomwork/snapshot-runtime";
 import { SqliteArchiveStore } from "./SqliteArchiveStore";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 import { SqliteEventStore } from "./SqliteEventStore";
@@ -24,7 +24,7 @@ export interface SqliteStorageOptions {
 
 /**
  * A `defineConfig({ storage })` preset for embedded SQLite. Returns a `custom`
- * storage descriptor with the SQLite stores constructed — so `@loom/app` never
+ * storage descriptor with the SQLite stores constructed — so `@loomwork/app` never
  * needs to know SQLite exists (ADR 0043: 1P/3P storage backends are symmetric,
  * each supplied as a preset, none privileged with a `kind`).
  *

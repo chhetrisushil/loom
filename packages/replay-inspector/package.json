@@ -1,5 +1,5 @@
 {
-  "name": "@loom/replay-inspector",
+  "name": "@loomwork/replay-inspector",
   "version": "0.1.0",
   "description": "Read-only replay inspector — reconstruct an execution's state at any point in its log, diff transitions, and read projection slices, under the version the execution is pinned to. A cache of the log, never an authority; no write path.",
   "main": "./dist/index.js",
@@ -20,15 +20,15 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/replay-vm": "workspace:^",
-    "@loom/snapshot-runtime": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^",
+    "@loomwork/snapshot-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

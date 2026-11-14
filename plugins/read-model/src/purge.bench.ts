@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { bench, describe } from "vitest";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { ReadModelService } from "./ReadModelService";

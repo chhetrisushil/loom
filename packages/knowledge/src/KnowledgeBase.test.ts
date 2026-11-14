@@ -1,6 +1,6 @@
-import { isTainted, taintOf, unwrapTainted } from "@loom/classify";
-import { InMemoryMemoryStore, TieredMemory, searchableText, tokenize } from "@loom/memory";
-import type { MemoryEntry, MemoryStore } from "@loom/memory";
+import { isTainted, taintOf, unwrapTainted } from "@loomwork/classify";
+import { InMemoryMemoryStore, TieredMemory, searchableText, tokenize } from "@loomwork/memory";
+import type { MemoryEntry, MemoryStore } from "@loomwork/memory";
 import { describe, expect, it } from "vitest";
 import { KnowledgeBase } from "./KnowledgeBase";
 import type { DecideFn } from "./KnowledgeBase";
@@ -358,7 +358,9 @@ class NoSearchStore implements MemoryStore {
 
 describe("KnowledgeBase - declared reach (L34, ADR 0086)", () => {
   it("retrieve declares an empty reach, on the method AND the instance, and runs no tool", async () => {
-    const { assertReachMatches, readReachDeclaration, recordReach } = await import("@loom/verify");
+    const { assertReachMatches, readReachDeclaration, recordReach } = await import(
+      "@loomwork/verify"
+    );
     const { kb } = corpus();
     await kb.putDoc(RUNBOOK);
     const rec = recordReach();

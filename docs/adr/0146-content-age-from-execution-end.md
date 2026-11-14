@@ -8,9 +8,9 @@
 - Builds on: [ADR 0145](0145-app-owned-retention-policy.md) (the retention policy and its advisory
   `content.unpinnedAfterMs >= terminalTtlMs` rule), [ADR 0116](0116-late-outcome-attach.md) (a late outcome lands
   after the terminal event), [ADR 0104](0104-recovery-never-answers-a-gate.md) (`resumeAs` re-opens a terminal execution)
-- Placement: **1P, `@loom/plugin-content` only** (`sweepUnpinnedContent`, `terminalEndOf`) + one CLI line in
-  `@loom/cli`. No new dependency (the terminal-kind check is duplicated, not imported from
-  `@loom/workflow-runtime`). Kernel, KERNEL_ABI, EVENT_SCHEMA and every SPI version unchanged. Always on: no
+- Placement: **1P, `@loomwork/plugin-content` only** (`sweepUnpinnedContent`, `terminalEndOf`) + one CLI line in
+  `@loomwork/cli`. No new dependency (the terminal-kind check is duplicated, not imported from
+  `@loomwork/workflow-runtime`). Kernel, KERNEL_ABI, EVENT_SCHEMA and every SPI version unchanged. Always on: no
   flag.
 
 ## Context

@@ -1,8 +1,8 @@
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import { flow$, handler$, step$ } from "@loom/core";
-import type { LlmProvider } from "@loom/llm";
-import { ReasoningRuntime } from "@loom/reasoning";
-import type { FlowRunner, RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import type { LlmProvider } from "@loomwork/llm";
+import { ReasoningRuntime } from "@loomwork/reasoning";
+import type { FlowRunner, RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { IntentRuntime } from "./IntentRuntime";

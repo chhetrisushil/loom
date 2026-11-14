@@ -106,7 +106,7 @@ capability/authority, K3 = resource metering, P9 = the Decision seam).
 - **Folds into:** `status → "running"`; `startedAt = event.timestamp`; if `input` is present,
   `variables._input = input`; if `flowHash` is present, `variables._flowHash = flowHash` —
   the content hash of the flow code this execution started under (`flowContentHash`,
-  @loom/core). Resume/recovery compares it against the registered flow and refuses a
+  @loomwork/core). Resume/recovery compares it against the registered flow and refuses a
   mismatch (`FlowCodeMismatchError`) instead of silently folding the log with changed code;
   logs without a recorded hash resume unchecked (G2).
 - Handler: `eventHandlers.ts`.
@@ -292,7 +292,7 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
   `getDecision`, so no amount of added metadata can change what replay does (P9). `context`
   is the observation the policy keyed on and `policy.propensity` is `P(chosen | context)` —
   together they turn the log into a `(state, action, propensity)` dataset that
-  [`@loom/learning`](../../packages/learning/README.md) mines for off-policy evaluation.
+  [`@loomwork/learning`](../../packages/learning/README.md) mines for off-policy evaluation.
 - Handler: `eventHandlers.ts`.
 
 #### `EFFECT_DENIED`
@@ -335,10 +335,10 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
 #### `OUTCOME_RECORDED`
 - **Introduced:** Loom 2.1 — the learning seam ([ADR 0018](../adr/0018-learning-seam-outcome-recorded.md)).
   Records *how a prior choice turned out* — the symmetric counterpart to `DECISION_RECORDED`.
-  Emitted via `recordOutcome(sink, …)` (`@loom/analytics`).
+  Emitted via `recordOutcome(sink, …)` (`@loomwork/analytics`).
 - **Payload:** `{ key: string; success?: boolean; score?: number; decisionId?: string }`
 - **Folds into:** appends the outcome to `variables._outcomes`. **Pure audit.** Mined by
-  `rankFromOutcomes(events)` into a ranking fed to `rankedRouter` (@loom/reasoning), closing the
+  `rankFromOutcomes(events)` into a ranking fed to `rankedRouter` (@loomwork/reasoning), closing the
   loop while every future route stays a logged `DECISION_RECORDED`.
 
 #### `EXECUTION_MIGRATED`
@@ -371,7 +371,7 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
 
 #### `PAYLOAD_SHREDDED`
 - **Introduced:** Loom 2.1 — K10, crypto-shredding ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
-  A subject's encryption key was destroyed (`shredSubject`, `@loom/plugin-crypto`), so this
+  A subject's encryption key was destroyed (`shredSubject`, `@loomwork/plugin-crypto`), so this
   execution's sensitive payload fields are permanently unrecoverable. Written AT SHRED TIME
   by the lifecycle service (A3) — never at replay — so replay stays a pure read and
   deterministically encounters the erasure.
@@ -451,7 +451,7 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
 
 #### `ERASURE_PENDING`
 - **Introduced:** 1.14.0 — T3-R4.5 deferred-erasure protocol ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
-  Written by the `EraseCoordinator` (`@loom/compliance`) to a reserved control stream
+  Written by the `EraseCoordinator` (`@loomwork/compliance`) to a reserved control stream
   (`__loom_erasure__`) when a subject's erasure is requested but DEFERRED because one of the
   subject's executions is still live — never shred a fold in flight. Folding the stream
   recovers the pending set, so a parked erasure survives a restart.
@@ -621,7 +621,7 @@ to the same numbers, because both are pure folds of logged facts (P2 / P9).
 ## 5. Schema version & governance (K5)
 
 The set of event types the fold understands **is** the kernel's on-disk ABI: stored logs must
-replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 names and versions
+replay across deploys (`@loomwork/deploy-sim` guards this at the flow level). K5 names and versions
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts

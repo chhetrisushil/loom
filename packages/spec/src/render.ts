@@ -10,7 +10,7 @@ import { type KernelManifest, kernelManifest } from "./manifest";
 // and the committed docs both render from HERE, so the docs can't drift from the manifest.
 
 const GENERATED_NOTE =
-  "> Generated from `@loom/spec` (`loom kernel-manifest --emit-docs`). Do not edit by hand — it is\n> derived from the version constants + capability registry, which are the source of truth.";
+  "> Generated from `@loomwork/spec` (`loom kernel-manifest --emit-docs`). Do not edit by hand — it is\n> derived from the version constants + capability registry, which are the source of truth.";
 
 /** The compatibility matrix — every kernel/SPI contract version + the current compatible set. */
 export function renderCompatibilityMatrix(m: KernelManifest = kernelManifest()): string {
@@ -64,7 +64,7 @@ export function renderCompatibilityMatrix(m: KernelManifest = kernelManifest()):
     "do not infer availability from `kernelAbiVersion >= 1.3.0` until the writers land.",
     "",
     "Validate a deployment: `loom compat --abi <v> --event-schema <v> [...]` (exit non-zero on a",
-    "major mismatch), or `checkCompatibility(deploymentVersions)` from `@loom/spec`.",
+    "major mismatch), or `checkCompatibility(deploymentVersions)` from `@loomwork/spec`.",
     "",
   ].join("\n");
 }

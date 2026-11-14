@@ -1,4 +1,4 @@
-// `@loom/sdk/postgres` — the Postgres store plugin, re-exported behind a subpath so `pg`
+// `@loomwork/sdk/postgres` — the Postgres store plugin, re-exported behind a subpath so `pg`
 // is pulled in only by consumers that explicitly want it.
 export {
   PostgresEventStore,
@@ -7,4 +7,4 @@ export {
   PostgresTimerStore,
   postgresStorage,
   type PostgresStorageOptions,
-} from "@loom/plugin-postgres";
+} from "@loomwork/plugin-postgres";

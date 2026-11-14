@@ -10,8 +10,8 @@ export {
 export { MAX_QUERY_TERMS, queryTerms, searchableText, tokenize } from "./searchText";
 export { TieredMemory, DEFAULT_TIERS } from "./TieredMemory";
 // Note: `DecideFn` is intentionally not re-exported — it is the same structural type
-// as `@loom/reasoning`'s (both mirror `ctx.decide`), and re-exporting both collides in
-// the @loom/sdk barrel. Pass `ctx.decide` to `recall({ decide })` directly.
+// as `@loomwork/reasoning`'s (both mirror `ctx.decide`), and re-exporting both collides in
+// the @loomwork/sdk barrel. Pass `ctx.decide` to `recall({ decide })` directly.
 export type {
   RecallOptions,
   RecallRelevantOptions,

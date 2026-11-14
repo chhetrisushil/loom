@@ -5,19 +5,19 @@ import {
   taintOriginLabel,
   tainted,
   unwrapTainted,
-} from "@loom/classify";
+} from "@loomwork/classify";
 import type {
   LlmContent,
   LlmResultPart,
   LlmResultPartInput,
   LlmToolResultPartInput,
-} from "@loom/llm";
+} from "@loomwork/llm";
 import {
   MAX_INLINE_BYTES,
   MAX_INLINE_TOTAL_BYTES,
   base64ByteLength,
   validateMediaPart,
-} from "@loom/llm";
+} from "@loomwork/llm";
 
 // ── R5 — a tool's output as a `tool_result` part ─────────────────────────────
 

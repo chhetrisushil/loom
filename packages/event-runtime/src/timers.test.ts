@@ -3,7 +3,7 @@ import { InMemoryTimerStore } from "./timers";
 import type { TimerStore } from "./timers";
 
 // T1.3 — timer storage contract. Run here against the in-memory reference; the
-// SQLite backend runs the same contract in @loom/plugin-sqlite (ADR 0043).
+// SQLite backend runs the same contract in @loomwork/plugin-sqlite (ADR 0043).
 export function timerStoreContract(name: string, make: () => TimerStore, cleanup?: () => void) {
   describe(name, () => {
     let store: TimerStore;

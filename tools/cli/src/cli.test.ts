@@ -9,16 +9,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { step$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import {
+  SqliteBranchRegistry,
+  SqliteEventStore,
+  SqliteSnapshotStore,
+} from "@loomwork/plugin-sqlite";
 import { failure } from "./refusalTestUtil";
 
-import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
-import { appFiles } from "@loom/scaffold";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loomwork/llm";
+import { appFiles } from "@loomwork/scaffold";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -371,7 +375,7 @@ describe("loom CLI", () => {
   });
 
   describe("loom appgen (NL → app)", () => {
-    // Canonical @loom/appgen example → spec.name "planner", flow at app/flows/planner/flow.ts.
+    // Canonical @loomwork/appgen example → spec.name "planner", flow at app/flows/planner/flow.ts.
     const EXAMPLE =
       "Create a planner. Use Gemma first. Elevate to Gemini. Pause for approval. Deploy on Fargate. Generate UI.";
 
@@ -861,7 +865,7 @@ describe("K10-R6 — CLI egress redaction (--redact)", () => {
       sequence: 1,
       startedAt: 0,
       updatedAt: 0,
-    } as unknown as import("@loom/core").ExecutionState;
+    } as unknown as import("@loomwork/core").ExecutionState;
     const text = describeState(state, ["token"]);
     expect(text).not.toContain("sk_live_SECRET");
     expect(text).toContain("[redacted]");
@@ -1019,7 +1023,7 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
 });
 
 describe("appgen --model provider resolution (any model of your choice)", () => {
-  // A fake @loom/appgen-model — only its gemmaRoute/DEFAULT_TIER are used (the local case).
+  // A fake @loomwork/appgen-model — only its gemmaRoute/DEFAULT_TIER are used (the local case).
   const fakeM = {
     DEFAULT_TIER: "e4b",
     gemmaRoute: (modelPath: string, tierKey: string) => ({
@@ -1045,7 +1049,7 @@ describe("appgen --model provider resolution (any model of your choice)", () => 
     }
   };
 
-  it("resolves anthropic / openai / gemini specs to the matching @loom/llm provider", () => {
+  it("resolves anthropic / openai / gemini specs to the matching @loomwork/llm provider", () => {
     withEnv({ ANTHROPIC_API_KEY: "a", OPENAI_API_KEY: "o", GEMINI_API_KEY: "g" }, () => {
       expect(
         routeFromSpec("anthropic:claude-opus-4-8", 0, undefined, fakeM).provider
@@ -1198,7 +1202,7 @@ describe("loom new / gen guards", () => {
     const r = cmdNew("flow", "order-check", join(root, "app"));
     expect(r.extras.map((e) => e.path)).toEqual([join(root, "app/flows/order-check/flow.test.ts")]);
     const test = readFileSync(r.extras[0]!.path, "utf-8");
-    expect(test).toContain('from "@loom/testing"');
+    expect(test).toContain('from "@loomwork/testing"');
     expect(test).toContain("OrderCheckFlow");
     expect(discoverFlows(join(root, "app"))).toEqual(["./flows/order-check/flow"]);
     // Re-running skips both files; nothing is overwritten.
@@ -1229,7 +1233,7 @@ describe("loom new / gen guards", () => {
       schedule: [],
       memory: [],
       projection: [],
-      sentinel: ['"@loom/plugin-sentinel": "workspace:*"'],
+      sentinel: ['"@loomwork/plugin-sentinel": "workspace:*"'],
     });
     // It never edits package.json.
     expect(readFileSync(join(root, "package.json"), "utf-8")).toBe(
@@ -1241,12 +1245,12 @@ describe("loom new / gen guards", () => {
     writeFileSync(
       join(root, "package.json"),
       JSON.stringify({
-        dependencies: { "@loom/core": "*", "@loom/workflow-runtime": "*", zod: "^3" },
+        dependencies: { "@loomwork/core": "*", "@loomwork/workflow-runtime": "*", zod: "^3" },
       })
     );
     expect(cmdNew("sentinel", "watch", join(root, "app")).missingDeps).toEqual([
-      '"@loom/middleware": "*"',
-      '"@loom/plugin-sentinel": "*"',
+      '"@loomwork/middleware": "*"',
+      '"@loomwork/plugin-sentinel": "*"',
     ]);
   });
 });

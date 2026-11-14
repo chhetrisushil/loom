@@ -15,13 +15,13 @@ Contents: [1. Postgres store](#1-postgres-store) -
 
 ## 1. Postgres store
 
-`@loom/plugin-postgres` ships `postgresStorage`, a `defineConfig({ storage })` preset that returns the
+`@loomwork/plugin-postgres` ships `postgresStorage`, a `defineConfig({ storage })` preset that returns the
 event store, snapshot store and (with `branching: true`) branch registry, plus a **co-located lease
 store** (see section 2):
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { postgresStorage } from "@loom/plugin-postgres";
+import { defineConfig } from "@loomwork/app";
+import { postgresStorage } from "@loomwork/plugin-postgres";
 
 const app = defineConfig({
   storage: postgresStorage({ url: process.env.DATABASE_URL!, branching: true }),

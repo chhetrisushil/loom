@@ -1,4 +1,4 @@
-import type { LlmResponse } from "@loom/llm";
+import type { LlmResponse } from "@loomwork/llm";
 import type { ConfidenceSignal, ReasoningRequest } from "./types";
 
 // Honest, pluggable confidence — NOT a magic self-reported number. The default uses

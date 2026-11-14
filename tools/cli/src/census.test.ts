@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import { SqliteEventStore, SqliteLeaseStore } from "@loom/plugin-sqlite";
+import type { EventEnvelope } from "@loomwork/core";
+import { SqliteEventStore, SqliteLeaseStore } from "@loomwork/plugin-sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cmdCensus, parseBuckets } from "./census";
 

@@ -1,4 +1,4 @@
-# @loom/analytics — read-only summaries of an execution's event log
+# @loomwork/analytics — read-only summaries of an execution's event log
 
 Pure functions that take an array of events and return a summary: step counts, metered cost, routing
 decisions, failures, latency, flame graphs, and a short advisory report with recommendations. They
@@ -7,8 +7,8 @@ reports and tooling such as `loom introspect`. The recommendations are advice fo
 here changes a run.
 
 ```ts
-import { analyze, hotFailures, runtimeIntelligence } from "@loom/analytics";
-import type { EventStore } from "@loom/event-runtime";
+import { analyze, hotFailures, runtimeIntelligence } from "@loomwork/analytics";
+import type { EventStore } from "@loomwork/event-runtime";
 
 declare const eventStore: EventStore;
 
@@ -43,7 +43,7 @@ console.log(hotFailures(events, 3));
 
 - **A compacted log is missing its history.** Decisions and outcomes of a compacted execution live in
   its checkpoint, not in the log. `outcomeAnalytics` documents building the events from the folded
-  state first (`evidenceEvents` in `@loom/learning`) when an execution may have been compacted.
+  state first (`evidenceEvents` in `@loomwork/learning`) when an execution may have been compacted.
 - **Recommendations are heuristics.** `suggestedBudgetUsd` is observed cost times `budgetHeadroom`
   (default 1.5). `rankModels` counts how often each model was routed to, which is frequency and not
   quality; outcome-based rankings need recorded outcomes.
@@ -58,6 +58,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 - [ADR 0034](../../docs/adr/0034-advisory-optimization-pipeline.md): the advisory pipeline.
 - [ADR 0115](../../docs/adr/0115-open-vocabularies.md) and
   [ADR 0116](../../docs/adr/0116-late-outcome-attach.md): custom dimensions and late outcomes.
-- API reference: section "`@loom/analytics` — event intelligence *(2.0)*" in
+- API reference: section "`@loomwork/analytics` — event intelligence *(2.0)*" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

@@ -1,20 +1,20 @@
-# ADR 0064 — `@loom/plugin-sandbox`: hardened eval of LLM-authored reshaping code
+# ADR 0064 — `@loomwork/plugin-sandbox`: hardened eval of LLM-authored reshaping code
 
 - Status: **Accepted** (`sandboxEval$` + `SandboxEvalEffect` on quickjs-emscripten)
 - Date: 2026-07-19
 - Builds on: [DE-series evaluation](../requirements/2026-07-19-dynamic-execution-de-series-evaluation.md)
   (sandboxEval$), ADR 0060 (typed channels), ADR 0063 (`canonicalJson`/shape
-  hashing), ADR 0046 (content-addressed scripts), K7 (`@loom/isolate` — the
+  hashing), ADR 0046 (content-addressed scripts), K7 (`@loomwork/isolate` — the
   isolation contract this follows).
 - Part of: the GenUI/DE corrected series. No kernel changes.
-- Amended by: [ADR 0144](0144-sandbox-backend-spi.md) (the engine becomes a `SandboxBackend` SPI in `@loom/sandbox`; QuickJS stays the default backend with the same limits, channels and security list; the success value is returned as its JSON round-trip).
+- Amended by: [ADR 0144](0144-sandbox-backend-spi.md) (the engine becomes a `SandboxBackend` SPI in `@loomwork/sandbox`; QuickJS stays the default backend with the same limits, channels and security list; the success value is returned as its JSON round-trip).
 
 ## Context
 
 Blueprint providers carry LLM-authored reshaping snippets (raw MCP output →
 canonical data shape). Executing model-written code per-application is a
 security anti-pattern — this must be written once and audited once. Nothing
-JS-VM-shaped existed; the closest machinery, `@loom/isolate`, forks a Node child
+JS-VM-shaped existed; the closest machinery, `@loomwork/isolate`, forks a Node child
 process: real isolation, but a child holds *ambient* Node authority that must be
 subtractively scrubbed (env, network modules, brokered fetch).
 

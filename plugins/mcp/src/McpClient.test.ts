@@ -1,5 +1,5 @@
 import * as http from "node:http";
-import { EffectRuntime } from "@loom/effect-runtime";
+import { EffectRuntime } from "@loomwork/effect-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { McpClient, McpToolNamesSkippedError } from "./McpClient";
 

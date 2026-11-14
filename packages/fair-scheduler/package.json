@@ -1,5 +1,5 @@
 {
-  "name": "@loom/fair-scheduler",
+  "name": "@loomwork/fair-scheduler",
   "version": "0.1.0",
   "description": "Per-tenant fair scheduler for Loom — a drop-in Scheduler implementation that dispatches with weighted round-robin across tenants behind a concurrency cap, so no single tenant can monopolize a lane. Keeps the zero-overhead Infinity fast path.",
   "main": "./dist/index.js",
@@ -21,7 +21,7 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/scheduler": "workspace:^"
+    "@loomwork/scheduler": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

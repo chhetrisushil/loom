@@ -1,4 +1,4 @@
-import { sha256Hex } from "@loom/core";
+import { sha256Hex } from "@loomwork/core";
 import { searchableText, tokenize } from "./searchText";
 import { clampSearchLimit } from "./types";
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "./types";

@@ -1,4 +1,4 @@
-// @loom/sandbox — the sandbox backend SPI (ADR 0144).
+// @loomwork/sandbox — the sandbox backend SPI (ADR 0144).
 //
 // A backend is the ENGINE: it runs one verified script against one bounded input and reports what
 // happened. `SandboxEffect` owns every guarantee around it (limits, content address, channels,

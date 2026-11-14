@@ -59,7 +59,7 @@ the pinned list). **No `KERNEL_ABI` change** — this is a boundary check, not a
   execution stays resumable by a permitted principal; denied `cancel`/`query` throw and fire the
   audit callback; a principal-less call bypasses even a deny-all authorizer.
 - `eventSchema.test.ts` pins `EXECUTION_DENIED` (schema 1.12.0); `abi.test.ts` unchanged (no
-  syscall). `@loom/spec` registers `execution-authz` at L2. Full runtime suite 109/109.
+  syscall). `@loomwork/spec` registers `execution-authz` at L2. Full runtime suite 109/109.
 
 ## Amendment (2026-10-17) — the verdict comes before the fold
 
@@ -93,7 +93,7 @@ execution still raises `PayloadShreddedError`; `cancel` still folds the redacted
 key-service error, a `KeyUnavailableError` without the erase intent) says nothing about the execution,
 so it is NOT an unknown owner: judging it so denied the legitimate owner (a false `onExecutionDenied`,
 e.g. a worker's `acquireFence` during a database blip) and reported a missing id as existing. It throws
-the new `ExecutionStoreUnavailableError` (`@loom/workflow-runtime`): retryable (`retryable: true`),
+the new `ExecutionStoreUnavailableError` (`@loomwork/workflow-runtime`): retryable (`retryable: true`),
 carrying only `op` and `executionId`, with no cause, workflow id, subject or redacted view, and
 IDENTICAL for the owner and a stranger (a fault must not become a status oracle). The real cause goes
 to `onStorageError`. `cancel` of a live execution and `restoreFromState` read the owner through the
@@ -206,12 +206,12 @@ duplicated package copies, but it also let any store decorator or third-party st
 error path) that threw a plain `Error` with that name forge an unknown owner, which
 `unknownOwner: "allow"` admits. Erasure is now the realm-safe brand `Symbol.for("loom.payloadShredded")`
 (a non-enumerable own property, so `name`, message and serialized shape are unchanged), set by
-`@loom/plugin-crypto`'s `PayloadShreddedError` constructor and by the kernel's own synthetic errors
+`@loomwork/plugin-crypto`'s `PayloadShreddedError` constructor and by the kernel's own synthetic errors
 (built from a `PAYLOAD_SHREDDED` tombstone), and read by ONE predicate, `isPayloadShredded` in
-`@loom/event-runtime` (beside `KeyUnavailableError`, so no consumer imports the crypto plugin). The
+`@loomwork/event-runtime` (beside `KeyUnavailableError`, so no consumer imports the crypto plugin). The
 name alone is never enough; the symbol registry makes the brand survive duplicated copies. Consumers
-moved: `WorkflowRuntime` (3 sites), `@loom/orchestration` `pinParkedChildren`, `@loom/compliance`
-`EraseCoordinator`, `@loom/plugin-content` GC, the CLI lifecycle. A store that throws its own erasure
+moved: `WorkflowRuntime` (3 sites), `@loomwork/orchestration` `pinParkedChildren`, `@loomwork/compliance`
+`EraseCoordinator`, `@loomwork/plugin-content` GC, the CLI lifecycle. A store that throws its own erasure
 error adopts `brandPayloadShredded(err)`; until then its error is a fault (retryable, nobody admitted).
 A serialized error (JSON, A2A) has lost the brand by design and no boundary re-trusts it by name; where
 a boundary needs the fact it reads the log's own `PAYLOAD_SHREDDED` tombstone. Verification:

@@ -334,7 +334,7 @@ function unanalysedCoverage(
     {
       rule,
       severity: "info",
-      message: `${blind.length} of ${flows.length} flow(s) had no runner-body analysis (${sample}${more}), so ${consequence}. Build with @loom/compiler and pass its manifest to cover them (ADR 0086).`,
+      message: `${blind.length} of ${flows.length} flow(s) had no runner-body analysis (${sample}${more}), so ${consequence}. Build with @loomwork/compiler and pass its manifest to cover them (ADR 0086).`,
     },
   ];
 }

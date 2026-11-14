@@ -1,18 +1,18 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import type { EventStore, TimerStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loomwork/event-runtime";
+import type { EventStore, TimerStore } from "@loomwork/event-runtime";
 import {
   PostgresEventStore,
   PostgresSnapshotStore,
   PostgresTimerStore,
   migratePostgresStores,
   postgresPool,
-} from "@loom/plugin-postgres";
-import { SqliteEventStore, SqliteSnapshotStore, SqliteTimerStore } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-postgres";
+import { SqliteEventStore, SqliteSnapshotStore, SqliteTimerStore } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 
 // The three durable backends the inbox runs on, for tests that must hold where the SQL is real.
 

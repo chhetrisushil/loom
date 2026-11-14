@@ -2,7 +2,7 @@
 
 - Status: Accepted (2026-07-12)
 - Date: 2026-07-12
-- Builds on: the P11 offline codegen (`parseIntent → AppSpec → generate`), `@loom/reasoning`'s
+- Builds on: the P11 offline codegen (`parseIntent → AppSpec → generate`), `@loomwork/reasoning`'s
   elevation ladder, and the folder convention (`discoverFlows`, `loom gen`).
 - Part of: the AI-native developer-experience line. **DX layer only — the framework kernel is not
   modified.**
@@ -19,9 +19,9 @@ spec and codegen never sees raw NL.
 ## Decision
 
 Restructure `loom appgen` into **four stages, with AI isolated to exactly one**, and keep the whole
-thing in the DX layer (`@loom/appgen` + an optional `@loom/appgen-model` + the CLI). Nothing in
-`@loom/core`, `@loom/compiler`, `@loom/workflow-runtime`, `@loom/effect-runtime`, `@loom/app`, or
-`@loom/reasoning` changes.
+thing in the DX layer (`@loomwork/appgen` + an optional `@loomwork/appgen-model` + the CLI). Nothing in
+`@loomwork/core`, `@loomwork/compiler`, `@loomwork/workflow-runtime`, `@loomwork/effect-runtime`, `@loomwork/app`, or
+`@loomwork/reasoning` changes.
 
 1. **scan** — `scanApp(dir) → AppModel`: deterministic TS-AST summary of flows/steps/gates and
    per-step handler state (`stub | edited | external`). Never raw file contents.
@@ -43,12 +43,12 @@ thing in the DX layer (`@loom/appgen` + an optional `@loom/appgen-model` + the C
   with a single source of truth for the stub text.
 - **`tsc`, not `loom check`, for validation.** `loom check` needs a post-build compiler manifest that
   fresh source lacks; `ts.createProgram` gives structured diagnostics with no build.
-- **Optional model as a separate package.** `@loom/appgen-model` holds the Gemma/node-llama-cpp
-  integration so `@loom/appgen` stays offline and near-zero-dep. The native runtime is an
+- **Optional model as a separate package.** `@loomwork/appgen-model` holds the Gemma/node-llama-cpp
+  integration so `@loomwork/appgen` stays offline and near-zero-dep. The native runtime is an
   `optionalDependency`, genuinely dynamically imported, and the CLI resolves the package **from the
   target project** — so neither the framework nor default CLI users carry it.
 - **Reasoning-ladder-on-itself.** The default path is free (deterministic). Elevate to a model only
-  when asked; the model path uses `@loom/reasoning`'s cheap-first ladder with a *validator* confidence
+  when asked; the model path uses `@loomwork/reasoning`'s cheap-first ladder with a *validator* confidence
   signal and a bounded self-repair loop, logging elevations into the spec lockfile (a DX-layer echo of
   `DECISION_RECORDED`).
 
@@ -59,7 +59,7 @@ thing in the DX layer (`@loom/appgen` + an optional `@loom/appgen-model` + the C
 - The model is strictly a quality upgrade: every failure mode (weak output, missing native dep, crash)
   degrades to the deterministic parser and still yields a valid `ChangeSpec`.
 - New surface: `--dry-run`, `--apply`, `--check`, `--from-spec`, `--model`/`--model-big`/`--model-tier`,
-  `--offline`, `--yes`. New package `@loom/appgen-model`. New convention `.loom/appgen/<ts>.spec.json`.
+  `--offline`, `--yes`. New package `@loomwork/appgen-model`. New convention `.loom/appgen/<ts>.spec.json`.
 - Kernel ABI and event schema unchanged.
 
 ## Notes
@@ -67,4 +67,4 @@ thing in the DX layer (`@loom/appgen` + an optional `@loom/appgen-model` + the C
 Real end-to-end testing against a Gemma GGUF fixed four integration bugs (ESM dynamic-import lowering,
 the node-llama-cpp v3 grammar API, project-dir peer resolution, a `minItems` grammar segfault) and set
 the footprint/stability defaults (bounded generation, small context). Environment guidance (Node LTS,
-RAM per tier) lives in the `@loom/appgen-model` README.
+RAM per tier) lives in the `@loomwork/appgen-model` README.

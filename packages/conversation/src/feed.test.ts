@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { boot, messages, until } from "./__fixtures__/harness";
 import { type FeedItem, createConversationReader, followConversation } from "./index";

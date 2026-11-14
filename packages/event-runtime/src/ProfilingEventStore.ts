@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { type DecoratorPlan, installOptional } from "./installOptional";
 import type { EventStore, OptionalEventStoreMethod } from "./types";
 
@@ -32,7 +32,7 @@ export interface WriteProfile {
  * tail, so a workload can write a great deal without writes ever being the constraint.
  *
  * Point this at your own application, alongside `effectTimingMiddleware` from
- * `@loom/middleware`, and compare: if effect time dwarfs write time, batching cannot help
+ * `@loomwork/middleware`, and compare: if effect time dwarfs write time, batching cannot help
  * you, whatever the raw event rate looks like.
  *
  * Zero-cost when unwired — it is a decorator, so a store that is not wrapped is unaffected.

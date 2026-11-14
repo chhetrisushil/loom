@@ -2,9 +2,9 @@
  * EVENT_SCHEMA 1.23.0 (Wave 2, W2-0; extended by 1.25.0) — the NAMES of the kernel's folded event kinds, as a
  * compile-time union.
  *
- * The fold's handler table (`@loom/replay-vm`) is the runtime truth; this tuple is its
+ * The fold's handler table (`@loomwork/replay-vm`) is the runtime truth; this tuple is its
  * type-level mirror, so a table keyed by `EventKind` (the answering/ignorable classification
- * in `@loom/event-runtime`, ADR 0118 D1) is a COMPILE error the moment a kind is added here
+ * in `@loomwork/event-runtime`, ADR 0118 D1) is a COMPILE error the moment a kind is added here
  * without a decision. A fitness test pins `KERNEL_EVENT_KINDS` equal to `knownEventTypes()`,
  * so the two cannot drift: adding a handler without adding it here fails that test, and adding
  * it here without classifying it fails `tsc`.

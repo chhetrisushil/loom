@@ -1,6 +1,6 @@
 # Blueprint IR 2.0.0 — closing the semantic leaks
 
-**Status:** design, approved in review on 2026-09-22 · **Scope:** loom (`@loom/blueprint-runtime`, `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`) and loom-ui (`core`, `renderer-lit`, `renderer-terminal`) · **Kernel change:** none · **Precedes:** loom-ui slice 6 (genUI migration)
+**Status:** design, approved in review on 2026-09-22 · **Scope:** loom (`@loomwork/blueprint-runtime`, `@loomwork/plugin-renderer-react`, `@loomwork/plugin-renderer-terminal`) and loom-ui (`core`, `renderer-lit`, `renderer-terminal`) · **Kernel change:** none · **Precedes:** loom-ui slice 6 (genUI migration)
 
 ## 0. Decisions this design rests on
 
@@ -31,7 +31,7 @@ The paper also distinguishes a mutable experience **model** from one validated *
 
 ## 2. The IR at 2.0.0
 
-### 2.1 Types (`@loom/blueprint-runtime`)
+### 2.1 Types (`@loomwork/blueprint-runtime`)
 
 ```ts
 export type BindingState = "pending" | "ready" | "stale" | "error";
@@ -47,7 +47,7 @@ export interface DataBinding {
   path: string;
   /** Where, in the SAME projection state, this binding's status lives. Absent ⇒ no status channel. */
   status?: { path: string };
-  /** `@loom/classify` DataClass. Read by compilers and delivery; never by renderers. */
+  /** `@loomwork/classify` DataClass. Read by compilers and delivery; never by renderers. */
   sensitivity?: DataClass;
 }
 
@@ -96,7 +96,7 @@ export interface WidgetRendererProps {
 }
 ```
 
-`WidgetKind` stays eight. `flex` and `stack` are unchanged. `DataClass` is imported as a type from `@loom/classify` (a new dependency of `@loom/blueprint-runtime`; it is type-only).
+`WidgetKind` stays eight. `flex` and `stack` are unchanged. `DataClass` is imported as a type from `@loomwork/classify` (a new dependency of `@loomwork/blueprint-runtime`; it is type-only).
 
 ### 2.2 Version pin
 
@@ -135,7 +135,7 @@ Existing rules are unchanged; `span` is no longer a prop and `undeclared-prop` f
 
 The whitepaper names a **Rendering Runtime**: a thin shared contract with a fat implementation per surface. loom has one; this spec names it so the layering is explicit and so no responsibility is left unowned.
 
-- **Shared contract = `@loom/blueprint-runtime`.** The Blueprint IR (this document), `RendererRegistry`, `traverseBlueprint`, `validateBlueprint`, `catalogCoverage`, `BindingStatus` and the canonical status matrix. This is what an app on loom alone renders with, and it is why loom's basic UI exists without loom-ui.
+- **Shared contract = `@loomwork/blueprint-runtime`.** The Blueprint IR (this document), `RendererRegistry`, `traverseBlueprint`, `validateBlueprint`, `catalogCoverage`, `BindingStatus` and the canonical status matrix. This is what an app on loom alone renders with, and it is why loom's basic UI exists without loom-ui.
 - **Per-surface implementations** = loom's React plugin (eager and fiber), loom's terminal plugin, loom-ui's Lit adapter (`renderBlueprintDom` + `litRegistry`), and later loom-ui's chat adapter. The asymmetry the paper predicts is already visible: React with fiber scheduling is large, terminal is nearly empty.
 - **Resolution happens at compile, not at render** — a deliberate difference from the paper. loom-ui's compiler resolves a semantic type to a concrete kind per surface once, and the artifact is content-addressed with that result. Adapters receive concrete kinds and stay deterministic and cheap; the cost is that a surface cannot re-resolve at runtime. Presentation hints (§7, slice 9) are therefore compile-time inputs that change the artifact, never renderer-side switches.
 
@@ -143,7 +143,7 @@ Where each of the paper's rendering-runtime responsibilities lives. **None is de
 
 | Responsibility (paper) | Owner | Status |
 |---|---|---|
-| Patch protocol and versioning | `@loom/blueprint-runtime` (IR 2.0.0, `irVersion`, pins) | this spec |
+| Patch protocol and versioning | `@loomwork/blueprint-runtime` (IR 2.0.0, `irVersion`, pins) | this spec |
 | Patch application preserving focus, scroll, half-entered input | each surface implementation; Lit first | slice 6a — shipped in loom-ui (`renderBlueprintDom` `handle.update`), design: `2026-09-22-loom-ui-recompose-design.md` |
 | Partial and out-of-order streams, every stage renderable | loom-ui compile emits progressive stages; adapters render each | slice 6c |
 | Scheduling by semantic priority, coalescing agent bursts | React: fiber mode (exists); Lit: adapter scheduler | slice 6b |
@@ -157,19 +157,19 @@ Where each of the paper's rendering-runtime responsibilities lives. **None is de
 
 **Canonical status precedence**, the same on every surface (adopted from loom-ui slice 4's matrix, now loom's): `error` → value renderer never runs, show the finding; `stale` → marker plus the value if present, marker plus "no value" otherwise; `pending` → marker plus the value if present, loading otherwise; no status or `ready` with `value === undefined` → loading; otherwise ready. Kind-level value contracts stay the framework's (loom validates nothing about values); the slot between `error` and `stale` where loom-ui inserts its contract check is a real parameter on both renderers, so the two matrices compose rather than merely being documented as composable: `check?: (widget, value) => { code, message } | undefined` on `TerminalRenderOptions` and on `BlueprintRenderer`/`WidgetFrame` props. It runs only for a widget whose binding DECLARES a status channel and only when `status?.state !== "error"` (a delivery error outranks it — there is no value to check), and a returned finding renders exactly as the error row does, suppressing the widget's own renderer. Returning `undefined` leaves the matrix untouched.
 
-**React (`@loom/plugin-renderer-react`)**, eager and fiber paths alike:
+**React (`@loomwork/plugin-renderer-react`)**, eager and fiber paths alike:
 - a grid cell gains a wrapper element carrying `gridColumn: span N` ONLY when `span > 1`; a span-1 cell is emitted directly, so every 1.0.0 grid renders the DOM it always did and each child still reconciles by its widget id;
 - a widget with `status` is wrapped in `<div data-binding-state=…>` and, for `pending` and `stale`, a marker element; for `error`, the finding replaces the widget renderer (the widget renderer is still passed `status` so a custom renderer may take over);
 - `source` becomes `data-source-type`, `data-source-version`, and `data-degraded="Trend@1.0.0 › Collection@1.0.0"` with a `title` tooltip on the wrapper;
 - `WidgetRendererProps.status` reaches every registered renderer; the eight built-ins ignore it (the wrapper handles it).
 - Fiber mode subscribes each widget to a selector over `(value, status)` and re-renders on either.
 
-**Terminal (`@loom/plugin-renderer-terminal`)**: `TerminalWidgetRenderer` becomes `(widget, value, status?) => string`; `renderBlueprintToString` applies the matrix with the glyphs `⋯ ` (pending, and the loading row — a declared channel with no value yet, whichever state says so), `~ ` (stale), `✗ ` (error, finding appended); a degraded widget's line ends with ` (degraded from Trend@1.0.0)` on its FIRST line only; spans are ignored. loom-ui's `withStatus` wrapper is retired (§6).
+**Terminal (`@loomwork/plugin-renderer-terminal`)**: `TerminalWidgetRenderer` becomes `(widget, value, status?) => string`; `renderBlueprintToString` applies the matrix with the glyphs `⋯ ` (pending, and the loading row — a declared channel with no value yet, whichever state says so), `~ ` (stale), `✗ ` (error, finding appended); a degraded widget's line ends with ` (degraded from Trend@1.0.0)` on its FIRST line only; spans are ignored. loom-ui's `withStatus` wrapper is retired (§6).
 
 ## 6. loom-ui changes (second PR)
 
 - **CI** bumps `LOOM_REF` to the loom merge commit; `pnpm.overrides` unchanged.
-- **core/node**: `SemanticNode.binding` gains `sensitivity?: DataClass` (zod enum over `@loom/classify`'s values); operations `bindProvider` gains `sensitivity?`; the artifact hash includes it (structure).
+- **core/node**: `SemanticNode.binding` gains `sensitivity?: DataClass` (zod enum over `@loomwork/classify`'s values); operations `bindProvider` gains `sensitivity?`; the artifact hash includes it (structure).
 - **core/compile**: emits `GridCell { span: node.span, node }` for every child of a grid container (widgets and nested containers alike) — `span-not-rendered` is deleted; emits `binding.status = { path: statusPath(handle) }` (`status.<handle>`, exported beside `hydrationPath`) and `binding.sensitivity` when set; emits `source = { type, version, degradedFrom: via.map(...) }` from `resolveSurface`'s `via`; stops emitting `SPAN_PROP`; `loomCatalogFor` stops appending `span` to contracts; `SPAN_PROP` and `handleFromPath` are deleted from the public surface (a `hydrationStatusPath`/`handleFromStatusPath` pair replaces the latter for hydration's own use).
 - **hydration**: `HandleStatus` is re-exported as loom's `BindingStatus` (structurally identical; hydration's `seq` is required, loom's optional — hydration narrows, never widens); the projection's `status.<handle>` slot is what `binding.status.path` names; no runtime change.
 - **renderer-lit**: `renderBlueprintDom` drops `statusProjectionId` and `selectSlice`'s handle lookup; the per-widget selector becomes `(resolveWidgetValue, resolveWidgetStatus)` over the binding's projection; grid cells apply `gridColumn`; `LuWidget` reads `widget.source` for its accessible name ("Trend, shown as a table") and a `data-degraded` attribute. `DomWidgetProps.status` type becomes loom's `BindingStatus`.
@@ -179,7 +179,7 @@ Where each of the paper's rendering-runtime responsibilities lives. **None is de
 
 ## 7. Roadmap — every capability, with its reference example
 
-loom-ui is a framework: each capability is built first and proven by a reference example in the same slice, so consumers have something to copy. Nothing below is deferred "until a consumer asks". Reference examples live in the sibling **loom-examples** repo (decision 2026-09-22), which gains `pnpm.overrides` `link:` entries for `@loom-ui/*` beside its `@loom/*` ones and a CI pin for each sibling.
+loom-ui is a framework: each capability is built first and proven by a reference example in the same slice, so consumers have something to copy. Nothing below is deferred "until a consumer asks". Reference examples live in the sibling **loom-examples** repo (decision 2026-09-22), which gains `pnpm.overrides` `link:` entries for `@loomwork/ui-*` beside its `@loomwork/*` ones and a CI pin for each sibling.
 
 | Slice | Capability | Where | Reference example (loom-examples) | Proves |
 |---|---|---|---|---|
@@ -199,9 +199,9 @@ Sequencing: IR 2.0 → 6a → 6 → 6b → 6c → 7 → 8 → 9 → 10. Slice 6 
 
 | Change | Placement | Why not elsewhere |
 |---|---|---|
-| IR 2.0.0 types, manifests, `asCell`, `upgradeBlueprint`, `cell()`, validation rules, status resolution | 1P `@loom/blueprint-runtime` | the IR is loom's compile target and both loom renderers read it |
-| React: spans, status wrapper, source attributes, fiber selector | 1P `@loom/plugin-renderer-react` | loom's basic UI gains the channel too; a loom-ui React renderer would duplicate every widget |
-| Terminal: status glyphs, degraded suffix, renderer signature | 1P `@loom/plugin-renderer-terminal` | same |
+| IR 2.0.0 types, manifests, `asCell`, `upgradeBlueprint`, `cell()`, validation rules, status resolution | 1P `@loomwork/blueprint-runtime` | the IR is loom's compile target and both loom renderers read it |
+| React: spans, status wrapper, source attributes, fiber selector | 1P `@loomwork/plugin-renderer-react` | loom's basic UI gains the channel too; a loom-ui React renderer would duplicate every widget |
+| Terminal: status glyphs, degraded suffix, renderer signature | 1P `@loomwork/plugin-renderer-terminal` | same |
 | ADR 0097, CHANGELOG, `composed-surfaces.md`, `architecture.md`, `api-reference.org`, `plugins.md` | docs | four guards fire on a new ADR (adrIndexDocs, changelogCoverage, docCitations, NOT_A_CAPABILITY) |
 | Kernel | none | event schema, syscalls, ABI untouched |
 
@@ -226,5 +226,5 @@ Negative case first at every layer.
 
 1. loom PR: IR 2.0.0 + renderers + ADR 0097 + docs; loom-examples run against it; rebase-merge on the maintainer's word.
 2. loom-ui PR: `LOOM_REF` bump + §6; rebase-merge on the maintainer's word.
-3. loom-examples PR: `@loom-ui/*` overrides + CI pin + the `blueprint-status` example.
+3. loom-examples PR: `@loomwork/ui-*` overrides + CI pin + the `blueprint-status` example.
 4. Then the §7 roadmap in order, one slice per PR pair (capability + example).

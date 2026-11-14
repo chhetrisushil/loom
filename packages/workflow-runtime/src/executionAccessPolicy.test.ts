@@ -1,4 +1,4 @@
-import { runExecutionAuthorizerConformance } from "@loom/conformance";
+import { runExecutionAuthorizerConformance } from "@loomwork/conformance";
 import { describe, expect, it } from "vitest";
 import { executionAccessPolicy } from "./executionAccessPolicy";
 import type { ExecutionAuthzRequest, ExecutionOp } from "./types";

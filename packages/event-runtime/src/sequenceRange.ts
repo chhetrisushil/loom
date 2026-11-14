@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // Binary-search helpers over an event array that is sorted ascending by
 // `sequence` — the invariant every EventStore preserves (the per-execution

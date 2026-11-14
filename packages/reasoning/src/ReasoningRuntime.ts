@@ -1,10 +1,10 @@
-import type { LlmResponse } from "@loom/llm";
+import type { LlmResponse } from "@loomwork/llm";
 import {
   assertRequestSupported,
   guardRequest,
   resolveRequestContent,
   textFreeReasoning,
-} from "@loom/llm";
+} from "@loomwork/llm";
 import { stopReasonConfidence } from "./confidence";
 import { tagRouter } from "./router";
 import type {

@@ -16,7 +16,7 @@ explicitly left alone. Six changes were worth making.
 
 ## Decision
 
-**A1 — copy-on-write fold (`@loom/replay-vm`).** The step handlers deep-cloned the
+**A1 — copy-on-write fold (`@loomwork/replay-vm`).** The step handlers deep-cloned the
 *entire* frames map (`cloneFrames`, S allocations) to update one frame, and
 `foldEvents` spread the whole state again per event. Replaced with a single-frame
 copy-on-write (`{ ...frames, [id]: frame }` — untouched frames shared by reference)
@@ -26,14 +26,14 @@ allocations to 2. Asymptotically still O(N) (S is bounded by the flow), but the
 constant is the point — this is the most-executed operation in the framework.
 _Measured: folding a 50-step / ~5000-event flow **33.7 ms → 4.4 ms (~7.7×)**._
 
-**A2 — periodic snapshots (`@loom/workflow-runtime`).** Snapshots were written only
+**A2 — periodic snapshots (`@loomwork/workflow-runtime`).** Snapshots were written only
 at suspend/fork, so a long non-suspending flow re-folded from sequence 0 on
 recovery (unbounded tail, O(N·S)). Added `snapshotEvery?: N`: the journal fires a
 post-commit hook and the runtime checkpoints every N events (at most one save in
 flight; fire-and-forget — a failed checkpoint only means a longer replay). Bounds
 recovery to O(N·S) tail. Default (unset) preserves the exact prior behavior.
 
-**A3 — bulk `copyPrefix` for `fork()` (`@loom/event-runtime`).** Forking appended
+**A3 — bulk `copyPrefix` for `fork()` (`@loomwork/event-runtime`).** Forking appended
 the prefix event-by-event, re-`JSON.stringify`-ing each payload already stored as
 JSON. Added an optional `EventStore.copyPrefix` — SQLite does it as one
 `INSERT … SELECT` with `json_patch` for the metadata merge (zero JS round-trip);
@@ -41,16 +41,16 @@ in-memory slices + re-stamps. The per-event `append` loop remains as a fallback 
 stores that don't implement it. Live projections still fire from the in-memory
 prefix already in hand.
 
-**B1 — `buildTrace` O(N²) → O(N) (`@loom/cli`).** The inspector render model folded
+**B1 — `buildTrace` O(N²) → O(N) (`@loomwork/cli`).** The inspector render model folded
 the whole prefix (`foldAt`) once per event. Replaced with a single incremental
 `ReplayVM.applyEvent` pass capturing status per sequence.
 _Measured: N=2000 **2.96 ms → 0.05 ms (~60×)**; the gap grows quadratically._
 
-**B2 — VCR cassette `Map` (`@loom/testing`).** `entries.find` per call was O(n²)
+**B2 — VCR cassette `Map` (`@loomwork/testing`).** `entries.find` per call was O(n²)
 while recording. Index by a `Map<key, response>` built once — O(1) lookups. The
 entries array stays the serialized source of truth.
 
-**B3 — A2UI batch-append structural sharing (`@loom/a2ui`).** `append` did
+**B3 — A2UI batch-append structural sharing (`@loomwork/a2ui`).** `append` did
 `[...existing, value]`, so a patch batch with k appends to one list was O(k²).
 `applyA2UIPatches` now tracks arrays *created during the current batch* in a
 `WeakSet` and pushes to those in place — O(k) per batch. Safe: the input state's
@@ -91,15 +91,15 @@ or re-derivation on paths now hit per-tick or per-append. Four additive optimiza
 landed (identical outputs, strict complexity/constant wins; within the no-regression
 gate — they only widen the margin):
 
-- **`nextOccurrence` field-jumping** (`@loom/workflow-runtime`, `cron.ts`) — the cron
+- **`nextOccurrence` field-jumping** (`@loomwork/workflow-runtime`, `cron.ts`) — the cron
   matcher advanced minute-by-minute; it now jumps directly to the next matching field
   value. Matters because `TimerService` (T1) evaluates it on every tick.
-- **Router tag index** (`@loom/reasoning`, `router.ts`) — the model router scanned its
+- **Router tag index** (`@loomwork/reasoning`, `router.ts`) — the model router scanned its
   route list per call; a prebuilt index makes tag→route an O(1) lookup.
-- **Crypto single-pass walk** (`@loom/store-crypto`, `crypto.ts`) — marked-field
+- **Crypto single-pass walk** (`@loomwork/store-crypto`, `crypto.ts`) — marked-field
   redaction/encryption traversed the object repeatedly; collapsed to one pass over the
   marked paths. On the append hot path when K10 is wired.
-- **`deploy-sim` linearization** (`@loom/deploy-sim`) — hoisted per-flow re-derivation
+- **`deploy-sim` linearization** (`@loomwork/deploy-sim`) — hoisted per-flow re-derivation
   out of the census loop.
 
 This does **not** revise A1–B3; it supplements them. See the

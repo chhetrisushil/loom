@@ -1,4 +1,4 @@
-import { createAgentModelEffect } from "@loom/agent";
+import { createAgentModelEffect } from "@loomwork/agent";
 import {
   type ConversationConfig,
   ConversationHub,
@@ -7,19 +7,19 @@ import {
   createConversations,
   inboxBargeIn,
   logParticipants,
-} from "@loom/conversation";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
-import type { PrincipalChain } from "@loom/effect-runtime";
+} from "@loomwork/conversation";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, GrantTable, ToolEffect } from "@loomwork/effect-runtime";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmStreamChunk, ReasoningStore } from "@loom/llm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
-import type { ExecutionAuthorizer } from "@loom/workflow-runtime";
+} from "@loomwork/event-runtime";
+import type { LlmProvider, LlmRequest, LlmStreamChunk, ReasoningStore } from "@loomwork/llm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime, executionAccessPolicy } from "@loomwork/workflow-runtime";
+import type { ExecutionAuthorizer } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import { type ConversationSseOptions, createConversationSseServer } from "../index";
 

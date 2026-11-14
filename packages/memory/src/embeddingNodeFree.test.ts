@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { sha256Hex } from "@loom/core";
+import { sha256Hex } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 
-// embedding.ts hashes with core's pure sha256Hex so browser bundles of @loom/memory carry no
+// embedding.ts hashes with core's pure sha256Hex so browser bundles of @loomwork/memory carry no
 // `node:crypto`. The digest feeds entry keys (`h:<hex>`), so it must equal node:crypto's.
 describe("embedding hashing is node-free and byte-identical to node:crypto", () => {
   const samples = [

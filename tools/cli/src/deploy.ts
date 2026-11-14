@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import { type CompatibilityReport, type FlowResolver, simulateDeploy } from "@loom/deploy-sim";
+import type { EventEnvelope } from "@loomwork/core";
+import { type CompatibilityReport, type FlowResolver, simulateDeploy } from "@loomwork/deploy-sim";
 
 /** Load stored logs from a directory of `*.json` files (each an EventEnvelope[]). */
 export function loadLogs(dir: string): EventEnvelope[][] {

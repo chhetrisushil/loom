@@ -8,9 +8,9 @@ import ts from "typescript";
 // in-process through the compiler API.
 //
 //   - ONE shared compiler host per checker: the SourceFiles of everything outside the fixture (the TypeScript lib,
-//     `@loom/core`, `@loom/workflow-runtime`, `zod` .d.ts) are parsed once and reused by every program, so the
+//     `@loomwork/core`, `@loomwork/workflow-runtime`, `zod` .d.ts) are parsed once and reused by every program, so the
 //     second case onward costs only the few new flow files. Fixture files are always re-read (they differ per case).
-//   - A bare import in a fixture file ("@loom/core", "zod") is resolved FROM THIS PACKAGE (`evals/node_modules`,
+//   - A bare import in a fixture file ("@loomwork/core", "zod") is resolved FROM THIS PACKAGE (`evals/node_modules`,
 //     i.e. the workspace's built `dist`), not from the temp directory, which has no node_modules. Relative imports
 //     resolve normally.
 //   - `types: []` and `skipLibCheck`: no @types scan, and no diagnostics from dependency declarations.

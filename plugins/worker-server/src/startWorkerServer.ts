@@ -1,4 +1,4 @@
-import type { WorkerRuntime } from "@loom/worker-runtime";
+import type { WorkerRuntime } from "@loomwork/worker-runtime";
 import { createWorkerServer } from "./createWorkerServer";
 import type { WorkerServer, WorkerServerOptions } from "./createWorkerServer";
 

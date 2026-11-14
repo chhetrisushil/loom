@@ -1,13 +1,13 @@
-import type { DispatchMetadata } from "@loom/dispatcher";
-import { RemoteWorkerRuntime } from "@loom/plugin-worker-remote";
-import type { RemoteWorkerRuntimeOptions } from "@loom/plugin-worker-remote";
+import type { DispatchMetadata } from "@loomwork/dispatcher";
+import { RemoteWorkerRuntime } from "@loomwork/plugin-worker-remote";
+import type { RemoteWorkerRuntimeOptions } from "@loomwork/plugin-worker-remote";
 import type {
   ExecutionPackage,
   ExecutionResult,
   WorkerLease,
   WorkerRequest,
   WorkerRuntime,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import { defaultSizingPolicy } from "./sizing";
 import type { CloudRunConfig, CloudRunPlatform, SizingPolicy } from "./types";
 

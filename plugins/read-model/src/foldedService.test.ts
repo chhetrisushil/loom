@@ -1,4 +1,4 @@
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it, vi } from "vitest";
 import type { FoldedModelEngine } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";

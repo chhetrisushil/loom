@@ -1,6 +1,6 @@
-import { runEventStoreDecoratorConformance } from "@loom/conformance";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { runEventStoreDecoratorConformance } from "@loomwork/conformance";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { faultInjectingStore } from "./faultStore";
 import { splitmix64 } from "./rng";

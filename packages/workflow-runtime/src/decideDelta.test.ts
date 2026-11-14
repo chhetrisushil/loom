@@ -1,4 +1,4 @@
-import type { FlowDefinition } from "@loom/core";
+import type { FlowDefinition } from "@loomwork/core";
 import {
   CapabilityDeniedError,
   type Effect,
@@ -8,8 +8,8 @@ import {
   EffectRuntime,
   GrantTable,
   ToolEffect,
-} from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+} from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   InMemoryKillSwitch,
   KillSwitchEngagedError,
@@ -19,8 +19,8 @@ import {
   retryMiddleware,
   safetyMiddleware,
   schemaValidator,
-} from "@loom/middleware";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/middleware";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
@@ -34,7 +34,7 @@ const isTaintedShape = (v: unknown): boolean =>
   typeof v === "object" && v !== null && "__loomTainted" in v;
 type R = FlowRunner<Record<string, unknown>, Record<string, unknown>>;
 
-/** The taint wrapper's wire shape (@loom/classify), inlined: this package does not depend on it. */
+/** The taint wrapper's wire shape (@loomwork/classify), inlined: this package does not depend on it. */
 const tv = (value: string) => ({ __loomTainted: { origin: "test" }, value });
 /** What a UI tail does: unwrap explicitly. */
 const text = (d: EffectDelta): string => d.delta.value;

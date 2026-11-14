@@ -1,4 +1,4 @@
-import { CUSTOM_DIMENSION_CEILING, CUSTOM_DIMENSION_PATTERN } from "@loom/replay-vm";
+import { CUSTOM_DIMENSION_CEILING, CUSTOM_DIMENSION_PATTERN } from "@loomwork/replay-vm";
 
 // ── Custom metering dimensions in analytics (ADR 0115 follow-up) ──────────────
 //

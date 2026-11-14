@@ -1,6 +1,6 @@
-import type { StepDefinition } from "@loom/core";
-import { declareReach } from "@loom/verify";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import type { StepDefinition } from "@loomwork/core";
+import { declareReach } from "@loomwork/verify";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 
 // ── ADR 0061 D4 — runtime-sized deterministic fan-out (the DE-1 residue) ──────
 //

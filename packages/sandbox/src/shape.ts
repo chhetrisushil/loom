@@ -1,4 +1,4 @@
-import { jsonSchemaHash } from "@loom/core";
+import { jsonSchemaHash } from "@loomwork/core";
 
 // ── ADR 0064 — the output-shape skeleton ─────────────────────────────────────
 //

@@ -1,16 +1,16 @@
-# @loom/worker-runtime — the worker SPI
+# @loomwork/worker-runtime — the worker SPI
 
 The contract for running one execution on some compute placement: `WorkerRuntime` (`allocate`, `execute`,
 `release`, optional `cancel`) and the JSON `ExecutionPackage` that crosses the boundary. A package carries
 identity and resume coordinates (`executionId`, `workflowId`, `flowId`, `input` or a `resumeEvent`),
 never code: the worker resolves the flow by id from the code it booted with and rebuilds state from the
 shared event and snapshot stores. This is infrastructure. An app does not normally import it; you read it
-when you write a worker backend or a dispatcher. A [`@loom/dispatcher`](../dispatcher/README.md) sits in
+when you write a worker backend or a dispatcher. A [`@loomwork/dispatcher`](../dispatcher/README.md) sits in
 front of a worker and owns retries and placement.
 
-Implementations: `LocalWorkerRuntime` ([`@loom/worker-runtime-local`](../worker-runtime-local/README.md),
-in-process), `RemoteWorkerRuntime` (`@loom/plugin-worker-remote`, HTTP to a `@loom/plugin-worker-server`
-endpoint) and `CloudRunWorkerRuntime` (`@loom/plugin-cloudrun`).
+Implementations: `LocalWorkerRuntime` ([`@loomwork/worker-runtime-local`](../worker-runtime-local/README.md),
+in-process), `RemoteWorkerRuntime` (`@loomwork/plugin-worker-remote`, HTTP to a `@loomwork/plugin-worker-server`
+endpoint) and `CloudRunWorkerRuntime` (`@loomwork/plugin-cloudrun`).
 
 ```ts
 import {
@@ -18,7 +18,7 @@ import {
   type ExecutionPackage,
   type ExecutionResult,
   type WorkerRuntime,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 
 // What a dispatcher does around any WorkerRuntime: lease, execute, always release.
 export async function dispatchOnce(
@@ -70,7 +70,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/worker-runtime` — the SPI" in [docs/api-reference.org](../../docs/api-reference.org).
-- Guide: [user guide, section 13: where executions run](../../docs/user-guide.md#13-where-executions-run-compute); `runWorkerRuntimeConformance` in `@loom/conformance` proves an implementation.
+- API reference: section "`@loomwork/worker-runtime` — the SPI" in [docs/api-reference.org](../../docs/api-reference.org).
+- Guide: [user guide, section 13: where executions run](../../docs/user-guide.md#13-where-executions-run-compute); `runWorkerRuntimeConformance` in `@loomwork/conformance` proves an implementation.
 - ADRs: [0001 dispatcher and worker runtime](../../docs/adr/0001-execution-dispatcher-and-worker-runtime.md), [0002 HTTP worker](../../docs/adr/0002-http-worker-and-remote-worker-runtime.md), [0003 Cloud Run](../../docs/adr/0003-cloud-run-worker-runtime.md), [0004 failure recovery](../../docs/adr/0004-failure-recovery.md).
 - Source: `packages/worker-runtime/src`.

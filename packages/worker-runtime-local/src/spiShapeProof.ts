@@ -2,16 +2,16 @@ import type {
   ExecutionAuthorizerLike,
   ResumeAuthenticatorLike,
   TimerDispatcherLike,
-} from "@loom/conformance";
+} from "@loomwork/conformance";
 import type {
   ExecutionAuthorizer,
   ResumeAuthenticator,
   TimerDispatcher,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 
 // ── Compile-time proof: the conformance kits still describe the real SPIs ────
 //
-// `@loom/conformance` declares `ExecutionAuthorizerLike` / `TimerDispatcherLike`
+// `@loomwork/conformance` declares `ExecutionAuthorizerLike` / `TimerDispatcherLike`
 // structurally, because importing the real interfaces there would close a cycle
 // (workflow-runtime dev-depends on plugin-sqlite, which depends on conformance).
 //

@@ -1,14 +1,19 @@
 import { createHash } from "node:crypto";
-import { isTainted, tainted, unwrapTainted } from "@loom/classify";
-import type { EventEnvelope, FlowDefinition, SkillDefinition, ToolDefinition } from "@loom/core";
-import { agent$, instructions$, skill$, tool$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "@loom/llm";
-import { ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+import { isTainted, tainted, unwrapTainted } from "@loomwork/classify";
+import type {
+  EventEnvelope,
+  FlowDefinition,
+  SkillDefinition,
+  ToolDefinition,
+} from "@loomwork/core";
+import { agent$, instructions$, skill$, tool$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "@loomwork/llm";
+import { ReplayVM } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";

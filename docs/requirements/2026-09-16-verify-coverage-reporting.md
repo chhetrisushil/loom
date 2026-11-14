@@ -63,7 +63,7 @@ That is the same failure this codebase keeps finding — an unchecked thing that
 
 ## 3. Proposed work
 
-Small, and mostly in `@loom/verify`. No kernel change, no new analysis, no SPI version.
+Small, and mostly in `@loomwork/verify`. No kernel change, no new analysis, no SPI version.
 
 | | item | shape | size |
 |---|---|---|---|
@@ -99,7 +99,7 @@ silently reintroduces the gap.
 
 ## 5. Placement verdict (ADR 0083)
 
-Not kernel — no syscall, no event, no SPI. V1–V3 are `@loom/verify` (where the rules and their report
+Not kernel — no syscall, no event, no SPI. V1–V3 are `@loomwork/verify` (where the rules and their report
 live); V4–V5 are the CLI. The second consumer for the coverage-reporting idea is already shipped and
 adjacent: `loom doctor` distinguishes `skipped` from `ok` for exactly this reason, and `loom census`
 reports lease coverage as *"not asked"* rather than zero. This is that same rule applied to the

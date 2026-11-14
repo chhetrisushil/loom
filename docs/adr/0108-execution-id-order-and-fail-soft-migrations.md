@@ -8,8 +8,8 @@
 - Builds on: [ADR 0074](0074-storage-scale-out-decorators.md) (the scatter-gather pager and the
   `Sharded(TenantScoped(…))` composition), [ADR 0091](0091-corpus-lifecycle-and-the-knowledge-package.md)
   (the precedent for a MAJOR SPI bump when a conforming store can fail a new kit case).
-- Placement: **SPI + first-party backends** (`@loom/event-runtime`, `@loom/plugin-postgres`,
-  `@loom/conformance`). **`EVENT_STORE_SPI_VERSION` 1.5.0 → 2.0.0**; per the addendum below,
+- Placement: **SPI + first-party backends** (`@loomwork/event-runtime`, `@loomwork/plugin-postgres`,
+  `@loomwork/conformance`). **`EVENT_STORE_SPI_VERSION` 1.5.0 → 2.0.0**; per the addendum below,
   **`BRANCH_REGISTRY_SPI_VERSION` 1.2.0 → 2.0.0**. KERNEL_ABI and EVENT_SCHEMA unchanged. No
   method added or removed.
 
@@ -30,7 +30,7 @@ handed out its inner, prefixed cursor and got an outer id back.
 ### D1 — Execution ids page in Unicode code point order; the cursor is an id (MAJOR)
 
 - Order: Unicode **code point** order, which is UTF-8 byte order, SQL `COLLATE "C"` and SQLite
-  BINARY. `compareExecutionIds` (`@loom/event-runtime`) is the reference comparator. It is not
+  BINARY. `compareExecutionIds` (`@loomwork/event-runtime`) is the reference comparator. It is not
   JavaScript's default order, which compares UTF-16 code units and disagrees on astral
   characters. The guarantee covers well-formed Unicode ids only: a lone surrogate cannot
   round-trip through UTF-8.

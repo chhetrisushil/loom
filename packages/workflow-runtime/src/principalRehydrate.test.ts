@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { rehydratePrincipal, storedPrincipalOf } from "./principal";
 

@@ -123,7 +123,7 @@ its grid.
 - loom-ui's `packages/core/src/blueprintIr.test.ts` pins `"2.0.0"` and goes red when loom-ui
   bumps its `LOOM_REF` past this ADR. That is the intended signal: the same PR teaches loom-ui's
   `compile` to emit placement and titles (phase 1 of the slice 6 design).
-- `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0. `@loom/spec` lists
+- `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0. `@loomwork/spec` lists
   this ADR in `NOT_A_CAPABILITY`, for the same reason as 0096 and 0097: an IR contract and
   renderer behaviour, not a runtime subsystem to grade.
 - `IR_VERSIONS_READ_AS_IS` must gain the outgoing version (`2.1.0`) on every future minor bump,

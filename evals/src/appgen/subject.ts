@@ -9,10 +9,10 @@ import {
   generateFlows,
   planChangesDeterministic,
   scanApp,
-} from "@loom/appgen";
-import { planChangesModel, tryParseChangeSpec, validateChangeSpec } from "@loom/appgen-model";
-import { CassetteMissError } from "@loom/eval";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+} from "@loomwork/appgen";
+import { planChangesModel, tryParseChangeSpec, validateChangeSpec } from "@loomwork/appgen-model";
+import { CassetteMissError } from "@loomwork/eval";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
 import type { ExpectedShape, FixtureKind } from "./cases";
 import { type Typechecker, formatDiagnostic } from "./typecheck";
 

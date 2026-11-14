@@ -1,6 +1,6 @@
 # Loom Benchmarks — Committed Baselines
 
-Run all benches: `pnpm bench`. Per package: `pnpm --filter @loom/<pkg> bench`.
+Run all benches: `pnpm bench`. Per package: `pnpm --filter @loomwork/<pkg> bench`.
 
 Two kinds of bench live here. Most are `vitest bench` micro-benchmarks measuring the
 *latency* of one operation in a serial loop. The **throughput** harness
@@ -16,7 +16,7 @@ Numbers below are indicative (Apple Silicon, Node 20, vitest bench). Re-capture 
 your CI host to set the authoritative baseline; compare relative movement, not
 absolute hz, across machines.
 
-## `@loom/plugin-crypto` — field-level encryption overhead (K10-R7 / ADR 0022 A4)
+## `@loomwork/plugin-crypto` — field-level encryption overhead (K10-R7 / ADR 0022 A4)
 
 `plugins/crypto/src/append.bench.ts` — the marked-vs-unmarked-vs-unwired append benchmark ADR
 0022 amendment A4 promised, proving the G2 bound (no overhead when unwired) and the honest
@@ -32,7 +32,7 @@ The empty-map wrapper being ~1.1× (a single lookup) — not the ~22× of the en
 provable "byte-identical when unmarked" claim. Each store is built once, outside the measured function:
 constructing the wrapper costs about 1.3 µs more, which an app pays once at boot and which earlier versions
 of this benchmark timed on every iteration. Against a real database these ratios are far smaller, because the
-write dominates. Run: `pnpm --filter @loom/plugin-crypto bench`.
+write dominates. Run: `pnpm --filter @loomwork/plugin-crypto bench`.
 
 ## traverseBlueprint — render fast path (regression gate)
 
@@ -49,7 +49,7 @@ Takeaway: even a 10k-node tree traverses in ~0.47ms — well inside a frame budg
 This is the empirical basis for **not** adding a Fiber-style time-slicer to the
 render path.
 
-## @loom/scheduler — overhead guardrails
+## @loomwork/scheduler — overhead guardrails
 
 | Bench                              | Result vs baseline |
 |------------------------------------|--------------------|
@@ -125,7 +125,7 @@ so erasure is never resurrected.
 ## Durable write throughput (`tools/bench-throughput`)
 
 The first measured answer to "how many requests per second can Loom do". Run:
-`LOOM_TEST_POSTGRES_URL=... pnpm --filter @loom/bench-throughput bench` (skips cleanly
+`LOOM_TEST_POSTGRES_URL=... pnpm --filter @loomwork/bench-throughput bench` (skips cleanly
 without a database). Full method and knobs: `tools/bench-throughput/README.md`.
 
 Captured on Apple Silicon, Node 24, **loopback** PostgreSQL 17.2, 256B payloads. Loopback
@@ -358,7 +358,7 @@ this table now says, and re-running it is one command:
 
 ```sh
 LOOM_TEST_POSTGRES_URL=postgres://… LOOM_BENCH_CONCURRENCIES=8,64 LOOM_BENCH_OPS=100 \
-  LOOM_BENCH_BATCHES=1,16,64 pnpm --filter @loom/bench-throughput bench
+  LOOM_BENCH_BATCHES=1,16,64 pnpm --filter @loomwork/bench-throughput bench
 ```
 
 Note the default is the conservative one. The earlier "knee at 16, regression at 64" came
@@ -466,7 +466,7 @@ workload). It was dropped rather than shipped as unmeasured complexity.
 [ADR 0065](adr/0065-group-commit-deferred-evidence-gate.md) gate 1 asks for a **real
 workload** where event-write throughput — not effect latency — is the **measured**
 bottleneck, and insists on a profile rather than intuition. `ProfilingEventStore`
-(`@loom/event-runtime`) and `effectTimingMiddleware` (`@loom/middleware`) are the
+(`@loomwork/event-runtime`) and `effectTimingMiddleware` (`@loomwork/middleware`) are the
 instruments for answering that on *your* traffic; both are decorators/middleware, so they
 are inert until wired.
 
@@ -526,7 +526,7 @@ repeat (alternating which goes first) and reduced to medians.
 
 ```
 LOOM_BENCH_BACKENDS=memory,sqlite,postgres LOOM_BENCH_CONCS=16,64,256 LOOM_BENCH_REPEATS=9 \
-LOOM_BENCH_PG_URL=postgres://... pnpm --filter @loom/bench-throughput bench:lease
+LOOM_BENCH_PG_URL=postgres://... pnpm --filter @loomwork/bench-throughput bench:lease
 ```
 
 `LOOM_BENCH_PG_URL` must point at a **throwaway** database: every run leaves its event, snapshot and
@@ -631,7 +631,7 @@ enough to be I/O-bound, where the S7f table shows it is within noise.
 ```
 LOOM_BENCH_BACKENDS=memory,sqlite,postgres LOOM_BENCH_CONCS=16,64,256 LOOM_BENCH_REPEATS=7 \
 LOOM_BENCH_EXECS=6000 LOOM_BENCH_SQLITE_EXECS=2000 LOOM_BENCH_PG_EXECS=3000 \
-LOOM_BENCH_PG_URL=postgres://... pnpm --filter @loom/bench-throughput bench:lease
+LOOM_BENCH_PG_URL=postgres://... pnpm --filter @loomwork/bench-throughput bench:lease
 ```
 
 Same machine and caveats as above (Apple M2, 8 cores, macOS, Node v24.18.0, PostgreSQL 17 on loopback

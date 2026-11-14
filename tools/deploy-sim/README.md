@@ -1,15 +1,15 @@
-# @loom/deploy-sim — check a deploy against executions that are still in flight
+# @loomwork/deploy-sim — check a deploy against executions that are still in flight
 
 Before you ship new flow code, replay your stored event logs against the new flow definitions and see
 which in-flight executions would break on resume. Nothing runs live: each log is folded
-(`replayAsFixture` from `@loom/eval`) and compared structurally with the definitions you pass in. Use it
+(`replayAsFixture` from `@loomwork/eval`) and compared structurally with the definitions you pass in. Use it
 as a CI gate for the "approval sat open for two days and we deployed in the middle" case. The
 `loom deploy check` command is a thin wrapper over it.
 
 ```ts
-import { simulateDeploy } from "@loom/deploy-sim";
-import type { EventEnvelope } from "@loom/core";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
+import { simulateDeploy } from "@loomwork/deploy-sim";
+import type { EventEnvelope } from "@loomwork/core";
+import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
 
 declare const logs: EventEnvelope[][]; // one array per execution, e.g. loaded from a store
 declare const next: WorkflowRuntime; // booted with the NEW flow code; it has getFlow(flowId)
@@ -54,6 +54,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 - [ADR 0014](../../docs/adr/0014-deploy-check-and-inspector.md): deploy check;
   [ADR 0113](../../docs/adr/0113-body-aware-code-fingerprint-and-dynamic-id-migration.md): the flow-code hash.
 - CLI: `loom deploy check --logs <dir> --config <module>` ([docs/usage-cli.md](../../docs/usage-cli.md)).
-- API reference: section "`@loom/deploy-sim` — deploy simulation" in
+- API reference: section "`@loomwork/deploy-sim` — deploy simulation" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

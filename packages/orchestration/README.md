@@ -1,4 +1,4 @@
-# @loom/orchestration — spawn a child workflow and await its result
+# @loomwork/orchestration — spawn a child workflow and await its result
 
 Cross-execution await without a new syscall. A parent flow spawns a child workflow and durably waits
 for its result; a supervisor correlates the child's completion back to the parent. Built from
@@ -6,7 +6,7 @@ for its result; a supervisor correlates the child's completion back to the paren
 [ADR 0040](../../docs/adr/0040-live-query-and-orchestration.md).
 
 ```ts
-import { awaitChild, superviseChildren } from "@loom/orchestration";
+import { awaitChild, superviseChildren } from "@loomwork/orchestration";
 
 // Parent flow: spawn "child" and await its output.
 const parentRunner = async (ctx, input) => {

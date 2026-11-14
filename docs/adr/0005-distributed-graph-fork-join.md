@@ -15,7 +15,7 @@ distributed sequencer.
 
 ## Decision
 
-New package `@loom/graph-executor` with `executeGraph(dispatcher, nodes, opts)`.
+New package `@loomwork/graph-executor` with `executeGraph(dispatcher, nodes, opts)`.
 Each graph node becomes its **own execution** (distinct `executionId`) dispatched
 concurrently through the `ExecutionDispatcher` (bounded by `limit` via
 `parallelLimit`). Placement is free — in-process, or one Cloud Run instance per

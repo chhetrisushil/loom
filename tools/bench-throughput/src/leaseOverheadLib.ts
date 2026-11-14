@@ -1,20 +1,20 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flow$, step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
-import type { EventStore, LeaseStore } from "@loom/event-runtime";
+import { flow$, step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loomwork/event-runtime";
+import type { EventStore, LeaseStore } from "@loomwork/event-runtime";
 import {
   PostgresEventStore,
   PostgresLeaseStore,
   PostgresSnapshotStore,
-} from "@loom/plugin-postgres";
-import { SqliteEventStore, SqliteLeaseStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+} from "@loomwork/plugin-postgres";
+import { SqliteEventStore, SqliteLeaseStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { Pool } from "pg";
 import { z } from "zod";
 import { drive } from "./harness";

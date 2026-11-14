@@ -131,7 +131,7 @@ export function describeWidgetStatus(
 // `data-binding-state` value, the marker's name / ARIA role / glyph / line, the `data-source-*`
 // attributes and the degraded-from tooltip. A renderer draws these in its own medium (DOM
 // elements, React elements, text) and adds nothing of its own to the vocabulary. Pure; reads only
-// its arguments. Consumers: `@loom/plugin-renderer-react`, `-terminal`, `-dom` (ADR 0127).
+// its arguments. Consumers: `@loomwork/plugin-renderer-react`, `-terminal`, `-dom` (ADR 0127).
 
 /** The marker one status draws. `text` is the whole line for the markers that carry one. */
 export interface WidgetStatusMarker {

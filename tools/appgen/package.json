@@ -1,5 +1,5 @@
 {
-  "name": "@loom/appgen",
+  "name": "@loomwork/appgen",
   "version": "0.1.0",
   "description": "AI-native DX for Loom — turn a natural-language intent into a structured AppSpec, then emit plain, static, inspectable TypeScript you own (flows, steps, capabilities, defineConfig). Codegen, never a runtime NL interpreter.",
   "main": "./dist/index.js",
@@ -20,7 +20,7 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/scaffold": "workspace:^",
+    "@loomwork/scaffold": "workspace:^",
     "typescript": "^5.6.3"
   },
   "devDependencies": {

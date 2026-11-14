@@ -6,8 +6,8 @@
   archive-before-delete), [ADR 0055](0055-k10-6-pin-seam-content-gc.md) (content GC),
   [ADR 0134](0134-snapshot-pruning.md) (snapshot pruning)
 - Related: [ADR 0083](0083-second-consumer-rule.md) (second-consumer rule)
-- Placement: **1P, `@loom/workflow-runtime` (the type, the validator, `LogLifecycle`) +
-  `@loom/plugin-content` (`sweepUnpinnedContent`, structural) + `@loom/cli` (`--policy`).** No kernel change;
+- Placement: **1P, `@loomwork/workflow-runtime` (the type, the validator, `LogLifecycle`) +
+  `@loomwork/plugin-content` (`sweepUnpinnedContent`, structural) + `@loomwork/cli` (`--policy`).** No kernel change;
   KERNEL_ABI, EVENT_SCHEMA and every SPI version unchanged. No new `defineConfig` field.
 
 ## Context
@@ -39,7 +39,7 @@ consumers.
 ### D1 - The value
 
 ```ts
-import { retentionPolicy } from "@loom/workflow-runtime";
+import { retentionPolicy } from "@loomwork/workflow-runtime";
 
 export const retention = retentionPolicy({
   terminalTtlMs: 90 * 86_400_000,
@@ -80,7 +80,7 @@ Both live in `packages/workflow-runtime/src/retentionPolicy.ts`; a violation is 
 A TypeScript literal can skip `retentionPolicy()`, and a JavaScript caller or a CLI module can pass anything.
 So every pass that RECEIVES a policy calls `assertRetentionPolicy` itself: `evaluate`, `applyRetention` and
 `pruneSnapshots({ policy })`. It accepts every input that was valid before (`{ terminalTtlMs: 0 }` included).
-`sweepUnpinnedContent({ policy })` cannot import the validator (no dependency on `@loom/workflow-runtime`), so
+`sweepUnpinnedContent({ policy })` cannot import the validator (no dependency on `@loomwork/workflow-runtime`), so
 it re-validates **structurally** with its own copy of the rules: it reads each field once into a plain
 snapshot, rejects unknown keys (top level and `content`), requires `unpinnedAfterMs` a finite integer `> 0`,
 and, when `terminalTtlMs` is present, a finite integer `>= 0` with `unpinnedAfterMs >= terminalTtlMs`. It does
@@ -98,7 +98,7 @@ so a getter that answers differently on a second read cannot smuggle a rule-brea
   ADR 0134 D5 is unaffected: pruning decides nothing the content sweep reads.
 - `sweepUnpinnedContent({ policy })` is an alternative to `olderThanMs`, taking
   `policy.content.unpinnedAfterMs`. The type is **structural** (`{ content?: { unpinnedAfterMs } }`), so
-  `@loom/plugin-content` gains no dependency on `@loom/workflow-runtime`. Exactly one of `olderThanMs` /
+  `@loomwork/plugin-content` gains no dependency on `@loomwork/workflow-runtime`. Exactly one of `olderThanMs` /
   `policy` must be given; both or neither is a `TypeError`, and a policy with no `content` section is an
   error rather than a silent no-op. The orphan pass's guard margin (ADR 0055 D6) applies to the resolved
   value unchanged.
@@ -172,7 +172,7 @@ stream from sequence 0 for every absent child. This amendment adds PREVENTION in
 rescan as the BACKSTOP (deletions made before the pin existed, deployments that do not wire it). It adds no
 storage, no event, no SPI method and nothing on a hot path.
 
-- **The pin.** `awaitedByParent(store, { snapshots?, onWarn? })` (`@loom/orchestration`) is a `PinPredicate`.
+- **The pin.** `awaitedByParent(store, { snapshots?, onWarn? })` (`@loomwork/orchestration`) is a `PinPredicate`.
 - **Which parent: the RECORDED one.** The parent is the `parent` on the child's own sequence 0 (written only
   under the kernel's lineage grant, so unforgeable; the edge `parkedOnChild` reads), NOT a split of the id: an app
   id `acct::42` is not a child of `acct`. No recorded parent (a root, an app id that merely contains `::`, a log
@@ -181,7 +181,7 @@ storage, no event, no SPI method and nothing on a hot path.
   un-prefixes both), so it is looked up as is.
 - **The parent's state: newest lifecycle event wins, the re-open rule.** The parent's log is scanned from the tip
   backwards for the first event that says live or ended, by the rules of ADR 0146 `terminalEndOf`
-  (`@loom/plugin-content`): `EXECUTION_RESUMED` / `SUSPENDED` / `STARTED` means LIVE (`resumeAs` re-opens a failed
+  (`@loomwork/plugin-content`): `EXECUTION_RESUMED` / `SUSPENDED` / `STARTED` means LIVE (`resumeAs` re-opens a failed
   or completed execution by appending `RESUMED`, ADR 0104 D1 / 0110 D1, so an old `FAILED` below it does not
   release the child); `COMPLETED` / `FAILED` / `CANCELLED` or a kernel `EXECUTION_CONTINUED` means ended. Events
   that say neither (audit rows, late outcomes and rewards after the terminal event) are skipped.
@@ -229,7 +229,7 @@ storage, no event, no SPI method and nothing on a hot path.
   `isVerifiedSuccessor` and `sameLineage` (so the true head is `>= D`), not that `D` IS the head. Verification
   and the `D+1`-absent check stay.
 
-  **Proofs** (the head search is `deepestGeneration` / `routeKeepSet` in `@loom/workflow-runtime`; they hold
+  **Proofs** (the head search is `deepestGeneration` / `routeKeepSet` in `@loomwork/workflow-runtime`; they hold
   for every head `H <= 2^31 - 2`, the bound of the search's `step < 2^30` guard).
 
   *Notation.* The search gallops from `lo = 0`, `step = 1`: while `step < 2^30` and the probe at `lo + step`
@@ -294,7 +294,7 @@ storage, no event, no SPI method and nothing on a hot path.
   verification, so it is never routed to or trusted; the cost is liveness only (the supervisor reads such a
   chain as "running"). (2) Retention over a raw, tenant-prefixed PHYSICAL store sees physical ids, so a child id
   differs from `successorIdOf(logical chain)`: the pin keeps the generation and warns once per chain (fails safe,
-  noisy). Run retention over the logical store. (3) The chain analytics in `@loom/analytics` show the
+  noisy). Run retention over the logical store. (3) The chain analytics in `@loomwork/analytics` show the
   reclaimed generations as gaps; that is the intended view of a bounded history, not a loss of the chain.
 - **Where it is wired, on by default.** `defineConfig` ORs it into `app.lifecycle`'s `pinned` (after the app's
   own `durability.retention.pinned`, never replacing it) whether or not `app.supervise` was called, and

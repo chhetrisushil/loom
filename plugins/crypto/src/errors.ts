@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { brandPayloadShredded } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { brandPayloadShredded } from "@loomwork/event-runtime";
 
 /**
  * K10.2 — a read touched payload encrypted under a subject key that has been

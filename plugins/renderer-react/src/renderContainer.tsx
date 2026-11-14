@@ -1,4 +1,4 @@
-import { type Layout, isLayoutId } from "@loom/blueprint-runtime";
+import { type Layout, isLayoutId } from "@loomwork/blueprint-runtime";
 import {
   type CSSProperties,
   Children,

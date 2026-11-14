@@ -2,14 +2,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildSegment } from "@loom/event-runtime";
+import { buildSegment } from "@loomwork/event-runtime";
 import {
   SqliteArchiveStore,
   SqliteContentStore,
   SqliteEventStore,
   SqliteSnapshotStore,
-} from "@loom/plugin-sqlite";
-import { ReplayVM } from "@loom/replay-vm";
+} from "@loomwork/plugin-sqlite";
+import { ReplayVM } from "@loomwork/replay-vm";
 import { afterEach, describe, expect, it } from "vitest";
 import { requireExistingFile } from "./stores";
 import { cmdSweepContent } from "./sweepContent";

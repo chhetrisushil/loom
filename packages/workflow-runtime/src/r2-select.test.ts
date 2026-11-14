@@ -1,4 +1,4 @@
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import {

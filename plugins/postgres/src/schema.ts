@@ -1,6 +1,6 @@
-import { KERNEL_EVENT_KINDS } from "@loom/core";
-import { EVENT_KIND_CLASS } from "@loom/event-runtime";
-import { SNAPSHOT_FRAME_SENTINEL } from "@loom/snapshot-runtime";
+import { KERNEL_EVENT_KINDS } from "@loomwork/core";
+import { EVENT_KIND_CLASS } from "@loomwork/event-runtime";
+import { SNAPSHOT_FRAME_SENTINEL } from "@loomwork/snapshot-runtime";
 import type { PoolLike } from "./pool";
 
 /** The kernel kinds that answer a park (ADR 0118 D1), from the one classification map. */
@@ -258,12 +258,12 @@ async function runMigration(
         : undefined;
     if (lz4Skipped !== undefined) {
       (onWarn ?? ((m: string) => console.warn(m)))(
-        `loom: @loom/plugin-postgres kept the default (pglz) compression for snapshots.state (${lz4Skipped}). Snapshots stay correct; the next boot retries. Drop the snapshotCompression: "lz4" option to silence this.`
+        `loom: @loomwork/plugin-postgres kept the default (pglz) compression for snapshots.state (${lz4Skipped}). Snapshots stay correct; the next boot retries. Drop the snapshotCompression: "lz4" option to silence this.`
       );
     }
     if (why !== null && why !== undefined) {
       (onWarn ?? ((m: string) => console.warn(m)))(
-        `loom: @loom/plugin-postgres did NOT install the ADR 0129 store-assigned incarnation (${why}). This store keeps the legacy creation-marker anchor, i.e. EventStore SPI 2.2.0 behaviour (a delete + byte-identical re-creation of an execution id is NOT detected by appendIfUnchanged), until a later boot installs it. PostgresEventStore.incarnationAnchors() reports the effective state.`
+        `loom: @loomwork/plugin-postgres did NOT install the ADR 0129 store-assigned incarnation (${why}). This store keeps the legacy creation-marker anchor, i.e. EventStore SPI 2.2.0 behaviour (a delete + byte-identical re-creation of an execution id is NOT detected by appendIfUnchanged), until a later boot installs it. PostgresEventStore.incarnationAnchors() reports the effective state.`
       );
     }
   } catch (err) {
@@ -382,7 +382,7 @@ export function ensureSnapshotZstd(
       );
       if (why !== undefined) {
         (options.onWarn ?? ((m: string) => console.warn(m)))(
-          `loom: @loom/plugin-postgres could not provision snapshots.state_z for the zstd snapshot codec (${why}). Snapshots are still written as JSONB (always correct, just larger); the next boot retries. Drop the snapshot codec option to silence this.`
+          `loom: @loomwork/plugin-postgres could not provision snapshots.state_z for the zstd snapshot codec (${why}). Snapshots are still written as JSONB (always correct, just larger); the next boot retries. Drop the snapshot codec option to silence this.`
         );
         return false;
       }
@@ -956,7 +956,7 @@ const DDL_REST = `
     END
     $leases_storage$;
 
-    -- ADR 0051 D2 (@loom/plugin-durable-state): typed keyed carry state for
+    -- ADR 0051 D2 (@loomwork/plugin-durable-state): typed keyed carry state for
     -- schedule-driven agents, revisioned for compare-and-set. The contract
     -- (schemas, migrations) lives above the SPI; this is a dumb CAS store.
     CREATE TABLE IF NOT EXISTS durable_state (
@@ -966,7 +966,7 @@ const DDL_REST = `
       payload JSONB NOT NULL
     );
 
-    -- RM (@loom/plugin-read-model, issue #183): durable cross-execution event
+    -- RM (@loomwork/plugin-read-model, issue #183): durable cross-execution event
     -- index. Idempotent rows (PK model_id,row_id) + monotonic per-execution
     -- watermarks; a read model is a rebuildable cache of the log, never an
     -- authority. GIN on fields serves the @> equality queries.
@@ -990,7 +990,7 @@ const DDL_REST = `
       PRIMARY KEY (model_id, execution_id)
     );
 
-    -- @loom/memory: durable agent memory. A key (\`memoryId::scope\`) names an
+    -- @loomwork/memory: durable agent memory. A key (\`memoryId::scope\`) names an
     -- ORDERED LIST of entries, so the table carries its own insertion key --
     -- entries routinely share a timestamp and ordering by it would reshuffle a
     -- conversation. TTL/size policy lives above the SPI, in MemoryRuntime.
@@ -1003,7 +1003,7 @@ const DDL_REST = `
     DO $ix_idx_memory_entries_key$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_memory_entries_key' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'memory_entries'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries (key, seq ASC); END IF; END $ix_idx_memory_entries_key$;
     -- Relevance search over searchableText(entry). The 'simple' configuration neither
     -- stems nor drops stopwords, which keeps it language-neutral and close to how SQLite's
-    -- unicode61 tokenizer and @loom/memory's own tokenize() split text -- three backends
+    -- unicode61 tokenizer and @loomwork/memory's own tokenize() split text -- three backends
     -- that agree on what a term is. An expression index, so the column stays the source.
     DO $ix_idx_memory_entries_fts$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_memory_entries_fts' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'memory_entries'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_fts ON memory_entries USING GIN (to_tsvector('simple', text)); END IF; END $ix_idx_memory_entries_fts$;
     -- Removal by entry id (ADR 0091). An EXPRESSION index over the stored JSON, not a

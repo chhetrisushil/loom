@@ -7,7 +7,7 @@
 - Builds on: [ADR 0087](0087-durable-agent-loop.md) D5 (compaction as a recorded task),
   [ADR 0122](0122-conversation-layer-streaming-transport-and-token-budgeting.md) (the conversation layer's rolling summary),
   [ADR 0083](0083-second-consumer-rule.md) (the second-consumer rule).
-- Placement: **1P, `@loom/agent` only.** Kernel, KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged. No new
+- Placement: **1P, `@loomwork/agent` only.** Kernel, KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged. No new
   event, no new log field.
 
 ## Context
@@ -35,7 +35,7 @@ with and without the warning (tested).
 
 **D2 - a built-in summarizer, model supplied by the caller.** `createSummarizerEffect(provider, { instruction?,
 maxTokens? })` returns an ordinary `createLlmEffect`: `{ messages } -> { summary }`, the contract of both
-`compaction.toolId` and `@loom/conversation`'s `budget.summarizerToolId`. The user registers it under a name
+`compaction.toolId` and `@loomwork/conversation`'s `budget.summarizerToolId`. The user registers it under a name
 of their choosing (`effects.register("summarize", createSummarizerEffect(provider))`, or passes a route's
 provider), so it runs inside the capability ring (grant, metering, quotas, `guardRequest`) like the agent's own
 model call, and `ctx.execute` records it once and serves it from the log on replay with no model call. It is
@@ -48,7 +48,7 @@ it fits, so keep it well under `afterBytes / 2`. An empty or whitespace summary 
 
 **D3 - reuse.** The conversation layer had no built-in summarizer (its `summarizerToolId` is also
 user-written), but it owned `summarizerText`, the bounded taint-unwrapping walker both contracts need. It moved
-to `@loom/agent` (`@loom/conversation` depends on `@loom/agent`, not the reverse) and `@loom/conversation`
+to `@loomwork/agent` (`@loomwork/conversation` depends on `@loomwork/agent`, not the reverse) and `@loomwork/conversation`
 re-exports it unchanged. The summarizer is not conversation-specific.
 
 **D4 - second consumer (ADR 0083).** Two unrelated consumers of the same `{ messages } -> { summary }`
@@ -63,7 +63,7 @@ registered effect serves both, as `summarizerText`'s documentation already said)
 
 ## Consequences
 
-Additive public API on `@loom/agent`: `AgentLoopConfig.warnTranscriptBytes`, `DEFAULT_STATE_GROWTH_WARN_BYTES`,
+Additive public API on `@loomwork/agent`: `AgentLoopConfig.warnTranscriptBytes`, `DEFAULT_STATE_GROWTH_WARN_BYTES`,
 `createSummarizerEffect`, `DEFAULT_SUMMARIZER_INSTRUCTION`, `SUMMARIZER_INPUT_ORIGIN`, and (moved)
 `summarizerText` / `SUMMARIZER_TEXT_TRUNCATED`. An existing uncompacted loop that crosses 256 KiB now logs
 one warning; set `warnTranscriptBytes: false` to silence it.

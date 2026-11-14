@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // ── Replay cost + scheduler metrics (issue #83) ──────────────────────────────
 //
@@ -74,7 +74,7 @@ export interface SchedulerCounters {
 }
 
 /**
- * Snapshot a scheduler's live counters. Structural parameter (no `@loom/scheduler` dependency)
+ * Snapshot a scheduler's live counters. Structural parameter (no `@loomwork/scheduler` dependency)
  * — pass any `{ inFlight, pending }`, e.g. a `Scheduler`.
  */
 export function schedulerSnapshot(scheduler: {

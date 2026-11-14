@@ -1,5 +1,5 @@
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { type Snapshot, type SnapshotStore, zstdAvailable } from "@loom/snapshot-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { type Snapshot, type SnapshotStore, zstdAvailable } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { defineConfig, normalizeConfig } from "./defineConfig";
 

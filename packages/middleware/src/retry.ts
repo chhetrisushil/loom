@@ -1,5 +1,5 @@
-import { SuspendError, TypedFailure } from "@loom/core";
-import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
+import { SuspendError, TypedFailure } from "@loomwork/core";
+import type { EffectContext, EffectMiddleware } from "@loomwork/effect-runtime";
 
 export interface RetryOptions {
   /** Max retries after the first attempt. Default 2 (⇒ up to 3 tries). */

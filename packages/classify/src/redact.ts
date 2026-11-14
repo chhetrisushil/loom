@@ -5,7 +5,7 @@ import { expandPaths, hasWildcard } from "./expand";
 // surfaces, the CLI). It replaces the value at each dot-path with a mask, copying only the
 // spine it touches (structural sharing elsewhere) and never mutating the caller's object.
 // Absent paths are skipped, so masking a payload that doesn't carry a marked field is a
-// no-op on that field. Lives here in `@loom/classify` — the neutral home the classification
+// no-op on that field. Lives here in `@loomwork/classify` — the neutral home the classification
 // consumers already depend on — so no surface package depends on another.
 
 /** The value an egress-masked field is replaced by (structure kept, value gone). */

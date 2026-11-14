@@ -1,4 +1,4 @@
-import type { PrincipalChain } from "@loom/effect-runtime";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import type {
   ExecutionAuthorizer,
   ExecutionAuthzRequest,
@@ -85,7 +85,7 @@ export interface ExecutionAccessOptions {
 export type ExecutionAccessPolicy = ExecutionAuthorizer & {
   /**
    * The resolved scope of every op (the defaults merged with `rules`). READ-ONLY, for a layer that must
-   * know whether the policy it sits on is owner-scoped before it trusts it (`@loom/conversation` refuses a
+   * know whether the policy it sits on is owner-scoped before it trusts it (`@loomwork/conversation` refuses a
    * policy that admits a tenant peer to query / send / cancel a conversation). Informational: it is not
    * consulted by `authorize`, and changing it changes nothing.
    */

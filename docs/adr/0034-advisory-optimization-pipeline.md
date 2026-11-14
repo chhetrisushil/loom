@@ -1,8 +1,8 @@
 # ADR 0034 — Advisory Optimization Pipeline
 
-- Status: Accepted (2026-07-10) — the one net-new item of the [forward-requirements evaluation](../requirements/2026-07-10-execution-kernel-forward-requirements-evaluation.md) (Requirement 8). Implemented: `advisoryPipeline` / `formatAdvisory` in `@loom/analytics` + `loom optimize` CLI.
+- Status: Accepted (2026-07-10) — the one net-new item of the [forward-requirements evaluation](../requirements/2026-07-10-execution-kernel-forward-requirements-evaluation.md) (Requirement 8). Implemented: `advisoryPipeline` / `formatAdvisory` in `@loomwork/analytics` + `loom optimize` CLI.
 - Date: 2026-07-10
-- Builds on: `@loom/analytics` (`runtimeIntelligence`, `costAnalytics`, `latencyBreakdown`, `decisionRecords`, `outcomeRecords`), `@loom/reasoning` (`rankedRouter`), [ADR 0018](0018-learning-seam-outcome-recorded.md) (`OUTCOME_RECORDED`), [ADR 0030](0030-decision-materialization.md)
+- Builds on: `@loomwork/analytics` (`runtimeIntelligence`, `costAnalytics`, `latencyBreakdown`, `decisionRecords`, `outcomeRecords`), `@loomwork/reasoning` (`rankedRouter`), [ADR 0018](0018-learning-seam-outcome-recorded.md) (`OUTCOME_RECORDED`), [ADR 0030](0030-decision-materialization.md)
 
 ## Context
 
@@ -15,7 +15,7 @@ requirement, a way to *evaluate a recommendation against the outcome it later pr
 
 ## Decision
 
-Add an optional pure read-model `advisoryPipeline(events, opts?)` in `@loom/analytics` that composes
+Add an optional pure read-model `advisoryPipeline(events, opts?)` in `@loomwork/analytics` that composes
 the existing components into one lifecycle. Two non-negotiables carry over: **G1** (preserve
 P2/P9 — never feed the fold) and **G2** (additive/opt-in — uncalled ⇒ byte-identical).
 

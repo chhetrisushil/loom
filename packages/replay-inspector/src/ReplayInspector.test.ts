@@ -1,9 +1,9 @@
-import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
-import { handler$, step$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loomwork/core";
+import { handler$, step$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ReplayInspector } from "./ReplayInspector";

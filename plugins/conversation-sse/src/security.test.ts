@@ -1,4 +1,4 @@
-import { executionAccessPolicy } from "@loom/workflow-runtime";
+import { executionAccessPolicy } from "@loomwork/workflow-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type Booted,
@@ -267,7 +267,7 @@ describe("limits", () => {
   });
 
   it("caps live subscribers per conversation without leaking that it exists", async () => {
-    const { ConversationHub } = await import("@loom/conversation");
+    const { ConversationHub } = await import("@loomwork/conversation");
     const b = await up({ hub: new ConversationHub({ maxSubscribersPerConversation: 1 }) });
     const id = await startConv(b, "tok-alice");
     const one = track(await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-alice")));

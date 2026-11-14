@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it, vi } from "vitest";
 import { CoalescingEventStore } from "./CoalescingEventStore";
 import { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";

@@ -1,27 +1,27 @@
-import type { FlowDefinition } from "@loom/core";
-import { step$ } from "@loom/core";
+import type { FlowDefinition } from "@loomwork/core";
+import { step$ } from "@loomwork/core";
 import {
   CapabilityDeniedError,
   EffectRuntime,
   GrantTable,
   ToolEffect,
   signDelegation,
-} from "@loom/effect-runtime";
+} from "@loomwork/effect-runtime";
 import type {
   CapabilityAuthorizer,
   CapabilityRequest,
   EffectContext,
   EffectMiddleware,
-} from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+} from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   InMemorySecretResolver,
   meteringMiddleware,
   redactOutputFrom,
   redactionMiddleware,
-} from "@loom/middleware";
-import { QuotaExceededError } from "@loom/middleware";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/middleware";
+import { QuotaExceededError } from "@loomwork/middleware";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
@@ -154,7 +154,7 @@ describe("ctx.decide hands the decider an invoker stamped with the deciding exec
 
   it("a delegation that does not cover the effect DENIES the decider's call", async () => {
     const token = signDelegation("s3cret", "alice", ["something-else"]);
-    const { DelegationAuthorizer } = await import("@loom/effect-runtime");
+    const { DelegationAuthorizer } = await import("@loomwork/effect-runtime");
     const authorizer = new DelegationAuthorizer({
       secret: "s3cret",
       base: new GrantTable({ "any-flow": ["*"] }),

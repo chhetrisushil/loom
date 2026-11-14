@@ -1,5 +1,5 @@
 {
-  "name": "@loom/event-runtime",
+  "name": "@loomwork/event-runtime",
   "version": "0.1.0",
   "description": "Append-only event store for the Loom framework",
   "main": "./dist/index.js",
@@ -31,7 +31,7 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^"
+    "@loomwork/core": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -1,4 +1,4 @@
-import type { ExecutionState, SuspendCondition } from "@loom/core";
+import type { ExecutionState, SuspendCondition } from "@loomwork/core";
 
 /**
  * The immutable, JSON-serializable description of ONE execution to run on a

@@ -12,7 +12,7 @@ import {
   isWidget,
   resolveWidgetStatus,
   resolveWidgetValue,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 import { deepEqual } from "./deepEqual";
 import type { DomWidgetRenderer } from "./defaultRegistry";
 import { h } from "./safeDom";

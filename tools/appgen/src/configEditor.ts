@@ -58,14 +58,14 @@ export function wireGrantsIntoConfig(
   const splices: Splice[] = [];
 
   const hasImport =
-    /import\s*\{[^}]*\bGrantTable\b[^}]*\}\s*from\s*["']@loom\/effect-runtime["']/.test(src);
+    /import\s*\{[^}]*\bGrantTable\b[^}]*\}\s*from\s*["']@loomwork\/effect-runtime["']/.test(src);
   if (!hasImport) {
     let lastImportEnd = 0;
     for (const s of sf.statements) if (ts.isImportDeclaration(s)) lastImportEnd = s.getEnd();
     splices.push({
       start: lastImportEnd,
       end: lastImportEnd,
-      text: '\nimport { GrantTable } from "@loom/effect-runtime";',
+      text: '\nimport { GrantTable } from "@loomwork/effect-runtime";',
     });
   }
 

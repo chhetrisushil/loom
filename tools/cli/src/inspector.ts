@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
-import { exposeError } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import { exposeError } from "@loomwork/core";
+import type { EventStore } from "@loomwork/event-runtime";
 import { describeState, foldAt } from "./core";
 import { LS_STATUSES, scanExecutions } from "./ls";
 import { buildTrace } from "./trace";

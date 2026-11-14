@@ -139,7 +139,7 @@ chosen sequence *is* time-travel. *(ADRs 0010, 0012, 0014)*
 ## Testing — deterministic, offline
 
 ```ts
-import { createTestApp, waitForPhase, captureGolden } from "@loom/testing";
+import { createTestApp, waitForPhase, captureGolden } from "@loomwork/testing";
 
 const app = createTestApp({ surfaces: ["mission"], flows: [myFlow] });
 const h = await app.runtime.start(myFlow, input);
@@ -198,7 +198,7 @@ The recurring route → plan → dispatch → gate loop, as composable functions
 base class:
 
 ```ts
-import { decideApproval } from "@loom/orchestrator";
+import { decideApproval } from "@loomwork/orchestrator";
 
 await decideApproval(
   { goal, riskLevel: "medium" },
@@ -234,14 +234,14 @@ Correctness pinned by tests for each invariant. Public SDK untouched. *(ADR 0015
 One compact release-approval app that exercises **all** of the above:
 
 ```bash
-pnpm --filter @loom/loom-starter gen      # folder convention → loom.gen.ts
-pnpm --filter @loom/loom-starter start    # start → pause at gate → resume → release
-pnpm --filter @loom/loom-starter test     # @loom/testing (incl. retry proof)
-pnpm --filter @loom/loom-starter eval     # golden replay
-pnpm --filter @loom/loom-starter deploy:check
+pnpm --filter @loomwork/loom-starter gen      # folder convention → loom.gen.ts
+pnpm --filter @loomwork/loom-starter start    # start → pause at gate → resume → release
+pnpm --filter @loomwork/loom-starter test     # @loomwork/testing (incl. retry proof)
+pnpm --filter @loomwork/loom-starter eval     # golden replay
+pnpm --filter @loomwork/loom-starter deploy:check
 ```
 
-`defineConfig` + `loom gen` + `retryMiddleware` + `@loom/testing` + evals +
+`defineConfig` + `loom gen` + `retryMiddleware` + `@loomwork/testing` + evals +
 deploy-sim + the compute seam — in one small, readable package.
 
 ---

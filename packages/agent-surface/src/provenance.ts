@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import type { Projection } from "@loom/projection-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { Projection } from "@loomwork/projection-runtime";
 import { DEFAULT_SURFACE, SURFACE_PATCH } from "./types";
 import type { PatchProvenance, SurfacePatchPayload } from "./types";
 

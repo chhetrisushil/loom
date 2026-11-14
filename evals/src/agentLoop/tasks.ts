@@ -1,4 +1,4 @@
-import type { LlmResponse, LlmToolCall } from "@loom/llm";
+import type { LlmResponse, LlmToolCall } from "@loomwork/llm";
 import type { Script } from "../cassetteFiles";
 import type { TaskInput } from "./subject";
 

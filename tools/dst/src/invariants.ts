@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // ── Invariants — the properties every fault schedule must preserve ────────────
 //

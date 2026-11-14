@@ -1,17 +1,17 @@
-import { schedule$ } from "@loom/core";
-import type { ScheduleDefinition } from "@loom/core";
-import type { EffectMiddleware } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import { claimCheckMiddleware } from "@loom/middleware";
-import type { ClaimCheckOptions, ClaimCheckStore } from "@loom/middleware";
-import { pinByEventKinds } from "@loom/plugin-content";
-import { sentinelState } from "@loom/plugin-durable-state";
+import { schedule$ } from "@loomwork/core";
+import type { ScheduleDefinition } from "@loomwork/core";
+import type { EffectMiddleware } from "@loomwork/effect-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import { claimCheckMiddleware } from "@loomwork/middleware";
+import type { ClaimCheckOptions, ClaimCheckStore } from "@loomwork/middleware";
+import { pinByEventKinds } from "@loomwork/plugin-content";
+import { sentinelState } from "@loomwork/plugin-durable-state";
 import type {
   DurableStateStore,
   EffectRegistry,
   Migration,
   SentinelStateHandle,
-} from "@loom/plugin-durable-state";
+} from "@loomwork/plugin-durable-state";
 import type { ZodSchema } from "zod";
 
 // ── DX-1 (db-copilot infra, issue #187) — the perpetual-agent pattern as one

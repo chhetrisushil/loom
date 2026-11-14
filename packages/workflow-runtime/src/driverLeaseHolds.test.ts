@@ -1,4 +1,4 @@
-import { InMemoryLeaseStore } from "@loom/event-runtime";
+import { InMemoryLeaseStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { type DriverLease, DriverLeases } from "./driverLease";
 import { LeaseLostError, isHeuristicOwner } from "./leaseKeeper";

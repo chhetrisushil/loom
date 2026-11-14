@@ -4,8 +4,8 @@ import {
   MetricCard,
   blueprint$,
   stack,
-} from "@loom/blueprint-runtime";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+} from "@loomwork/blueprint-runtime";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
 import { describe, expect, it } from "vitest";
 import { defaultDomRegistry } from "./defaultRegistry";
 import { mountBlueprint } from "./renderBlueprint";

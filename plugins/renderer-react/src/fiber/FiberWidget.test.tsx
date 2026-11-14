@@ -6,8 +6,8 @@ import {
   asCell,
   blueprint$,
   grid,
-} from "@loom/blueprint-runtime";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+} from "@loomwork/blueprint-runtime";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
 import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { BlueprintRenderer } from "../BlueprintRenderer";

@@ -1,6 +1,6 @@
 // ── ADR 0064 — sandbox contract types ────────────────────────────────────────
 //
-// The contract SHAPE follows @loom/isolate's IsolatedToolSpec (static spec,
+// The contract SHAPE follows @loomwork/isolate's IsolatedToolSpec (static spec,
 // scalar-marshaled context, no closures over parent state) — but the engine is
 // QuickJS-in-WASM: capability-EMPTY by construction. Nothing exists inside the
 // VM except what is injected (a JSON-marshaled `input`), so no-I/O is a
@@ -127,10 +127,10 @@ export interface SandboxSpec {
   workers?: SandboxWorkers;
 }
 
-// Moved to @loom/sandbox (ADR 0144); re-exported so existing imports keep working.
+// Moved to @loomwork/sandbox (ADR 0144); re-exported so existing imports keep working.
 export {
   SANDBOX_ERRORS,
   SandboxEvalInput,
   type SandboxEvalInputValue,
   type ScriptReader,
-} from "@loom/sandbox";
+} from "@loomwork/sandbox";

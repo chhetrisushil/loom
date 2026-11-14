@@ -1,4 +1,4 @@
-import { canonicalJson, fnv1a64 } from "@loom/core";
+import { canonicalJson, fnv1a64 } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { blueprint$ } from "./Blueprint";
 import { BLUEPRINT_IR_VERSION } from "./irVersion";

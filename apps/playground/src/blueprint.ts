@@ -5,7 +5,7 @@ import {
   blueprint$,
   grid,
   stack,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 
 export const TaskBlueprint = blueprint$({
   id: "task-dashboard",

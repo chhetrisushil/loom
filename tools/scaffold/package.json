@@ -1,5 +1,5 @@
 {
-  "name": "@loom/scaffold",
+  "name": "@loomwork/scaffold",
   "version": "0.1.0",
   "description": "Shared code templates + registration codegen for Loom — used by create-loom-app (whole app) and `loom new`/`loom gen` (single files + generated registration)",
   "main": "./dist/index.js",

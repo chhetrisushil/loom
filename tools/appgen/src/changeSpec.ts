@@ -1,4 +1,4 @@
-import { pascal } from "@loom/scaffold";
+import { pascal } from "@loomwork/scaffold";
 import type { AppModel } from "./appModel";
 import { type IdResolver, parseIntent } from "./parseIntent";
 import { newIdSlug, existingIdSlug as slug } from "./slug";
@@ -11,7 +11,7 @@ import type { CapabilitySpec, ComputeSpec, ReasoningSpec } from "./types";
 // step is tagged create / extend / modify. This is the ONLY structure a model ever
 // emits — it carries intent (add a step, add an approval gate), never file contents.
 // The deterministic planner below wraps `parseIntent` and diffs against the scan; a
-// model-backed planner (Stage 2, @loom/appgen-model) produces the same shape.
+// model-backed planner (Stage 2, @loomwork/appgen-model) produces the same shape.
 
 export type Op = "create" | "extend" | "modify" | "delete";
 

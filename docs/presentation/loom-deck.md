@@ -240,7 +240,7 @@ Full reasoning: **`docs/architecture.md` §7** and **`docs/adr/` (0001–0015)**
 
 ```bash
 pnpm install && pnpm build
-pnpm --filter @loom/agent-network start
+pnpm --filter @loomwork/agent-network start
 ```
 
 ---
@@ -248,7 +248,7 @@ pnpm --filter @loom/agent-network start
 ## Start in 5 minutes
 
 ```bash
-npm create loom-app@latest my-app && cd my-app && pnpm install
+npm create @loomwork/loom-app@latest my-app && cd my-app && pnpm install
 ```
 
 ```ts

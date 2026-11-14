@@ -70,7 +70,7 @@ behaviour under `snapshotEvery`.
 - **A benchmark is owed**, not a design. It belongs in `tools/bench-throughput` alongside the
   existing append/QPS work, and it answers LQ-2 directly.
 - **SU-2's Accept line becomes a test to write, not a change to make** — "10,000 runs suspended
-  for 30 simulated days consume no measurable CPU" is a `@loom/dst` scenario, and asserting it
+  for 30 simulated days consume no measurable CPU" is a `@loomwork/dst` scenario, and asserting it
   guards against a future regression that would otherwise be invisible.
 - **The pending/abandoned distinction stays in userspace.** Two applications may reasonably
   disagree about what supersession means; encoding one opinion as a kernel state would make the

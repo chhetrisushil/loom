@@ -1,5 +1,5 @@
 {
-  "name": "@loom/conversation",
+  "name": "@loomwork/conversation",
   "version": "0.1.0",
   "description": "A durable conversation over one chained execution: turns arrive on the inbox, a new turn barges in on a running one, long dialogues rotate (continue-as-new), history is read from the log, and the prompt is fitted to a token budget",
   "main": "./dist/index.js",
@@ -20,18 +20,18 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/agent": "workspace:^",
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/llm": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^",
+    "@loomwork/agent": "workspace:^",
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/llm": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@loom/memory": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
+    "@loomwork/memory": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

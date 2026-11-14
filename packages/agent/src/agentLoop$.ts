@@ -1,5 +1,5 @@
-import { isTainted, taintOf, tainted } from "@loom/classify";
-import type { AgentDefinition, ExecutableTask, ToolDefinition } from "@loom/core";
+import { isTainted, taintOf, tainted } from "@loomwork/classify";
+import type { AgentDefinition, ExecutableTask, ToolDefinition } from "@loomwork/core";
 import {
   TypedFailure,
   canonicalJson,
@@ -7,9 +7,9 @@ import {
   fnv1a64,
   loadInstructions,
   sha256Hex,
-} from "@loom/core";
-import type { Effect } from "@loom/effect-runtime";
-import { ToolEffect } from "@loom/effect-runtime";
+} from "@loomwork/core";
+import type { Effect } from "@loomwork/effect-runtime";
+import { ToolEffect } from "@loomwork/effect-runtime";
 import type {
   LlmContent,
   LlmContentPartInput,
@@ -20,7 +20,7 @@ import type {
   LlmToolCall,
   LlmToolResultPartInput,
   LlmToolSpecInput,
-} from "@loom/llm";
+} from "@loomwork/llm";
 import {
   LLM_INTERRUPTED,
   MAX_INLINE_TOTAL_BYTES,
@@ -28,11 +28,11 @@ import {
   base64ByteLength,
   hasReasoningParts,
   withoutReasoningParts,
-} from "@loom/llm";
-import type { TieredMemory } from "@loom/memory";
-import type { ModelInvoker, ReasonOptions, ReasoningRuntime } from "@loom/reasoning";
-import { approvalViewDigest } from "@loom/workflow-runtime";
-import type { BranchContext, DecideOptions, ExecutionContext } from "@loom/workflow-runtime";
+} from "@loomwork/llm";
+import type { TieredMemory } from "@loomwork/memory";
+import type { ModelInvoker, ReasonOptions, ReasoningRuntime } from "@loomwork/reasoning";
+import { approvalViewDigest } from "@loomwork/workflow-runtime";
+import type { BranchContext, DecideOptions, ExecutionContext } from "@loomwork/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
@@ -52,7 +52,7 @@ import { assertContextIsClean } from "./untrustedContext";
 // handler receives `StepHandlerContext`: `emit`, and nothing else. No `execute`,
 // no `suspend`, no `decide`. Forty model calls and N tool calls are ONE frame, so
 // a crash at turn 39 re-runs all 39; approval has to be hoisted out of the agent
-// entirely; and routing choices are hand-emitted in a shape `@loom/learning`
+// entirely; and routing choices are hand-emitted in a shape `@loomwork/learning`
 // cannot evaluate. The kernel's entire agent-relevant surface was present and
 // unreachable from the agent.
 //
@@ -183,7 +183,7 @@ export interface AgentLoopConfig {
   reasoning?: ReasoningRuntime;
   /**
    * R18 (ADR 0124) — the prompt template and model configuration in force, as content-addressed
-   * references (`promptVersion` / `modelVersion` from `@loom/learning`). Recorded in the `policy`
+   * references (`promptVersion` / `modelVersion` from `@loomwork/learning`). Recorded in the `policy`
    * stamp of each journaled model-response decision (`policy.refs`), so an evaluation can slice
    * trajectories by prompt or model version. Additive and descriptive: a decision's `choice` is the
    * only replay input, so a log with or without it replays identically. Applies to the direct
@@ -217,7 +217,7 @@ export interface AgentLoopConfig {
    * R9 — refuse to run any model call outside the effect ring. With this set, `agentLoop$`
    * throws up front when `reasoning` is configured without {@link reasoningToolId}, and when a
    * `skillSelector` calls a provider directly instead of being `effectBacked`.
-   * `@loom/app`'s strict profile CANNOT set this for you (it does not construct agents): pass it
+   * `@loomwork/app`'s strict profile CANNOT set this for you (it does not construct agents): pass it
    * at each call site. Without it, `agentLoop$` emits a one-time process warning
    * (`LOOM_AGENT_RING`) when `reasoning` is used with no `reasoningToolId`. Default `false`
    * keeps today's behaviour.
@@ -227,7 +227,7 @@ export interface AgentLoopConfig {
    * ADR 0133 D7 - refuse (throw {@link AgentLoopConfigError}) when the direct routed path (`reasoning`
    * without `reasoningToolId`) is used with a route whose provider declares `capabilities.reasoning`:
    * that path discards the model's reasoning every turn. Default `false` (a one-time warning instead).
-   * `@loom/app`'s `observability.reasoning.requireContinuation` sets the app-wide default.
+   * `@loomwork/app`'s `observability.reasoning.requireContinuation` sets the app-wide default.
    */
   requireReasoningContinuation?: boolean;
   /** Where the direct-path reasoning warning goes. Default: the app's `observability.onWarn`, else a process warning. */
@@ -574,7 +574,7 @@ type LoopDefaults = {
   onWarn?: ((m: string) => void) | undefined;
   requireReasoningContinuation?: boolean | undefined;
 };
-// Process-wide, but keyed on a global symbol so a duplicate copy of @loom/agent shares ONE slot
+// Process-wide, but keyed on a global symbol so a duplicate copy of @loomwork/agent shares ONE slot
 // instead of silently configuring a copy the loop never reads.
 const LOOP_DEFAULTS_KEY = Symbol.for("loom.agent.loopDefaults");
 function loopDefaultsSlot(): LoopDefaults {
@@ -587,7 +587,7 @@ function loopDefaultsSlot(): LoopDefaults {
   return slot;
 }
 /**
- * App-wide defaults for `agentLoop$` options that an app (not each call site) owns. `@loom/app`'s
+ * App-wide defaults for `agentLoop$` options that an app (not each call site) owns. `@loomwork/app`'s
  * `defineConfig` calls this with `observability.onWarn` (only when the app gave one) and
  * `observability.reasoning.requireContinuation`. FAIL-CLOSED: `requireReasoningContinuation: true` is
  * monotonic (once any caller in the process sets it, no later call clears it; use
@@ -1850,7 +1850,7 @@ export async function agentLoop$(
         // never re-asked (and cannot answer differently and move the `#turn:<i>:tool:<j>` ids under
         // the log). The runtime still guards the request, checks modalities and keeps its response
         // cache; only the network part (`run`) is wrapped. Bounded (`boundResponse`) and stamped so
-        // `@loom/learning` does not read it as a policy choice. Still OUTSIDE the ring: no
+        // `@loomwork/learning` does not read it as a policy choice. Still OUTSIDE the ring: no
         // authorization, metering or kill switch; `reasoningToolId` is how a host gets those.
         const wrapCall: ReasonOptions["wrapCall"] | undefined =
           reasoningToolId === undefined
@@ -2033,7 +2033,7 @@ function normalizeToolOutput(toolName: string, output: unknown): unknown {
 /**
  * ADR 0142 D2 - the lean log entry's description of a tool output. `output` is already the JSON
  * round trip ({@link normalizeToolOutput}), so `digest` - sha256 (hex) of `canonicalJson` of it
- * (@loom/core: sorted keys, no whitespace) - equals the canonical form of the output the log holds,
+ * (@loomwork/core: sorted keys, no whitespace) - equals the canonical form of the output the log holds,
  * live or resumed. `bytes` is its UTF-8 length. An output JSON cannot represent (`undefined`, a
  * function, or deeper than the canonicalizer's cap) has `digest: null, bytes: 0`: the entry never throws.
  */

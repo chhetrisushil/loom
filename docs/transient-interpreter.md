@@ -99,7 +99,7 @@ an id from `(executionId, stepId)` must append `callKey` when present: the A2A
 peer client (task id) and the redaction middleware (secret-ref id) do. The
 `a2ui` `callFunction` effect is `journaled`, so it can never run in a scope.
 
-**Verification (L31).** `@loom/verify`'s runner-body reach analysis counts a
+**Verification (L31).** `@loomwork/verify`'s runner-body reach analysis counts a
 literal-toolId `scope.invokeTransient` as a reached effect and reports a non-literal
 toolId, an escaping scope, or an unseen decider as unresolved; a scope call to a
 `journaled` effect is a `replay-safety` error (ADR 0086 amendment).
@@ -113,7 +113,7 @@ awaited is aborted when the decider settles, and a call made after it settles
 throws.
 
 These refusals carry stable names, so a consumer that cannot import
-`@loom/workflow-runtime` classifies them by `err.name` rather than by message:
+`@loomwork/workflow-runtime` classifies them by `err.name` rather than by message:
 `ExecutionCancelledError` (the abort reason of `cancel()` when the canceller supplied
 no `Error`, and of a deadline breach; `kind` is `"cancel"` or `"deadline"`) and
 `DecideScopeClosedError` (a call on a settled scope, and the abort reason of an
@@ -173,4 +173,4 @@ another's.
 implements exactly this: `src/hydration.ts` hydrates a DB-telemetry dashboard
 transiently on every open, and escalates to a durable repair run when a simulated
 backend deploy drifts a tool's input schema. Run it with `pnpm --filter
-@loom/db-observability start` from `loom-examples`.
+@loomwork/db-observability start` from `loom-examples`.

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { ReplayVM } from "./ReplayVM";
 import { QUARANTINE_FOLD_CAP } from "./eventHandlers";
@@ -481,7 +481,7 @@ describe("EXECUTION_STARTED.continuedFrom.carried.quarantined (the validated see
 });
 
 describe("the classification: both new kinds leave a park unanswered", () => {
-  it("is asserted in @loom/event-runtime (eventKindClass.test.ts); here the fold proves they never change `status`", () => {
+  it("is asserted in @loomwork/event-runtime (eventKindClass.test.ts); here the fold proves they never change `status`", () => {
     const parked = [start(), ev(1, "EXECUTION_SUSPENDED", { condition: { on: "Approval" } })];
     const after = foldEvents([...parked, quarantine(2, "chat", 3, "k3"), release(3, "chat", "k3")]);
     expect(after.status).toBe("suspended");

@@ -1,11 +1,11 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import type {
   ExecutionPackage,
   ExecutionResult,
   WorkerLease,
   WorkerRequest,
   WorkerRuntime,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { LocalDispatcher } from "./LocalDispatcher";
 
@@ -183,7 +183,7 @@ describe("LocalDispatcher", () => {
 });
 
 // L20 — "another holder owns this execution" is not a failed attempt. Name-shaped errors stand
-// in for `@loom/event-runtime` / `@loom/workflow-runtime` classes this package does not depend
+// in for `@loomwork/event-runtime` / `@loomwork/workflow-runtime` classes this package does not depend
 // on; the predicate matches by name for exactly that reason.
 function named(name: string, fields: Record<string, unknown>, cause?: unknown): Error {
   const err = Object.assign(new Error(name), fields, cause !== undefined ? { cause } : {});

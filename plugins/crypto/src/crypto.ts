@@ -1,10 +1,10 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { expandPaths, hasWildcard } from "@loom/classify";
+import { expandPaths, hasWildcard } from "@loomwork/classify";
 import {
   type SnapshotCodecName,
   decodeStateMaybeLegacy,
   encodeState,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 
 // ── K10.2 — field-level AES-256-GCM envelope ─────────────────────────────────
 //
@@ -22,7 +22,7 @@ export const CIPHER_ID = ENC_TAG;
 /**
  * Where a deterministic cipher seam is asked for an IV: the stream, the envelope's sequence and the
  * sealed path (a wildcard path that seals several values is asked once per value, suffixed `#n`).
- * The seam itself ({@link IvSource}) is exported only from `@loom/plugin-crypto/testing`.
+ * The seam itself ({@link IvSource}) is exported only from `@loomwork/plugin-crypto/testing`.
  */
 export interface IvContext {
   readonly streamId: string;
@@ -31,7 +31,7 @@ export interface IvContext {
 }
 
 /**
- * An IV source for the deterministic cipher seam (testing only; see `@loom/plugin-crypto/testing`).
+ * An IV source for the deterministic cipher seam (testing only; see `@loomwork/plugin-crypto/testing`).
  * Nominal: only {@link brandIvSource} (reachable from the `/testing` subpath alone) mints one, so a
  * plain function does not type-check AND is refused at run time ({@link assertIvSourceAllowed}).
  */
@@ -209,7 +209,7 @@ export function assertIvSourceAllowed(ivSource: IvSource | undefined, who: strin
   // test run (NODE_ENV "test" or a vitest process). An unset NODE_ENV is not "not production".
   if (typeof ivSource !== "function" || !BRANDED_IV_SOURCES.has(ivSource)) {
     throw new Error(
-      `${who}: \`ivSource\` must be minted by @loom/plugin-crypto/testing (seededIvSource); a plain function is refused (a deterministic IV breaks AES-GCM confidentiality).`
+      `${who}: \`ivSource\` must be minted by @loomwork/plugin-crypto/testing (seededIvSource); a plain function is refused (a deterministic IV breaks AES-GCM confidentiality).`
     );
   }
   if (
@@ -217,7 +217,7 @@ export function assertIvSourceAllowed(ivSource: IvSource | undefined, who: strin
     (process.env.NODE_ENV !== "test" && process.env.VITEST === undefined)
   ) {
     throw new Error(
-      `${who}: a custom \`ivSource\` is allowed only in a test run (NODE_ENV "test" or VITEST set, and never NODE_ENV "production"); it is refused here (a deterministic IV breaks AES-GCM confidentiality). It exists for seeded simulation only; see @loom/plugin-crypto/testing.`
+      `${who}: a custom \`ivSource\` is allowed only in a test run (NODE_ENV "test" or VITEST set, and never NODE_ENV "production"); it is refused here (a deterministic IV breaks AES-GCM confidentiality). It exists for seeded simulation only; see @loomwork/plugin-crypto/testing.`
     );
   }
 }

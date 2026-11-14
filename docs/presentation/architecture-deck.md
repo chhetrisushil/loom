@@ -40,7 +40,7 @@ That single guarantee is what the whole architecture is built to deliver.
 1. **Event sourcing** — every state change is an immutable `EventEnvelope` appended to an ordered log. State is *always derived* by replaying the log, never mutated in place.
 2. **Deterministic replay** — on resume, the `ReplayVM` fast-forwards the log so completed steps return **cached outputs** instead of re-executing.
 3. **Blueprint-driven UI** — the flow emits domain events; `ProjectionRuntime` folds them into view models; a JSON `Blueprint` renders to live widgets bound to those models.
-4. **Build-time optimization** — `@loom/compiler` extracts co-located handlers into lazy chunks, validates flow graphs, and generates resumability metadata.
+4. **Build-time optimization** — `@loomwork/compiler` extracts co-located handlers into lazy chunks, validates flow graphs, and generates resumability metadata.
 
 Everything else is a consequence of these four.
 
@@ -54,13 +54,13 @@ The execution core has **no Node or DOM imports**; the *edges* are the only envi
 ISOMORPHIC CORE  (Node or browser — stores & effects injected)
   core · workflow-runtime · effect-runtime · replay-vm · projection-runtime
   blueprint-runtime · capability · intent · planner · agent · memory · scheduler
-  fetch-based I/O: @loom/llm · @loom/plugin-mcp client · @loom/plugin-a2a CLIENT
+  fetch-based I/O: @loomwork/llm · @loomwork/plugin-mcp client · @loomwork/plugin-a2a CLIENT
 
 SERVER-ONLY (Node)                    CLIENT-ONLY (browser)
-  SqliteEventStore  (better-sqlite3)    @loom/plugin-renderer-react
+  SqliteEventStore  (better-sqlite3)    @loomwork/plugin-renderer-react
   SqliteSnapshotStore                   (or BYOR: DOM / Web Components)
   createA2AServer   (node:http)
-  @loom/plugin-renderer-terminal · @loom/compiler (build time)
+  @loomwork/plugin-renderer-terminal · @loomwork/compiler (build time)
 ```
 
 **What you inject decides where it runs.** And because the store interfaces are async-first, "server-only" isn't SQLite-only — inject a Postgres/Redis/DynamoDB backend and the same core runs against your cloud datastore.
@@ -76,9 +76,9 @@ The store/transport interfaces are **async-first** — any backend plugs in. Shi
 | `EventStore` | `InMemoryEventStore` | `SqliteEventStore` · or **BYO** Postgres/Redis/DynamoDB |
 | `SnapshotStore` | `InMemorySnapshotStore` | `SqliteSnapshotStore` · or **BYO** |
 | Agent transport | `createA2AClientEffect` (`fetch`) | `createA2AServer` (`node:http`) |
-| Surface | `@loom/plugin-renderer-react` / BYOR DOM | `@loom/plugin-renderer-terminal` (TUI) |
+| Surface | `@loomwork/plugin-renderer-react` / BYOR DOM | `@loomwork/plugin-renderer-terminal` (TUI) |
 
-Because `EventStore`/`SnapshotStore`/`BranchRegistry` return Promises, a **network backend is first-class** — no adapter, no in-memory shim. The only *runtime* Node-only deps are the SQLite stores and the A2A server; `@loom/compiler` is Node-only but runs at **build time**, never bundled.
+Because `EventStore`/`SnapshotStore`/`BranchRegistry` return Promises, a **network backend is first-class** — no adapter, no in-memory shim. The only *runtime* Node-only deps are the SQLite stores and the A2A server; `@loomwork/compiler` is Node-only but runs at **build time**, never bundled.
 
 <!--
 Presenter: this is the payoff of async-first storage. Postgres via LISTEN/NOTIFY, Redis, DynamoDB — all implement the same interface and inject the same way. The sync ctx.emit/surface(ctx) API is preserved by a per-execution write pipeline (next-level detail on the Execution model slide).
@@ -100,7 +100,7 @@ runtime  ─await→  journal.drain()   at durability barriers:
                     • before waitForSuspend + snapshot save
 ```
 
-- **Any backend**: `EventStore`/`SnapshotStore`/`BranchRegistry`/`TimerStore`/`MemoryStore` are Promise-returning, each with a published conformance kit. In-memory, SQLite and Postgres all ship; a third-party backend proves itself by running the same kit (`loom-plugin-vector` does, for `MemoryStore`, by cosine similarity rather than an index).
+- **Any backend**: `EventStore`/`SnapshotStore`/`BranchRegistry`/`TimerStore`/`MemoryStore` are Promise-returning, each with a published conformance kit. In-memory, SQLite and Postgres all ship; a third-party backend proves itself by running the same kit (`@loomwork/plugin-vector` does, for `MemoryStore`, by cosine similarity rather than an index).
 - **Sync `ctx.emit`/`surface(ctx)` preserved**: the journal folds in memory synchronously; durable writes flush in order at barriers. No `nextSequence` round-trip — the sequencer is in-memory.
 - **New failure mode**: a rejected `append` aborts the run → `StorageWriteError` at the barrier + `onStorageError` hook. Never fabricated into the log.
 - Reference: `docs/examples/postgres-backend/` (`LISTEN/NOTIFY`) · `InMemoryAsyncEventStore` proves it in the async test suite.
@@ -110,17 +110,17 @@ runtime  ─await→  journal.drain()   at durability barriers:
 ## Package dependency graph
 
 ```
-                @loom/compiler   (Vite plugin + CLI — build time only)
+                @loomwork/compiler   (Vite plugin + CLI — build time only)
                       │ transforms
                       ▼
-                  @loom/sdk       (public re-export surface — start here)
+                  @loomwork/sdk       (public re-export surface — start here)
         ┌────────────┼───────────────┬─────────────────┐
         ▼            ▼               ▼                 ▼
  workflow-runtime  blueprint-   projection-      renderer-react
         │           runtime      runtime
         ▼            ▼               ▼
  effect-runtime · event-runtime · snapshot-runtime · replay-vm
-        └───────────────────────────► @loom/core (types, builders, SuspendError)
+        └───────────────────────────► @loomwork/core (types, builders, SuspendError)
 
  Agentic:      llm · agent · mcp · a2a · agent-surface · registry
  Intelligence: capability · intent · planner · memory · renderer-terminal
@@ -128,7 +128,7 @@ runtime  ─await→  journal.drain()   at durability barriers:
  Optional:     telemetry (depends only on core — OTel-ready)
 ```
 
-Every package depends on `@loom/core`. Apps import `@loom/sdk`.
+Every package depends on `@loomwork/core`. Apps import `@loomwork/sdk`.
 
 ---
 
@@ -234,7 +234,7 @@ runtime (no compiler):  handler$(fn) → HandlerRef  → LazyEffect calls fn dir
 build time (compiler):  handler$(fn) → () => import("chunk")  → loaded lazily on first execute
 ```
 
-`@loom/compiler` (Vite plugin + CLI) does three things at build time:
+`@loomwork/compiler` (Vite plugin + CLI) does three things at build time:
 
 1. **Lazy chunk extraction** — each `handler$` (and each skill's `instructions$`) → its own `import()` chunk, recorded in `loom-manifest.json`.
 2. **Static flow-graph analysis** — validates step wiring before runtime.
@@ -255,14 +255,14 @@ domain events ──▶ ProjectionRuntime (foldEvent) ──▶ view models ─�
 ```
 
 - **Blueprints are JSON, framework-free** — a server step can emit one; any renderer picks it up.
-- **BYOR**: `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, or a DOM/Web-Components layer — the runtime carries **zero framework imports** (see `angular-command-center`).
+- **BYOR**: `@loomwork/plugin-renderer-react`, `@loomwork/plugin-renderer-terminal`, or a DOM/Web-Components layer — the runtime carries **zero framework imports** (see `angular-command-center`).
 - A refresh or resume **rebuilds the exact screen** from the log.
 
 ---
 
 ## Cooperative scheduler — fiber principles, right layer
 
-`@loom/scheduler` is an **ephemeral, dependency-free** priority-ordered semaphore + `AbortSignal` cancellation — for the *live window between events*.
+`@loomwork/scheduler` is an **ephemeral, dependency-free** priority-ordered semaphore + `AbortSignal` cancellation — for the *live window between events*.
 
 > **Why not a Fiber reconciler?** Fiber slices a CPU-bound render against a frame deadline. Loom's trees are dashboard-sized (`traverseBlueprint`: 10k nodes in ~0.47ms), and where React is the surface, React *already* has fiber. A second reconciler = duplicate machinery, added latency, no gain.
 
@@ -328,7 +328,7 @@ task suspended at approval gate · sequence 1
 
 - **Fork** copies the parent prefix into a child id (`foldEvents` reads neither `id` nor `executionId` → byte-identical replay; completed steps stay cached). **No new event type** — provenance lives in metadata + the `BranchRegistry`.
 - **`promote()` is a pointer move**, not a merge — the loser stays an immutable, resumable execution.
-- Runnable: `pnpm --filter @loom/db-command-center-server demo:fork`.
+- Runnable: `pnpm --filter @loomwork/db-command-center-server demo:fork`.
 
 <!--
 Presenter: fork() is called externally (e.g. an operator at the gate), not from inside the flow — there is no ctx.fork. It returns ForkResult{state}; drive the branch with resume() or restoreFromState(). Branch-only is a deliberate refusal: divergent ExecutionStates have no principled 3-way merge, unlike git's text. Same discipline as "scheduler, not a reconciler".
@@ -347,8 +347,8 @@ Presenter: fork() is called externally (e.g. an operator at the gate), not from 
 | **Branch, not merge/rebase** | forking is free over an immutable log; divergent state has no principled join → pick a winner |
 | **JSON-serializable Blueprints** | server-generated UI, persisted layouts, cross-renderer — no React coupling |
 | **Async-first storage, BYO backend** | sync stores (SQLite, in-memory) satisfy it trivially; async/network backends (Postgres, Redis, DynamoDB) are native → no architectural ceiling |
-| **Separate `@loom/compiler`** | TS/Vite deps never reach the browser bundle |
-| **UI-agnostic runtime** | only `@loom/plugin-renderer-react` is framework-specific → Angular/Vue/Node all reuse it |
+| **Separate `@loomwork/compiler`** | TS/Vite deps never reach the browser bundle |
+| **UI-agnostic runtime** | only `@loomwork/plugin-renderer-react` is framework-specific → Angular/Vue/Node all reuse it |
 
 ---
 

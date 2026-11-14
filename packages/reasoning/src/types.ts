@@ -7,7 +7,7 @@ import type {
   LlmResponse,
   LlmToolCall,
   LlmToolSpecInput,
-} from "@loom/llm";
+} from "@loomwork/llm";
 
 // A decision sink shaped exactly like `ExecutionContext.decide` (minus opts). When a
 // flow passes `ctx.decide`, each route/elevation becomes a durable DECISION_RECORDED

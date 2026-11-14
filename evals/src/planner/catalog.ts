@@ -1,6 +1,6 @@
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import { flow$, handler$, step$ } from "@loom/core";
-import type { ExecutionContext, FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import type { ExecutionContext, FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 
 // The capability catalogue the planner cases run against: a database-operations command centre, shaped like the

@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
-import { agent$, instructions$, skill$, tool$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import { agent$, instructions$, skill$, tool$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";

@@ -1,6 +1,6 @@
-import { tainted } from "@loom/classify";
-import { UNTRUSTED_CONTENT_SYSTEM_NOTE, guardRequest, textOf as messageText } from "@loom/llm";
-import type { LlmRequest } from "@loom/llm";
+import { tainted } from "@loomwork/classify";
+import { UNTRUSTED_CONTENT_SYSTEM_NOTE, guardRequest, textOf as messageText } from "@loomwork/llm";
+import type { LlmRequest } from "@loomwork/llm";
 import type { Grader } from "./suite";
 
 // ── Graders ──────────────────────────────────────────────────────────────────
@@ -298,7 +298,7 @@ export function jsonSchema(
 
 // ── The LLM judge ───────────────────────────────────────────────────────────
 
-/** The `DecideScope` surface a judge needs - structurally `@loom/workflow-runtime`'s. */
+/** The `DecideScope` surface a judge needs - structurally `@loomwork/workflow-runtime`'s. */
 export interface JudgeScope {
   invokeTransient<TIn = unknown, TOut = unknown>(
     toolId: string,
@@ -373,7 +373,7 @@ export function judgeRequest(
 
 /** Render a request as one prompt string. Exported for tests only (not re-exported from the package entry). */
 export function renderRequest(r: LlmRequest): string {
-  // messageText (@loom/llm textOf), not JSON.stringify: a parts message must render as its text, not as a JSON array.
+  // messageText (@loomwork/llm textOf), not JSON.stringify: a parts message must render as its text, not as a JSON array.
   return [r.system ?? "", ...r.messages.map((m) => messageText(m.content))]
     .filter(Boolean)
     .join("\n\n");

@@ -1,13 +1,13 @@
-import { step$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { step$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   type FlowRunner,
   LogLifecycle,
   type RegisteredFlow,
   WorkflowRuntime,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { hashChainedEventStore } from "./hashChain";

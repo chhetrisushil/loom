@@ -98,7 +98,7 @@ export const KERNEL_SYSCALLS: readonly KernelSyscall[] = [
     since: "1.0.0",
     // ADR 0114: deprecated in 1.3.0. The kernel no longer imports agent-surface; the accessor is
     // injected (`WorkflowRuntimeDeps.surface`) and the documented spelling is `surface(ctx)` from
-    // `@loom/agent-surface`. Removal is a later MAJOR.
+    // `@loomwork/agent-surface`. Removal is a later MAJOR.
     deprecated: true,
     summary: "drive durable, replayable UI surfaces (agent-surface; injected, see `surface(ctx)`)",
   },

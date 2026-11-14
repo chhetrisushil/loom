@@ -1,4 +1,4 @@
-import { runSandboxBackendConformance } from "@loom/conformance";
+import { runSandboxBackendConformance } from "@loomwork/conformance";
 import { QuickJsSandboxBackend } from "./QuickJsSandboxBackend";
 
 // ── ADR 0144 D5 — QuickJS passes the same kit every third-party backend must pass ──

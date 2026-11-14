@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a second model kind to `@loom/plugin-read-model` — a durable, per-execution folded-state projection (`registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`) — with in-memory, SQLite and Postgres backends and a conformance kit, a sensitive-state guard (a folded model must not persist plaintext sensitive data) and a bounded live-path state cache.
+**Goal:** Add a second model kind to `@loomwork/plugin-read-model` — a durable, per-execution folded-state projection (`registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`) — with in-memory, SQLite and Postgres backends and a conformance kit, a sensitive-state guard (a folded model must not persist plaintext sensitive data) and a bounded live-path state cache.
 
 **Architecture:** The fold is the existing `ProjectionDefinition` (`projection$`). One state row per `(modelId, executionId)` whose `sequence` IS the watermark, written by a monotonic compare-and-set so nodes converge without locks. A `FoldedModelEngine` (pure core, new file) owns registration, contiguity, per-execution serialization and reads; `ReadModelService` delegates to it and shares the existing `onEvent` seam and catch-up scan. Backends gain five OPTIONAL store methods (SPI 1.1.0 → 1.2.0). Fold input is a masked view of the event and every new state passes a pure persist-time check (D11); a per-node LRU of fold bases removes the read before each live apply while the store's CAS stays the authority (D15).
 
@@ -12,11 +12,11 @@
 
 ## Global Constraints
 
-- No kernel change: `KERNEL_ABI` and `EVENT_SCHEMA` untouched; no `@loom/app`, `@loom/core` or event-type edits. Layering guard intact (plugins never imported by kernel packages).
+- No kernel change: `KERNEL_ABI` and `EVENT_SCHEMA` untouched; no `@loomwork/app`, `@loomwork/core` or event-type edits. Layering guard intact (plugins never imported by kernel packages).
 - `READ_MODEL_STORE_SPI_VERSION` becomes `"1.2.0"`; the five new store methods are OPTIONAL (`beginFold?`, `applyFolded?`, `getFolded?`, `getFoldedByKey?`, `purgeFolded?`).
 - A folded model is a cache of the log: rebuild == incremental; nothing reads it on replay.
 - Fold `version` is REQUIRED (non-blank after trim); a changed version rebuilds the model automatically (D5). The version written to the store is `version` plus a digest of the declared sensitive map (D11).
-- Sensitive-state guard (D11): handlers get a masked copy of the event; a state holding a cipher envelope or a value lifted from a sensitive path is refused with `SensitiveStateError` (never carries a value); `@loom/classify` becomes a dependency of `@loom/plugin-read-model` (masking only; the `__loomEnc` shape rule of ADR 0130 D2 is re-implemented locally, not imported from the crypto plugin); no off switch.
+- Sensitive-state guard (D11): handlers get a masked copy of the event; a state holding a cipher envelope or a value lifted from a sensitive path is refused with `SensitiveStateError` (never carries a value); `@loomwork/classify` becomes a dependency of `@loomwork/plugin-read-model` (masking only; the `__loomEnc` shape rule of ADR 0130 D2 is re-implemented locally, not imported from the crypto plugin); no off switch.
 - State cache (D15): write-path only, default 1024 entries, `foldCache: false` disables; the store's CAS is the authority; `getMany` / `getManyByKey` / `refresh` never read it. Tests prove it with counted store reads, never timing.
 - `getMany*` is capped at `MAX_GET_MANY = 1000` keys.
 - Tests: wait on conditions (`service.drain()`, `until`), never fixed sleeps; no `performance.now()` in `*.test.ts`; Postgres suites gated on `LOOM_TEST_POSTGRES_URL` (never print its value); every package with tests keeps its `tsconfig.test.json` (`pnpm typecheck:tests`).
@@ -110,10 +110,10 @@ describe("folded SPI types (ADR 0132 D6/D7)", () => {
 
 - [ ] **Step 2: Run, verify it fails**
 
-Run: `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedTypes.test.ts`
+Run: `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedTypes.test.ts`
 Expected: FAIL (`MAX_GET_MANY` / `assertManyKeys` not exported).
 
-- [ ] **Step 3: Implement** — in `types.ts`, change the first import to `import type { EventEnvelope, ProjectionDefinition } from "@loom/core";`, change the version constant to `"1.2.0"` and extend its doc comment with `- 1.2.0: five optional folded-state methods (ADR 0132); clear() also drops folded state.`, then append:
+- [ ] **Step 3: Implement** — in `types.ts`, change the first import to `import type { EventEnvelope, ProjectionDefinition } from "@loomwork/core";`, change the version constant to `"1.2.0"` and extend its doc comment with `- 1.2.0: five optional folded-state methods (ADR 0132); clear() also drops folded state.`, then append:
 
 ```ts
 // ── ADR 0132 — folded-state read models ──────────────────────────────────────
@@ -282,16 +282,16 @@ Update the `clear` doc: "also drops the model's folded states and fold header". 
 
 - [ ] **Step 4: Run, verify it passes**
 
-Run: `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedTypes.test.ts && pnpm --filter @loom/plugin-read-model build`
+Run: `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedTypes.test.ts && pnpm --filter @loomwork/plugin-read-model build`
 Expected: PASS, build clean.
 
-- [ ] **Step 5: Repo guards (F5).** The docs PR already added the ADR 0132 CHANGELOG entry and bumped the `0001–0132` ranges and the `architecture.md` bullet (so `changelogCoverage` and `adrIndexDocs` pass on every PR). Here, extend that CHANGELOG entry: change "(decision record; no code change yet)" to "(first slice: the folded types and SPI 1.2.0)" and append one sentence naming the five optional methods and that a backend omitting them behaves as before. Verify: `pnpm --filter @loom/spec exec vitest run src/changelogCoverage.test.ts src/adrIndexDocs.test.ts` → PASS.
+- [ ] **Step 5: Repo guards (F5).** The docs PR already added the ADR 0132 CHANGELOG entry and bumped the `0001–0132` ranges and the `architecture.md` bullet (so `changelogCoverage` and `adrIndexDocs` pass on every PR). Here, extend that CHANGELOG entry: change "(decision record; no code change yet)" to "(first slice: the folded types and SPI 1.2.0)" and append one sentence naming the five optional methods and that a backend omitting them behaves as before. Verify: `pnpm --filter @loomwork/spec exec vitest run src/changelogCoverage.test.ts src/adrIndexDocs.test.ts` → PASS.
 
 - [ ] **Step 6: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/types.ts plugins/read-model/src/index.ts plugins/read-model/src/foldedTypes.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run src/foldedTypes.test.ts
+pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedTypes.test.ts
 git add plugins/read-model/src/types.ts plugins/read-model/src/index.ts plugins/read-model/src/foldedTypes.test.ts CHANGELOG.md
 git commit -m "feat(read-model): folded-state SPI types, SPI 1.2.0 (ADR 0132 D1/D6/D7)"
 ```
@@ -499,7 +499,7 @@ In `packages/conformance/src/index.ts` add near the other top-level exports (an 
 In `plugins/read-model/src/conformance.test.ts` change to:
 
 ```ts
-import { runFoldedStateConformance, runReadModelStoreConformance } from "@loom/conformance";
+import { runFoldedStateConformance, runReadModelStoreConformance } from "@loomwork/conformance";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 
 runReadModelStoreConformance(() => new InMemoryReadModelStore(), "InMemoryReadModelStore");
@@ -508,7 +508,7 @@ runFoldedStateConformance(() => new InMemoryReadModelStore(), "InMemoryReadModel
 
 - [ ] **Step 2: Run, verify the cases skip** (in-memory has no folded methods yet — they must SKIP, not fail; this pins the skip contract)
 
-Run: `pnpm --filter @loom/conformance build && pnpm --filter @loom/plugin-read-model exec vitest run src/conformance.test.ts`
+Run: `pnpm --filter @loomwork/conformance build && pnpm --filter @loomwork/plugin-read-model exec vitest run src/conformance.test.ts`
 Expected: PASS with the 12 folded cases reported as skipped.
 
 - [ ] **Step 3: Format and commit**
@@ -544,7 +544,7 @@ it("the in-memory reference implements every folded method (so the kit does not 
 ```
 (add `it` import is already present; place the `import` at the top of the file.)
 
-Run: `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedTypes.test.ts` — Expected: FAIL.
+Run: `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedTypes.test.ts` — Expected: FAIL.
 
 - [ ] **Step 2: Implement** — in `InMemoryReadModelStore.ts` add imports `FoldedApply, FoldedApplyResult, FoldedRecord, FoldedSelector` (types) and `assertManyKeys` (value) from `./types`; add fields and methods:
 
@@ -620,7 +620,7 @@ and in `clear`, add `this.folded.delete(modelId); this.foldVersions.delete(model
 
 - [ ] **Step 3: Run, verify pass**
 
-Run: `pnpm --filter @loom/plugin-read-model exec vitest run src/conformance.test.ts src/foldedTypes.test.ts`
+Run: `pnpm --filter @loomwork/plugin-read-model exec vitest run src/conformance.test.ts src/foldedTypes.test.ts`
 Expected: PASS, folded cases now RUN (12 passed, 0 skipped).
 
 - [ ] **Step 4: Format and commit**
@@ -651,8 +651,8 @@ git commit -m "feat(read-model): in-memory folded state reference backend (ADR 0
 - [ ] **Step 1: Fixtures + failing tests.** `plugins/read-model/src/foldedFixtures.ts` (test support; NOT exported from `index.ts`):
 
 ```ts
-import { projection$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
+import { projection$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 export interface IngestState {
   status: "queued" | "running" | "done" | "failed";
@@ -806,13 +806,13 @@ describe("FoldedModelEngine — the contiguous fold (D3, D4)", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedEngine.test.ts` → FAIL (module missing).
+- [ ] **Step 2: Run, verify fail** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedEngine.test.ts` → FAIL (module missing).
 
 - [ ] **Step 3: Implement** `plugins/read-model/src/FoldedModelEngine.ts`:
 
 ```ts
-import { loadProjectionHandlers, projectionEventTypes } from "@loom/core";
-import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
+import { loadProjectionHandlers, projectionEventTypes } from "@loomwork/core";
+import type { EventEnvelope, ProjectionHandlers } from "@loomwork/core";
 import type {
   FoldBase,
   FoldedEngineOptions,
@@ -963,13 +963,13 @@ export class FoldedModelEngine {
 
 Note: `state` for a record with `state === null` and an unerased row is "no handled event yet", so the first handled event folds from `structuredClone(initialState)`.
 
-- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedEngine.test.ts` → PASS. Then `pnpm --filter @loom/plugin-read-model build` (typecheck: `ProjectionHandlers` is exported by `@loom/core`, `packages/core/src/index.ts:59`).
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedEngine.test.ts` → PASS. Then `pnpm --filter @loomwork/plugin-read-model build` (typecheck: `ProjectionHandlers` is exported by `@loomwork/core`, `packages/core/src/index.ts:59`).
 
 - [ ] **Step 5: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedFixtures.ts plugins/read-model/src/foldedEngine.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run src/foldedEngine.test.ts
+pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedEngine.test.ts
 git add plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedFixtures.ts plugins/read-model/src/foldedEngine.test.ts
 git commit -m "feat(read-model): FoldedModelEngine registration and contiguous fold (ADR 0132 D4/D5)"
 ```
@@ -987,7 +987,7 @@ git commit -m "feat(read-model): FoldedModelEngine registration and contiguous f
 - Produces (est. ~150 changed lines, 2 files): on `FoldedModelEngine`: `handle(event): void`, `drain(): Promise<void>`, `protected enqueue<T>(modelId, executionId, job): Promise<T>`, the per-(model, execution) live **frontier** and `protected dropFrontier(modelId)`.
 - Design (ADR 0132 D4, ADR 0058 D2). The live feed hands the engine EVERY event of an execution, handled or not, in the execution's order. An event no handler matches does not write; it advances an in-memory **contiguous-through pointer** (the frontier): "every event up to here is either folded into the stored state or was seen here and is unhandled". A handled event applies when it is `max(watermark, frontier) + 1`, and persists the watermark at its own sequence. A hole (a restart mid-execution, a missed event) is filled from `liveSource` or reported as `FoldGapError`; the next catch-up heals it. The frontier is seeded by an execution's sequence-0 event, dropped on any hole this node did not observe and by `reset`, and bounded (`FRONTIER_MAX`); losing an entry costs one store read and, at worst, a gap fill, never a wrong state. Catch-up, refresh and rebuild persist the final watermark even when the tail is unhandled.
 
-- [ ] **Step 1: Failing tests** — append to `foldedEngine.test.ts` (add the import `InMemoryAsyncEventStore` from `@loom/event-runtime`):
+- [ ] **Step 1: Failing tests** — append to `foldedEngine.test.ts` (add the import `InMemoryAsyncEventStore` from `@loomwork/event-runtime`):
 
 ```ts
 describe("FoldedModelEngine — the live tail (D4)", () => {
@@ -1177,13 +1177,13 @@ and methods (before the closing brace):
   }
 ```
 
-- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedEngine.test.ts` → PASS; `pnpm --filter @loom/plugin-read-model build`.
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedEngine.test.ts` → PASS; `pnpm --filter @loomwork/plugin-read-model build`.
 
 - [ ] **Step 5: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedEngine.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run src/foldedEngine.test.ts
+pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedEngine.test.ts
 git add plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedEngine.test.ts
 git commit -m "feat(read-model): folded live tail observes every event, serializes per execution (ADR 0132 D4)"
 ```
@@ -1409,7 +1409,7 @@ const refreshOptions = (o: FoldedReadOptions): RefreshOptions =>
 ```
 Note `refresh`'s return counts executions advanced (test above: first call after getMany already advanced → second returns 0), which is what ADR 0132 D8 already says; no ADR edit is needed.
 
-- [ ] **Step 4: Run, verify pass** → `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedEngine.test.ts` PASS.
+- [ ] **Step 4: Run, verify pass** → `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedEngine.test.ts` PASS.
 - [ ] **Step 5: Format and commit**
 
 ```bash
@@ -1517,7 +1517,7 @@ describe("assertStateClean — the persist-time check (ADR 0132 D11)", () => {
 });
 ```
 
-- [ ] **Step 2: Run, verify fail** — `pnpm --filter @loom/plugin-read-model exec vitest run src/sensitiveState.test.ts` → FAIL (module missing).
+- [ ] **Step 2: Run, verify fail** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/sensitiveState.test.ts` → FAIL (module missing).
 
 - [ ] **Step 3: Implement** `plugins/read-model/src/sensitiveState.ts`:
 
@@ -1640,7 +1640,7 @@ export function assertStateClean(ctx: SensitiveStateContext, state: unknown, lif
 ```
 In `index.ts` add `export { SensitiveStateError } from "./sensitiveState"; export type { SensitiveStateContext, SensitiveStateReason } from "./sensitiveState";`.
 
-- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/sensitiveState.test.ts && pnpm --filter @loom/plugin-read-model build` → PASS.
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/sensitiveState.test.ts && pnpm --filter @loomwork/plugin-read-model build` → PASS.
 - [ ] **Step 5: Format and commit**
 
 ```bash
@@ -1656,7 +1656,7 @@ git commit -m "feat(read-model): sensitive-state guard output check (ADR 0132 D1
 **Files:**
 - Create: `plugins/read-model/src/sensitiveInput.ts`
 - Create: `plugins/read-model/src/sensitiveInput.test.ts`
-- Modify: `plugins/read-model/package.json` (add `"@loom/classify": "workspace:*"` to `dependencies`)
+- Modify: `plugins/read-model/package.json` (add `"@loomwork/classify": "workspace:*"` to `dependencies`)
 - Modify: `plugins/read-model/tsconfig.json` (add `{ "path": "../../packages/classify" }` to `references`; `tsconfig.test.json` has no `references` of its own and needs no edit)
 - Modify: `pnpm-lock.yaml` (via `pnpm install`; commit only the resulting importer entry)
 
@@ -1745,11 +1745,11 @@ describe("foldView — what a handler is allowed to see", () => {
 
 - [ ] **Step 2: Run, verify fail** → FAIL (module missing).
 
-- [ ] **Step 3: Implement.** First `pnpm --filter @loom/plugin-read-model add @loom/classify@workspace:*` (updates `package.json` and the lockfile), add the tsconfig reference. Then `plugins/read-model/src/sensitiveInput.ts`:
+- [ ] **Step 3: Implement.** First `pnpm --filter @loomwork/plugin-read-model add @loomwork/classify@workspace:*` (updates `package.json` and the lockfile), add the tsconfig reference. Then `plugins/read-model/src/sensitiveInput.ts`:
 
 ```ts
-import { REDACTED, expandPaths, maskPaths } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+import { REDACTED, expandPaths, maskPaths } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type Lifted,
   SensitiveStateError,
@@ -1828,12 +1828,12 @@ export function foldView(
 }
 ```
 
-- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/sensitiveInput.test.ts && pnpm --filter @loom/plugin-read-model build` → PASS. Check the layering guard still passes: `pnpm --filter @loom/spec exec vitest run` (plugins may depend on `@loom/classify`, as the crypto plugin does).
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/sensitiveInput.test.ts && pnpm --filter @loomwork/plugin-read-model build` → PASS. Check the layering guard still passes: `pnpm --filter @loomwork/spec exec vitest run` (plugins may depend on `@loomwork/classify`, as the crypto plugin does).
 - [ ] **Step 5: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/sensitiveInput.ts plugins/read-model/src/sensitiveInput.test.ts plugins/read-model/package.json plugins/read-model/tsconfig.json
-pnpm --filter @loom/plugin-read-model exec vitest run src/sensitiveInput.test.ts
+pnpm --filter @loomwork/plugin-read-model exec vitest run src/sensitiveInput.test.ts
 git add plugins/read-model/src/sensitiveInput.ts plugins/read-model/src/sensitiveInput.test.ts plugins/read-model/package.json plugins/read-model/tsconfig.json pnpm-lock.yaml
 git commit -m "feat(read-model): sensitive-state guard fold input view (ADR 0132 D11)"
 ```
@@ -2016,7 +2016,7 @@ then set `sensitive,` in the `model` literal (`beginFold(p.id, version)` and `ve
 ```
 In `index.ts` export `sensitiveMapFromCovers` (value) and `SensitiveMap` (type, from Task 1's list).
 
-- [ ] **Step 4: Run** `pnpm --filter @loom/plugin-read-model exec vitest run` → PASS (all prior engine tests unchanged: an empty map and no markers leave events untouched).
+- [ ] **Step 4: Run** `pnpm --filter @loomwork/plugin-read-model exec vitest run` → PASS (all prior engine tests unchanged: an empty map and no markers leave events untouched).
 - [ ] **Step 5: Format and commit**
 
 ```bash
@@ -2158,7 +2158,7 @@ export class FoldStateCache {
 const key = (modelId: string, executionId: string): string => `${modelId}\u0000${executionId}`;
 ```
 
-- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/foldStateCache.test.ts`.
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldStateCache.test.ts`.
 - [ ] **Step 5: Format and commit**
 
 ```bash
@@ -2397,12 +2397,12 @@ Replace `foldBatch` (Task 4a1/5c) and `applyLive` (Task 4a2) with the following.
 ```
 and export `interface FoldOutcome { result: FoldedApplyResult | "noop"; record?: FoldBase }`.
 
-- [ ] **Step 4: Run** `pnpm --filter @loom/plugin-read-model exec vitest run` → PASS (all earlier engine/service tests: the cache is on by default and must change no result).
+- [ ] **Step 4: Run** `pnpm --filter @loomwork/plugin-read-model exec vitest run` → PASS (all earlier engine/service tests: the cache is on by default and must change no result).
 - [ ] **Step 5: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedCache.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run
+pnpm --filter @loomwork/plugin-read-model exec vitest run
 git add plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedCache.test.ts
 git commit -m "feat(read-model): per-node fold-base cache on the live apply path (ADR 0132 D15)"
 ```
@@ -2516,7 +2516,7 @@ describe("FoldedModelEngine — the cache never weakens correctness (D15)", () =
 });
 ```
 
-- [ ] **Step 2: Run** `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedCache.test.ts` → PASS. A failure here is a real correctness bug in Task 6b: fix the engine, never loosen a test or add a wait.
+- [ ] **Step 2: Run** `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedCache.test.ts` → PASS. A failure here is a real correctness bug in Task 6b: fix the engine, never loosen a test or add a wait.
 - [ ] **Step 3: Format and commit**
 
 ```bash
@@ -2540,7 +2540,7 @@ git commit -m "test(read-model): fold-base cache stays correct under conflict, r
 - [ ] **Step 1: Failing tests** — `plugins/read-model/src/foldedService.test.ts`:
 
 ```ts
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { evt, ingestProjection, keyOf, scopeOf } from "./foldedFixtures";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
@@ -2704,12 +2704,12 @@ and at the top of `register(model)` add: `if (this.folded?.has(model.id)) throw 
 ```
 (`getMany` / `getManyByKey` exist on the engine from Task 4b. `FoldedModelEngine` itself is not exported from `index.ts`.)
 
-- [ ] **Step 4: Run all read-model tests** — `pnpm --filter @loom/plugin-read-model exec vitest run` → PASS (existing row tests unchanged).
+- [ ] **Step 4: Run all read-model tests** — `pnpm --filter @loomwork/plugin-read-model exec vitest run` → PASS (existing row tests unchanged).
 - [ ] **Step 5: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/ReadModelService.ts plugins/read-model/src/foldedService.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run
+pnpm --filter @loomwork/plugin-read-model exec vitest run
 git add plugins/read-model/src/ReadModelService.ts plugins/read-model/src/foldedService.test.ts
 git commit -m "feat(read-model): registerFolded, live fan-out and batch reads for folded models (ADR 0132 D13)"
 ```
@@ -2882,12 +2882,12 @@ describe("ReadModelService folded models — catch-up (D4, D13)", () => {
   }
 ```
 
-- [ ] **Step 4: Run all read-model tests** — `pnpm --filter @loom/plugin-read-model exec vitest run` → PASS (existing row tests unchanged: confirms the `scan` refactor).
+- [ ] **Step 4: Run all read-model tests** — `pnpm --filter @loomwork/plugin-read-model exec vitest run` → PASS (existing row tests unchanged: confirms the `scan` refactor).
 - [ ] **Step 5: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/ReadModelService.ts plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedService.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run
+pnpm --filter @loomwork/plugin-read-model exec vitest run
 git add plugins/read-model/src/ReadModelService.ts plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedService.test.ts
 git commit -m "feat(read-model): shared catch-up scan folds folded models on the live queue (ADR 0132 D4/D13)"
 ```
@@ -3005,12 +3005,12 @@ describe("ReadModelService folded models — refresh, erasure, rebuild, pins", (
 
 Doc comment on `purgeFolded`: "A tombstone for an execution that exists; rebuild un-tombstones — see ADR 0132 D12 for the tolerant-source obligation."
 
-- [ ] **Step 4: Run** `pnpm --filter @loom/plugin-read-model exec vitest run` → PASS.
+- [ ] **Step 4: Run** `pnpm --filter @loomwork/plugin-read-model exec vitest run` → PASS.
 - [ ] **Step 5: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/ReadModelService.ts plugins/read-model/src/foldedService.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run
+pnpm --filter @loomwork/plugin-read-model exec vitest run
 git add plugins/read-model/src/ReadModelService.ts plugins/read-model/src/foldedService.test.ts
 git commit -m "feat(read-model): folded refresh, tombstone purge, version rebuild and pins (ADR 0132 D5/D8/D12)"
 ```
@@ -3027,8 +3027,8 @@ git commit -m "feat(read-model): folded refresh, tombstone purge, version rebuil
 - [ ] **Step 1: Write the tests** — `plugins/read-model/src/foldedConvergence.test.ts`:
 
 ```ts
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { evt, ingestProjection, keyOf, scopeOf } from "./foldedFixtures";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
@@ -3195,12 +3195,12 @@ describe("folded models: rebuild == incremental (D14)", () => {
 });
 ```
 
-- [ ] **Step 2: Run** — `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedConvergence.test.ts`. Expected: PASS. If a convergence test fails or flakes, that is a real bug: stop and root-cause it (do not add waits).
+- [ ] **Step 2: Run** — `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedConvergence.test.ts`. Expected: PASS. If a convergence test fails or flakes, that is a real bug: stop and root-cause it (do not add waits).
 - [ ] **Step 3: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/foldedConvergence.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run src/foldedConvergence.test.ts
+pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedConvergence.test.ts
 git add plugins/read-model/src/foldedConvergence.test.ts
 git commit -m "test(read-model): folded rebuild==incremental and multi-node convergence, cache on and off (ADR 0132 D14/D15)"
 ```
@@ -3212,15 +3212,15 @@ git commit -m "test(read-model): folded rebuild==incremental and multi-node conv
 **Files:**
 - Create: `plugins/read-model/src/foldedSensitive.test.ts`
 
-**Interfaces:** consumes the public service API plus the real `EncryptingEventStore` / `InMemoryKeyStore` from `@loom/plugin-crypto` (a devDependency already). No production change expected; a failure is a guard bug, fix it in the owning file.
+**Interfaces:** consumes the public service API plus the real `EncryptingEventStore` / `InMemoryKeyStore` from `@loomwork/plugin-crypto` (a devDependency already). No production change expected; a failure is a guard bug, fix it in the owning file.
 
 - [ ] **Step 1: Write the tests** — `plugins/read-model/src/foldedSensitive.test.ts`:
 
 ```ts
-import { projection$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import { projection$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { evt } from "./foldedFixtures";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
@@ -3349,12 +3349,12 @@ describe("sensitive-state guard — a lifted copy fails loudly on every feed (D1
 ```
 (`sealingCapability` is installed on the `EncryptingEventStore` instance by its constructor (`plugins/crypto/src/EncryptingEventStore.ts:254`), so `enc.sealingCapability?.()` is callable straight after construction.)
 
-- [ ] **Step 2: Run** `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedSensitive.test.ts` → PASS (requires Task 7b: `ReadModelService` takes `sensitive` (7a1) and the test uses `refresh` and `rebuild` (7b)).
+- [ ] **Step 2: Run** `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedSensitive.test.ts` → PASS (requires Task 7b: `ReadModelService` takes `sensitive` (7a1) and the test uses `refresh` and `rebuild` (7b)).
 - [ ] **Step 3: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/foldedSensitive.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run src/foldedSensitive.test.ts
+pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedSensitive.test.ts
 git add plugins/read-model/src/foldedSensitive.test.ts
 git commit -m "test(read-model): sensitive-state guard parity across live, catch-up, refresh, rebuild and raw sources (ADR 0132 D11)"
 ```
@@ -3366,23 +3366,23 @@ git commit -m "test(read-model): sensitive-state guard parity across live, catch
 **Files:**
 - Create: `plugins/read-model/src/foldedErasure.test.ts`
 
-**Interfaces:** consumes the same building blocks `plugins/read-model/src/erasure.test.ts` uses and copies its constants verbatim (its `boot`, `action`, `SENSITIVE`, `subjectOf` and `NO_SNAPSHOTS` are file-local, not exported): `EncryptingEventStore`, `InMemoryKeyStore`, `shredSubject(keys, raw, executionId, { subjectId, executionIds, snapshotStore })`, `isShredded`, `PayloadShreddedError` from `@loom/plugin-crypto`. No production change expected; a failure means D11/D12 is wrong, so fix the code, never the test.
+**Interfaces:** consumes the same building blocks `plugins/read-model/src/erasure.test.ts` uses and copies its constants verbatim (its `boot`, `action`, `SENSITIVE`, `subjectOf` and `NO_SNAPSHOTS` are file-local, not exported): `EncryptingEventStore`, `InMemoryKeyStore`, `shredSubject(keys, raw, executionId, { subjectId, executionIds, snapshotStore })`, `isShredded`, `PayloadShreddedError` from `@loomwork/plugin-crypto`. No production change expected; a failure means D11/D12 is wrong, so fix the code, never the test.
 
 The hazard these tests pin: zero-config masking (D11) covers a catch-up read through the encrypting store (the `metadata.seal` marker) and anything in a declared `sensitive` map. It does NOT cover the live feed of a service with no declared map: the runtime's event is plaintext and carries no marker. A fold fed that way copies the value, the shred cannot reach the copy, and `purgeFolded` is what removes it. With the map declared the fold never held the value, and the purge is only a backstop.
 
 - [ ] **Step 1: Write the tests** — `plugins/read-model/src/foldedErasure.test.ts`:
 
 ```ts
-import { projection$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { projection$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   InMemoryKeyStore,
   PayloadShreddedError,
   isShredded,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { ReadModelService } from "./ReadModelService";
@@ -3520,12 +3520,12 @@ describe("subject erasure and folded read-model state (ADR 0132 D11/D12)", () =>
 ```
 (Case 3's final line relies on zero-config masking: the catch-up read went through the encrypting store, so `bo`'s `operator` was masked by the `metadata.seal` marker before the fold saw it.)
 
-- [ ] **Step 2: Run** `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedErasure.test.ts` → PASS.
+- [ ] **Step 2: Run** `pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedErasure.test.ts` → PASS.
 - [ ] **Step 3: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/foldedErasure.test.ts
-pnpm --filter @loom/plugin-read-model exec vitest run src/foldedErasure.test.ts
+pnpm --filter @loomwork/plugin-read-model exec vitest run src/foldedErasure.test.ts
 git add plugins/read-model/src/foldedErasure.test.ts
 git commit -m "test(read-model): folded state erasure via purgeFolded and tolerant rebuild (ADR 0132 D12)"
 ```
@@ -3540,14 +3540,14 @@ git commit -m "test(read-model): folded state erasure via purgeFolded and tolera
 
 **Interfaces:** implements the five optional methods; `clear` also deletes folded rows/header. Est. ~150 changed lines, 2 files.
 
-- [ ] **Step 1: Failing test** — in `plugins/sqlite/src/conformance.test.ts` add `runFoldedStateConformance` to the `@loom/conformance` import and, right after the existing `runReadModelStoreConformance(…)` call:
+- [ ] **Step 1: Failing test** — in `plugins/sqlite/src/conformance.test.ts` add `runFoldedStateConformance` to the `@loomwork/conformance` import and, right after the existing `runReadModelStoreConformance(…)` call:
 
 ```ts
 runFoldedStateConformance(() => new SqliteReadModelStore(":memory:"), "SqliteReadModelStore");
 ```
-Run: `pnpm --filter @loom/conformance build && pnpm --filter @loom/plugin-sqlite exec vitest run src/conformance.test.ts` → folded cases SKIP (no methods yet). Add to the same file a guard `it("implements the folded methods", () => { expect(typeof new SqliteReadModelStore(":memory:").applyFolded).toBe("function"); });` inside a `describe("SqliteReadModelStore folded", …)` — FAILS.
+Run: `pnpm --filter @loomwork/conformance build && pnpm --filter @loomwork/plugin-sqlite exec vitest run src/conformance.test.ts` → folded cases SKIP (no methods yet). Add to the same file a guard `it("implements the folded methods", () => { expect(typeof new SqliteReadModelStore(":memory:").applyFolded).toBe("function"); });` inside a `describe("SqliteReadModelStore folded", …)` — FAILS.
 
-- [ ] **Step 2: Implement.** Imports: `FoldedApply, FoldedApplyResult, FoldedRecord, FoldedSelector` (types) and `assertManyKeys, foldedSelectorColumn` (values) from `@loom/plugin-read-model`. Add a module-level row type and mapper (no private-member type tricks):
+- [ ] **Step 2: Implement.** Imports: `FoldedApply, FoldedApplyResult, FoldedRecord, FoldedSelector` (types) and `assertManyKeys, foldedSelectorColumn` (values) from `@loomwork/plugin-read-model`. Add a module-level row type and mapper (no private-member type tricks):
 
 ```ts
 interface FoldedDbRow {
@@ -3667,12 +3667,12 @@ Methods:
   }
 ```
 
-- [ ] **Step 3: Run** `pnpm --filter @loom/plugin-sqlite exec vitest run src/conformance.test.ts` → 12 folded cases PASS (not skipped).
+- [ ] **Step 3: Run** `pnpm --filter @loomwork/plugin-sqlite exec vitest run src/conformance.test.ts` → 12 folded cases PASS (not skipped).
 - [ ] **Step 4: Format and commit**
 
 ```bash
 npx biome check --write plugins/sqlite/src/SqliteReadModelStore.ts plugins/sqlite/src/conformance.test.ts
-pnpm --filter @loom/plugin-sqlite exec vitest run src/conformance.test.ts
+pnpm --filter @loomwork/plugin-sqlite exec vitest run src/conformance.test.ts
 git add plugins/sqlite/src/SqliteReadModelStore.ts plugins/sqlite/src/conformance.test.ts
 git commit -m "feat(sqlite): folded-state read model store methods (ADR 0132)"
 ```
@@ -3803,12 +3803,12 @@ export async function ensureFoldedTables(pool: PoolLike, o: FoldedTableOptions =
 ```
 In `index.ts` add: `export { foldedStateDdl } from "./foldedState"; export type { FoldedTableOptions } from "./foldedState";` (Task 12b1 adds `PostgresReadModelStoreOptions` beside `PostgresReadModelStore`).
 
-- [ ] **Step 3: Run** `pnpm --filter @loom/plugin-postgres exec vitest run src/foldedState.test.ts` → PASS.
+- [ ] **Step 3: Run** `pnpm --filter @loomwork/plugin-postgres exec vitest run src/foldedState.test.ts` → PASS.
 - [ ] **Step 4: Format and commit**
 
 ```bash
 npx biome check --write plugins/postgres/src/foldedState.ts plugins/postgres/src/foldedState.test.ts plugins/postgres/src/index.ts
-pnpm --filter @loom/plugin-postgres exec vitest run src/foldedState.test.ts
+pnpm --filter @loomwork/plugin-postgres exec vitest run src/foldedState.test.ts
 git add plugins/postgres/src/foldedState.ts plugins/postgres/src/foldedState.test.ts plugins/postgres/src/index.ts
 git commit -m "feat(postgres): caller-chosen schema/tables and DDL for folded read-model state (ADR 0132 D10)"
 ```
@@ -3828,7 +3828,7 @@ git commit -m "feat(postgres): caller-chosen schema/tables and DDL for folded re
 - Consumes: Task 12a, `foldedSelectorColumn` / `assertManyKeys` (Task 1), the Task 2 kit.
 - Produces (est. ~190 changed lines, 5 files): `new PostgresReadModelStore(config, options?: PostgresReadModelStoreOptions)` where `PostgresReadModelStoreOptions extends FoldedTableOptions { manageSchema?: boolean }` (exported from `plugins/postgres/src/index.ts`); the five methods; `clear` also deletes folded state/header, but ONLY when the folded tables already exist and it never creates them (a store that never used a folded model, or whose role may not run DDL, pays one `to_regclass` and no DDL: ADR 0132 D6/D10).
 
-- [ ] **Step 1: Failing tests.** In `plugins/postgres/src/conformance.test.ts` add `runFoldedStateConformance` to the `@loom/conformance` import, a cursor `let nextFolded = 0;` next to `nextReadModel`, and after the existing read-model kit call:
+- [ ] **Step 1: Failing tests.** In `plugins/postgres/src/conformance.test.ts` add `runFoldedStateConformance` to the `@loomwork/conformance` import, a cursor `let nextFolded = 0;` next to `nextReadModel`, and after the existing read-model kit call:
 
 ```ts
   runFoldedStateConformance(() => {
@@ -3836,7 +3836,7 @@ git commit -m "feat(postgres): caller-chosen schema/tables and DDL for folded re
     return new PostgresReadModelStore(pool);
   }, "PostgresReadModelStore");
 ```
-(12 folded cases < 32 schemas, so each factory call gets its own schema.) Run with the test database (never print the URL): `LOOM_TEST_POSTGRES_URL=… pnpm --filter @loom/plugin-postgres exec vitest run src/conformance.test.ts` → folded cases SKIP. Add a guard test (no DB needed) to `foldedState.test.ts`: `import { PostgresReadModelStore } from "./PostgresReadModelStore"; it("exposes the folded methods", () => expect(typeof PostgresReadModelStore.prototype.applyFolded).toBe("function"));` → FAILS.
+(12 folded cases < 32 schemas, so each factory call gets its own schema.) Run with the test database (never print the URL): `LOOM_TEST_POSTGRES_URL=… pnpm --filter @loomwork/plugin-postgres exec vitest run src/conformance.test.ts` → folded cases SKIP. Add a guard test (no DB needed) to `foldedState.test.ts`: `import { PostgresReadModelStore } from "./PostgresReadModelStore"; it("exposes the folded methods", () => expect(typeof PostgresReadModelStore.prototype.applyFolded).toBe("function"));` → FAILS.
 
 Create `plugins/postgres/src/foldedClear.test.ts` (gated like the sibling suites; own schema per run):
 
@@ -3892,7 +3892,7 @@ if (PG_URL === undefined) {
 }
 ```
 
-- [ ] **Step 2: Implement.** Imports: `FoldedApply, FoldedApplyResult, FoldedRecord, FoldedSelector` (types) and `assertManyKeys, foldedSelectorColumn` (values) from `@loom/plugin-read-model`; `type FoldedNames, type FoldedTableOptions, ensureFoldedTables, foldedNames` from `./foldedState`. Constructor and fields:
+- [ ] **Step 2: Implement.** Imports: `FoldedApply, FoldedApplyResult, FoldedRecord, FoldedSelector` (types) and `assertManyKeys, foldedSelectorColumn` (values) from `@loomwork/plugin-read-model`; `type FoldedNames, type FoldedTableOptions, ensureFoldedTables, foldedNames` from `./foldedState`. Constructor and fields:
 
 ```ts
 export interface PostgresReadModelStoreOptions extends FoldedTableOptions {
@@ -4066,7 +4066,7 @@ In `plugins/postgres/src/index.ts` replace the `PostgresReadModelStore` export w
 
 Note on the types: `pg` returns BIGINT as string, hence `Number(...)` (as the row path already does); a `state` JSONB column arrives parsed.
 
-- [ ] **Step 3: Run** the guard test, then with the database: `LOOM_TEST_POSTGRES_URL=… pnpm --filter @loom/plugin-postgres exec vitest run src/conformance.test.ts src/foldedClear.test.ts src/foldedState.test.ts` → folded kit 12 PASS, `clear` tests PASS.
+- [ ] **Step 3: Run** the guard test, then with the database: `LOOM_TEST_POSTGRES_URL=… pnpm --filter @loomwork/plugin-postgres exec vitest run src/conformance.test.ts src/foldedClear.test.ts src/foldedState.test.ts` → folded kit 12 PASS, `clear` tests PASS.
 
 - [ ] **Step 4: Format and commit**
 
@@ -4174,7 +4174,7 @@ if (PG_URL === undefined) {
 }
 ```
 
-- [ ] **Step 2: Run** with the test database: `LOOM_TEST_POSTGRES_URL=… pnpm --filter @loom/plugin-postgres exec vitest run src/foldedRls.test.ts` → PASS, or skipped with a reason when the user cannot create roles (report which).
+- [ ] **Step 2: Run** with the test database: `LOOM_TEST_POSTGRES_URL=… pnpm --filter @loomwork/plugin-postgres exec vitest run src/foldedRls.test.ts` → PASS, or skipped with a reason when the user cannot create roles (report which).
 - [ ] **Step 3: Format and commit**
 
 ```bash
@@ -4220,7 +4220,7 @@ await service.getMany("ingest-status", [executionId], { refreshFrom: [eventStore
 State the rules in prose: (1) **Sensitive state.** Handlers receive events with every declared or sealed-marked path replaced by `"[redacted]"`; a state that holds a sealed envelope or a value copied from a sensitive path is refused with `SensitiveStateError` (model, execution, event and state path; never the value) and the watermark does not advance. Say what it cannot catch (an undeclared field, a transformed copy, a short value, free text) in the same words as ADR 0132 D11, and that state should still hold identifiers, enums, counters and timestamps. (2) Keep `version` honest; the declared sensitive map is part of the fold version, so editing it rebuilds. (3) `refresh` costs a log-tail read: use it on the one execution a user action touched, by id (`getMany(…, { refreshFrom })` or `refresh`); `getManyByKey(…, { refreshFrom })` refreshes only executions that already have a row for the key, so it cannot discover an execution that was just started. (3b) `liveSource` is optional: the engine is shown every event of an execution it follows from its first event, so events no handler matches are not holes; configure `liveSource` (normally the node's own event store) so a node that restarts mid-execution fills the hole instead of reporting a `FoldGapError` until the next `catchUp`. (4) The state cache serves the live write path only; reads always hit the store; `foldCache: false` disables it.
 
 - [ ] **Step 2: `docs/api-reference.org` and `docs/README.md`** — add the entries; in README add a bullet linking `adr/0132-folded-state-read-model.md` with the text "0132 added durable per-execution folded-state read models with a sensitive-state guard and a bounded live-path cache".
-- [ ] **Step 3: Package description and generated README (F31).** In `plugins/read-model/package.json` append to `description`: " Also durable per-execution folded-state models (`registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`; ADR 0132).", then run `node scripts/package-readmes.mjs` and `pnpm --filter @loom/spec exec vitest run src/packageReadmes.test.ts`.
+- [ ] **Step 3: Package description and generated README (F31).** In `plugins/read-model/package.json` append to `description`: " Also durable per-execution folded-state models (`registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`; ADR 0132).", then run `node scripts/package-readmes.mjs` and `pnpm --filter @loomwork/spec exec vitest run src/packageReadmes.test.ts`.
 - [ ] **Step 4: Format and commit**
 
 ```bash
@@ -4271,7 +4271,7 @@ Merge later with `gh pr merge --rebase`, in stack order.
 
 1. **Q1 — fold `version` is required** for every folded model (blank = `TypeError`). Accepted as recommended. Since D11, the version written to the header also carries a digest of the declared sensitive map.
 2. **Q2 — `getMany` / `getManyByKey` omit erased and never-matched executions.** Accepted as recommended: indistinguishable to the caller, so erasure state does not leak to UI code.
-3. **Q3 — a sensitive-state guard ships in v1 (changed from the recommendation).** Handlers receive events with declared or seal-marked paths masked to `"[redacted]"` and with any cipher envelope masked; before persisting, the engine rejects a state holding a sealed envelope or a value lifted from a sensitive path, with a typed `SensitiveStateError` that names the model, execution, event and state path and never the value. Built from `sensitive()` marks / the `sensitive` map, `metadata.seal`, the ADR 0130 envelope shape rule and `@loom/classify` masking; pure (P7); limits stated in ADR 0132 D11. Tasks 5a, 5b, 5c, 9.
+3. **Q3 — a sensitive-state guard ships in v1 (changed from the recommendation).** Handlers receive events with declared or seal-marked paths masked to `"[redacted]"` and with any cipher envelope masked; before persisting, the engine rejects a state holding a sealed envelope or a value lifted from a sensitive path, with a typed `SensitiveStateError` that names the model, execution, event and state path and never the value. Built from `sensitive()` marks / the `sensitive` map, `metadata.seal`, the ADR 0130 envelope shape rule and `@loomwork/classify` masking; pure (P7); limits stated in ADR 0132 D11. Tasks 5a, 5b, 5c, 9.
 4. **Q4 — `refresh` is one log-tail read per execution**, used only on the execution a user action touched; list pages use the plain `getMany` / `getManyByKey`. Accepted as recommended; no "wait until sequence N" API.
 5. **Q5 — old-version nodes stop projecting** (`FoldVersionMismatchError` to `onError`) until restarted on the new version, and a rollback re-folds. Accepted as recommended; no dual-version tables.
 6. **Q6 — lazy tables by default; `manageSchema: false` for apps that own their DDL** (DocMind runs `foldedStateDdl({ schema: "docmind" })` in its own migrations beside the RLS policies). Accepted as recommended.

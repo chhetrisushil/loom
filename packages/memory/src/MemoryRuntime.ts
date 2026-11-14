@@ -1,4 +1,4 @@
-import type { MemoryDefinition } from "@loom/core";
+import type { MemoryDefinition } from "@loomwork/core";
 import { InMemoryMemoryStore } from "./InMemoryMemoryStore";
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "./types";
 

@@ -1,8 +1,8 @@
-import type { ExecutionState } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { type EventStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type FlowRunner, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { type EventStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { type FlowRunner, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { liveQuery } from "./liveQuery";

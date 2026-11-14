@@ -1,4 +1,4 @@
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { epsilonGreedy, fixedRouter, rankedRouter, ucb1 } from "./router";
 import type { ModelRoute, ReasoningRequest } from "./types";

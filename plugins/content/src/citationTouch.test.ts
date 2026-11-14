@@ -1,7 +1,7 @@
-import { runSnapshotStoreDecoratorConformance } from "@loom/conformance";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { runSnapshotStoreDecoratorConformance } from "@loomwork/conformance";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ContentMissingError,
@@ -287,7 +287,7 @@ describe("touch problems with no onTouchError hook (ADR 0055 D6 amendment 2)", (
     vi.resetModules();
     const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const mod = await import("./index");
-    const { InMemoryAsyncEventStore: Mem } = await import("@loom/event-runtime");
+    const { InMemoryAsyncEventStore: Mem } = await import("@loomwork/event-runtime");
     const content = new mod.InMemoryContentStore({ now: () => OLD });
     const raw = new Mem();
     const resolving = new mod.ContentResolvingEventStore(raw, content, { externalize: {} });
@@ -305,7 +305,7 @@ describe("touch problems with no onTouchError hook (ADR 0055 D6 amendment 2)", (
     vi.resetModules();
     const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const mod = await import("./index");
-    const { InMemoryAsyncEventStore: Mem } = await import("@loom/event-runtime");
+    const { InMemoryAsyncEventStore: Mem } = await import("@loomwork/event-runtime");
     const content = new mod.InMemoryContentStore({ now: () => OLD });
     const seen: unknown[] = [];
     const resolving = new mod.ContentResolvingEventStore(new Mem(), content, {

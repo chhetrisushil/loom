@@ -1,11 +1,11 @@
-import { unwrapTainted } from "@loom/classify";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
-} from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";

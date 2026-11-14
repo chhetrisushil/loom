@@ -1,17 +1,17 @@
-import { step$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { LocalDispatcher, SupervisingDispatcher } from "@loom/dispatcher";
-import type { ExecutionDispatcher } from "@loom/dispatcher";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { LocalDispatcher, SupervisingDispatcher } from "@loomwork/dispatcher";
+import type { ExecutionDispatcher } from "@loomwork/dispatcher";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   type EventStore,
   InMemoryAsyncEventStore,
   TenantScopedEventStore,
-} from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type ExecutionPackage, isSupersededRefusal } from "@loom/worker-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+} from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { type ExecutionPackage, isSupersededRefusal } from "@loomwork/worker-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LocalWorkerRuntime } from "./LocalWorkerRuntime";

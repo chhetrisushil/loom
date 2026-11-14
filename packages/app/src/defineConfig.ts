@@ -1,5 +1,5 @@
-import { SkillRegistry, configureAgentLoopDefaults } from "@loom/agent";
-import { agentSurfaceProjection, createSurfaceEmitter } from "@loom/agent-surface";
+import { SkillRegistry, configureAgentLoopDefaults } from "@loomwork/agent";
+import { agentSurfaceProjection, createSurfaceEmitter } from "@loomwork/agent-surface";
 import {
   DEFAULT_TENANT as DEFAULT_ERASE_TENANT,
   type ErasableContent,
@@ -12,8 +12,12 @@ import {
   type SubjectResolver,
   type TenantResolver,
   exportSubject as exportSubjectData,
-} from "@loom/compliance";
-import { isProjectionHandlersRef, loadProjectionHandlers, projectionEventTypes } from "@loom/core";
+} from "@loomwork/compliance";
+import {
+  isProjectionHandlersRef,
+  loadProjectionHandlers,
+  projectionEventTypes,
+} from "@loomwork/core";
 import type {
   AgentDefinition,
   AnyProjectionDefinition,
@@ -23,14 +27,14 @@ import type {
   ScheduleDefinition,
   SkillDefinition,
   ToolDefinition,
-} from "@loom/core";
-import type { ExecutionDispatcher } from "@loom/dispatcher";
-import { EffectRuntime, PolicyAuthorizer } from "@loom/effect-runtime";
+} from "@loomwork/core";
+import type { ExecutionDispatcher } from "@loomwork/dispatcher";
+import { EffectRuntime, PolicyAuthorizer } from "@loomwork/effect-runtime";
 import type {
   CapabilityAuthorizer,
   EffectMiddleware,
   EffectReasoningDefaults,
-} from "@loom/effect-runtime";
+} from "@loomwork/effect-runtime";
 import type {
   ArchiveStore,
   BranchRegistry,
@@ -38,24 +42,24 @@ import type {
   EventStore,
   LeaseStore,
   TimerStore,
-} from "@loom/event-runtime";
-import { decoratedInnerOf } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import { decoratedInnerOf } from "@loomwork/event-runtime";
 // Only the in-memory stores are imported statically — they are pure JS. We import
 // them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
 // barrel also re-exports the SQLite stores (which `import "better-sqlite3"`), and
 // these packages compile to CommonJS — which bundlers cannot tree-shake. The subpath
 // keeps better-sqlite3 / node:fs out of browser bundles: SQLite arrives only through the
-// `sqliteStorage()` preset from @loom/plugin-sqlite, so a browser app using in-memory storage
+// `sqliteStorage()` preset from @loomwork/plugin-sqlite, so a browser app using in-memory storage
 // stays clean.
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryLeaseStore,
-} from "@loom/event-runtime/memory";
-import { type KnowledgeBase, openKnowledgeBase } from "@loom/knowledge";
-import type { KnowledgeBaseConfig } from "@loom/knowledge";
-import { InMemoryMemoryStore, MemoryRuntime } from "@loom/memory";
-import type { MemoryStore } from "@loom/memory";
+} from "@loomwork/event-runtime/memory";
+import { type KnowledgeBase, openKnowledgeBase } from "@loomwork/knowledge";
+import type { KnowledgeBaseConfig } from "@loomwork/knowledge";
+import { InMemoryMemoryStore, MemoryRuntime } from "@loomwork/memory";
+import type { MemoryStore } from "@loomwork/memory";
 import {
   BudgetLedger,
   type ClaimCheckOptions,
@@ -69,39 +73,39 @@ import {
   redactOutputFrom,
   redactionMiddleware,
   secretOutputPathsByStep,
-} from "@loom/middleware";
-import { awaitedByParent } from "@loom/orchestration";
-import { toAgentCard } from "@loom/plugin-a2a";
-import type { AgentCard } from "@loom/plugin-a2a";
+} from "@loomwork/middleware";
+import { awaitedByParent } from "@loomwork/orchestration";
+import { toAgentCard } from "@loomwork/plugin-a2a";
+import type { AgentCard } from "@loomwork/plugin-a2a";
 import {
   EncryptingArchiveStore,
   EncryptingSnapshotStore,
   type KeyStore,
-} from "@loom/plugin-crypto";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+} from "@loomwork/plugin-crypto";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import {
   type SnapshotCodecName,
   type SnapshotStore,
   assertSnapshotCodecAvailable,
   parseSnapshotCodec,
-} from "@loom/snapshot-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
+} from "@loomwork/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime/memory";
 import {
   composeAdapters,
   createTelemetryHook,
   scrubPathsByStep,
   scrubbingAdapter,
-} from "@loom/telemetry";
-import type { TelemetryAdapter } from "@loom/telemetry";
-import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
-import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/telemetry";
+import type { TelemetryAdapter } from "@loomwork/telemetry";
+import { type VerificationReport, runVerification, verify as runVerify } from "@loomwork/verify";
+import { LogLifecycle, TimerService, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import type {
   HeartbeatOptions,
   PrincipalCodec,
   PrincipalResolver,
   TimerDispatcher,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import type {
   ArchiveStores,
   ExecutionAuthorizer,
@@ -109,7 +113,7 @@ import type {
   PinPredicate,
   RegisteredFlow,
   ResumeAuthenticator,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
 import {
   type PrincipalCryptoOptions,
@@ -156,7 +160,7 @@ import {
   resolveVerifyInput,
 } from "./verifyAdapter";
 
-/** Structural view of a CapabilityCatalog — avoids a hard `@loom/capability` dep. */
+/** Structural view of a CapabilityCatalog — avoids a hard `@loomwork/capability` dep. */
 export interface CatalogLike {
   registerInto(runtime: WorkflowRuntime): void;
   get(capabilityId: string): { flow: RegisteredFlow } | undefined;
@@ -170,8 +174,8 @@ export type StorageConfig =
    * any `EventStore` + `SnapshotStore` (and an optional `BranchRegistry` for
    * fork/branch). This is also how every concrete backend is wired: a store plugin
    * exports a preset returning this shape — `sqliteStorage({ dir })` from
-   * `@loom/plugin-sqlite`, `postgresStorage({ url })` from `@loom/plugin-postgres`,
-   * or your own — so `@loom/app` names no vendor and 1P/3P backends are symmetric
+   * `@loomwork/plugin-sqlite`, `postgresStorage({ url })` from `@loomwork/plugin-postgres`,
+   * or your own — so `@loomwork/app` names no vendor and 1P/3P backends are symmetric
    * (ADR 0043).
    */
   | {
@@ -278,7 +282,7 @@ export interface SecurityOptions {
   /**
    * C.1 — authorizes execution lifecycle operations (`start`/`resume`/`cancel`, and the
    * public `loadState`). Without `strict`, consulted only for calls that carry a `principal`.
-   * `executionAccessPolicy()` from `@loom/workflow-runtime` is the first-party reference policy.
+   * `executionAccessPolicy()` from `@loomwork/workflow-runtime` is the first-party reference policy.
    *
    * SECURITY CONTRACT, restated from {@link WorkflowRuntime} because this is where it is
    * now wired: outside `strict`, principal-less calls bypass the gate BY DESIGN, so the
@@ -302,7 +306,7 @@ export interface SecurityOptions {
    * principal with `fromRef` on every start / resume / timer wake / recovery. REQUIRED under
    * {@link strict} or a composed {@link compliance} plugin unless {@link crypto} is composed
    * (otherwise `defineConfig` refuses to compose, {@link PrincipalRecordingRefusedError}).
-   * `@loom/orchestration`'s supervisor composes its own codec for delegated children.
+   * `@loomwork/orchestration`'s supervisor composes its own codec for delegated children.
    */
   principalCodec?: PrincipalCodec;
   /**
@@ -548,7 +552,7 @@ export interface ClaimCheckConfig {
     /**
      * `true` for a store that seals each blob under its owning subject's key, so the shred erases it.
      * REQUIRED with `security.crypto` (ADR 0140 D8): pass `new EncryptingContentStore(inner, keys, ...)` from
-     * `@loom/plugin-crypto` (ADR 0143), built over the SAME KeyStore and `subjectOf` as `security.crypto`
+     * `@loomwork/plugin-crypto` (ADR 0143), built over the SAME KeyStore and `subjectOf` as `security.crypto`
      * (a different one is refused at boot). Otherwise leave it unset.
      */
     readonly sealsContent?: boolean;
@@ -665,7 +669,7 @@ function claimCheckFrom(
   const sealsContent = (raw.store as { sealsContent?: unknown }).sealsContent === true;
   if (posture.crypto && !sealsContent) {
     throw new TypeError(
-      "defineConfig: execution.claimCheck with security.crypto is refused: the offloaded tool outputs would sit in the content store in PLAINTEXT, outside the per-subject keys that seal the log, so erasing a subject (a key's destruction) could not reach them. Wrap the store: `new EncryptingContentStore(inner, keys, { subjectOf })` from @loom/plugin-crypto (ADR 0143) seals each blob under its owning subject's key and declares `sealsContent: true`; give it the SAME KeyStore and subjectOf as security.crypto. Or drop execution.claimCheck. Nothing was composed."
+      "defineConfig: execution.claimCheck with security.crypto is refused: the offloaded tool outputs would sit in the content store in PLAINTEXT, outside the per-subject keys that seal the log, so erasing a subject (a key's destruction) could not reach them. Wrap the store: `new EncryptingContentStore(inner, keys, { subjectOf })` from @loomwork/plugin-crypto (ADR 0143) seals each blob under its owning subject's key and declares `sealsContent: true`; give it the SAME KeyStore and subjectOf as security.crypto. Or drop execution.claimCheck. Nothing was composed."
     );
   }
   if (posture.crypto && sealsContent) {
@@ -942,7 +946,7 @@ export interface DurabilityOptions {
      * K10.6 — pin predicate: retention exempts executions this returns `true`
      * for (outcome `"pinned"`). The kernel supplies the gate; what pins is
      * policy (G3) — e.g. `pinByEventKinds(store, ["FINDING_RECORDED"])` from
-     * `@loom/plugin-content`.
+     * `@loomwork/plugin-content`.
      */
     pinned?: PinPredicate;
     /**
@@ -1086,7 +1090,7 @@ export interface ChecksOptions {
    */
   validate?: boolean | "warn" | "error";
   /**
-   * Pre-flight runtime verification (`@loom/verify`). Runs read-only, off-log checks over
+   * Pre-flight runtime verification (`@loomwork/verify`). Runs read-only, off-log checks over
    * the resolved app **at boot, before any execution starts**. `"error"` throws on an
    * error-severity finding; `"warn"` reports via {@link onWarn}; `"off"` (the default)
    * is byte-identical to not wiring verify (G2). Use the object form to declare the
@@ -1555,7 +1559,7 @@ export interface LoomApp {
   supervise<S extends { parkedOnChild(executionId: string): Promise<boolean> }>(supervisor: S): S;
   /**
    * T3 — live subject index (`subjectId → executions`), present only when `compliance` is
-   * wired. Fed by the event stream; rebuildable from the log. See `@loom/compliance`.
+   * wired. Fed by the event stream; rebuildable from the log. See `@loomwork/compliance`.
    */
   subjectIndex?: SubjectIndex;
   /**
@@ -1610,7 +1614,7 @@ export interface LoomApp {
    * regardless of the `verify` config key. `options.lint` merges EXTRA compiler-lint
    * findings (per-flow, over any configured `verify.lint`) — `loom verify` uses this to
    * inject the compiler manifest's ADR 0061 `loopIdentity` field automatically. See
-   * `@loom/verify`.
+   * `@loomwork/verify`.
    */
   verify(options?: { lint?: VerifyLintInputs }): VerificationReport;
   close(): Promise<void>;
@@ -1712,7 +1716,7 @@ function buildStores(
     }
     // Bring your own backend — used verbatim. Concrete backends arrive this way via
     // a store plugin's preset (`sqliteStorage()`, `postgresStorage()`, …), so
-    // `@loom/app` stays free of any vendor dependency (ADR 0043).
+    // `@loomwork/app` stays free of any vendor dependency (ADR 0043).
     return {
       eventStore: storage.eventStore,
       snapshotStore:
@@ -1727,7 +1731,7 @@ function buildStores(
   if (kind !== "memory") {
     throw new TypeError(
       kind === "sqlite" || kind === "postgres"
-        ? `defineConfig: storage kind "${kind}" does not exist. Use the preset: storage: ${kind}Storage({ ... }) from @loom/plugin-${kind}.`
+        ? `defineConfig: storage kind "${kind}" does not exist. Use the preset: storage: ${kind}Storage({ ... }) from @loomwork/plugin-${kind}.`
         : `defineConfig: unknown storage kind ${JSON.stringify(kind)}. Use { kind: "memory" }, { kind: "custom", ... } or a store plugin's preset.`
     );
   }
@@ -1870,7 +1874,7 @@ export function normalizeConfig(config: LoomConfig): ResolvedConfig {
   }
   if (moved.length > 0) {
     throw new Error(
-      `defineConfig: ${moved.join(", ")} — these options now live in a group. Run \`loom migrate-config --apply\` to rewrite your config, move them by hand, or pin @loom/app to the previous version.`
+      `defineConfig: ${moved.join(", ")} — these options now live in a group. Run \`loom migrate-config --apply\` to rewrite your config, move them by hand, or pin @loomwork/app to the previous version.`
     );
   }
   return resolved as unknown as ResolvedConfig;

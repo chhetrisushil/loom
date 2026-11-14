@@ -1,6 +1,6 @@
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { createA2AClientEffect } from "./A2AClientEffect";
 

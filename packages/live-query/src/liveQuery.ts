@@ -1,6 +1,6 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import type { EventStore } from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
 
 // ── Live query over an in-flight execution ────────────────────────────────────
 //

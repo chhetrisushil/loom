@@ -1,6 +1,6 @@
 # ADR 0087 — The agent loop is a runner body, not a step handler
 
-- Status: **Accepted — shipped** (`agentLoop$`, `createAgentModelEffect` in `@loom/agent`;
+- Status: **Accepted — shipped** (`agentLoop$`, `createAgentModelEffect` in `@loomwork/agent`;
   `agentStep$` retained)
 - Date: 2026-08-18
 - Builds on: [ADR 0061](0061-step-identity-interpreter-guardrails.md) (step identity + the
@@ -14,7 +14,7 @@
 
 ## Context
 
-`@loom/agent` implemented the ReAct loop on the wrong side of two boundaries at once.
+`@loomwork/agent` implemented the ReAct loop on the wrong side of two boundaries at once.
 
 `agentStep$` wraps the entire loop in `step$({ handler: handler$(...) })`, and a handler receives
 `StepHandlerContext` — `executionId`, `stepId`, `workflowId`, `attempt`, and `emit`. That is the
@@ -27,7 +27,7 @@ independently expensive:
   hoisted out of the agent entirely — precisely the design the feature exists to avoid.
 - **No `ctx.decide` per turn.** `DECISION_RECORDED` was hand-emitted through `emit`: a fact in the
   log, but not served on replay and carrying no propensity, so an agent's routing choices were
-  logged in a shape `@loom/learning` cannot evaluate.
+  logged in a shape `@loomwork/learning` cannot evaluate.
 - **No streaming.** `ctx.stream` exists and the handler cannot reach it.
 
 The kernel's entire agent-relevant surface was present and unreachable from the agent. Nothing was
@@ -125,7 +125,7 @@ something made it easy to follow, and it matters because a sink is not always tr
 fold economics ST-R rejected, arriving through the sanctioned door. Wrapping the sink turns the
 delta count from a property of the provider's tokenizer into a decision.
 
-Transient sinks (`@loom/live-query`, `progressHub`) do not need it — there, per-token is free.
+Transient sinks (`@loomwork/live-query`, `progressHub`) do not need it — there, per-token is free.
 
 ## Consequences
 
@@ -137,8 +137,8 @@ Transient sinks (`@loom/live-query`, `progressHub`) do not need it — there, pe
   through `ctx.execute`, granularity through `chunkDeltas`.
 - The log grows with conversation length for adopters who opt in. Documented, with the two existing
   mitigations named; `agentStep$` remains for those who want neither.
-- `@loom/agent` gains a dependency on `@loom/workflow-runtime` for `ExecutionContext` — the same
-  edge `@loom/orchestration` already has, and for the same reason: a runner-body construct needs the
+- `@loomwork/agent` gains a dependency on `@loomwork/workflow-runtime` for `ExecutionContext` — the same
+  edge `@loomwork/orchestration` already has, and for the same reason: a runner-body construct needs the
   runner's context type.
 
 ## Verification

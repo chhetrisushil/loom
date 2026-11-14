@@ -17,8 +17,8 @@
   runtime policy required (D8), service-owned coordinator, unguessable verified turn ids, delegation, per-asker memory,
   classified questions, strict clearance (D10). Fix round 1 (Opus review of PR #518, not approved) — owner-only default (D8), shared mode (D10), bounded
   backward reads (D3), edge hardening (D6), summary/identity/peek fixes (D2, D5).
-- Placement: **two 1P packages, kernel untouched.** `@loom/conversation` (new) and `@loom/plugin-conversation-sse` (new
-  plugin), plus three additive seams on `@loom/agent`. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are unchanged; no
+- Placement: **two 1P packages, kernel untouched.** `@loomwork/conversation` (new) and `@loomwork/plugin-conversation-sse` (new
+  plugin), plus three additive seams on `@loomwork/agent`. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are unchanged; no
   syscall, no event kind, no payload field. Every behaviour is built from `runtime.start`, `runtime.send`,
   `ctx.receive`, `ctx.decide`, `ctx.execute`, `ctx.continueAsNew` and `EventStore.readRange / subscribe` as they exist.
 
@@ -138,7 +138,7 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
   999999999.0` was ~2e9 store calls before). A read also takes a `signal`: the gateway aborts it when the client goes away.
 - The head generation is found by galloping and bisecting over `headOf` (generations are consecutive), O(log G) point
   reads, not a walk. Rotation does not truncate history: every generation's log stays (until retention reclaims it).
-- `source: "conversation-record"` and `"conversation-budget"` are added to `@loom/learning`'s `RECORDED_FACT_SOURCES`:
+- `source: "conversation-record"` and `"conversation-budget"` are added to `@loomwork/learning`'s `RECORDED_FACT_SOURCES`:
   they are bookkeeping, not a choice among alternatives.
 
 **D4 — Rotation: the rotation point is between consuming a message and starting its turn.**
@@ -172,7 +172,7 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
   again.
 - **Eviction and summary.** Dropped turns leave the prompt (they stay in `history`). With `budget.summarizerToolId` they
   are folded into a rolling summary through `ctx.execute` against that effect, **using the same `{ messages } → { summary }`
-  contract as `agentLoop$` `compaction.toolId`, so one summarizer effect serves both**. *(Note: both inputs may carry `tainted()` wrappers - here the user's words and the previous summary, in `compaction.toolId` failed tool calls, MCP results and origin-bearing history, nested in text parts and `tool_result` content; `textOf` on one throws `TaintedContentError`, and `summarizerText` from `@loom/conversation` is the sanctioned reader. It returns untrusted data that must stay out of instruction positions; the summary is re-injected fenced with origin `conversation:summary`.)* The summary is model output over
+  contract as `agentLoop$` `compaction.toolId`, so one summarizer effect serves both**. *(Note: both inputs may carry `tainted()` wrappers - here the user's words and the previous summary, in `compaction.toolId` failed tool calls, MCP results and origin-bearing history, nested in text parts and `tool_result` content; `textOf` on one throws `TaintedContentError`, and `summarizerText` from `@loomwork/conversation` is the sanctioned reader. It returns untrusted data that must stay out of instruction positions; the summary is re-injected fenced with origin `conversation:summary`.)* The summary is model output over
   untrusted text, so it rides in a *fenced* `user` message (origin `conversation:summary`), never the system prompt.
   *(Amended 2026-11-03: a summarizer step that fails with anything but control flow (park, authority/safety stop,
   cancel, divergence) DEGRADES - the previous summary is kept, the evicted turns leave the prompt, the turn and the
@@ -187,7 +187,7 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
   conversation budget decides which *turns* enter a run; `config.agent.compaction` (messages / bytes) keeps passing
   through and bounds the transcript *inside* a run, where tool results grow.
 
-**D6 — The streaming transport: `@loom/plugin-conversation-sse`.**
+**D6 — The streaming transport: `@loomwork/plugin-conversation-sse`.**
 
 Routes: `POST /conversations` (start; **the server mints the id**), `GET /conversations/:id` (status),
 `POST /conversations/:id/turns` (`{ text, messageId? }`), `POST /conversations/:id/close`,
@@ -205,7 +205,7 @@ never a message, and resuming is the same code path as following.
 - **Authentication.** Every route needs `authenticate(req)` to return a principal with a non-empty `actor`, derived from
   connection facts only. The server refuses to be created without it unless `insecure: true` (warned; refused under
   `strict`). It binds `127.0.0.1` by default. `OPTIONS` carries no credentials and is answered for allowed origins only.
-- **Authorization is `@loom/conversation`'s**, per conversation and **owner-only by default** (D8), or the explicit
+- **Authorization is `@loomwork/conversation`'s**, per conversation and **owner-only by default** (D8), or the explicit
   participant set of a shared conversation (D10); the gateway holds no second ACL, it maps the client's refusal to the one
   404. The runtime's own policy still applies underneath in owner-only mode.
 - **Existence is hidden.** A conversation the caller may not touch and one that does not exist both answer
@@ -305,7 +305,7 @@ live deltas on this node and falls back to the durable record.
   A provider error can carry hostnames, request ids or credentials; the first cut recorded `${name}: ${message}` into a
   transcript every viewer reads (P2-2).
 
-**D9 — Three additive seams on `@loom/agent`.** `AgentLoopConfig.loopId` (the id prefix of a loop's frames, decisions and
+**D9 — Three additive seams on `@loomwork/agent`.** `AgentLoopConfig.loopId` (the id prefix of a loop's frames, decisions and
 gates; default the definition id; two loops in one execution must not share it, and the test pins what happens when they
 do), `AgentInput.history` (earlier messages before the prompt, oldest first, caller-sized) and `AgentInput.promptOrigin`
 (the prompt is third-party content). All default to today's behaviour byte for byte; `agentHistory.test.ts` pins both
@@ -352,7 +352,7 @@ Motivating workload: an incident surface whose AI chat is shared by several resp
 3. **Each answer is classified by what it touched.** `classes` = the declared class of every tool the turn called
    (`shared.classOf(toolName)`; a tool it does not know is the label `unclassified`) UNION the classes of every entry that
    fed its context. The record carries them; the decision is recorded, so replay never re-asks the host. (The core has no
-   per-tool class declaration, so the host supplies the map; `@loom/classify`'s `DataClass` is a handling class for fields
+   per-tool class declaration, so the host supplies the map; `@loomwork/classify`'s `DataClass` is a handling class for fields
    and is not reused as the label vocabulary, which is open and the host's.)
 4. **Per-viewer filtering.** `shared.cleared(viewer, classes)` (REQUIRED) is called with a non-empty class list and must
    clear EVERY class; fail closed, so a host returns `false` for a label it does not recognise. An entry the viewer is not

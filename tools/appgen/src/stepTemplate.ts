@@ -1,4 +1,4 @@
-import { pascal } from "@loom/scaffold";
+import { pascal } from "@loomwork/scaffold";
 import { assertSafeId, tsStringLiteral } from "./emit";
 import { stubHandlerBody } from "./stub";
 

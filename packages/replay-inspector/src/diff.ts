@@ -2,7 +2,7 @@
 //
 // Checked before building: `packages/agent-surface/src/applyPatch.ts` is a path-based
 // immutable *update* over `SurfacePatch`, not a differ, and `resolvePath`
-// (`@loom/blueprint-runtime`, ADR 0068) resolves a single dot-path. Neither diffs two
+// (`@loomwork/blueprint-runtime`, ADR 0068) resolves a single dot-path. Neither diffs two
 // values. So one small differ lives here, shared by IX-2 and IX-3.
 //
 // Three properties this must have, all of them load-bearing against hostile or merely
@@ -23,7 +23,7 @@
 // the output is a flat array of `{ path, kind }` records, so no user-controlled string
 // is ever used as a write key. Reads use `Object.keys` (own, enumerable) so an
 // inherited or `__proto__` key cannot enter a path. This mirrors the kernel fold's own
-// `assertSafeKey` discipline in `@loom/replay-vm`.
+// `assertSafeKey` discipline in `@loomwork/replay-vm`.
 
 export type ChangeKind = "added" | "removed" | "changed";
 

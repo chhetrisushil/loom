@@ -777,7 +777,7 @@ describe("constant ids and step factories (L37)", () => {
 
   it("resolves mcpInvoke$ whatever its (templated) step id: the EFFECT is mcp.invoke", () => {
     const r = analyzeRunnerReach(`
-      import { mcpInvoke$ } from "@loom/plugin-mcp";
+      import { mcpInvoke$ } from "@loomwork/plugin-mcp";
       const runner = async (ctx, steps) => {
         for (const s of steps) await ctx.run(mcpInvoke$(\`tool:\${s.id}\`), {});
         await ctx.run(mcpInvoke$("remap-sample"), {});
@@ -875,7 +875,7 @@ describe("constant ids and step factories (L37)", () => {
 
   it("sandboxEval$ resolves to its default effect, or to a constant override", () => {
     const r = analyzeRunnerReach(`
-      import { sandboxEval$ } from "@loom/plugin-sandbox";
+      import { sandboxEval$ } from "@loomwork/plugin-sandbox";
       const T = "sandbox.custom";
       const runner = async (ctx, i, v) => {
         await ctx.run(sandboxEval$(\`reshape#\${i}\`), {});
@@ -902,7 +902,7 @@ describe("constant ids and step factories (L37)", () => {
 describe("hand-off step arguments (L34)", () => {
   it("records the arguments that resolve to a step, by position", () => {
     const r = analyzeRunnerReach(`
-      import { mcpInvoke$ } from "@loom/plugin-mcp";
+      import { mcpInvoke$ } from "@loomwork/plugin-mcp";
       const a = step$({ id: "a", toolId: "tool.a" });
       const runner = async (ctx, items) => {
         await fanout$(ctx, a, items, { limit: 2 });
@@ -955,7 +955,7 @@ describe("imported constants and factories (L37)", () => {
       mkdirSync(join(dir, "llm"));
       writeFileSync(
         join(dir, "llm", "effects.ts"),
-        `import { step$ } from "@loom/core";
+        `import { step$ } from "@loomwork/core";
          export const LLM_REPAIR = "llm.repair";
          export const NOT_CONST = String(1);
          export function llmStep$(id: string, toolId: string) { return step$({ id, toolId }); }
@@ -996,9 +996,9 @@ describe("false resolutions are unresolved, never a guess (L34 fix round)", () =
 
   it("known factories resolve only from their own package, aliased or via the SDK", () => {
     const direct = analyzeRunnerReach(`
-      import { mcpInvoke$ as m } from "@loom/plugin-mcp";
-      import { mcpInvoke$ as viaSdk } from "@loom/sdk";
-      import { sandboxEval$ } from "@loom/sdk/sandbox";
+      import { mcpInvoke$ as m } from "@loomwork/plugin-mcp";
+      import { mcpInvoke$ as viaSdk } from "@loomwork/sdk";
+      import { sandboxEval$ } from "@loomwork/sdk/sandbox";
       const runner = async (ctx) => {
         await ctx.run(m("a")); await ctx.run(viaSdk("b")); await ctx.run(sandboxEval$("c"));
       };`);
@@ -1008,7 +1008,7 @@ describe("false resolutions are unresolved, never a guess (L34 fix round)", () =
 
   it("P1-a: overloaded local mcpInvoke$ is not the plugin's", () => {
     unresolvedOnly(`
-      import { step$ } from "@loom/core";
+      import { step$ } from "@loomwork/core";
       function mcpInvoke$(id: string): any;
       function mcpInvoke$(id: string, x?: number): any { return step$({ id, toolId: "my.tool" }); }
       const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
@@ -1029,12 +1029,12 @@ describe("false resolutions are unresolved, never a guess (L34 fix round)", () =
   });
   it("P1-a: a parameter named mcpInvoke$ is not the plugin's", () => {
     unresolvedOnly(`
-      import { mcpInvoke$ as real } from "@loom/plugin-mcp";
+      import { mcpInvoke$ as real } from "@loomwork/plugin-mcp";
       const runner = async (ctx, mcpInvoke$) => { await ctx.run(mcpInvoke$("a")); };`);
   });
   it("P1-a: the plugin's name imported but redeclared elsewhere in the module is unresolved", () => {
     unresolvedOnly(`
-      import { mcpInvoke$ } from "@loom/plugin-mcp";
+      import { mcpInvoke$ } from "@loomwork/plugin-mcp";
       const other = (mcpInvoke$) => 1;
       const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
   });
@@ -1199,35 +1199,35 @@ describe("an import and a same-named local elsewhere are ambiguous (L34 re-revie
 
   it("an imported step with a same-named binding in another function", () => {
     unresolvedOnly(`
-      import { step$ } from "@loom/core";
+      import { step$ } from "@loomwork/core";
       import { a } from "./steps";
       function w() { const a = step$({ id: "a", toolId: "t.local" }); return a; }
       const runner = async (ctx) => { await ctx.run(a, {}); };`);
   });
   it("an imported factory with a same-named arrow in another function", () => {
     unresolvedOnly(`
-      import { step$ } from "@loom/core";
+      import { step$ } from "@loomwork/core";
       import { mk } from "./steps";
       function w() { const mk = (id) => step$({ id, toolId: "t.local" }); return mk; }
       const runner = async (ctx) => { await ctx.run(mk("a")); };`);
   });
   it("an imported factory with a same-named nested function declaration", () => {
     unresolvedOnly(`
-      import { step$ } from "@loom/core";
+      import { step$ } from "@loomwork/core";
       import { mk } from "./steps";
       function w() { function mk(id) { return step$({ id, toolId: "t.local" }); } return mk; }
       const runner = async (ctx) => { await ctx.run(mk("a")); };`);
   });
   it("the plugin's mcpInvoke$ with a same-named local in another function", () => {
     unresolvedOnly(`
-      import { step$ } from "@loom/core";
-      import { mcpInvoke$ } from "@loom/plugin-mcp";
+      import { step$ } from "@loomwork/core";
+      import { mcpInvoke$ } from "@loomwork/plugin-mcp";
       function w(ctx) { const mcpInvoke$ = (id) => step$({ id, toolId: "x.y" }); return mcpInvoke$; }
       const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
   });
   it("a default import with a same-named local factory elsewhere", () => {
     unresolvedOnly(`
-      import { step$ } from "@loom/core";
+      import { step$ } from "@loomwork/core";
       import mk from "./steps";
       function w() { const mk = (id) => step$({ id, toolId: "t.local" }); return mk; }
       const runner = async (ctx) => { await ctx.run(mk("a")); };`);
@@ -1370,7 +1370,7 @@ describe("a step$ with no toolId dispatches its own id (runtime: toolId ?? id)",
 
   it("resolves an id imported from a relative module", async () => {
     const r = await withIds(`
-      import { step$ } from "@loom/core";
+      import { step$ } from "@loomwork/core";
       import { SCAN_TOOLS_STEP_ID } from "./ids";
       const Scan = step$({ id: SCAN_TOOLS_STEP_ID, effectClass: "read" });
       export const runner = async (ctx) => { await ctx.run(Scan, {}); };
@@ -1381,7 +1381,7 @@ describe("a step$ with no toolId dispatches its own id (runtime: toolId ?? id)",
 
   it("a same-named local shadowing the imported id stays unresolved", async () => {
     const r = await withIds(`
-      import { step$ } from "@loom/core";
+      import { step$ } from "@loomwork/core";
       import { SCAN_TOOLS_STEP_ID } from "./ids";
       const Scan = step$({ id: SCAN_TOOLS_STEP_ID });
       function other() { const SCAN_TOOLS_STEP_ID = "x"; return SCAN_TOOLS_STEP_ID; }
@@ -1396,9 +1396,9 @@ describe("a step$ with no toolId dispatches its own id (runtime: toolId ?? id)",
       `import { mk$ } from "./ids"; const S = mk$({ id: "a" });`,
       `import { step$ } from "./ids"; const S = step$({ id: "a" });`,
       `const step$ = (x) => x; const S = step$({ id: "a" });`,
-      `import { step$ } from "@loom/core"; const S = step$({ id: "a", ...extra });`,
-      `import { step$ } from "@loom/core"; const S = step$({ id: "a", ["toolId"]: t });`,
-      `import { step$ } from "@loom/core"; const S = step$({ id: "a", toolId: pick() });`,
+      `import { step$ } from "@loomwork/core"; const S = step$({ id: "a", ...extra });`,
+      `import { step$ } from "@loomwork/core"; const S = step$({ id: "a", ["toolId"]: t });`,
+      `import { step$ } from "@loomwork/core"; const S = step$({ id: "a", toolId: pick() });`,
     ]) {
       const r = await withIds(
         `${body} export const runner = async (ctx) => { await ctx.run(S, {}); };`
@@ -1411,7 +1411,7 @@ describe("a step$ with no toolId dispatches its own id (runtime: toolId ?? id)",
 describe("a step declared in flow$({ steps }) is still followed (loom's own flow$ only reads it)", () => {
   it("resolves a step listed in flow$ steps and run by the runner", () => {
     const r = analyzeRunnerReach(`
-      import { flow$, step$ } from "@loom/core";
+      import { flow$, step$ } from "@loomwork/core";
       const Scan = step$({ id: "scan-tools", handler: async () => ({}) });
       const runner = async (ctx) => ctx.run(Scan, {});
       export const F = flow$({ id: "f", name: "f", version: "1", steps: [Scan] });`);
@@ -1420,8 +1420,8 @@ describe("a step declared in flow$({ steps }) is still followed (loom's own flow
   });
   it("a local or other-package flow$ is not loom's: the containment stays an escape", () => {
     for (const head of [
-      `import { step$ } from "@loom/core"; const flow$ = (d) => d;`,
-      `import { step$ } from "@loom/core"; import { flow$ } from "@acme/flows";`,
+      `import { step$ } from "@loomwork/core"; const flow$ = (d) => d;`,
+      `import { step$ } from "@loomwork/core"; import { flow$ } from "@acme/flows";`,
     ]) {
       const r = analyzeRunnerReach(`
         ${head}
@@ -1434,7 +1434,7 @@ describe("a step declared in flow$({ steps }) is still followed (loom's own flow
   });
   it("an imported flow$ shadowed by a same-named local elsewhere is not trusted", () => {
     const r = analyzeRunnerReach(`
-      import { flow$, step$ } from "@loom/core";
+      import { flow$, step$ } from "@loomwork/core";
       function w() { const flow$ = (d) => d; return flow$; }
       const Scan = step$({ id: "scan-tools", toolId: "t.x" });
       const runner = async (ctx) => ctx.run(Scan, {});
@@ -1444,7 +1444,7 @@ describe("a step declared in flow$({ steps }) is still followed (loom's own flow
   });
   it("only the `steps` key of flow$'s first argument counts", () => {
     const r = analyzeRunnerReach(`
-      import { flow$, step$ } from "@loom/core";
+      import { flow$, step$ } from "@loomwork/core";
       const Scan = step$({ id: "scan-tools", toolId: "t.x" });
       const runner = async (ctx) => ctx.run(Scan, {});
       export const F = flow$({ steps: [], extra: [Scan] });`);

@@ -3,7 +3,7 @@
 // This is Loom's *native*, event-sourced surface protocol — an agent drives a UI
 // state tree by emitting durable patch events. It is deliberately NOT the Google
 // A2UI wire protocol (component catalogs, JSON-Pointer bindings, bidirectional
-// RPC); for interop with external A2UI clients see the `@loom/plugin-a2ui`
+// RPC); for interop with external A2UI clients see the `@loomwork/plugin-a2ui`
 // adapter, which projects these surfaces onto the A2UI wire format.
 
 // The single event type that carries every surface update. Because updates travel

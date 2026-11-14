@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type AppendIfUnchangedResult,
   type DecoratorPlan,
@@ -6,12 +6,12 @@ import {
   type OptionalEventStoreMethod,
   type TipObservation,
   installOptional,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import type { Rng } from "./rng";
 
 // ── Fault-injecting event store ───────────────────────────────────────────────
 //
-// The generalization of `@loom/testing`'s single-point `crashingEventStore`: instead
+// The generalization of `@loomwork/testing`'s single-point `crashingEventStore`: instead
 // of one hard-coded crash predicate, faults are DRAWN from a seeded stream at each
 // append/delivery point, and every decision is RECORDED as a `FaultDraw`. That gives
 // two modes over the same code:

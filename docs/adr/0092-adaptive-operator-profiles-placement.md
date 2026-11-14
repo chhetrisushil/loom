@@ -104,7 +104,7 @@ explicit ids are what make a floor a floor; there is now a check that says when 
 
 ### D6 — Subject erasure must invalidate derived read models (W3, deferred)
 
-`@loom/compliance` shreds the log and knows nothing about read models; `ReadModelStore`'s only
+`@loomwork/compliance` shreds the log and knows nothing about read models; `ReadModelStore`'s only
 removal verb is `clear(modelId)`. A shredded subject's derived rows therefore survive with their
 extracted fields intact — and those are the rows a console reads. The correct behaviour today is
 `clear` + rebuild, which after the shred produces no rows for the subject, and the profile extractor

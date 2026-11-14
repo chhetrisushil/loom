@@ -2,7 +2,7 @@ import {
   type ExecutionResult,
   ExecutionSupersededError,
   isSupersededRefusal,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { RemoteWorkerRuntime } from "./RemoteWorkerRuntime";
 

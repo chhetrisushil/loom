@@ -1,5 +1,5 @@
-import { maskPaths } from "@loom/classify";
-import type { EventEnvelope, ExecutionFrame, ExecutionState } from "@loom/core";
+import { maskPaths } from "@loomwork/classify";
+import type { EventEnvelope, ExecutionFrame, ExecutionState } from "@loomwork/core";
 import type { DiffOptions, DiffResult } from "./diff";
 import { diffState } from "./diff";
 import { pinOf } from "./pinning";
@@ -47,7 +47,7 @@ export interface ReplayInspectorOptions {
   /**
    * Dot-paths, rooted at `ExecutionState`, whose values are masked before anything is
    * returned or diffed — e.g. `variables._input.ssn`. Derive them from the flow's
-   * contract with `pathsOfClass(schema, "sensitive")` (`@loom/classify`).
+   * contract with `pathsOfClass(schema, "sensitive")` (`@loomwork/classify`).
    *
    * Masking is applied BEFORE the diff, not after, so a redacted value cannot leak
    * through `before`/`after` on a change record. Two values that differ only inside a

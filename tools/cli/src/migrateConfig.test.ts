@@ -13,15 +13,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GROUPED_OPTIONS } from "@loom/app";
+import { GROUPED_OPTIONS } from "@loomwork/app";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./cli";
 import { analyzeConfig, checkPreserved, cmdMigrateConfig, unifiedDiff } from "./migrateConfig";
 
 const wrap = (body: string) =>
-  `import { defineConfig } from "@loom/app";\n\nexport default defineConfig({\n${body}});\n`;
+  `import { defineConfig } from "@loomwork/app";\n\nexport default defineConfig({\n${body}});\n`;
 
-describe("migrate-config: the mapping is @loom/app's own table", () => {
+describe("migrate-config: the mapping is @loomwork/app's own table", () => {
   it("moves every flat option to the group GROUPED_OPTIONS names, idempotently", () => {
     for (const [group, options] of GROUPED_OPTIONS) {
       for (const option of options) {
@@ -70,7 +70,7 @@ describe("migrate-config: rewriting", () => {
   });
 
   it("handles a one-line config, merging and creating namespaces", () => {
-    const head = `import { defineConfig } from "@loom/app";\n`;
+    const head = `import { defineConfig } from "@loomwork/app";\n`;
     const src = `${head}export default defineConfig({ name: "a", strict: true, onWarn, security: { crypto } });\n`;
     expect(analyzeConfig(src).text).toBe(
       `${head}export default defineConfig({ name: "a", observability: { onWarn }, security: { crypto, strict: true } });\n`
@@ -147,7 +147,7 @@ describe("migrate-config: conflicts and refusals", () => {
     expect(analyzeConfig(wrap("  [k]: 1,\n")).refusal).toMatch(/computed key/);
     expect(
       analyzeConfig(
-        `import { defineConfig } from "@loom/app";\nexport default defineConfig(cfg);\n`
+        `import { defineConfig } from "@loomwork/app";\nexport default defineConfig(cfg);\n`
       ).refusal
     ).toMatch(/not given an object literal \(cfg\)/);
     expect(analyzeConfig(wrap("  strict: true,\n  security: shared,\n")).refusal).toMatch(
@@ -164,12 +164,12 @@ describe("migrate-config: conflicts and refusals", () => {
   it("refuses a file that is not a loom config or has no defineConfig call", () => {
     expect(
       analyzeConfig(`import { defineConfig } from "vite";\ndefineConfig({ strict: 1 });\n`).refusal
-    ).toMatch(/@loom\/app/);
-    expect(analyzeConfig(`import "@loom/app";\nexport const x = 1;\n`).refusal).toMatch(
+    ).toMatch(/@loomwork\/app/);
+    expect(analyzeConfig(`import "@loomwork/app";\nexport const x = 1;\n`).refusal).toMatch(
       /no import of `defineConfig`/
     );
     expect(
-      analyzeConfig(`import { defineConfig } from "@loom/app";\nexport const x = 1;\n`).refusal
+      analyzeConfig(`import { defineConfig } from "@loomwork/app";\nexport const x = 1;\n`).refusal
     ).toMatch(/no `defineConfig/);
   });
 
@@ -411,26 +411,26 @@ describe("migrate-config: file endings, BOM, bindings, generics (P3)", () => {
     expect(a.text).toBe(`\uFEFF${wrap("  security: {\n    strict: true,\n  },\n")}`);
   });
 
-  it("rewrites the call through the local name of the @loom/app import", () => {
-    const src = `import { defineConfig as dc } from "@loom/app";\nexport default dc({\n  strict: true,\n});\n`;
+  it("rewrites the call through the local name of the @loomwork/app import", () => {
+    const src = `import { defineConfig as dc } from "@loomwork/app";\nexport default dc({\n  strict: true,\n});\n`;
     expect(analyzeConfig(src).text).toBe(
-      `import { defineConfig as dc } from "@loom/app";\nexport default dc({\n  security: {\n    strict: true,\n  },\n});\n`
+      `import { defineConfig as dc } from "@loomwork/app";\nexport default dc({\n  security: {\n    strict: true,\n  },\n});\n`
     );
-    const ns = `import * as app from "@loom/app";\nexport default app.defineConfig({\n  strict: true,\n});\n`;
+    const ns = `import * as app from "@loomwork/app";\nexport default app.defineConfig({\n  strict: true,\n});\n`;
     expect(analyzeConfig(ns).moved).toEqual([{ key: "strict", group: "security" }]);
   });
 
   it("does not rewrite a defineConfig from another module (a vite-style config)", () => {
-    const vite = `import { defineConfig } from "vite";\nimport { loom } from "@loom/app";\nexport default defineConfig({\n  strict: true,\n  plugins: [loom()],\n});\n`;
+    const vite = `import { defineConfig } from "vite";\nimport { loom } from "@loomwork/app";\nexport default defineConfig({\n  strict: true,\n  plugins: [loom()],\n});\n`;
     const a = analyzeConfig(vite);
-    expect(a.refusal).toMatch(/no import of `defineConfig` from `@loom\/app`/);
+    expect(a.refusal).toMatch(/no import of `defineConfig` from `@loomwork\/app`/);
     expect(a.text).toBe(vite);
-    const both = `import { defineConfig as dc } from "@loom/app";\nimport { defineConfig } from "vite";\nconst v = defineConfig({\n  strict: true,\n});\nexport default dc({\n  strict: true,\n});\n`;
+    const both = `import { defineConfig as dc } from "@loomwork/app";\nimport { defineConfig } from "vite";\nconst v = defineConfig({\n  strict: true,\n});\nexport default dc({\n  strict: true,\n});\n`;
     const b = analyzeConfig(both);
     expect(b.moved).toEqual([{ key: "strict", group: "security" }]);
     expect(b.text).toContain("const v = defineConfig({\n  strict: true,\n});");
     expect(b.text).toContain("dc({\n  security: {\n    strict: true,");
-    const typeOnly = `import type { defineConfig } from "@loom/app";\ndefineConfig({\n  strict: true,\n});\n`;
+    const typeOnly = `import type { defineConfig } from "@loomwork/app";\ndefineConfig({\n  strict: true,\n});\n`;
     expect(analyzeConfig(typeOnly).refusal).toMatch(/no import of `defineConfig`/);
   });
 
@@ -447,7 +447,7 @@ describe("migrate-config: file endings, BOM, bindings, generics (P3)", () => {
       )
     );
     const one = analyzeConfig(
-      `import { defineConfig } from "@loom/app";\ndefineConfig({ policies: new Map<string, number>(), name: "x" });\n`
+      `import { defineConfig } from "@loomwork/app";\ndefineConfig({ policies: new Map<string, number>(), name: "x" });\n`
     );
     expect(one.text).toContain("security: { policies: new Map<string, number>() }");
     // Two comparisons are two entries, not a type-argument list.

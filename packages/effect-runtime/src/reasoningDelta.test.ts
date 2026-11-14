@@ -1,4 +1,4 @@
-import { tainted, unwrapTainted } from "@loom/classify";
+import { tainted, unwrapTainted } from "@loomwork/classify";
 import { describe, expect, it } from "vitest";
 import { EffectRuntime } from "./EffectRuntime";
 import { LlmEffect } from "./effects/LlmEffect";

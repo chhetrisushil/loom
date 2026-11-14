@@ -8,7 +8,7 @@ import {
 // ADR 0130 D11 / Q8 gate: heartbeat leasing costs <= 10% on the no-op throughput ceiling and
 // nothing at I/O-bound durations. Measures OFF vs EAGER vs LAZY (the S7g default). See leaseOverheadLib.ts.
 //
-//   pnpm --filter @loom/bench-throughput bench:lease
+//   pnpm --filter @loomwork/bench-throughput bench:lease
 // LOOM_BENCH_PG_URL (postgres backend) MUST point at a THROWAWAY database: rows/tables are left
 // behind. The pool max is 32, so the conc-256 cells are pool-bound as well as write-bound. The
 // `execs` column is the count actually run (round(n / conc) * conc), not the configured n.

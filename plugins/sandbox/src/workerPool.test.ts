@@ -1,7 +1,7 @@
-import { TypedFailure } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import { InMemoryContentStore } from "@loom/plugin-content";
+import { TypedFailure } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
 import { getQuickJS } from "quickjs-emscripten";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SandboxWorkerPool, SandboxWorkerStartupError } from "./SandboxWorkerPool";

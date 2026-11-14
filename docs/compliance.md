@@ -1,7 +1,7 @@
-# Data-subject rights (`@loom/compliance`)
+# Data-subject rights (`@loomwork/compliance`)
 
 > **T3 (GDPR/CCPA-enabling).** Event-sourcing is *structurally* strong for subject rights —
-> every fact about a person is already in the log. `@loom/compliance` productizes that: a
+> every fact about a person is already in the log. `@loomwork/compliance` productizes that: a
 > **subject index** answers "which records concern this person?" and **`exportSubject`**
 > assembles an access/portability package. This is compliance-*enabling* tooling, **not legal
 > advice**, and the kernel supplies no notion of "data subject" (G3 — that is policy).
@@ -218,7 +218,7 @@ idempotent: liveness is judged on that redacted view.
 
 With the opt-in `execution.claimCheck`, an agent tool's large output lives in a CONTENT STORE, not the log, so a
 key's destruction does not reach it. `security.crypto` with the opt-in is refused at boot unless the store
-declares `sealsContent: true`: wrap the store with `EncryptingContentStore` from `@loom/plugin-crypto` (ADR 0143), over the SAME KeyStore and `subjectOf` as the log (a different one is refused at boot). It seals each blob under its owning subject's key with a subject-scoped address, so the shred makes every blob unreadable; `eraseSubject` still journals the blobs it covered and deletes the ciphertext (`contentDeleted: { deleted, retained: 0, sealed }`).
+declares `sealsContent: true`: wrap the store with `EncryptingContentStore` from `@loomwork/plugin-crypto` (ADR 0143), over the SAME KeyStore and `subjectOf` as the log (a different one is refused at boot). It seals each blob under its owning subject's key with a subject-scoped address, so the shred makes every blob unreadable; `eraseSubject` still journals the blobs it covered and deletes the ciphertext (`contentDeleted: { deleted, retained: 0, sealed }`).
 Citation is not ownership: a log can cite a blob it never put, so erasure asks the store to PROVE the subject owns each cited blob and deletes only those. Others are journaled `retained` as `foreign` (another subject's blob, or an absent one) or `unprovable` (the proving key was already destroyed, e.g. a re-erasure after a direct `shredSubject`; the ciphertext is unreadable but cannot be claimed as this subject's). `contentDeleted` is `{ deleted, retained, sealed, foreign, unprovable }`. **Align the compliance `subjectOf` (the SubjectIndex) with the crypto `subjectOf`** (the same function, e.g. both by user): when they differ, one data subject spans several executions under distinct keys, and erasure tries the proof under every distinct execution of the subject that cites the address (at most 16 per address), deleting a blob if ANY proves it. A blob cited only by executions outside the subject's index, or by more than 16 of them with the owner past the cap, stays `foreign` (retained, never deleted), so a misaligned pair is slower and may retain ciphertext, never wrong.
 Over a plaintext store `eraseSubject` collects the envelope refs the subject's executions cite (logs, archive
 segments, snapshots) before the shred, keeps any blob another non-erased execution still cites (a deduplicated
@@ -331,7 +331,7 @@ nothing is appended, the execution is never failed, and a node that CAN open it 
   written (an incapable node must not write into a log it cannot read). The true cause
   (`marker-unopenable` / `key-unavailable`, sequence, covered paths) goes to operators only:
   `onStorageError` and the log, the first refusal and then every 16th, and `sealedDetailOf(err)` from
-  `@loom/workflow-runtime/operator`.
+  `@loomwork/workflow-runtime/operator`.
 - **A sealed principal is refused before the policy is consulted**, whatever `unknownOwner` says (a
   lenient policy can no longer admit a stranger to a stream this node cannot read).
 - **Key gone is two different facts.** A real `shredSubject` leaves a `PAYLOAD_SHREDDED` tombstone:
@@ -533,7 +533,7 @@ throws and the purge that works through the same strict source.
 
 ## Triage & scope
 
-`@loom/compliance` is a 1P **authoring/application-tier** package above the kernel — subject
+`@loomwork/compliance` is a 1P **authoring/application-tier** package above the kernel — subject
 rights are policy, not a kernel or vendor concern. It depends only on the kernel read path
 (`EventStore.read`/`append`, `foldEvents`). The `shred` mechanism is injected, so the package
 stays decoupled from any specific crypto plugin.

@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { type PrincipalChain, delegationDigest } from "@loom/effect-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { type PrincipalChain, delegationDigest } from "@loomwork/effect-runtime";
 
 // ── R3k (ADR 0111) — the execution's principal is durable ─────────────────────
 //

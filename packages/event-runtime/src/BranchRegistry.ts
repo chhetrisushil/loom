@@ -11,12 +11,12 @@
 
 /**
  * SPI version for the {@link BranchRegistry} contract (ADR 0033). Pinned by
- * `runBranchRegistryConformance` in `@loom/testing`.
+ * `runBranchRegistryConformance` in `@loomwork/testing`.
  *
  * **2.0.0 (L21, ADR 0108 addendum, MAJOR):** `listRefs` orders names in Unicode **code
  * point** order — the same order `EventStore.listExecutionsPage` pins (ADR 0108, SPI
  * 2.0.0): UTF-8 byte order, SQL `COLLATE "C"`, SQLite BINARY, and `compareExecutionIds`
- * (`@loom/event-runtime`) as the reference comparator. Not a database's default collation,
+ * (`@loomwork/event-runtime`) as the reference comparator. Not a database's default collation,
  * and not `String.prototype.localeCompare` — both can disagree with code point order, and
  * `localeCompare` can return 0 for two DISTINCT, canonically-equivalent names (an NFC "é"
  * and its NFD decomposition). `after` may be **any string**, not only a name a previous

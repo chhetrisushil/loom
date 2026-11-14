@@ -1,6 +1,6 @@
-import { SuspendError } from "@loom/core";
-import { CapabilityDeniedError, EffectModeViolationError } from "@loom/effect-runtime";
-import { ExecutionTerminatedError } from "@loom/workflow-runtime";
+import { SuspendError } from "@loomwork/core";
+import { CapabilityDeniedError, EffectModeViolationError } from "@loomwork/effect-runtime";
+import { ExecutionTerminatedError } from "@loomwork/workflow-runtime";
 
 /**
  * Error classes that are NOT a tool's own failure and must reach the runtime untouched, matched by
@@ -104,11 +104,11 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
 
 const MAX_CAUSE_DEPTH = 5;
 
-/** The brand `@loom/workflow-runtime` puts on both sealed refusals (`isSealedUnreadable`). */
+/** The brand `@loomwork/workflow-runtime` puts on both sealed refusals (`isSealedUnreadable`). */
 const SEALED_UNREADABLE = Symbol.for("loom.sealedUnreadable");
 
 /**
- * `LlmHttpError` (`@loom/llm`) is classified by STATUS, matched by name and a numeric `status` so
+ * `LlmHttpError` (`@loomwork/llm`) is classified by STATUS, matched by name and a numeric `status` so
  * this file needs no import. TERMINAL: 3xx (a redirect, never followed: the base URL is wrong or intercepted; not retryable), 401/403 or any `kind: "auth"` such as Google's 400 API_KEY_INVALID (configuration), 429 (rate limit: the same stop as
  * `RateLimitExceededError`) and 5xx/529 (transient: the step retry policy's to handle, not the
  * model's). FEEDBACK: every other status (400/404/408/409/413/422 ...): a request the model can
@@ -129,7 +129,7 @@ function isTerminalLlmHttp(err: object): boolean {
 }
 
 /**
- * A provider failure, matched like the rest of this file (by name, so a second copy of `@loom/llm`
+ * A provider failure, matched like the rest of this file (by name, so a second copy of `@loomwork/llm`
  * or an adapter's own class of that name counts): `LlmHttpError` with a numeric `status` (any
  * status), `LlmResponseLimitError`, `LlmResponseInvalidError`, `LlmStreamError` by its name or any constructor name on its prototype chain.
  */

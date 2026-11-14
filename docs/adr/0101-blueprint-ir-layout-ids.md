@@ -47,7 +47,7 @@ registry-object key, a CSS selector or a DOM attribute — a renderer uses it on
 or a React key — so `__proto__` or a 10 000-character id is harmless.
 
 `isLayoutId(value: unknown): value is string` is the one spelling of the rule, exported from
-`@loom/blueprint-runtime` beside `isLayoutRole`, so a compiler's schema (loom-ui core), a
+`@loomwork/blueprint-runtime` beside `isLayoutRole`, so a compiler's schema (loom-ui core), a
 renderer's keying (loom-ui's DOM adapter, loom's React renderer) and `validateBlueprint` apply
 the same predicate and cannot drift apart.
 
@@ -149,13 +149,13 @@ Writers (`blueprint$`) stamp `2.4.0` from here on.
 - `preservesBlueprintNodes` can now report a dropped CONTAINER id. A caller comparing an id'd
   tree against its own earlier id'd tree gets strictly more findings, all of them real losses of
   identity.
-- `@loom/blueprint-runtime` exports two new values, `blueprintLayoutIds` and `isLayoutId`. Both
+- `@loomwork/blueprint-runtime` exports two new values, `blueprintLayoutIds` and `isLayoutId`. Both
   are part of the IR contract, not vocabulary: they name no container.
 - loom-ui's `packages/core/src/blueprintIr.test.ts` pins the IR version it compiles against and
   goes red when loom-ui bumps its `LOOM_REF` past this ADR. That is the intended signal: the same
   PR teaches its `compile` to emit `ContainerNode.id` on every container and its DOM adapter's
   `reconcileContainer` to key by it.
-- `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0. `@loom/spec` lists
+- `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0. `@loomwork/spec` lists
   this ADR in `NOT_A_CAPABILITY`, for the same reason as 0096–0100: an IR contract and renderer
   behaviour, not a runtime subsystem to grade.
 - The next minor bump adds `2.4.0` to `IR_VERSIONS_READ_AS_IS`.

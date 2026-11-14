@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { canonicalJson } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
+import { canonicalJson } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import type {
   ResumeAuthenticator,
   ResumeEvent,

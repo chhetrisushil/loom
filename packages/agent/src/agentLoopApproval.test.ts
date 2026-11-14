@@ -1,16 +1,16 @@
-import type { FlowDefinition } from "@loom/core";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import type { FlowDefinition } from "@loomwork/core";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   ResumeRefusedError,
   WorkflowRuntime,
   answerApproval,
   approvalViewDigest,
-} from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { agentLoop$ } from "./agentLoop$";

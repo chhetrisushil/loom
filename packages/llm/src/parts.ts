@@ -1,4 +1,4 @@
-import { type TaintedValue, isTainted } from "@loom/classify";
+import { type TaintedValue, isTainted } from "@loomwork/classify";
 
 // ── R5 — content parts (ADR 0120) ─────────────────────────────────────────────
 //
@@ -181,7 +181,7 @@ export class TaintedContentError extends Error {
   readonly origin: string;
   constructor(origin: string) {
     super(
-      `textOf() was given tainted content from "${origin}": untrusted data wrapped by tainted(), not message text. Unwrap it deliberately with unwrapTainted() (or, in a conversation summarizer, summarizerText() from @loom/conversation) and treat the result as DATA - never place it in an instruction position.`
+      `textOf() was given tainted content from "${origin}": untrusted data wrapped by tainted(), not message text. Unwrap it deliberately with unwrapTainted() (or, in a conversation summarizer, summarizerText() from @loomwork/conversation) and treat the result as DATA - never place it in an instruction position.`
     );
     this.name = "TaintedContentError";
     this.origin = origin;

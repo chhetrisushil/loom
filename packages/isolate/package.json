@@ -1,5 +1,5 @@
 {
-  "name": "@loom/isolate",
+  "name": "@loomwork/isolate",
   "version": "0.1.0",
   "description": "K7 data-plane isolation — run tool effects in a separate authority domain (child process with scrubbed env), with kernel-side egress brokering (allowlist + resolve-and-pin, EGRESS_DENIED) and per-tool credential injection",
   "main": "./dist/index.js",
@@ -20,11 +20,11 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/effect-runtime": "workspace:^",
-    "@loom/replay-vm": "workspace:^"
+    "@loomwork/effect-runtime": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^"
   },
   "devDependencies": {
-    "@loom/middleware": "workspace:*",
+    "@loomwork/middleware": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

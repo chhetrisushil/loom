@@ -1,4 +1,4 @@
-import { policy$ } from "@loom/core";
+import { policy$ } from "@loomwork/core";
 import { describe, expect, it, vi } from "vitest";
 import { EffectRuntime } from "./EffectRuntime";
 import { DelegationAuthorizer, GrantTable, capabilityIds, signDelegation } from "./authz";

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
-import { BadRequestError, exposeError } from "@loom/core";
-import type { EffectMode } from "@loom/core";
-import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
+import { BadRequestError, exposeError } from "@loomwork/core";
+import type { EffectMode } from "@loomwork/core";
+import type { EffectRuntime, PrincipalChain } from "@loomwork/effect-runtime";
 import {
   DEFAULT_MCP_PROTOCOL_VERSION,
   type McpCallToolResult,
@@ -296,7 +296,7 @@ export function createMcpServer(options: McpServerOptions = {}): McpServer {
   const urlHost =
     host === "0.0.0.0" || host === "::" ? "localhost" : host.includes(":") ? `[${host}]` : host;
   const protocolVersion = options.protocolVersion ?? DEFAULT_MCP_PROTOCOL_VERSION;
-  const serverInfo = options.serverInfo ?? { name: "@loom/plugin-mcp", version: "0.0.1" };
+  const serverInfo = options.serverInfo ?? { name: "@loomwork/plugin-mcp", version: "0.0.1" };
   const audienceOf = options.audienceOf ?? ((): McpAudience => "model");
 
   const tools = new Map<string, McpServedTool>();

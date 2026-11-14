@@ -1,4 +1,4 @@
-# @loom/app
+# @loomwork/app
 
 The composition root for a Loom app. `defineConfig` takes one static config object (storage, flows,
 surfaces, skills, projections, and the grouped `security` / `observability` / `durability` /
@@ -10,21 +10,21 @@ would have written by hand ([ADR 0006](../../docs/adr/0006-config-and-effect-mid
 ## When to use it
 
 Almost always. It is the supported way to build an app, and the scaffold from
-[`@loom/create-loom-app`](../../tools/create-loom-app/README.md) already uses it. Construct
+[`@loomwork/create-loom-app`](../../tools/create-loom-app/README.md) already uses it. Construct
 [`WorkflowRuntime`](../workflow-runtime/README.md) directly only if you are writing infrastructure
 that needs a different composition.
 
 ## Install
 
-Not published to npm yet. Inside this repo's workspace use `"@loom/app": "workspace:*"`; from a
+Not published to npm yet. Inside this repo's workspace use `"@loomwork/app": "workspace:*"`; from a
 sibling checkout use a `link:` override to `../loom/packages/app` (see
 [AGENTS.md](../../AGENTS.md)). Storage backends are separate packages you add yourself:
-[`@loom/plugin-sqlite`](../../plugins/sqlite/README.md) and
-[`@loom/plugin-postgres`](../../plugins/postgres/README.md). The default is in-memory.
+[`@loomwork/plugin-sqlite`](../../plugins/sqlite/README.md) and
+[`@loomwork/plugin-postgres`](../../plugins/postgres/README.md). The default is in-memory.
 
 ## Entry points
 
-`package.json` `exports`: one entry, `@loom/app`. Main values: `defineConfig`, `normalizeConfig`,
+`package.json` `exports`: one entry, `@loomwork/app`. Main values: `defineConfig`, `normalizeConfig`,
 `registerFlowsFrom`, `validateFlowGraph`, `manifestWarnings`, `approvalPayload`, `unsafeAutoApprove`,
 `progressHub`, `runAgentOnce`. Types: `LoomConfig`, `LoomApp`, `LoomStores`, `StorageConfig` and the
 option groups `SecurityOptions`, `ObservabilityOptions`, `DurabilityOptions`, `ExecutionOptions`,
@@ -34,9 +34,9 @@ option groups `SecurityOptions`, `ObservabilityOptions`, `DurabilityOptions`, `E
 
 ```ts
 import { z } from "zod";
-import { flow$, handler$, step$ } from "@loom/core";
-import { defineConfig } from "@loom/app";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import { defineConfig } from "@loomwork/app";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 
 const greetStep = step$({
   id: "greet",
@@ -93,8 +93,8 @@ await app.close();
 
 - [User guide, section 9: Configuration reference](../../docs/user-guide.md#9-configuration-reference)
   and [section 3: Effects and middleware](../../docs/user-guide.md#3-effects--middleware).
-- [API reference: Composition](../../docs/api-reference.org) (`@loom/app`).
+- [API reference: Composition](../../docs/api-reference.org) (`@loomwork/app`).
 - [Getting started](../../docs/getting-started.md), [usage guide](../../docs/usage.md),
   [plugins](../../docs/plugins.md), [operations runbook](../../docs/operations.md).
-- [`@loom/core`](../core/README.md), [`@loom/workflow-runtime`](../workflow-runtime/README.md),
-  [`@loom/effect-runtime`](../effect-runtime/README.md).
+- [`@loomwork/core`](../core/README.md), [`@loomwork/workflow-runtime`](../workflow-runtime/README.md),
+  [`@loomwork/effect-runtime`](../effect-runtime/README.md).

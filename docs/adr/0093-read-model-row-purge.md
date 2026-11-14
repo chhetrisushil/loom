@@ -5,7 +5,7 @@
 - Implements: the item [ADR 0092](0092-adaptive-operator-profiles-placement.md) D6 deferred,
   and supplies the measurement its gate asked for (below).
 - Builds on: [ADR 0058](0058-read-model-plugin.md) (the read-model plugin and its
-  cache-not-authority contract), K10.2 crypto-shredding, `@loom/compliance`'s `eraseSubject`.
+  cache-not-authority contract), K10.2 crypto-shredding, `@loomwork/compliance`'s `eraseSubject`.
 - **KERNEL_ABI unchanged (1.1.0); EVENT_SCHEMA unchanged (1.18.0).** A plugin SPI grows one
   optional method: `READ_MODEL_STORE_SPI_VERSION` 1.0.0 → **1.1.0**.
 

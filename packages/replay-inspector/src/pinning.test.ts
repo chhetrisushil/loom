@@ -1,5 +1,5 @@
-import { flowContentHash, legacyFlowContentHash } from "@loom/core";
-import type { ExecutionState, FlowDefinition } from "@loom/core";
+import { flowContentHash, legacyFlowContentHash } from "@loomwork/core";
+import type { ExecutionState, FlowDefinition } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { canServePin, canServePinFrom, describePin, pinOf } from "./pinning";
 

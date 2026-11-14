@@ -1,4 +1,4 @@
-# @loom/reasoning — model routing and elevation
+# @loomwork/reasoning — model routing and elevation
 
 `ReasoningRuntime` picks a model from a set of tiered routes, scores the answer, and moves to a stronger
 tier when the score is below a threshold. The stages are separate and replaceable: a `Router` chooses the
@@ -9,8 +9,8 @@ makes the same choices. Use it when cheap-first routing with escalation is worth
 `invoke` that runs each model call as a journaled effect.
 
 ```ts
-import type { LlmProvider, LlmResponse } from "@loom/llm";
-import { ReasoningRuntime, validatorConfidence } from "@loom/reasoning";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
+import { ReasoningRuntime, validatorConfidence } from "@loomwork/reasoning";
 
 // Stand-ins for real providers: the cheap model answers badly, the strong one answers well.
 const provider = (content: string): LlmProvider => ({
@@ -46,7 +46,7 @@ console.log(result.modelId, result.elevated); // "large" true; result.trace has 
 - **Routers.** `tagRouter` (default: the lowest tier whose `tags` include `strategy`, else the lowest
   tier), `fixedRouter(id)`, `rankedRouter(rankings, { minSamples?, fallback? })`, `ucb1(stats, ...)` and
   `epsilonGreedy(inner, { epsilon })`. The learned ones take per-route evidence such as
-  `outcomeAnalytics(events)` from `@loom/analytics`.
+  `outcomeAnalytics(events)` from `@loomwork/analytics`.
 - **Confidence.** `stopReasonConfidence` (default: 0.9 for `end_turn` and `tool_use`, 0.3 for
   `max_tokens`), `validatorConfidence(fn)` (1 or 0) and `constantConfidence(n)`.
 - **Types.** `ModelRoute`, `ReasoningRequest` (with `strategy` and `maxTier`), `ModelInvoker`,
@@ -69,7 +69,7 @@ console.log(result.modelId, result.elevated); // "large" true; result.trace has 
 - **`rankedRouter` can collapse onto what it already chose**, because arms it stops picking stop
   generating outcomes. Wrap it in `epsilonGreedy` or use `ucb1`, which is deterministic (no RNG).
 - **Captured reasoning is text-free here.** Reasoning parts leave this runtime in recorded form only;
-  readable text goes to a sidecar through `@loom/llm` (ADR 0133).
+  readable text goes to a sidecar through `@loomwork/llm` (ADR 0133).
 
 ## Install
 
@@ -77,7 +77,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/reasoning` — model routing & elevation" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/reasoning` — model routing & elevation" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [user guide, section 15: reasoning runtime](../../docs/user-guide.md#15-reasoning-runtime--routing--elevation), [reasoning and memory](../../docs/loom-2.0/02-reasoning-and-memory.md).
 - ADRs: [0016 execution runtime and decision seam](../../docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md), [0121 one canonical agent loop](../../docs/adr/0121-one-canonical-agent-loop.md), [0133 model reasoning audit capture](../../docs/adr/0133-model-reasoning-audit-capture.md).
 - Source: `packages/reasoning/src`.

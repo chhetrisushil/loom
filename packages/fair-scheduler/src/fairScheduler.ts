@@ -3,11 +3,11 @@ import {
   type ScheduleOptions,
   type Scheduler,
   type SchedulerEvent,
-} from "@loom/scheduler";
+} from "@loomwork/scheduler";
 
 // ── Per-tenant fair scheduler ─────────────────────────────────────────────────
 //
-// A drop-in `Scheduler` (same interface as `@loom/scheduler`'s `createScheduler`) that,
+// A drop-in `Scheduler` (same interface as `@loomwork/scheduler`'s `createScheduler`) that,
 // when work queues behind a concurrency cap, dispatches with **weighted round-robin
 // across tenants** instead of one global priority-FIFO. The base scheduler is fair to
 // TASKS (priority + arrival); under multi-tenancy that lets one busy tenant starve the

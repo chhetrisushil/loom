@@ -44,7 +44,7 @@ new store SPI beyond one optional method, and four items that are mostly or whol
 | **R9** strict mode, kill switch, spawn caps | `security.strict`, `KillSwitchRegistry` | Feature flags in §3 hang off `kernel.features`, under `defineConfig`. |
 | **R12** authenticated A2A/MCP ingress | A2A task namespacing, `authenticate` | The ingress that supplies the principal R3k now records. |
 | **R13** ADR 0117 | `viewDigest` on suspend conditions, `signedResumeAuthenticator`, `locatePark` | R2 keeps the digest per wait; R8k's conditional fence takes its sequence from `locatePark`. |
-| **R8** restart-safe supervisor | `@loom/orchestration` | Parks on `CHILD_DONE` with `viewDigest = correlationKey`; its README names the residual R8k closes. |
+| **R8** restart-safe supervisor | `@loomwork/orchestration` | Parks on `CHILD_DONE` with `viewDigest = correlationKey`; its README names the residual R8k closes. |
 
 Current contracts: `KERNEL_ABI_VERSION` **1.2.0** (`workflow-runtime/src/abi.ts`), `EVENT_SCHEMA_VERSION`
 **1.22.0** (`replay-vm/src/eventHandlers.ts`), `EVENT_STORE_SPI_VERSION` **2.0.0**, `DISPATCHER_SPI_VERSION`
@@ -56,7 +56,7 @@ Current contracts: `KERNEL_ABI_VERSION` **1.2.0** (`workflow-runtime/src/abi.ts`
 |---|---|---|---|---|
 | R1b | bounded history | `ctx.continueAsNew`, `EXECUTION_CONTINUED`, `continued` status, deterministic successor started FIRST (existing recovery repairs a crash; no new sweep) | chain lineage queries (analytics), supervisor follow-through, `continueEvery` helper (agent) | frame pruning rejected |
 | R3k | durable principal | `principal` + `parent` on `EXECUTION_STARTED`, `_principal` fold key, `PrincipalResolver` seam, effect principal = owner | `executionAccessPolicy` reads the owner, delegation re-derivation (orchestration), DelegationAuthorizer fails closed | the delegation token is never persisted |
-| R2 | inbox, receive, select | `ctx.receive` / `ctx.select`, `MESSAGE_CONSUMED`, multi-wait park condition, `InboxSource` seam, authorized `runtime.send` (the only inbox writer) | **`@loom/inbox`**: routing by name, pub/sub, retry, over `runtime.send` | content-predicate receive rejected |
+| R2 | inbox, receive, select | `ctx.receive` / `ctx.select`, `MESSAGE_CONSUMED`, multi-wait park condition, `InboxSource` seam, authorized `runtime.send` (the only inbox writer) | **`@loomwork/inbox`**: routing by name, pub/sub, retry, over `runtime.send` | content-predicate receive rejected |
 | R6 | structured concurrency | scopes, park barrier, `STEP_CANCELLED` and `PARALLEL_COMPLETED` writers | cancel cascade to children (orchestration), **not** kernel | scoped `Promise.all` impossible |
 | R7 | fingerprint | SHA-256 structural hash, `codeHash`, divergence detector, family-aware replay-check | code-by-hash registry / bundler (compiler) | hashing `toString()` rejected |
 | R11 | late reward | one runtime method `recordOutcome` (authz + sequence CAS, terminal-only, no fence), two guarded payload fields | reward pipeline (`attachOutcomes`) | side table rejected (new SPI) |
@@ -177,7 +177,7 @@ change is an additive schema change.
 | `kernel.features` | **W2-0 adds no flag.** Each flag lands with its writer's PR. R6's is `kernel.features.scopes` (default off; user decision 2026-10-06): off, `ctx.parallel` is the pre-R6 bounded `Promise.all` (no scope abort, no `STEP_CANCELLED` for a sibling, no `PARALLEL_COMPLETED`, a record in the log is ignored); on, R6 semantics. The park barrier is an ordering guarantee that writes no new event and is always on. |
 | `continued` consumers | Terminal and **not completed** everywhere: core type, replay-vm, `LogLifecycle` retention, `blankStream`, strays scanner, `eraseSubject`, analytics, learning (`outcome: "continued"`, no terminal reward), A2A bus (`working`), local worker (not `completed`), orchestration (a continued PARENT's park is gone and its specs/groups are reclaimed; a continued CHILD is deliberately never settled), telemetry, audit-chain's head cache, DST's terminal invariant and the CLI timeline (kernel-stamped `EXECUTION_CONTINUED` handled; a fitness test fails any literal terminal-kind set that omits it, with an allowlist for the orchestration settle set), `cancel` (no-op) and `resumeAs` (refused). Follow-to-head landed with R1b: the supervisor follows `_continuedTo` (a continued child's successor settles the original slot), `LocalWorkerRuntime` reports the head's outcome, and `waitForCompletion` of a predecessor resolves with its own `continued` state (`variables._continuedTo` names the successor; `runtime.followToHead(id)` returns the head). |
 | Classification (ADR 0118 D1) | `isAnsweringKind(event)` reads `eventType` and `metadata`: a kind in `KERNEL_EVENT_KINDS` → its `EVENT_KIND_CLASS` entry; a kind NOT in it → an application event, **ignorable** (a parallel sibling's emit or a `ctx.stream` delta after a park must not stale `acquireFenceIf` forever); EXCEPT an unknown kind with `metadata.kernel === true` (a newer node's kernel kind in a mixed fleet) → **answering**, fail-closed. Rule for every later kernel kind: its writer MUST stamp `metadata.kernel: true`. |
-| ABI reservation | `KERNEL_ABI` 1.3.0 RESERVES the Wave 2 syscalls; it does not contain them. A syscall exists iff it is in the kernel's `KERNEL_SYSCALLS` table. The wire handshake (`WIRE_ABI`, `@loom/wire-abi`) advertises `kernelAbiVersion` AND `syscalls` generated from that table, so a 3P MUST feature-detect (is `continueAsNew` / `receive` / `select` in the advertised `syscalls`?) and MUST NOT infer availability from `kernelAbiVersion >= 1.3.0` until the writers land (each lands behind its `kernel.features` flag, then in the table). |
+| ABI reservation | `KERNEL_ABI` 1.3.0 RESERVES the Wave 2 syscalls; it does not contain them. A syscall exists iff it is in the kernel's `KERNEL_SYSCALLS` table. The wire handshake (`WIRE_ABI`, `@loomwork/wire-abi`) advertises `kernelAbiVersion` AND `syscalls` generated from that table, so a 3P MUST feature-detect (is `continueAsNew` / `receive` / `select` in the advertised `syscalls`?) and MUST NOT infer availability from `kernelAbiVersion >= 1.3.0` until the writers land (each lands behind its `kernel.features` flag, then in the table). |
 | Residual | One live reserved shape remains: an existing log whose app-emitted `RESOURCE_METERED` already carries a field named `custom` folds differently from 1.23.0 (a payload field on a kind that was already folded, validated at the userspace guard but not stamp-gated, because metering is written by userspace). `OUTCOME_RECORDED.recordedBy`/`late` and a park's `waits` are stamp-gated and no longer residual. Recorded in the CHANGELOG. |
 | Interim | (Resolved by R1b.) `LocalWorkerRuntime` follows `_continuedTo` to the head and reports ITS outcome under the dispatched id; `ExecutionOutcome` is not widened, and a chain it cannot follow stays the fail-safe FAILED outcome. |
 
@@ -363,7 +363,7 @@ message / timer / approval.
 append at sequence *n+1* races the owner's own append, so atomic append-while-running cannot be a 1P wrapper.
 The way out is to not append to the owner's log at all: the inbox is a **separate reserved stream**
 (`__loom_inbox__:<chainId>`), the owner **pulls** and journals consumption into its own log. Routing, pub/sub
-and fan-in are 1P (`@loom/inbox`), **but the write is not**: `runtime.send` is the only writer and is
+and fan-in are 1P (`@loomwork/inbox`), **but the write is not**: `runtime.send` is the only writer and is
 authorized (round 1; see below). The kernel keeps what cannot be 1P: a syscall that waits on several
 sources, the fact that records consumption, and the authorized append.
 
@@ -403,7 +403,7 @@ continuation — at-least-once send, exactly-once consume within the window; `ap
   for a park with an inbox wait.
 - **`send` is authorized.** `runtime.send(chainId, msg, { principal })` is judged as a new `ExecutionOp`
   `"send"` against the R3k owner of the chain head; the sender's identity subset is recorded on the message
-  and in `MESSAGE_CONSUMED`; the delivered payload is **tainted** (ADR 0085). `@loom/inbox` builds on it.
+  and in `MESSAGE_CONSUMED`; the delivered payload is **tainted** (ADR 0085). `@loomwork/inbox` builds on it.
   This also removes the contradiction between ADR 0109 D4 (`runtime.send`) and the first draft of ADR 0110
   (a 1P `send`), and mirrors the argument ADR 0116 makes against a 1P append.
 - **The stream is bounded.** Sequence allocation uses `head()` (O(1)) instead of `read().length` (the reason
@@ -417,7 +417,7 @@ unchanged for a single-gate park; the multi-wait binding is the `waitId` extensi
 
 **Delta.** ABI `+receive`, `+select`. Schema `+MESSAGE_CONSUMED`, `waits[]`, `waitId`, `_inbox`,
 `_waitAnswers`, `_waits`. Runtime method `send`; op `"send"`. SPI none (`InboxSource` is a function seam).
-New 1P package `@loom/inbox`. **Needs R6, R3k and R8k first.**
+New 1P package `@loomwork/inbox`. **Needs R6, R3k and R8k first.**
 
 **Replay and migration.** Existing logs have no new keys; replay is identical. An execution that parked with
 `waits` cannot be driven by an older node (feature flag `kernel.features.inbox`).
@@ -441,7 +441,7 @@ fold handler and readers but **no writer**. Hand-rolled `Promise.all(ctx.execute
 parent does not cancel supervised children.
 
 **Placement.** Scopes and the park barrier: kernel (`WorkflowContext`, `ExecutionJournal`). **R9k, the cancel
-cascade: 1P (`@loom/orchestration`)** — the plan wrote "kernel", but the kernel has no child relation and adding
+cascade: 1P (`@loomwork/orchestration`)** — the plan wrote "kernel", but the kernel has no child relation and adding
 one would be a new lineage SPI for a policy the supervisor already holds (it journals the spawn decisions and, with
 R8, rebuilds them). The kernel supplies the signal (an effect that starts a child receives the abort and must
 forward it); the supervisor observes its parent's `EXECUTION_CANCELLED` and cancels non-terminal children with
@@ -492,7 +492,7 @@ already holds several definitions per flow id and pins by hash; the missing part
 **Mechanism.** (D1) structural hash → SHA-256 (`sha256:`) computed by a small **pure-JS SHA-256 kept in
 `core`** (platform-neutral; `flowContentHash` is also used by `app/src/verifyAdapter.ts:365`), `fnv1a:`
 recordings still accepted. (D2) optional
-`FlowDefinition.codeFingerprint` from the toolchain (`@loom/compiler` already hashes handler chunks),
+`FlowDefinition.codeFingerprint` from the toolchain (`@loomwork/compiler` already hashes handler chunks),
 recorded as `codeHash`; a mismatch is `FlowCodeMismatchError` unless the registered flow lists the recorded value
 in `compatibleWith` (an explicit author assertion, reviewed in the diff). The kernel does not hash
 `toString()`. (D3) **replay-divergence detection**: before the **first live journal append of any kind** (a step, but
@@ -553,13 +553,13 @@ sees it with no join.
 ### 4.7 R14 — `ctx.ui` out of the kernel (ADR 0114)
 
 **Problem.** `ctx.ui` is `KERNEL_SYSCALLS` entry `ui` (`kind: "accessor"`); `workflow-runtime` depends on
-`@loom/agent-surface` (→ `classify`, `projection-runtime`), imports a UI type into the kernel's own
+`@loomwork/agent-surface` (→ `classify`, `projection-runtime`), imports a UI type into the kernel's own
 `ExecutionContext`, and the layering guard (ADR 0043) forbids kernel → `plugins/*` but cannot see kernel →
 application vocabulary. It is `createSurfaceEmitter((t, p) => this.emit(t, p))`: sugar over `emit`.
 
 **Placement.** Out of the kernel. **Mechanism.** The type moves to agent-surface by declaration merging into an
 empty `ExecutionContextExtensions`; the runtime gets the accessor from an injected factory
-(`WorkflowRuntimeDeps.surface`), which `defineConfig`, `@loom/testing` and the scaffold supply; `surface(ctx)` is
+(`WorkflowRuntimeDeps.surface`), which `defineConfig`, `@loomwork/testing` and the scaffold supply; `surface(ctx)` is
 the documented spelling; `ui` is marked `deprecated` in the ABI table (removal = a MAJOR); `negotiateBudget`'s
 table drift is fixed in the same bump; the layering guard gains the inverse rule: **a kernel package depends only
 on kernel packages** (red on `main`, green after).
@@ -612,7 +612,7 @@ head check would strand parents and window 1 would not close. Now
 AND the park being unanswered**: it refuses `stale` if the token moved or if any *answering* event
 (`EXECUTION_RESUMED` of any payload, `EXECUTION_SUSPENDED`, the terminal kinds incl. `EXECUTION_CONTINUED`)
 exists past `parkSeq`; audit appends (`EXECUTION_DENIED`, `OUTCOME_RECORDED`, `STEP_FAILED`,
-`MESSAGE_CONSUMED`, …) are ignored (an allow-list in `@loom/event-runtime`, every kind classified by a
+`MESSAGE_CONSUMED`, …) are ignored (an allow-list in `@loomwork/event-runtime`, every kind classified by a
 fitness test). `parkSeq` is needed because a winner's resume append does not move the token, so a retry on
 a re-read token alone would fence out a live body. `RunOptions.fenceIfParkedAt` (the park sequence) on
 `resume`/`resumeAs`: the runtime derives the token, and on `{ stale, fence: cur }` **re-reads the park and,
@@ -627,7 +627,7 @@ IMMEDIATE`, Postgres a transaction (`FOR UPDATE` on the fence row, then a fresh-
 bump) with the append guard reading the row `FOR SHARE`. It also re-checks `assertResumable` under
 the acquired fence (defence in depth). The winner's acquire moves the token and its resume trips the
 `parkSeq` condition, so both windows close and the supervisor's bounded loop becomes one attempt. Stores
-without it keep today's behaviour. Retention: `@loom/orchestration` `pinParkedChildren` (a `PinPredicate`),
+without it keep today's behaviour. Retention: `@loomwork/orchestration` `pinParkedChildren` (a `PinPredicate`),
 auto-composed by `defineConfig` when `superviseChildren` is wired, using the child's recorded `parent` (R3k;
 before it, the supervisor's rebuilt state) and the parent's park. **R8k lands before R2** (inbox
 notify-resume uses it).
@@ -675,7 +675,7 @@ R11); Sonnet on R14 and R15 and every re-review. Two lanes at most (machine load
 | 2 | **R8k** `acquireFenceIf` (token) + pin predicate (0118) | B | W2-0 | SPI MINOR, conformance + DST; the fence half has no other dependency |
 | 3 | **R6** scopes + park barrier + `PARALLEL_COMPLETED` + cascade sweep (0112) | A | W2-0 | mints scope paths; the barrier R2 and R1b need |
 | 4 | **R14** `ctx.ui` out (0114) | B | W2-0 | independent; drops the dependency edge early |
-| 5 | **R2** inbox, receive, select, `runtime.send` + `@loom/inbox` (0110) | A | R3k, R6, R8k | the largest PR; split `@loom/inbox` into its own PR |
+| 5 | **R2** inbox, receive, select, `runtime.send` + `@loomwork/inbox` (0110) | A | R3k, R6, R8k | the largest PR; split `@loomwork/inbox` into its own PR |
 | 6 | **R15** open vocabularies (0115) | B | W2-0 | independent |
 | 7 | **R11** `recordOutcome` (0116) | B | R3k (owner for authz) | retention-clock change rides along; **the `continued` clause of its terminal set is gated on R1b (step 8)**: until then the terminal set is `completed`/`failed`/`cancelled` and the clause is added by R1b's PR |
 | 8 | **R1b** continue-as-new (0109) | A | R3k, R6 (barrier), R2 (inbox cursors) | measured acceptance on `exp.cjs` |
@@ -719,9 +719,9 @@ review's recommendation, adopted in round 1 and not contested (**Decided (defaul
 8. **`propensity` validation.** *Decided (default; not contested by the user, 2026-10-05):* its **own small PR, no ADR**.
    Rationale: a `ctx.decide` input tightening unrelated to attaching rewards.
 9. **R7 default.** *Decided (default; not contested by the user, 2026-10-05):* `warn` by default; under strict it
-   **fails, on membership only** (no order check). Producing `codeFingerprint` in `@loom/compiler` is a
+   **fails, on membership only** (no order check). Producing `codeFingerprint` in `@loomwork/compiler` is a
    **follow-up**, not in the R7 PR. Rationale: detection of a silent fault arrives as a warning first.
-10. **R9k placement.** *Decided (default; not contested by the user, 2026-10-05):* **1P (`@loom/orchestration`)
+10. **R9k placement.** *Decided (default; not contested by the user, 2026-10-05):* **1P (`@loomwork/orchestration`)
     confirmed**; the kernel has no child relation.
 11. **`parallel` branch functions (R6).** *Decided (default; not contested by the user, 2026-10-05):* branch functions on
     `ctx.parallel` are fine, **with the parallel-call ordinal in `scopePath`** (`<k>.<branch>`). Rationale: no

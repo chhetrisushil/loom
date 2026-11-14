@@ -1,15 +1,15 @@
-# @loom/worker-runtime-local — the in-process worker
+# @loomwork/worker-runtime-local — the in-process worker
 
 `LocalWorkerRuntime` is the zero-cloud `WorkerRuntime`: it runs an `ExecutionPackage` on a `WorkflowRuntime`
 in this process, which is the same object that holds your registered flows and effects. It is the reference
 implementation of the worker SPI. It sits behind a
-dispatcher (`LocalDispatcher`, `PlacementDispatcher`) and `@loom/plugin-worker-server` can serve any
+dispatcher (`LocalDispatcher`, `PlacementDispatcher`) and `@loomwork/plugin-worker-server` can serve any
 `WorkerRuntime`, this one included, over HTTP. Most apps do not construct one directly. You do when you are wiring
 placement by hand or testing a dispatcher.
 
 ```ts
-import { LocalDispatcher } from "@loom/dispatcher";
-import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { LocalWorkerRuntime } from "@loomwork/worker-runtime-local";
 import { app } from "./config"; // your defineConfig({ storage, flows, ... }) result
 
 const worker = new LocalWorkerRuntime(app.runtime);
@@ -28,7 +28,7 @@ console.log(result.status, result.output); // "completed" { message: "Hello, Ada
 
 `LocalWorkerRuntime` implements `allocate`, `execute`, `release` and `cancel`, and exposes
 `runsAsSystem`. Its one option is `LocalWorkerRuntimeOptions.system`. The contract it implements is in
-[`@loom/worker-runtime`](../worker-runtime/README.md).
+[`@loomwork/worker-runtime`](../worker-runtime/README.md).
 
 ## Behaviour that surprises people
 
@@ -56,7 +56,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/worker-runtime-local` — the in-process worker" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/worker-runtime-local` — the in-process worker" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [user guide, section 13: where executions run](../../docs/user-guide.md#13-where-executions-run-compute).
 - ADRs: [0001 dispatcher and worker runtime](../../docs/adr/0001-execution-dispatcher-and-worker-runtime.md), [0004 failure recovery](../../docs/adr/0004-failure-recovery.md).
-- Source: `packages/worker-runtime-local/src`. Placement in front of it: [`@loom/dispatcher`](../dispatcher/README.md).
+- Source: `packages/worker-runtime-local/src`. Placement in front of it: [`@loomwork/dispatcher`](../dispatcher/README.md).

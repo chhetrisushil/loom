@@ -1,4 +1,4 @@
-import { isTainted } from "@loom/classify";
+import { isTainted } from "@loomwork/classify";
 import type { MemoryEntry } from "./types";
 
 /**

@@ -1,4 +1,4 @@
-# @loom/plugin-audit-chain — tamper-evident hash-chained event log
+# @loomwork/plugin-audit-chain — tamper-evident hash-chained event log
 
 A composable `EventStore` wrapper that makes Loom's durable log **cryptographically verifiable**.
 Each event carries, in its metadata, `H(prevHash ‖ canonical(event))` and (optionally) an
@@ -8,7 +8,7 @@ Each event carries, in its metadata, `H(prevHash ‖ canonical(event))` and (opt
 > whether or not chaining is wired (G1/G2). See [ADR 0037](../../docs/adr/0037-tamper-evident-audit-chain.md).
 
 ```ts
-import { hashChainedEventStore } from "@loom/plugin-audit-chain";
+import { hashChainedEventStore } from "@loomwork/plugin-audit-chain";
 
 // The chain is outermost: it wraps tenant-scoping, which wraps fencing, which wraps the base store:
 const store = hashChainedEventStore(tenantScopedEventStore(fencingStore(base)), {

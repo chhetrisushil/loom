@@ -1,5 +1,5 @@
-import { projection$ } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { projection$ } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { FoldedModelEngine, foldedStates } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";

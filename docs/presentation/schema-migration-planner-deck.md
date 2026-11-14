@@ -101,10 +101,10 @@ dual-write    ███░░░░░░░ 31%     ← still backfilling
 ## Run it
 
 ```bash
-pnpm --filter @loom/schema-migration-planner dev         # client :5173 + server :8787
+pnpm --filter @loomwork/schema-migration-planner dev         # client :5173 + server :8787
 # → run the complex goal → "Explore branches" → watch 3 progress bars → "Promote"
 
-pnpm --filter @loom/schema-migration-planner demo:fork   # narrated, headless, end-to-end
+pnpm --filter @loomwork/schema-migration-planner demo:fork   # narrated, headless, end-to-end
 ```
 
 ```

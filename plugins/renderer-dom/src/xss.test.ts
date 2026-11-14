@@ -11,7 +11,7 @@ import {
   blueprint$,
   customWidget$,
   stack,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 import { describe, expect, it } from "vitest";
 import { type DomWidgetRenderer, defaultDomRegistry } from "./defaultRegistry";
 import { renderBlueprintToDom } from "./renderBlueprint";

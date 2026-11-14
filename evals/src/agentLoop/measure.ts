@@ -1,11 +1,11 @@
-import type { AgentLoopConfig } from "@loom/agent";
+import type { AgentLoopConfig } from "@loomwork/agent";
 import {
   type CassetteData,
   CassetteProvider,
   type EvalCase,
   type EvalSuiteReport,
   runEvalSuite,
-} from "@loom/eval";
+} from "@loomwork/eval";
 import { type Scores, type Thresholds, toRows } from "../gate";
 import { mean } from "../metrics";
 import type { MetricRow } from "../scoreboard";

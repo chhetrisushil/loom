@@ -1,6 +1,6 @@
-import { canonicalJson, step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { canonicalJson, step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   type ArchiveSegment,
   type ArchiveStore,
@@ -8,7 +8,7 @@ import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   segmentDigest,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   EncryptingArchiveStore,
   EncryptingEventStore,
@@ -16,16 +16,16 @@ import {
   InMemoryKeyStore,
   PayloadShreddedError,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import {
   PostgresArchiveStore,
   PostgresEventStore,
   PostgresSnapshotStore,
   migratePostgresStores,
   postgresPool,
-} from "@loom/plugin-postgres";
-import { SqliteArchiveStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-postgres";
+import { SqliteArchiveStore, SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LogLifecycle } from "./LogLifecycle";

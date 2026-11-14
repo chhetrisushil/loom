@@ -1,13 +1,13 @@
-import { type AgentLoopConfig, agentLoop$, createAgentModelEffect } from "@loom/agent";
-import { isTainted, unwrapTainted } from "@loom/classify";
-import { type FlowDefinition, type ToolDefinition, agent$, tool$ } from "@loom/core";
-import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { QuotaExceededError } from "@loom/middleware";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime, answerApproval } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+import { type AgentLoopConfig, agentLoop$, createAgentModelEffect } from "@loomwork/agent";
+import { isTainted, unwrapTainted } from "@loomwork/classify";
+import { type FlowDefinition, type ToolDefinition, agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, GrantTable, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
+import { QuotaExceededError } from "@loomwork/middleware";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime, answerApproval } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 
 // ── The world a scripted task runs in ─────────────────────────────────────────

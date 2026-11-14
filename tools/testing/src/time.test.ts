@@ -1,5 +1,5 @@
-import type { FlowDefinition } from "@loom/core";
-import type { RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+import type { FlowDefinition } from "@loomwork/core";
+import type { RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createTestApp } from "./createTestApp";

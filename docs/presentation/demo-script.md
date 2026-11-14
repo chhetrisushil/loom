@@ -8,7 +8,7 @@ Everything runs **offline** — the examples use mock/scripted LLM providers, so
 ## Prerequisites (once)
 
 > **The example apps now live in the sibling [`loom-examples`](../examples.md) repo.** Check it out
-> next to `loom` and run the commands below from that checkout — every `pnpm --filter @loom/<example>`
+> next to `loom` and run the commands below from that checkout — every `pnpm --filter @loomwork/<example>`
 > resolves there, not in the framework repo.
 
 ```bash
@@ -31,7 +31,7 @@ known, pre‑existing Rollup CJS interop error unrelated to the framework.
 ## Demo 0 — The whole pipeline, headless (2 min) ⭐ best opener
 
 ```bash
-pnpm --filter @loom/agent-network start
+pnpm --filter @loomwork/agent-network start
 ```
 
 **What to show** — it prints 8 labeled sections and exits:
@@ -54,7 +54,7 @@ pnpm --filter @loom/agent-network start
 ## Demo 1 — Cloud Command Center: durable + human‑in‑the‑loop + streaming UI (5 min) ⭐ centerpiece
 
 ```bash
-pnpm --filter @loom/cloud-command-center dev
+pnpm --filter @loomwork/cloud-command-center dev
 ```
 
 Open the printed URL (default `http://localhost:5173/`, auto‑increments if busy).
@@ -77,13 +77,13 @@ Open the printed URL (default `http://localhost:5173/`, auto‑increments if bus
 ## Demo 2 — Playground: see the machinery (4 min)
 
 ```bash
-pnpm --filter @loom/playground dev
+pnpm --filter @loomwork/playground dev
 ```
 
 **What to show**
 1. Type a goal, click **➤ Run Intent** (or **▶ Run Flow** for the direct path).
 2. **Surface tab** — live `ui` surface (left) next to the **raw patch stream** (right): `set` / `merge` / `append` / `increment` scrolling as the flow runs.
-3. **Trace tab** — Gantt‑style per‑step timing (from `@loom/telemetry`).
+3. **Trace tab** — Gantt‑style per‑step timing (from `@loomwork/telemetry`).
 4. **Event Log tab** — the append‑only event stream that *is* the application state.
 5. Click **✓ Approve** to resume.
 
@@ -96,7 +96,7 @@ pnpm --filter @loom/playground dev
 ## Demo 3 — Framework‑agnostic (2 min, optional)
 
 ```bash
-pnpm --filter @loom/angular-command-center dev
+pnpm --filter @loomwork/angular-command-center dev
 ```
 
 **What to show** — the *same* incident workflow, rendered by **Angular** (`@Injectable` service + signals) instead of React.
@@ -111,7 +111,7 @@ pnpm --filter @loom/angular-command-center dev
 ## Demo 4 — Durability, proven by test (2 min, optional)
 
 ```bash
-pnpm --filter @loom/cloud-command-center exec vitest run test/e2e/suspend-resume.test.ts
+pnpm --filter @loomwork/cloud-command-center exec vitest run test/e2e/suspend-resume.test.ts
 ```
 
 **What to show** — the test suspends in one runtime, **closes the event store** (simulating a restart), then resumes in a **new** runtime and asserts the metrics/logs effects were called **0 times**.
@@ -124,9 +124,9 @@ pnpm --filter @loom/cloud-command-center exec vitest run test/e2e/suspend-resume
 ## Demo 5 — Git‑style branching: fork → simulate → promote (3 min) ⭐ the "wow"
 
 ```bash
-pnpm --filter @loom/incident-war-room demo:fork      # headless, narrated (best for a talk)
+pnpm --filter @loomwork/incident-war-room demo:fork      # headless, narrated (best for a talk)
 # …or the live UI:
-pnpm --filter @loom/incident-war-room dev            # run the replica goal → "Explore branches" → "Promote"
+pnpm --filter @loomwork/incident-war-room dev            # run the replica goal → "Explore branches" → "Promote"
 ```
 
 **What to show** — a replica‑lag remediation runs to its approval gate and **suspends** at sequence 1. Instead of a blind approve/reject, it **forks** the suspended execution into three *mutually‑exclusive* candidate strategies (scale replicas / fail over / throttle), **simulates** each (concurrently) to preview projected lag/ETA/downtime/cost, shows the **parent still suspended and untouched**, then **promotes** the winner — which applies for real. In the UI: the **War Room** tab's branch graph + side‑by‑side diff fill in live, then **Promote**.
@@ -140,7 +140,7 @@ pnpm --filter @loom/incident-war-room dev            # run the replica goal → 
 **Second domain (optional, +1 min)** — to prove the seam is *domain‑agnostic*, run the same branching on a schema migration. The `BranchOrchestrator` and branch UI are reused verbatim; only the domain changes. It also streams **live per‑branch backfill progress** — three shadow‑migrations advancing at once.
 
 ```bash
-pnpm --filter @loom/schema-migration-planner demo:fork   # add a NOT NULL column to a 40M‑row table: online‑DDL vs shadow‑copy vs dual‑write
+pnpm --filter @loomwork/schema-migration-planner demo:fork   # add a NOT NULL column to a 40M‑row table: online‑DDL vs shadow‑copy vs dual‑write
 ```
 
 ---
@@ -162,10 +162,10 @@ pnpm --filter @loom/schema-migration-planner demo:fork   # add a NOT NULL column
   ```bash
   lsof -tiTCP:5173 -sTCP:LISTEN | xargs kill -9    # repeat per port
   ```
-- **"does not provide an export" in a browser demo** — a `@loom/*` package isn't in that app's Vite `optimizeDeps.include`. It's a Vite pre‑bundle config, not a code bug (all current examples are configured correctly).
+- **"does not provide an export" in a browser demo** — a `@loomwork/*` package isn't in that app's Vite `optimizeDeps.include`. It's a Vite pre‑bundle config, not a code bug (all current examples are configured correctly).
 - **Go live with a real model** — in `examples/cloud-command-center/src/runtime/aiTriage.ts` (and `agent-network/src/main.ts`), replace `new MockLlmProvider()` / `new ScriptedLlmProvider(...)` with:
   ```ts
-  import { AnthropicProvider } from "@loom/llm";
+  import { AnthropicProvider } from "@loomwork/llm";
   const provider = new AnthropicProvider({ model: "claude-opus-4-8" }); // reads ANTHROPIC_API_KEY
   ```
   Nothing else changes.

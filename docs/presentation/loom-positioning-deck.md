@@ -300,7 +300,7 @@ The same event log that makes execution durable also **drives the interface**.
 
 > A `ctx.decide` logs the choice, **the policy that made it, and the probability it was drawn with.**
 
-- That makes a decision evaluable **counterfactually, off real logs** — *"what would a different policy have scored?"* — without re-running anything (`@loom/learning`).
+- That makes a decision evaluable **counterfactually, off real logs** — *"what would a different policy have scored?"* — without re-running anything (`@loomwork/learning`).
 - **Propensity cannot be reconstructed later.** If it wasn't logged at the draw, it's gone.
 
 **A bare decision log *looks* scored while being unevaluable. That's the difference.**

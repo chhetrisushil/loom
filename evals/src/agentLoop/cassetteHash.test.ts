@@ -1,5 +1,5 @@
-import { CassetteMissError, CassetteProvider } from "@loom/eval";
-import type { LlmRequest, LlmResponse } from "@loom/llm";
+import { CassetteMissError, CassetteProvider } from "@loomwork/eval";
+import type { LlmRequest, LlmResponse } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { authorCassette, loadCassette } from "./cassettes";
 import { runTask } from "./subject";

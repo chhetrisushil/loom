@@ -1,10 +1,10 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import {
   type DecoratorPlan,
   type EventStore,
   KeyUnavailableError,
   installOptional,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   type OptionalSnapshotStoreMethod,
   type Snapshot,
@@ -12,7 +12,7 @@ import {
   type SnapshotStore,
   assertSnapshotCodecAvailable,
   parseSnapshotCodec,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import {
   type IvSource,
   assertIvSourceAllowed,
@@ -117,7 +117,7 @@ export interface EncryptingSnapshotStoreOptions {
   /**
    * Deterministic cipher seam (ADR 0130 residuals D7, simulation only): see
    * `EncryptingEventStoreOptions.ivSource`. Build one with `seededIvSource` from
-   * `@loom/plugin-crypto/testing`. Allowed only under `NODE_ENV=test` or `VITEST` (fail closed).
+   * `@loomwork/plugin-crypto/testing`. Allowed only under `NODE_ENV=test` or `VITEST` (fail closed).
    */
   ivSource?: IvSource;
   /**
@@ -146,7 +146,7 @@ export class EncryptingSnapshotStore implements SnapshotStore {
   readonly listSequences?: NonNullable<SnapshotStore["listSequences"]>;
   /**
    * ADR 0130 D8 — structural marker: the WHOLE folded state is sealed (not just static paths).
-   * A plain property so neither `loom doctor` nor the kernel depends on @loom/plugin-crypto.
+   * A plain property so neither `loom doctor` nor the kernel depends on @loomwork/plugin-crypto.
    * Absent (not `false`) in static-path mode.
    */
   readonly sealsWholeState?: true;
@@ -167,7 +167,7 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     /**
      * PUBLIC so a pre-flight check can ask whether these keys outlive the process — see
      * `KeyStore.durable`. `loom doctor` looks for this property structurally, which is how it
-     * checks an encrypting store without depending on @loom/plugin-crypto.
+     * checks an encrypting store without depending on @loomwork/plugin-crypto.
      */
     readonly keys: KeyStore,
     options: EncryptingSnapshotStoreOptions

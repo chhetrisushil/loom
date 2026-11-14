@@ -11,8 +11,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { applyChanges, generateFlows, scanApp } from "@loom/appgen";
-import type { ChangeSpec, FilePlan } from "@loom/appgen";
+import { applyChanges, generateFlows, scanApp } from "@loomwork/appgen";
+import type { ChangeSpec, FilePlan } from "@loomwork/appgen";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveInsideRoot, writePlan } from "./subject";
 
@@ -149,7 +149,7 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
   // plain writeFileSync) over a symlinked flow.ts and record whether the OUTSIDE file changed (content or mtime). Any
   // exception from scanApp / applyChanges / the writer is CAUGHT and recorded separately, so a fix that makes scanApp
   // skip the link or applyChanges throw turns `outsideChanged` false and flips this pin, whatever the mechanism.
-  // SCOPE: this is the APPGEN-LEVEL path only (evals does not depend on @loom/cli). It goes red when @loom/appgen stops
+  // SCOPE: this is the APPGEN-LEVEL path only (evals does not depend on @loomwork/cli). It goes red when @loomwork/appgen stops
   // offering a symlinked flow as editable; the CLI write path (resolveInside + writer in tools/cli/src/appgen.ts) is
   // pinned by tools/cli's own tests. The assertion marked FLIP below was flipped to false when the fix landed.
   function symlinkEscape(): { outsideChanged: boolean; threw: string | undefined } {

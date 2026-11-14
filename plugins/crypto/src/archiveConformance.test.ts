@@ -1,4 +1,4 @@
-import { runArchiveStoreDecoratorConformance } from "@loom/conformance";
+import { runArchiveStoreDecoratorConformance } from "@loomwork/conformance";
 import { EncryptingArchiveStore } from "./EncryptingArchiveStore";
 import { InMemoryKeyStore } from "./keystore";
 

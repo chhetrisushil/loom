@@ -1,12 +1,12 @@
-import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
-import { assembleStream } from "@loom/llm";
+import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loomwork/llm";
+import { assembleStream } from "@loomwork/llm";
 import { expect } from "vitest";
 
 /**
  * The `toolRequest` rule from {@link runLlmProviderConformance} (`./index.ts`), kept in
  * its own module — NOT re-exported from the package's single public entry point
  * (`src/index.ts`) — so it can be exercised directly by this package's own tests without
- * growing `@loom/conformance`'s public surface (ADR 0083: no second consumer has named a
+ * growing `@loomwork/conformance`'s public surface (ADR 0083: no second consumer has named a
  * standalone need for it). A provider factory can only be driven through vitest's `it`,
  * and vitest refuses to collect a nested `describe`/`it` once a test has started running,
  * so the negative cases that prove this rule FIRES are unit tests against this function

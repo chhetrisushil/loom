@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { foldEvents } from "@loom/replay-vm";
+import type { EventEnvelope } from "@loomwork/core";
+import { foldEvents } from "@loomwork/replay-vm";
 
 // ── T2.3 — language-agnostic fold conformance vectors ─────────────────────────
 //

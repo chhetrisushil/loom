@@ -1,4 +1,4 @@
-# @loom/agent
+# @loomwork/agent
 
 The agent loop for Loom. `agentLoop$` is the canonical reason-then-act loop: it runs inside a flow
 runner, makes one durable frame per turn (a crash costs one turn), resolves the model call through
@@ -10,18 +10,18 @@ are deprecated but still work.
 ## When to use it
 
 When a flow needs a model to choose and call tools. Define the agent with `agent$` and its tools with
-`tool$` from [`@loom/core`](../core/README.md), register the model and tool effects, then call
+`tool$` from [`@loomwork/core`](../core/README.md), register the model and tool effects, then call
 `agentLoop$(ctx, { definition, modelToolId }, { prompt })` from the runner.
 
 ## Install
 
-Not published to npm yet: `"@loom/agent": "workspace:*"` in this workspace, or a `link:` override
+Not published to npm yet: `"@loomwork/agent": "workspace:*"` in this workspace, or a `link:` override
 from a sibling checkout (see [AGENTS.md](../../AGENTS.md)). You also need an LLM provider from
-[`@loom/llm`](../llm/README.md).
+[`@loomwork/llm`](../llm/README.md).
 
 ## Entry points
 
-`@loom/agent` (single entry): `agentLoop$`, `createAgentModelEffect`, `agentStep$` and `AgentRunner`
+`@loomwork/agent` (single entry): `agentLoop$`, `createAgentModelEffect`, `agentStep$` and `AgentRunner`
 (deprecated), `registerReasoningRoutes`, `memoryWriteBackEffect`, `mediaResult`, `toolSearchDocs`,
 `Bm25ToolRanker`, `deterministicSkillSelector`, `llmSkillSelector`, and their config types
 (`AgentLoopConfig`, `ToolSearchConfig`, `SkillActivationConfig`, ...).
@@ -30,11 +30,11 @@ from a sibling checkout (see [AGENTS.md](../../AGENTS.md)). You also need an LLM
 
 ```ts
 import { z } from "zod";
-import { agent$, tool$ } from "@loom/core";
-import { agentLoop$, createAgentModelEffect } from "@loom/agent";
-import type { LlmProvider } from "@loom/llm";
-import { defineConfig } from "@loom/app";
-import type { FlowRunner } from "@loom/workflow-runtime";
+import { agent$, tool$ } from "@loomwork/core";
+import { agentLoop$, createAgentModelEffect } from "@loomwork/agent";
+import type { LlmProvider } from "@loomwork/llm";
+import { defineConfig } from "@loomwork/app";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 
 declare const provider: LlmProvider;
 
@@ -79,7 +79,7 @@ defineConfig({
 
 ## See also
 
-- [API reference: `@loom/agent`](../../docs/api-reference.org) (ReAct loop).
+- [API reference: `@loomwork/agent`](../../docs/api-reference.org) (ReAct loop).
 - [User guide, section 7: Agents, tools and A2A](../../docs/user-guide.md#7-agents-tools--a2a).
-- [`@loom/effect-runtime`](../effect-runtime/README.md), [`@loom/llm`](../llm/README.md),
-  [`@loom/reasoning`](../reasoning/README.md).
+- [`@loomwork/effect-runtime`](../effect-runtime/README.md), [`@loomwork/llm`](../llm/README.md),
+  [`@loomwork/reasoning`](../reasoning/README.md).

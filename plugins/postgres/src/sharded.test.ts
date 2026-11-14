@@ -1,5 +1,5 @@
-import { runEventStoreConformance } from "@loom/conformance";
-import { ShardedEventStore, TenantScopedEventStore } from "@loom/event-runtime";
+import { runEventStoreConformance } from "@loomwork/conformance";
+import { ShardedEventStore, TenantScopedEventStore } from "@loomwork/event-runtime";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";

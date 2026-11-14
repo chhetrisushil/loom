@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { unwrapTainted } from "@loom/classify";
-import { TieredMemory } from "@loom/memory";
-import { SqliteMemoryStore } from "@loom/plugin-sqlite";
+import { unwrapTainted } from "@loomwork/classify";
+import { TieredMemory } from "@loomwork/memory";
+import { SqliteMemoryStore } from "@loomwork/plugin-sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { KnowledgeBase } from "./KnowledgeBase";
 import type { DecideFn } from "./KnowledgeBase";

@@ -1,11 +1,11 @@
-import type { EventEnvelope } from "@loom/core";
-import { declareReach } from "@loom/verify";
+import type { EventEnvelope } from "@loomwork/core";
+import { declareReach } from "@loomwork/verify";
 
 // ── Learning seam: outcomes → rankings (closes the P9 loop) ───────────────────
 //
 // The decision seam (P9) records WHAT was chosen (DECISION_RECORDED). This is the
 // symmetric half: record HOW a choice turned out, then mine those outcomes into a
-// ranking you feed back to `rankedRouter` (@loom/reasoning) so future routes favor
+// ranking you feed back to `rankedRouter` (@loomwork/reasoning) so future routes favor
 // what actually worked. The route choice stays a logged decision (P9) — auditable
 // and replay-deterministic — so the loop improves outcomes run-to-run without ever
 // making replay non-deterministic. `recordOutcome` only hands a payload to the
@@ -140,7 +140,7 @@ export interface OutcomeAnalyticsOptions {
  * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
  * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
  * compacted, build the events from the folded state first —
- * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loomwork/learning` — and
  * pass THOSE.
  */
 export function outcomeAnalytics(
@@ -186,7 +186,7 @@ export function outcomeAnalytics(
 
 /**
  * Rank keys by how well their choices turned out (mean success/score). Feed to
- * `rankedRouter(rankFromOutcomes(events))` (@loom/reasoning) to route future work
+ * `rankedRouter(rankFromOutcomes(events))` (@loomwork/reasoning) to route future work
  * toward proven models — the outcome-driven counterpart to `rankModels` (which ranks
  * by frequency chosen). The resulting route is still recorded via `ctx.decide` (P9).
  *

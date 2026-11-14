@@ -3,7 +3,7 @@
 One file per host, each the verbatim output of:
 
 ```bash
-LOOM_TEST_POSTGRES_URL=postgres://… pnpm --filter @loom/bench-throughput hardware
+LOOM_TEST_POSTGRES_URL=postgres://… pnpm --filter @loomwork/bench-throughput hardware
 ```
 
 The report is self-describing — CPU, memory, Postgres version and settings, and the

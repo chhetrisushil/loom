@@ -1,11 +1,11 @@
-import type { ExecutionPolicy, ExecutionState } from "@loom/core";
+import type { ExecutionPolicy, ExecutionState } from "@loomwork/core";
 import type {
   ExecutionPackage,
   ExecutionResult,
   WorkerLease,
   WorkerRequest,
   WorkerRuntime,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { LocalDispatcher } from "./LocalDispatcher";
 import { PlacementDispatcher } from "./PlacementDispatcher";

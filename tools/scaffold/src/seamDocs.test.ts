@@ -13,7 +13,7 @@ import { SEAM_KEYS, SEAM_SPI, SEAM_WIRING, pluginFiles } from "./plugin";
 // canonical SPI map — the one document an implementer opens to find out what
 // seams exist. `llm` had been missing for far longer than `policy`.
 //
-// This is the same shape as the ADR-coverage guard in `@loom/spec`: convert "we
+// This is the same shape as the ADR-coverage guard in `@loomwork/spec`: convert "we
 // forgot" into a failing test, in a reviewable diff. It only covers what is
 // mechanically checkable **inside this repo** — the sibling `loom-plugins`
 // README and the multi-checkout setup diagrams are deliberately left to review,
@@ -52,7 +52,7 @@ function seamsMissingFromGuide(guideText: string): string[] {
   return SEAM_KEYS.filter((key) => !list.includes(`\`${key}\``));
 }
 
-/** Every `run*Conformance` @loom/conformance exports. Read as text — no dependency on it. */
+/** Every `run*Conformance` @loomwork/conformance exports. Read as text — no dependency on it. */
 function exportedKits(): string[] {
   const source = readFileSync(resolve(REPO_ROOT, "packages/conformance/src/index.ts"), "utf8");
   return [...source.matchAll(/export function (run\w*Conformance)/g)].map((m) => m[1] as string);
@@ -93,7 +93,7 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
   function publishedSpis(mapText: string): string[] {
     const names = new Set<string>();
     for (const row of mapText.split("\n").filter((l) => l.startsWith("|"))) {
-      const m = /`([A-Z]\w+)`\s*\(`@loom\/[\w-]+`\)/.exec(row);
+      const m = /`([A-Z]\w+)`\s*\(`@loomwork\/[\w-]+`\)/.exec(row);
       if (m?.[1] !== undefined) names.add(m[1]);
     }
     return [...names];

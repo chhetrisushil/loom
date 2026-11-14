@@ -9,7 +9,7 @@ describe("defineConfig storage.kind", () => {
 
   it.each(["sqlite", "postgres"])("refuses %s, naming its preset", (kind) => {
     expect(() => compose({ kind, dir: ".data" })).toThrow(
-      new RegExp(`${kind}Storage\\(.*@loom/plugin-${kind}`)
+      new RegExp(`${kind}Storage\\(.*@loomwork/plugin-${kind}`)
     );
   });
 

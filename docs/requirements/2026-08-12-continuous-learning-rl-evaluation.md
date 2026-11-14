@@ -25,7 +25,7 @@ The framing in the proposal is off by one level. The user-facing benefit is not
 > real production traffic before shipping it, and explain every decision it
 > made afterward.**
 
-That property falls out of the event log and `@loom/replay-vm` that already
+That property falls out of the event log and `@loomwork/replay-vm` that already
 exist. It is defensible against every competitor, and it does not require loom
 to enter the model-training business.
 
@@ -36,11 +36,11 @@ to enter the model-training business.
 | # | Component | Verdict | Rationale |
 |---|---|---|---|
 | L1 | `context` + `policy` fields on `DECISION_RECORDED` | **Kernel** (additive payload) | Only the kernel writes this event. Without an observation on the decision, no *contextual* policy is learnable from the log — only a global per-key mean. ~10 lines, `EVENT_SCHEMA` minor bump, `KERNEL_ABI` unchanged. |
-| L2 | Exploration wrappers, sample floor, recency decay | **1P — `@loom/reasoning`** | Routers already live there. Also repairs a shipped defect (§3). |
-| L3 | Trajectory extraction + credit assignment | **1P — new `@loom/learning`** | A read-only lens over the log, identical posture to `@loom/analytics`. Needs the execution tree, which is runtime knowledge. |
-| L4 | `Policy` SPI (`select(context, actions)`) | **1P — `@loom/learning`** | One interface is all 3P needs to plug in. |
-| L5 | Offline / shadow policy evaluation via replay | **1P — `@loom/learning`** | **The differentiator.** Requires deterministic replay + recorded alternatives. No other framework can offer it. |
-| L6 | Policy promotion, pinning, canary, rollback | **1P — `@loom/learning`** + `@loom/verify` rule | Safety envelope; reuses K2 grants and DST scenarios. |
+| L2 | Exploration wrappers, sample floor, recency decay | **1P — `@loomwork/reasoning`** | Routers already live there. Also repairs a shipped defect (§3). |
+| L3 | Trajectory extraction + credit assignment | **1P — new `@loomwork/learning`** | A read-only lens over the log, identical posture to `@loomwork/analytics`. Needs the execution tree, which is runtime knowledge. |
+| L4 | `Policy` SPI (`select(context, actions)`) | **1P — `@loomwork/learning`** | One interface is all 3P needs to plug in. |
+| L5 | Offline / shadow policy evaluation via replay | **1P — `@loomwork/learning`** | **The differentiator.** Requires deterministic replay + recorded alternatives. No other framework can offer it. |
+| L6 | Policy promotion, pinning, canary, rollback | **1P — `@loomwork/learning`** + `@loomwork/verify` rule | Safety envelope; reuses K2 grants and DST scenarios. |
 | L7 | Bandit / RL algorithms (Thompson, LinUCB, PPO…) | **3P** (`../loom-plugins`) | Pure math over a dataset. Zero kernel knowledge required. |
 | L8 | In-process training, gradient updates, GPU orchestration | **REJECT** | Not a framework concern. Loom would become a bad RLlib and inherit a research treadmill it cannot win. |
 | L9 | A learned policy acting *outside* `ctx.decide` | **REJECT** | Breaks P9 auditability, which is the entire reason learning is safe here. Non-negotiable. |
@@ -174,7 +174,7 @@ why it belongs in the L1 payload rather than in a later package.
 
 Small, pure win. **Worth doing regardless of the RL decision.**
 
-- Exploration in `@loom/reasoning`: `ucb1(stats)` and `epsilonGreedy(inner, {
+- Exploration in `@loomwork/reasoning`: `ucb1(stats)` and `epsilonGreedy(inner, {
   epsilon, rng })`. **Thompson was dropped** — it needs Bernoulli or bounded
   rewards and `score` is unbounded by contract, while UCB1 covers the same need
   *deterministically*, which is worth more in a replay-first runtime than the
@@ -206,7 +206,7 @@ This turns the log from *"what was chosen"* into a genuine `(s, a, π)` dataset;
 unchanged. **Everything else in this proposal can live outside the kernel
 precisely because of this field.**
 
-### T3 — `@loom/learning` (1P) — the differentiator — **DONE** ([ADR 0080](../adr/0080-learning-substrate.md))
+### T3 — `@loomwork/learning` (1P) — the differentiator — **DONE** ([ADR 0080](../adr/0080-learning-substrate.md))
 
 - **`trajectories(events)`** — a read lens like every other analytics lens,
   folding `DECISION_RECORDED` + `OUTCOME_RECORDED` +
@@ -223,13 +223,13 @@ precisely because of this field.**
   This is the feature no other framework can offer, because it requires
   deterministic replay plus recorded alternatives. It is also the honest answer
   to *"how do I know the new policy is better before I ship it?"*
-- **`promote()`** — gated on the eval report, a `@loom/verify` rule, and a DST
+- **`promote()`** — gated on the eval report, a `@loomwork/verify` rule, and a DST
   scenario. Policies are versioned artifacts, pinned per deployment; rollback is
   a re-pin.
 
 ### T4 — 3P learners — **DONE**
 
-`../loom-plugins` ships `loom-plugin-linucb`: disjoint LinUCB with Sherman–Morrison
+`../loom-plugins` ships `@loomwork/plugin-linucb`: disjoint LinUCB with Sherman–Morrison
 rank-1 updates (O(d²), no matrix inversion) and an ε-greedy layer that reports
 exact propensities. It is the reference proof that the SPI is sufficient for a
 real contextual learner. Vendors (fine-tune services, eval platforms) implement
@@ -305,5 +305,5 @@ top of this loop.
 |---|---|---|
 | T1 | `ucb1` / `epsilonGreedy` / `minSamples` / `halfLifeMs` | none |
 | T2 | `context` + `policy` on `DECISION_RECORDED` | EVENT_SCHEMA 1.17.0 → **1.18.0**; KERNEL_ABI unchanged |
-| T3 | `@loom/learning` + `loom learn report\|eval` + `runPolicyConformance` | none (read-only) |
-| T4 | `loom-plugin-linucb` (sibling repo) | none (3P) |
+| T3 | `@loomwork/learning` + `loom learn report\|eval` + `runPolicyConformance` | none (read-only) |
+| T4 | `@loomwork/plugin-linucb` (sibling repo) | none (3P) |

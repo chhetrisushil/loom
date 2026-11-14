@@ -187,7 +187,7 @@ describe("names", () => {
 });
 
 describe("newFiles and importedPackages", () => {
-  it("a flow ships a sibling test that imports @loom/testing; other kinds ship only themselves", () => {
+  it("a flow ships a sibling test that imports @loomwork/testing; other kinds ship only themselves", () => {
     expect(newFiles("flow", "greet").map((f) => f.path)).toEqual([
       "app/flows/greet/flow.ts",
       "app/flows/greet/flow.test.ts",
@@ -200,17 +200,19 @@ describe("newFiles and importedPackages", () => {
     expect(
       importedPackages(
         [
-          'import { a } from "@loom/core";',
+          'import { a } from "@loomwork/core";',
           'import x from "zod/v3";',
           'import "node:fs";',
           'import y from "./y";',
         ].join("\n")
       )
-    ).toEqual(["@loom/core", "zod"]);
-    expect(importedPackages(newFile("sentinel", "w").content)).toContain("@loom/plugin-sentinel");
+    ).toEqual(["@loomwork/core", "zod"]);
+    expect(importedPackages(newFile("sentinel", "w").content)).toContain(
+      "@loomwork/plugin-sentinel"
+    );
   });
 
-  it("the scaffolded package.json declares @loom/testing for the emitted flow test", () => {
-    expect(appFiles("a")["package.json"]).toContain('"@loom/testing": "workspace:*"');
+  it("the scaffolded package.json declares @loomwork/testing for the emitted flow test", () => {
+    expect(appFiles("a")["package.json"]).toContain('"@loomwork/testing": "workspace:*"');
   });
 });

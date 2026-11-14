@@ -1,16 +1,20 @@
 import { createHash } from "node:crypto";
-import { TypedFailure } from "@loom/core";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import type { ExecutionDispatcher } from "@loom/dispatcher";
-import type { CapabilityAuthorizer, CapabilityRequest, EffectContext } from "@loom/effect-runtime";
+import { TypedFailure } from "@loomwork/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import type { ExecutionDispatcher } from "@loomwork/dispatcher";
+import type {
+  CapabilityAuthorizer,
+  CapabilityRequest,
+  EffectContext,
+} from "@loomwork/effect-runtime";
 import type {
   BranchRef,
   BranchRegistry,
   EventStore,
   TimerRecord,
   TimerStore,
-} from "@loom/event-runtime";
-import type { AcquireOptions, LeaseStore } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import type { AcquireOptions, LeaseStore } from "@loomwork/event-runtime";
 import {
   ArchiveConflictError,
   ArchiveIncarnationError,
@@ -23,14 +27,14 @@ import {
   compareExecutionIds,
   headOf,
   readRangeOf,
-} from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
-import { assembleStream, mediaTypeAccepted } from "@loom/llm";
-import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
-import { SandboxEffect } from "@loom/sandbox";
-import type { SandboxBackend, ScriptReader } from "@loom/sandbox";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
+} from "@loomwork/event-runtime";
+import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loomwork/llm";
+import { assembleStream, mediaTypeAccepted } from "@loomwork/llm";
+import type { Projection, ProjectionRuntime } from "@loomwork/projection-runtime";
+import { SandboxEffect } from "@loomwork/sandbox";
+import type { SandboxBackend, ScriptReader } from "@loomwork/sandbox";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
+import type { ExecutionPackage, WorkerRuntime } from "@loomwork/worker-runtime";
 import { describe, expect, it } from "vitest";
 import {
   checkContentStoreTouchContract,
@@ -61,13 +65,13 @@ export {
 } from "./decorators.js";
 
 /**
- * `ExecutionAuthorizer` and `TimerDispatcher` live in `@loom/workflow-runtime`, and importing
- * them here would close a cycle: workflow-runtime dev-depends on `@loom/plugin-sqlite`, which
+ * `ExecutionAuthorizer` and `TimerDispatcher` live in `@loomwork/workflow-runtime`, and importing
+ * them here would close a cycle: workflow-runtime dev-depends on `@loomwork/plugin-sqlite`, which
  * depends on this package. So their shapes are declared STRUCTURALLY — TypeScript matches by
  * shape, so a real implementation satisfies these without importing anything.
  *
  * Duplicating a contract is how contracts drift, so it does not stand alone:
- * `@loom/worker-runtime-local` sees both packages and holds a compile-time proof that the
+ * `@loomwork/worker-runtime-local` sees both packages and holds a compile-time proof that the
  * real interfaces still satisfy these. If an SPI gains a method, that build fails.
  */
 export type ExecutionOpLike =
@@ -149,7 +153,7 @@ function evt(executionId: string, sequence: number, eventType = "STEP_COMPLETED"
 }
 
 /**
- * The EventStore contract (`@loom/event-runtime`): durable, append-only, per-execution
+ * The EventStore contract (`@loomwork/event-runtime`): durable, append-only, per-execution
  * ordered reads, live subscribe, and (optionally) fencing.
  */
 export interface EventStoreConformanceOptions {
@@ -1219,7 +1223,7 @@ function snap(executionId: string, sequence: number, id?: string): Snapshot {
   };
 }
 
-/** The SnapshotStore contract (`@loom/snapshot-runtime`): save + point/latest/before reads. */
+/** The SnapshotStore contract (`@loomwork/snapshot-runtime`): save + point/latest/before reads. */
 export function runSnapshotStoreConformance(
   factory: () => SnapshotStore,
   label = "SnapshotStore"
@@ -2266,7 +2270,7 @@ export interface ExecutionDispatcherConformanceOptions {
 }
 
 /**
- * The ExecutionDispatcher contract (`@loom/dispatcher`): dispatch a package to a terminal
+ * The ExecutionDispatcher contract (`@loomwork/dispatcher`): dispatch a package to a terminal
  * result, report health, and accept a cancel without throwing — and (1.1.0, with
  * `options.overWorker`) never retry a superseded refusal.
  */
@@ -3020,7 +3024,7 @@ export function runCapabilityAuthorizerConformance(
 // ── KeyStore (K10.2 crypto-shredding SPI) ─────────────────────────────────────
 //
 // Not a kernel seam — it is the crypto plugin's SPI — but the erasure contract is
-// security-critical, so the kit ships here (with a structural type, so `@loom/conformance`
+// security-critical, so the kit ships here (with a structural type, so `@loomwork/conformance`
 // stays free of any plugin dependency). Call it from a KeyStore impl's test suite.
 
 /** Structural view of the crypto-plugin KeyStore SPI (avoids a plugin dependency). */
@@ -3129,7 +3133,7 @@ export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "Key
 // ── ContentStore (ADR 0046 content-store SPI) ─────────────────────────────────
 //
 // Not a kernel seam — it is the content plugin's SPI — but the contract (content-addressed,
-// idempotent, loud-free absence) is worth pinning. Structural type so `@loom/conformance`
+// idempotent, loud-free absence) is worth pinning. Structural type so `@loomwork/conformance`
 // stays free of any plugin dependency. Call from a ContentStore impl's test suite.
 
 /** Structural view of the SPI 1.5.0 owner argument (ADR 0143). */
@@ -3482,7 +3486,7 @@ export function runContentStoreConformance(
 
 // ── DurableStateStore (ADR 0051 D2 durable-state SPI) ─────────────────────────
 //
-// The `@loom/plugin-durable-state` backend contract: a dumb keyed CAS store.
+// The `@loomwork/plugin-durable-state` backend contract: a dumb keyed CAS store.
 // Contract knowledge (schemas, migrations) lives above the SPI, so conformance
 // pins only storage semantics: revisions start at 1 and increment by exactly one,
 // `expectedRevision: 0` creates, any mismatch rejects with an error shaped like
@@ -3602,7 +3606,7 @@ export function runDurableStateStoreConformance(
 
 // ── ReadModelStore (RM, db-copilot infra — issue #183) ────────────────────────
 //
-// The `@loom/plugin-read-model` backend contract: a dumb indexed row store with
+// The `@loomwork/plugin-read-model` backend contract: a dumb indexed row store with
 // idempotent apply and monotonic per-execution watermarks. Model knowledge
 // (kinds, extractors) lives above the SPI, so conformance pins storage
 // semantics only. Structural type, same idiom as ContentStore/DurableStateStore.
@@ -3834,7 +3838,7 @@ export interface MemoryStoreLike {
 }
 
 /**
- * Assert a MemoryStore backend (`@loom/memory`) upholds the SPI: a key names an
+ * Assert a MemoryStore backend (`@loomwork/memory`) upholds the SPI: a key names an
  * ORDERED LIST of entries, appended to, read whole, and cleared.
  *
  * Three of these cases exist because they are exactly what a SQL backend gets wrong
@@ -3869,7 +3873,7 @@ export interface MemoryStoreLike {
  * are free for an inverted index and are the two cases a SIMILARITY backend has to
  * design for: cosine is defined against every entry, so an unthresholded ranking is
  * never empty. That is a floor to choose, not a reason to exempt the backend — the
- * third-party `loom-plugin-vector` passes this kit unmodified.
+ * third-party `@loomwork/plugin-vector` passes this kit unmodified.
  *
  * Note what a portable kit CANNOT reach: a backend that joins its index back to the rows
  * satisfies the clear/replace cases structurally, index maintenance or not. That the index
@@ -4286,7 +4290,7 @@ export function runMemoryStoreConformance(
 }
 
 /**
- * Prove a {@link Policy} (`@loom/learning`) conforms to the SPI (ADR 0080).
+ * Prove a {@link Policy} (`@loomwork/learning`) conforms to the SPI (ADR 0080).
  *
  * The kit pins the *shape and safety* of a policy, never its quality — what it
  * chooses is the plugin's business, and a policy that chooses badly is still
@@ -4906,7 +4910,7 @@ export async function checkSandboxAbortStopsBackend(
 }
 
 /**
- * Prove a {@link SandboxBackend} (`@loom/sandbox`) conforms to the SPI (ADR 0144).
+ * Prove a {@link SandboxBackend} (`@loomwork/sandbox`) conforms to the SPI (ADR 0144).
  *
  * `factory` is called once per case, so no state is shared between cases other than what the
  * backend itself leaks (which is exactly what the `fresh per run` case checks). The kit calls

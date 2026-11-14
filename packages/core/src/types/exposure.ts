@@ -40,7 +40,7 @@ export interface ExposedError {
  * makes the response diagnosable without making it informative, because an operator can
  * grep the id in their logs and find the real error that this function handed them instead.
  *
- * `newId` is injected because `@loom/core` deliberately imports no node builtins; callers
+ * `newId` is injected because `@loomwork/core` deliberately imports no node builtins; callers
  * pass `randomUUID`.
  */
 export function exposeError(err: unknown, newId: () => string): ExposedError {

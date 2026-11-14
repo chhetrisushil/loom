@@ -63,7 +63,7 @@ letters, digits or hyphens, **1–64 characters**. The reasons:
   so a trailing newline (`"stepped\n"`) or any whitespace is rejected.
 
 `isLayoutRole(value: unknown): value is string` is the one spelling of the rule, exported from
-`@loom/blueprint-runtime` so a compiler's schema (loom-ui core) and a renderer's lookup (loom-ui's
+`@loomwork/blueprint-runtime` so a compiler's schema (loom-ui core) and a renderer's lookup (loom-ui's
 DOM adapter) apply the same predicate and cannot drift apart.
 
 A role that is **absent, malformed, or unknown to the renderer in use** draws the plain
@@ -146,9 +146,9 @@ added after ADR 0098 fails otherwise), so `validateBlueprint` knows 2.0.0, 2.1.0
   `compile` to emit `role` and adds the container-renderer seam that reads it.
 - `BlueprintFindingCode` gains `role-invalid` (warn). A consumer that switches exhaustively over
   the codes sees a new case; one that gates on `ok` is unaffected.
-- `@loom/blueprint-runtime` exports one new value, `isLayoutRole`. It is part of the IR contract,
+- `@loomwork/blueprint-runtime` exports one new value, `isLayoutRole`. It is part of the IR contract,
   not vocabulary: it names no role.
-- `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0. `@loom/spec` lists
+- `KERNEL_ABI_VERSION` stays 1.1.0 and `EVENT_SCHEMA_VERSION` stays 1.18.0. `@loomwork/spec` lists
   this ADR in `NOT_A_CAPABILITY`, for the same reason as 0096–0098: an IR contract and renderer
   behaviour, not a runtime subsystem to grade.
 - The next minor bump adds `2.2.0` to `IR_VERSIONS_READ_AS_IS`.

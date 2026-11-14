@@ -15,7 +15,7 @@ This guide takes you from zero to a **durable flow that runs, pauses for a human
 
 ## 1. Scaffold an app
 
-Loom's `@loom/*` packages are **not published to npm yet**, so you build the framework from a
+Loom's `@loomwork/*` packages are **not published to npm yet**, so you build the framework from a
 checkout once and point `create-loom-app` at it. An app anywhere on disk links to the built checkout
 with `--loom-path`:
 
@@ -25,7 +25,7 @@ cd loom
 pnpm install && pnpm build          # `pnpm build:fast` is quicker for the edit-rebuild loop
 node tools/create-loom-app/dist/index.js ~/code/my-app --loom-path "$PWD"
 cd ~/code/my-app
-pnpm install                        # resolves @loom/* through link: overrides into the checkout
+pnpm install                        # resolves @loomwork/* through link: overrides into the checkout
 pnpm test                           # the scaffold ships a passing test
 pnpm start                          # runs the greet flow once
 ```
@@ -35,7 +35,7 @@ pnpm start                          # runs the greet flow once
 cannot resolve there. Scaffolding **inside** the checkout (`node tools/create-loom-app/dist/index.js
 apps/my-app`, then `pnpm install` from the repo root) needs no flag and uses `workspace:*`.
 
-> **Once published**, this collapses to `npm create loom-app@latest my-app && cd my-app && pnpm install`.
+> **Once published**, this collapses to `npm create @loomwork/loom-app@latest my-app && cd my-app && pnpm install`.
 > That command does not work yet.
 
 This wires a minimal app through `defineConfig` — a runtime, in-memory stores, and a projection
@@ -52,7 +52,7 @@ workspace/
 
 `loom-examples` consumes this repo's unpublished packages from `../loom` through pnpm `overrides`
 with `link:` paths (not `workspace:*`, git or npm dependencies), so check it out **next to** `loom`
-and build `loom` first. Run an example with `pnpm --filter @loom/<name> start` from that repo; the
+and build `loom` first. Run an example with `pnpm --filter @loomwork/<name> start` from that repo; the
 [examples catalogue](examples.md) says which one teaches what.
 
 ---
@@ -63,7 +63,7 @@ The scaffold already ships a `greet` flow (`app/flows/greet/flow.ts`, registered
 Sections 2 to 7 build **new** flows (`helloFlow`, then `approveFlow`) in files you add under `src/`:
 create each file, then add the flow to the `flows` array of your `defineConfig` (in `app/config.ts`),
 or use the `defineConfig` snippets below in a scratch script. Section 6 uses
-`@loom/testing`, which the scaffold already lists in `devDependencies`.
+`@loomwork/testing`, which the scaffold already lists in `devDependencies`.
 
 A flow has two parts:
 
@@ -74,9 +74,9 @@ Create `src/hello.ts`:
 
 ```ts
 import { z } from "zod";
-import { step$, handler$, flow$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { surface } from "@loom/agent-surface";
+import { step$, handler$, flow$ } from "@loomwork/core";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
+import { surface } from "@loomwork/agent-surface";
 
 // A step: schema-checked input/output + the work to do.
 const greetStep = step$({
@@ -89,7 +89,7 @@ const greetStep = step$({
   })),
 });
 
-// A runner: plain async orchestration. `surface(ctx)` (from `@loom/agent-surface`) pushes UI updates to a surface.
+// A runner: plain async orchestration. `surface(ctx)` (from `@loomwork/agent-surface`) pushes UI updates to a surface.
 const runner: FlowRunner<{ name: string }, { message: string }> = async (ctx, input) => {
   surface(ctx).set("phase", "greeting");
   const result = await ctx.run(greetStep, { name: input.name });
@@ -120,7 +120,7 @@ export const helloFlow: RegisteredFlow = {
 The fastest path is `defineConfig`, which assembles the runtime and stores for you. Create `src/main.ts`:
 
 ```ts
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 import { helloFlow } from "./hello";
 
 const app = defineConfig({
@@ -155,9 +155,9 @@ The feature that sets Loom apart: a flow can **suspend** at a durable checkpoint
 
 ```ts
 import { z } from "zod";
-import { step$, handler$, flow$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { surface } from "@loom/agent-surface";
+import { step$, handler$, flow$ } from "@loomwork/core";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
+import { surface } from "@loomwork/agent-surface";
 
 const ApprovalDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });
 type ApprovalDecision = z.infer<typeof ApprovalDecision>;
@@ -213,7 +213,7 @@ export const approveFlow: RegisteredFlow = {
 Drive it to suspension, then resume:
 
 ```ts
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 import { approveFlow } from "./approve";
 
 const app = defineConfig({ storage: { kind: "memory" }, surfaces: ["default"], flows: [approveFlow] });
@@ -273,7 +273,7 @@ Loom's testing kit spins up an in-memory app and waits on surfaces deterministic
 
 ```ts
 import { describe, it, expect } from "vitest";
-import { createTestApp, waitForPhase } from "@loom/testing";
+import { createTestApp, waitForPhase } from "@loomwork/testing";
 import { approveFlow } from "../src/approve";
 
 describe("approve flow", () => {
@@ -304,12 +304,12 @@ describe("approve flow", () => {
 The in-memory default forgets everything on restart. For a durable, multi-node deployment swap the
 storage preset; the flows do not change:
 
-First add `@loom/plugin-postgres` to the app's `package.json` dependencies (`"@loom/plugin-postgres": "workspace:*"`)
-and run `pnpm install`; the scaffold's dependencies are `@loom/app`, `core`, `effect-runtime`, `middleware`,
-`workflow-runtime`, `agent-surface` (and `@loom/cli` as a dev dependency), which do not include it.
+First add `@loomwork/plugin-postgres` to the app's `package.json` dependencies (`"@loomwork/plugin-postgres": "workspace:*"`)
+and run `pnpm install`; the scaffold's dependencies are `@loomwork/app`, `core`, `effect-runtime`, `middleware`,
+`workflow-runtime`, `agent-surface` (and `@loomwork/cli` as a dev dependency), which do not include it.
 
 ```ts
-import { postgresStorage } from "@loom/plugin-postgres";
+import { postgresStorage } from "@loomwork/plugin-postgres";
 
 const app = defineConfig({
   storage: postgresStorage({ url: process.env.DATABASE_URL! }),

@@ -1,5 +1,5 @@
-import { tainted } from "@loom/classify";
-import { memory$ } from "@loom/core";
+import { tainted } from "@loomwork/classify";
+import { memory$ } from "@loomwork/core";
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryMemoryStore } from "./InMemoryMemoryStore";
 import { MemoryRuntime } from "./MemoryRuntime";

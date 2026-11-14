@@ -7,7 +7,7 @@
   slowing resume.
 - Builds on: [ADR 0134](0134-snapshot-pruning.md) (pruning, part 1), [ADR 0129](0129-creation-marker-incarnation.md)
   (the fail-soft, warn-through-`onWarn` migration pattern this reuses).
-- Placement: **1P plugin (`@loom/plugin-postgres`) only.** Kernel, KERNEL_ABI, EVENT_SCHEMA and every SPI
+- Placement: **1P plugin (`@loomwork/plugin-postgres`) only.** Kernel, KERNEL_ABI, EVENT_SCHEMA and every SPI
   unchanged. One additive option on the existing `migrate` / `PostgresEventStore` / `postgresStorage`
   options.
 

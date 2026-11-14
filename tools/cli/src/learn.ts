@@ -1,17 +1,17 @@
 import path from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { EventStore } from "@loomwork/event-runtime";
 import {
   evaluatePolicy,
   formatEvalReport,
   promotionGate,
   steps,
   trajectories,
-} from "@loom/learning";
-import type { Policy, Trajectory } from "@loom/learning";
-import { evidenceEvents } from "@loom/learning";
-import { ReplayVM, normalizeSnapshotState } from "@loom/replay-vm";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/learning";
+import type { Policy, Trajectory } from "@loomwork/learning";
+import { evidenceEvents } from "@loomwork/learning";
+import { ReplayVM, normalizeSnapshotState } from "@loomwork/replay-vm";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
 /**
@@ -139,7 +139,7 @@ export async function cmdLearnReport(flags: StoreFlags, executionId?: string): P
   const terminal = all.filter((s) => s.rewardSource === "terminal").length;
   const unscored = all.filter((s) => s.rewardSource === "none").length;
 
-  // Per-arm evidence, best-first — the same shape @loom/reasoning's ucb1 consumes.
+  // Per-arm evidence, best-first — the same shape @loomwork/reasoning's ucb1 consumes.
   const arms = new Map<string, { n: number; sum: number }>();
   for (const s of all) {
     if (s.reward === undefined) continue;

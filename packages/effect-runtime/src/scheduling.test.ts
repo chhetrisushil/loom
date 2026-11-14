@@ -1,4 +1,4 @@
-import { Priority, createScheduler } from "@loom/scheduler";
+import { Priority, createScheduler } from "@loomwork/scheduler";
 import { describe, expect, it, vi } from "vitest";
 import { EffectRuntime } from "./EffectRuntime";
 import { ToolEffect } from "./effects/ToolEffect";

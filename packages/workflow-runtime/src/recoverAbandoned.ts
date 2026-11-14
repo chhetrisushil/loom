@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import {
   type ExecutionEnumerable,
   type LeaseStore,
@@ -6,7 +6,7 @@ import {
   isPayloadShredded,
   isReservedStream,
   iterateExecutionIds,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
 import { redriveDelayMs } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";

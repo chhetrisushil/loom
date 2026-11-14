@@ -1,6 +1,6 @@
-import { maskPaths } from "@loom/classify";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { recordedStepOutputs, replayAsFixture } from "@loom/eval";
+import { maskPaths } from "@loomwork/classify";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { recordedStepOutputs, replayAsFixture } from "@loomwork/eval";
 
 // ── foldAt — time-travel primitive (pure) ─────────────────────────────────────
 
@@ -8,7 +8,7 @@ import { recordedStepOutputs, replayAsFixture } from "@loom/eval";
  * Fold the log up to and including `sequence` (or the whole log when omitted) into
  * its `ExecutionState`. This is `loom debug`'s time-travel step: it reconstructs
  * exactly what the execution looked like at any point, deterministically, with no
- * live effects. Reuses `@loom/eval`'s identity-seeded fold.
+ * live effects. Reuses `@loomwork/eval`'s identity-seeded fold.
  */
 export function foldAt(events: EventEnvelope[], sequence?: number): ExecutionState {
   const prefix = sequence === undefined ? events : events.filter((e) => e.sequence <= sequence);

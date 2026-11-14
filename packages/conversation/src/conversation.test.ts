@@ -1,12 +1,12 @@
-import { SuspendError, agent$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
+import { SuspendError, agent$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
 import {
   LlmHttpError,
   LlmResponseInvalidError,
   LlmResponseLimitError,
   LlmStreamError,
-} from "@loom/llm";
-import { InboxClosedError } from "@loom/workflow-runtime";
+} from "@loomwork/llm";
+import { InboxClosedError } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import {
   Latch,

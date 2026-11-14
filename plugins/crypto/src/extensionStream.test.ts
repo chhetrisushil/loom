@@ -1,6 +1,10 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore, isKeyUnavailable, isPayloadShredded } from "@loom/event-runtime";
-import { InMemoryContentStore } from "@loom/plugin-content";
+import type { EventEnvelope } from "@loomwork/core";
+import {
+  InMemoryAsyncEventStore,
+  isKeyUnavailable,
+  isPayloadShredded,
+} from "@loomwork/event-runtime";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
 import { describe, expect, it } from "vitest";
 import { EncryptingContentStore } from "./EncryptingContentStore";
 import { EncryptingEventStore } from "./EncryptingEventStore";

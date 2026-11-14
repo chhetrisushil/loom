@@ -1,7 +1,11 @@
 import vm from "node:vm";
-import type { ExecutionState } from "@loom/core";
-import { DISPATCHER_SPI_VERSION, LocalDispatcher, SupervisingDispatcher } from "@loom/dispatcher";
-import { GrantTable } from "@loom/effect-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import {
+  DISPATCHER_SPI_VERSION,
+  LocalDispatcher,
+  SupervisingDispatcher,
+} from "@loomwork/dispatcher";
+import { GrantTable } from "@loomwork/effect-runtime";
 import {
   type AcquireOptions,
   BRANCH_REGISTRY_SPI_VERSION,
@@ -20,30 +24,30 @@ import {
   TenantScopedArchiveStore,
   TenantScopedEventStore,
   creationMarker,
-} from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest } from "@loom/llm";
+} from "@loomwork/event-runtime";
+import type { LlmProvider, LlmRequest } from "@loomwork/llm";
 import {
   AnthropicProvider,
   GeminiProvider,
   OpenAiProvider,
   assertRequestSupported,
   textOf,
-} from "@loom/llm";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import type { SandboxBackend, SandboxRequest } from "@loom/sandbox";
+} from "@loomwork/llm";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
+import type { SandboxBackend, SandboxRequest } from "@loomwork/sandbox";
 import {
   InMemoryAsyncSnapshotStore,
   ProfilingSnapshotStore,
   SNAPSHOT_STORE_SPI_VERSION,
   TenantScopedSnapshotStore,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import type {
   ExecutionPackage,
   ExecutionResult,
   WorkerLease,
   WorkerRequest,
   WorkerRuntime,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import { describe, expect, it } from "vitest";
 import {
   checkContentStoreTouchContract,
@@ -738,7 +742,7 @@ describe("SPI version constants", () => {
 });
 
 // (WorkerRuntime conformance self-tests against LocalWorkerRuntime in
-// @loom/worker-runtime-local — that package owns the reference impl + a runtime to run.)
+// @loomwork/worker-runtime-local — that package owns the reference impl + a runtime to run.)
 
 // --- LlmProvider: a deterministic echo provider (offline). ---
 const echoProvider: LlmProvider = {

@@ -1,11 +1,11 @@
-import type { EventEnvelope } from "@loom/core";
-import type { AppendIfUnchangedResult, EventStore, TipObservation } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { AppendIfUnchangedResult, EventStore, TipObservation } from "@loomwork/event-runtime";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
   SubscriberRegistry,
   creationMarker,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
 

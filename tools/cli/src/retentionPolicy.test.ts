@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import type { EventEnvelope } from "@loomwork/core";
+import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageError } from "./args";
 import { run } from "./cli";

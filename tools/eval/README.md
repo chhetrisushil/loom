@@ -1,4 +1,4 @@
-# @loom/eval — use the event log as a test fixture, and grade model output
+# @loomwork/eval — use the event log as a test fixture, and grade model output
 
 Two things, both offline. First, the log-as-fixture primitives: fold a recorded event log back into its
 final state (`replayAsFixture`), diff two runs for golden-file regression (`diffRuns`), and score a
@@ -8,8 +8,8 @@ calls in a suite are served from recorded cassettes, so a suite makes no live LL
 you record. Use it in tests and CI; it is not a runtime component.
 
 ```ts
-import { CassetteProvider, exactMatch, runEvalSuite } from "@loom/eval";
-import type { CassetteData } from "@loom/eval";
+import { CassetteProvider, exactMatch, runEvalSuite } from "@loomwork/eval";
+import type { CassetteData } from "@loomwork/eval";
 
 declare const committed: CassetteData; // loaded from a committed cassette file
 const provider = new CassetteProvider({ mode: "replay", data: committed });
@@ -64,6 +64,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
   [ADR 0131](../../docs/adr/0131-loom-own-evals.md) (loom's own evals).
 - CLI: `loom eval --dir <path>` replays golden logs against expectations
   ([docs/usage-cli.md](../../docs/usage-cli.md)).
-- API reference: section "`@loom/eval` — log-as-fixture evals" in
+- API reference: section "`@loomwork/eval` — log-as-fixture evals" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

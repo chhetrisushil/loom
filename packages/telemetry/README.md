@@ -1,4 +1,4 @@
-# @loom/telemetry — flow and step callbacks
+# @loomwork/telemetry — flow and step callbacks
 
 Turns the kernel's event stream into nine optional callbacks, so you can ship traces and metrics without
 reading event envelopes: flow start, complete, fail, suspend and resume, and step start, complete, fail and
@@ -9,8 +9,8 @@ call the hook yourself: list adapters under `observability.telemetry` and `defin
 wires them to the event stream and masks sensitive fields first.
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { ConsoleTelemetryAdapter, type TelemetryAdapter } from "@loom/telemetry";
+import { defineConfig } from "@loomwork/app";
+import { ConsoleTelemetryAdapter, type TelemetryAdapter } from "@loomwork/telemetry";
 import { helloFlow } from "./config"; // any registered flow
 
 // Implement any subset of the nine callbacks.
@@ -64,7 +64,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/telemetry`" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/telemetry`" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [operations](../../docs/operations.md), [data classification](../../docs/data-classification.md) (what gets scrubbed).
 - ADR: [0147 `onDurableEvent`](../../docs/adr/0147-on-durable-event.md).
 - Source: `packages/telemetry/src`.

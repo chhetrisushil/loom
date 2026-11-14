@@ -1,15 +1,15 @@
-import { type FlowDefinition, step$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { type FlowDefinition, step$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   type EventStore,
   InMemoryAsyncEventStore,
   InMemoryLeaseStore,
   InMemoryTimerStore,
   type LeaseStore,
-} from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 
 // ── Rig for the heartbeat-lease DST scenarios (ADR 0130 D11, S7f) ─────────────────────────────

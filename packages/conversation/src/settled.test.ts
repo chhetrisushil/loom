@@ -1,6 +1,6 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmRequest } from "@loom/llm";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmRequest } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { Latch, boot, lastUserText, messages, signRaw, until } from "./__fixtures__/harness";
 import { type TurnSettledEvent, turnSettledObserver } from "./index";

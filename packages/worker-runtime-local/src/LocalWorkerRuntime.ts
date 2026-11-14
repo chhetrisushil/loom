@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import type {
   ExecutionOutcome,
   ExecutionPackage,
@@ -6,9 +6,13 @@ import type {
   WorkerLease,
   WorkerRequest,
   WorkerRuntime,
-} from "@loom/worker-runtime";
-import { ChainHopLimitError, LeaseHeldError, StartLeaseHeldError } from "@loom/workflow-runtime";
-import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/worker-runtime";
+import {
+  ChainHopLimitError,
+  LeaseHeldError,
+  StartLeaseHeldError,
+} from "@loomwork/workflow-runtime";
+import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loomwork/workflow-runtime";
 
 type Principal = NonNullable<RunOptions["principal"]>;
 

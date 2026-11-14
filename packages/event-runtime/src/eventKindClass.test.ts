@@ -1,4 +1,4 @@
-import { KERNEL_EVENT_KINDS } from "@loom/core";
+import { KERNEL_EVENT_KINDS } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { EVENT_KIND_CLASS, isAnsweringKind } from "./eventKindClass";
 

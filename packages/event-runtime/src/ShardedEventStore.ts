@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import type { ShardPlan } from "./ShardPlan";
 import { bucketOf } from "./SubscriberRegistry";
 import { compareExecutionIds } from "./executionIdOrder";

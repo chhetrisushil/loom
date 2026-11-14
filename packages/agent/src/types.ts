@@ -14,7 +14,7 @@ export interface AgentInput {
   prompt: string;
   /**
    * R17 (ADR 0122) — earlier messages of the dialogue, oldest first, placed before `prompt`. The
-   * caller owns their size (`@loom/conversation` fits them to a token budget); they are part of the
+   * caller owns their size (`@loomwork/conversation` fits them to a token budget); they are part of the
    * recorded request of every turn, so a resume rebuilds the identical transcript.
    */
   history?: readonly AgentHistoryMessage[];

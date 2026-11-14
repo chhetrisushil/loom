@@ -1,11 +1,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";

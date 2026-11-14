@@ -128,10 +128,10 @@ Routes: `POST /branches` · `/review` `{strategy, approved}` · `/promote` `{str
 ## Run it
 
 ```bash
-pnpm --filter @loom/incident-war-room dev         # client :5173 + durable server :8787
+pnpm --filter @loomwork/incident-war-room dev         # client :5173 + durable server :8787
 # → run the replica goal → "Explore branches" → watch the graph + diff → "Promote"
 
-pnpm --filter @loom/incident-war-room demo:fork   # narrated, headless, end-to-end
+pnpm --filter @loomwork/incident-war-room demo:fork   # narrated, headless, end-to-end
 ```
 
 ```

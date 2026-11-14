@@ -23,7 +23,7 @@
 // host's `ui/notifications/tool-result` and re-reads via the ambient surface
 // cursor tool.
 
-import { hashResourceBody } from "@loom/plugin-mcp";
+import { hashResourceBody } from "@loomwork/plugin-mcp";
 import { SURFACE_CURSOR_TOOL } from "./surfaceCursor";
 
 /** The URI the surface-host template is published under. */
@@ -41,7 +41,7 @@ export const SURFACE_HOST_MIME_TYPE = "text/html;profile=mcp-app";
  * JSON Pointer. Anything the catalog does not define is skipped rather than
  * guessed — an unknown component type renders nothing, never raw HTML.
  */
-export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (static; pinned by content hash) -->
+export const SURFACE_HOST_TEMPLATE = `<!-- @loomwork/plugin-mcp-app surface host (static; pinned by content hash) -->
 <div id="loom-root" data-empty="true"></div>
 <style>
   #loom-root { font: 14px/1.5 var(--font-sans, system-ui, sans-serif); color: var(--color-text-primary, CanvasText); }
@@ -268,7 +268,7 @@ export const SURFACE_HOST_TEMPLATE = `<!-- @loom/plugin-mcp-app surface host (st
  * pinned artifact that silently changes turns a deterministic replay into a
  * different observable outcome, and nothing else in the system would notice.
  *
- * Deliberately delegates to `@loom/plugin-mcp`'s `hashResourceBody` — the SAME
+ * Deliberately delegates to `@loomwork/plugin-mcp`'s `hashResourceBody` — the SAME
  * function the ingress side applies to a fetched `ui://` resource. A pin is only
  * useful if the value captured at plan time is the value a reader recomputes;
  * two hashing implementations that mostly agree is precisely how a pin stops

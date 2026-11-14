@@ -1,4 +1,4 @@
-import type { Lease, LeaseStore } from "@loom/event-runtime";
+import type { Lease, LeaseStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import {
   LeaseKeeper,

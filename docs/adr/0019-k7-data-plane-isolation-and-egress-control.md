@@ -1,6 +1,6 @@
 # ADR 0019 — K7: data-plane isolation & egress control
 
-- Status: Accepted (implemented 2026-07-10 — `@loom/isolate`: `IsolatedToolEffect` runs a
+- Status: Accepted (implemented 2026-07-10 — `@loomwork/isolate`: `IsolatedToolEffect` runs a
   tool in a pooled child process AT the effect position (the chain's innermost link, so
   K2/K3/K6 stay kernel-side, per amendment A1); scrubbed per-tool env (K7.2/K7.4); network
   only via the marshaled `ctx.fetch`, brokered kernel-side with a static allowlist checked

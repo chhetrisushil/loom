@@ -13,7 +13,7 @@ import { readWorkspaceGraph } from "./layering";
 //
 // It stayed invisible because loom's own test config forces
 // `conditions: ["require", "default"]`, and TypeScript reads `types` directly, so
-// nothing in the repo ever asked for the missing condition. `@loom/memory` was the
+// nothing in the repo ever asked for the missing condition. `@loomwork/memory` was the
 // first to be caught, by a package that happened to have no vitest config.
 //
 // `default` is the fallback that any condition set matches. It is checked LAST,

@@ -1,4 +1,4 @@
-import type { ScheduleDefinition } from "@loom/core";
+import type { ScheduleDefinition } from "@loomwork/core";
 import type { ZodSchema } from "zod";
 import { durableState } from "./durableState";
 import type {

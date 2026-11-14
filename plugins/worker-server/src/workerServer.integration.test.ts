@@ -1,15 +1,15 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { step$ } from "@loom/core";
-import { LocalDispatcher } from "@loom/dispatcher";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { step$ } from "@loomwork/core";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
 
-import { RemoteWorkerRuntime } from "@loom/plugin-worker-remote";
-import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+import { RemoteWorkerRuntime } from "@loomwork/plugin-worker-remote";
+import { LocalWorkerRuntime } from "@loomwork/worker-runtime-local";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createWorkerServer } from "./createWorkerServer";

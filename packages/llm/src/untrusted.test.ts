@@ -1,5 +1,5 @@
-import { tainted } from "@loom/classify";
-import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
+import { tainted } from "@loomwork/classify";
+import type { EffectContext, EffectDelta } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { createLlmEffect } from "./createLlmEffect";
 import type { LlmMessageContent } from "./parts";

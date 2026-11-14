@@ -1,4 +1,4 @@
-// @loom/dst — Deterministic Simulation Testing for the Loom kernel.
+// @loomwork/dst — Deterministic Simulation Testing for the Loom kernel.
 //
 // Drive the durable-execution kernel under seeded, adversarial fault schedules and
 // assert its invariants hold; reproduce and minimize any failure bit-for-bit. This

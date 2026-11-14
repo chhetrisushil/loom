@@ -2,7 +2,7 @@ import {
   type ExecutionPackage,
   type ExecutionResult,
   isSupersededRefusal,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 import type { DispatchMetadata, DispatcherHealth, ExecutionDispatcher } from "./types";
 
 export interface CircuitPolicy {

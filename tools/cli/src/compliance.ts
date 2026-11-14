@@ -1,6 +1,6 @@
-import { SubjectIndex } from "@loom/compliance";
-import type { EventEnvelope } from "@loom/core";
-import { isReservedStream, readRangeOf } from "@loom/event-runtime";
+import { SubjectIndex } from "@loomwork/compliance";
+import type { EventEnvelope } from "@loomwork/core";
+import { isReservedStream, readRangeOf } from "@loomwork/event-runtime";
 import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
 

@@ -13,7 +13,7 @@ import {
   runReadModelStoreConformance,
   runSnapshotStoreConformance,
   runTimerStoreConformance,
-} from "@loom/conformance";
+} from "@loomwork/conformance";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { SqliteArchiveStore } from "./SqliteArchiveStore";

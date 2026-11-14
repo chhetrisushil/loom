@@ -1,4 +1,4 @@
-import { advisoryPipeline, formatAdvisory } from "@loom/analytics";
+import { advisoryPipeline, formatAdvisory } from "@loomwork/analytics";
 import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
 /**

@@ -1,7 +1,7 @@
-import type { EventEnvelope } from "@loom/core";
-import { LeaseHeldError, LeaseLostError, recoverAbandoned } from "@loom/workflow-runtime";
-import { LeaseStoreQuietError, StartLeaseHeldError } from "@loom/workflow-runtime";
-import { TimerService } from "@loom/workflow-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { LeaseHeldError, LeaseLostError, recoverAbandoned } from "@loomwork/workflow-runtime";
+import { LeaseStoreQuietError, StartLeaseHeldError } from "@loomwork/workflow-runtime";
+import { TimerService } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import {
   type Node,

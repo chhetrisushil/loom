@@ -1,6 +1,6 @@
-import { LocalDispatcher } from "@loom/dispatcher";
-import { RemoteWorkerRuntime } from "@loom/plugin-worker-remote";
-import { isSupersededRefusal } from "@loom/worker-runtime";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { RemoteWorkerRuntime } from "@loomwork/plugin-worker-remote";
+import { isSupersededRefusal } from "@loomwork/worker-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { createWorkerServer } from "./createWorkerServer";
 import type { WorkerServer } from "./createWorkerServer";

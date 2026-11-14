@@ -1,12 +1,12 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   InMemoryKeyStore,
   PayloadShreddedError,
   isShredded,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { ReadModelService } from "./ReadModelService";
@@ -18,7 +18,7 @@ import type { ReadModelDefinition } from "./types";
 // RM-2 makes a read model derivative by construction: "a CACHE of the log with a
 // watermark, never an authority — drop it and rebuild by re-scanning". Crypto-shredding
 // (K10.2) erases a subject by destroying the key its sensitive fields were encrypted
-// under. Nothing connects the two: `@loom/compliance`'s `eraseSubject` knows the event
+// under. Nothing connects the two: `@loomwork/compliance`'s `eraseSubject` knows the event
 // store and the key store, and the only removal verb on `ReadModelStore` is
 // `clear(modelId)` — the whole model.
 //

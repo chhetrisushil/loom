@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 /**
  * The backend-independent half of `EventStore.subscribe` (ADR 0074 D4).

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { tainted } from "@loom/classify";
-import type { LlmStreamChunk, ReasoningStore } from "@loom/llm";
+import { tainted } from "@loomwork/classify";
+import type { LlmStreamChunk, ReasoningStore } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { boot, lastUserText, messages } from "./__fixtures__/harness";
 import { ConversationHub, type LiveEvent, withTurnScope } from "./index";

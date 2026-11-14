@@ -1,6 +1,6 @@
-import type { LlmEffect } from "@loom/effect-runtime";
-import { createLlmEffect } from "@loom/llm";
-import type { ContentResolver, LlmProvider, LlmReasoningOptions, LlmResponse } from "@loom/llm";
+import type { LlmEffect } from "@loomwork/effect-runtime";
+import { createLlmEffect } from "@loomwork/llm";
+import type { ContentResolver, LlmProvider, LlmReasoningOptions, LlmResponse } from "@loomwork/llm";
 import type { AgentModelCall } from "./agentLoop$";
 
 /**

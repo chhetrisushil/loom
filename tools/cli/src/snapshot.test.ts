@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
-import { zstdAvailable } from "@loom/snapshot-runtime";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
+import { zstdAvailable } from "@loomwork/snapshot-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./cli";
 

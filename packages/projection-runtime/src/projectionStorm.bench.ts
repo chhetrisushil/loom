@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { bench, describe } from "vitest";
 import { InMemoryProjectionRuntime } from "./InMemoryProjectionRuntime";
 

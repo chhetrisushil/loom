@@ -1,5 +1,5 @@
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { LogLifecycle, type RetentionVerdict } from "./LogLifecycle";
 import { RetentionPolicyError, assertRetentionPolicy, retentionPolicy } from "./retentionPolicy";

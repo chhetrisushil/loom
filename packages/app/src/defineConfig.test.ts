@@ -1,5 +1,5 @@
-import { surface } from "@loom/agent-surface";
-import { secret, sensitive } from "@loom/classify";
+import { surface } from "@loomwork/agent-surface";
+import { secret, sensitive } from "@loomwork/classify";
 import {
   type EventEnvelope,
   agent$,
@@ -11,21 +11,26 @@ import {
   skill$,
   step$,
   tool$,
-} from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { EffectMiddleware } from "@loom/effect-runtime";
+} from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectMiddleware } from "@loomwork/effect-runtime";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
-import { InMemorySecretResolver, isSecretRef, retryMiddleware, secretRef } from "@loom/middleware";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+} from "@loomwork/event-runtime";
+import type { BranchRegistry, EventStore } from "@loomwork/event-runtime";
+import {
+  InMemorySecretResolver,
+  isSecretRef,
+  retryMiddleware,
+  secretRef,
+} from "@loomwork/middleware";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { type CatalogLike, defineConfig as defineConfigRaw } from "./defineConfig";

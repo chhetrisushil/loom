@@ -1,4 +1,4 @@
-// @loom/plugin-a2ui — project Loom agent surfaces onto the Google A2UI
+// @loomwork/plugin-a2ui — project Loom agent surfaces onto the Google A2UI
 // (Agent-to-UI) wire protocol v1.0 so any A2UI-compliant client can render a
 // Loom-driven UI. Egress + inbound actions + `callFunction` bidirectional RPC.
 

@@ -257,7 +257,7 @@ describe("no raw LLM message content reads (R5, ADR 0120)", () => {
   });
 
   it("is not vacuous: the scan resolved typed content accesses, and every allowlist entry is live", () => {
-    // If @loom/llm's dist is missing the alias resolves to `any` and nothing is ever flagged.
+    // If @loomwork/llm's dist is missing the alias resolves to `any` and nothing is ever flagged.
     expect(scan.examined.size).toBeGreaterThanOrEqual(3);
     // .tsx and .mts sources are walked too (plugins/renderer-react is .tsx).
     expect(walkSourceFiles().some((f) => f.endsWith(".tsx"))).toBe(true);
@@ -272,7 +272,7 @@ describe("no raw LLM message content reads (R5, ADR 0120)", () => {
   it("FAILS on a planted bad snippet (and passes the safe shapes)", () => {
     const dir = mkdtempSync(join(tmpdir(), "loom-rawcontent-"));
     try {
-      // Resolve @loom/llm through the repo's own node_modules by living under the repo is not possible
+      // Resolve @loomwork/llm through the repo's own node_modules by living under the repo is not possible
       // for a tmp dir, so the fixture declares the same alias locally.
       const fixture = join(dir, "fixture.ts");
       const source = `type LlmContentPart = { type: "text"; text: string } | { type: "image"; data: string };

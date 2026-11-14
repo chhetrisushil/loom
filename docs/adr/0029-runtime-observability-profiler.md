@@ -1,8 +1,8 @@
 # ADR 0029 — Runtime Observability / profiler
 
-- Status: Accepted (2026-07-10) — accepted item #2 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `flameGraph` / `latencyBreakdown` / `profile` / `formatProfile` lenses in `@loom/analytics` + `loom profile --db <path> <executionId>` CLI. P3 ratios (`cacheHitRatio`/`predictionAccuracy`) present as `null` (inert until those seams land).
+- Status: Accepted (2026-07-10) — accepted item #2 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `flameGraph` / `latencyBreakdown` / `profile` / `formatProfile` lenses in `@loomwork/analytics` + `loom profile --db <path> <executionId>` CLI. P3 ratios (`cacheHitRatio`/`predictionAccuracy`) present as `null` (inert until those seams land).
 - Date: 2026-07-10
-- Builds on: `@loom/analytics` (M9 read-only lenses), `@loom/telemetry` (`TelemetryAdapter`), `@loom/cli` (`buildTrace`, `loom inspect`)
+- Builds on: `@loomwork/analytics` (M9 read-only lenses), `@loomwork/telemetry` (`TelemetryAdapter`), `@loomwork/cli` (`buildTrace`, `loom inspect`)
 
 ## Context
 
@@ -15,7 +15,7 @@ is strictly read-only over the log + telemetry, it carries no determinism risk.
 
 ## Decision
 
-Add profiler lenses in `@loom/analytics` (and a `loom profile <executionId>` CLI view) that fold
+Add profiler lenses in `@loomwork/analytics` (and a `loom profile <executionId>` CLI view) that fold
 the existing event stream + telemetry spans into diagnostics. Read-only, off-log, opt-in (G1/G2).
 
 - **P1 — flame graph** — fold `STEP_STARTED`/`STEP_COMPLETED` (+ nested `execute`/`parallel`) into

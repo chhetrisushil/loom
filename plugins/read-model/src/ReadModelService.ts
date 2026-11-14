@@ -1,6 +1,6 @@
-import { checkVersionPins } from "@loom/core";
-import type { EventEnvelope, PinReport } from "@loom/core";
-import { iterateExecutionIds } from "@loom/event-runtime";
+import { checkVersionPins } from "@loomwork/core";
+import type { EventEnvelope, PinReport } from "@loomwork/core";
+import { iterateExecutionIds } from "@loomwork/event-runtime";
 import { FoldedModelEngine, foldedCapable } from "./FoldedModelEngine";
 import type {
   CatchUpReport,
@@ -360,7 +360,7 @@ export class ReadModelService {
    * would compare equal to another empty declaration and read as a verified match.
    */
   pins(): Readonly<Record<string, string>> {
-    // No prototype — see `emptyPins` in @loom/blueprint-runtime: a model id of `__proto__`
+    // No prototype — see `emptyPins` in @loomwork/blueprint-runtime: a model id of `__proto__`
     // would otherwise set one rather than add a key, and drop out of every report silently.
     const pins: Record<string, string> = Object.create(null);
     for (const [id, model] of this.models) {

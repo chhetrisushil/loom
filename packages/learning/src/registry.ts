@@ -21,7 +21,7 @@ import type { EvalReport } from "./types";
 
 export type RolloutMode = "full" | "canary" | "shadow";
 
-/** A compare-and-set keyed store. `DurableStateStore` (`@loom/plugin-durable-state`) satisfies it. */
+/** A compare-and-set keyed store. `DurableStateStore` (`@loomwork/plugin-durable-state`) satisfies it. */
 export interface PolicyKvStore {
   load(key: string): Promise<{ revision: number; payload: unknown } | null>;
   save(

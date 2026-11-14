@@ -1,8 +1,8 @@
 // Reference: a Postgres-backed SnapshotStore for Loom. See PgEventStore.ts for
 // context. Inject it into WorkflowRuntime exactly like SqliteSnapshotStore.
 
-import type { ExecutionState } from "@loom/core";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
 import type { Pool } from "pg";
 
 interface SnapshotRow {

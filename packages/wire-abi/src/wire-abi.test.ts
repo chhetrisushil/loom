@@ -1,4 +1,4 @@
-import { KERNEL_SYSCALLS } from "@loom/workflow-runtime";
+import { KERNEL_SYSCALLS } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { FOLD_VECTORS, runFoldVectors } from "./foldVectors";
 import { WIRE_ABI, WIRE_METHODS, deriveWireMethods } from "./protocol";

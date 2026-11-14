@@ -3,14 +3,14 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 // ADR 0114 — type-level proof (loom test files are NOT tsc-checked, so this one runs tsc itself).
-// A consumer that imports ONLY `@loom/app` (+ the kernel's `ExecutionContext`) must see `ctx.ui`.
-// Resolution is from @loom/testing's own `node_modules`, i.e. the built `dist` a consumer gets.
+// A consumer that imports ONLY `@loomwork/app` (+ the kernel's `ExecutionContext`) must see `ctx.ui`.
+// Resolution is from @loomwork/testing's own `node_modules`, i.e. the built `dist` a consumer gets.
 function diagnose(source: string): string[] {
   const file = join(
     __dirname,
     "..",
     "__ui_consumer__.ts"
-  ) /* resolves from @loom/testing: depends on @loom/app + workflow-runtime, NOT agent-surface */;
+  ) /* resolves from @loomwork/testing: depends on @loomwork/app + workflow-runtime, NOT agent-surface */;
   const options: ts.CompilerOptions = {
     strict: true,
     noEmit: true,
@@ -37,11 +37,11 @@ function diagnose(source: string): string[] {
     .map((d) => `TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, "\n")}`);
 }
 
-describe("ADR 0114 — ctx.ui type reaches an @loom/app-only consumer", () => {
-  it("type-checks ctx.ui.set when only @loom/app is imported", () => {
+describe("ADR 0114 — ctx.ui type reaches an @loomwork/app-only consumer", () => {
+  it("type-checks ctx.ui.set when only @loomwork/app is imported", () => {
     const diags = diagnose(`
-      import { defineConfig } from "@loom/app";
-      import type { ExecutionContext } from "@loom/workflow-runtime";
+      import { defineConfig } from "@loomwork/app";
+      import type { ExecutionContext } from "@loomwork/workflow-runtime";
       export const cfg = defineConfig;
       export function run(ctx: ExecutionContext): void {
         ctx.ui.set("status", "ok");
@@ -51,9 +51,9 @@ describe("ADR 0114 — ctx.ui type reaches an @loom/app-only consumer", () => {
     expect(diags).toEqual([]);
   });
 
-  it("negative control: without @loom/app (or agent-surface) in the program ctx.ui is untyped", () => {
+  it("negative control: without @loomwork/app (or agent-surface) in the program ctx.ui is untyped", () => {
     const diags = diagnose(`
-      import type { ExecutionContext } from "@loom/workflow-runtime";
+      import type { ExecutionContext } from "@loomwork/workflow-runtime";
       export function run(ctx: ExecutionContext): void {
         ctx.ui.set("status", "ok");
       }

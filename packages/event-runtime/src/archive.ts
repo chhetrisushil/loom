@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { type EventEnvelope, canonicalJson } from "@loom/core";
+import { type EventEnvelope, canonicalJson } from "@loomwork/core";
 import {
   ArchiveDigestError,
   type ArchiveExecutionPage,

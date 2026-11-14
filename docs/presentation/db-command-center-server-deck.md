@@ -138,7 +138,7 @@ The mutating flow still hits a durable `ctx.suspend` checkpoint on the server:
 ## Run it
 
 ```bash
-pnpm --filter @loom/db-command-center-server dev    # client :5173 + durable server :8787
+pnpm --filter @loomwork/db-command-center-server dev    # client :5173 + durable server :8787
 ```
 
 Same two goals, same behavior. Or drive the API directly:
@@ -161,7 +161,7 @@ Every remediation task is a real event-sourced execution — so it can be **fork
 suspends at its approval gate, fork it into speculative branches, preview each, keep the winner:
 
 ```bash
-pnpm --filter @loom/db-command-center-server demo:fork
+pnpm --filter @loomwork/db-command-center-server demo:fork
 ```
 
 ```

@@ -58,7 +58,7 @@ function field(value: unknown, key: string): unknown {
  *  - `ExecutionSupersededError` — the wire form of either.
  *
  * Not included: `StartLeaseHeldError` (a caller-chosen start that found a lease but NO sequence 0, a
- * possible ghost; same reasoning) and `StartFencedOutError` (`@loom/workflow-runtime`) — a start refused on the fence
+ * possible ghost; same reasoning) and `StartFencedOutError` (`@loomwork/workflow-runtime`) — a start refused on the fence
  * with sequence 0 still absent. Its newer token's holder has written nothing and may be dead, so
  * settling would lose the start outright; it stays retryable.
  *
@@ -70,9 +70,9 @@ function field(value: unknown, key: string): unknown {
  * accepted rather than guessing which execution a batch error "really" meant.
  *
  * Every other error, including any other `StorageWriteError`, is `false`: a genuine failure is
- * never swallowed. Matched by `name`, not class, because `@loom/worker-runtime` sits below the
+ * never swallowed. Matched by `name`, not class, because `@loomwork/worker-runtime` sits below the
  * packages that define the first two (layering), and so a second bundled copy of any of them
- * cannot hide a refusal — the same rule as `isStaleFence` in `@loom/workflow-runtime`.
+ * cannot hide a refusal — the same rule as `isStaleFence` in `@loomwork/workflow-runtime`.
  */
 export function isSupersededRefusal(err: unknown, executionId: string): boolean {
   const name = field(err, "name");

@@ -1,4 +1,4 @@
-# ADR 0053 — `@loom/plugin-durable-state`: typed, versioned carry state as recorded effects
+# ADR 0053 — `@loomwork/plugin-durable-state`: typed, versioned carry state as recorded effects
 
 - Status: **Accepted — shipped** (plugin + in-memory/SQLite/Postgres backends + conformance kit)
 - Date: 2026-07-15
@@ -68,10 +68,10 @@ contention point.
 ### D5 — Backends and conformance
 
 `InMemoryDurableStateStore` (reference, deep-cloning), `SqliteDurableStateStore`
-(`@loom/plugin-sqlite`, own idempotent table migration like SqliteTimerStore),
-`PostgresDurableStateStore` (`@loom/plugin-postgres`, table in the shared `migrate()` schema —
+(`@loomwork/plugin-sqlite`, own idempotent table migration like SqliteTimerStore),
+`PostgresDurableStateStore` (`@loomwork/plugin-postgres`, table in the shared `migrate()` schema —
 one backup captures events + carry state; CAS via guarded single-statement INSERT/UPDATE, safe
-cross-node without locks). `runDurableStateStoreConformance` in `@loom/conformance`
+cross-node without locks). `runDurableStateStoreConformance` in `@loomwork/conformance`
 (structural type, ADR 0033 idiom) is dogfooded by the in-memory and SQLite backends and by an
 env-gated Postgres test.
 

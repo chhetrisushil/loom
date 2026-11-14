@@ -1,11 +1,16 @@
-import { BUILTIN_METER_DIMENSIONS, SuspendError, VOCABULARY_NAME_PATTERN, step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { Effect, EffectContext } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { meteringMiddleware } from "@loom/middleware";
-import { BUILTIN_DIMENSION_NAMES, CUSTOM_DIMENSION_PATTERN, ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import {
+  BUILTIN_METER_DIMENSIONS,
+  SuspendError,
+  VOCABULARY_NAME_PATTERN,
+  step$,
+} from "@loomwork/core";
+import type { FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { Effect, EffectContext } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { meteringMiddleware } from "@loomwork/middleware";
+import { BUILTIN_DIMENSION_NAMES, CUSTOM_DIMENSION_PATTERN, ReplayVM } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";

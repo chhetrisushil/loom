@@ -1,5 +1,5 @@
-import { unwrapTainted } from "@loom/classify";
-import type { EventStore } from "@loom/event-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import type { EventStore } from "@loomwork/event-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { inboxBackends } from "./__tests__/r2Backends";

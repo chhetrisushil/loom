@@ -1,4 +1,4 @@
-import { runContentStoreConformance } from "@loom/conformance";
+import { runContentStoreConformance } from "@loomwork/conformance";
 import { describe, expect, it } from "vitest";
 import { CachingContentStore } from "./CachingContentStore";
 import { InMemoryContentStore } from "./ContentStore";

@@ -35,7 +35,7 @@ export function workspacePackages(root) {
   return out;
 }
 
-/** Org headings of docs/api-reference.org that cover `name` (`** ~@loom/x~ - ...`). */
+/** Org headings of docs/api-reference.org that cover `name` (`** ~@loomwork/x~ - ...`). */
 export function apiReferenceHeading(orgText, name) {
   for (const line of orgText.split("\n")) {
     if (!/^\*+\s/.test(line)) continue;

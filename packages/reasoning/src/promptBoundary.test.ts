@@ -1,6 +1,6 @@
-import { tainted } from "@loom/classify";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { UntrustedContentError } from "@loom/llm";
+import { tainted } from "@loomwork/classify";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
+import { UntrustedContentError } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { ReasoningRuntime } from "./ReasoningRuntime";
 

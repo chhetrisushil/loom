@@ -166,7 +166,7 @@ Say "the primitive is there, the human-task plumbing is yours" rather than overc
 
 Everyone records **what** the model returned. A Loom `ctx.decide` also records the **policy** and the **probability that choice was drawn with**.
 
-- That makes a decision evaluable **counterfactually, later, off real logs** — "what would a different policy have scored?" without re-running anything (`@loom/learning`).
+- That makes a decision evaluable **counterfactually, later, off real logs** — "what would a different policy have scored?" without re-running anything (`@loomwork/learning`).
 - Propensity **cannot be reconstructed after the fact**. If it wasn't logged at the draw, it's gone.
 
 **A bare decision log *looks* scored while being unevaluable. That's the difference.**

@@ -1,25 +1,25 @@
-import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   ContentMissingError,
   ContentResolvingEventStore,
   InMemoryContentStore,
-} from "@loom/plugin-content";
+} from "@loomwork/plugin-content";
 import {
   PostgresEventStore,
   PostgresSnapshotStore,
   migratePostgresStores,
-} from "@loom/plugin-postgres";
-import { foldEvents } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-postgres";
+import { foldEvents } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   type FlowRunner,
   LogLifecycle,
   type RegisteredFlow,
   WorkflowRuntime,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";

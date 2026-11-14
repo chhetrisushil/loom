@@ -1,5 +1,5 @@
-import { badge, bind, button, column, list, text } from "@loom/plugin-a2ui";
-import type { ComponentInstance } from "@loom/plugin-a2ui";
+import { badge, bind, button, column, list, text } from "@loomwork/plugin-a2ui";
+import type { ComponentInstance } from "@loomwork/plugin-a2ui";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 import { SURFACE_HOST_TEMPLATE } from "./template";

@@ -1,4 +1,4 @@
-# ADR 0036 — Deterministic Simulation Testing (`@loom/dst`)
+# ADR 0036 — Deterministic Simulation Testing (`@loomwork/dst`)
 
 - Status: Accepted (2026-07-11)
 - Date: 2026-07-11
@@ -19,7 +19,7 @@ by adversarial exploration.
 
 ## Decision
 
-Add **`@loom/dst`**, a test/dev-only package that drives the real kernel under seeded fault
+Add **`@loomwork/dst`**, a test/dev-only package that drives the real kernel under seeded fault
 schedules and asserts its invariants. It is imported by **no runtime package**, so its production
 overhead is **zero by construction** (dependency direction), not by a flag.
 
@@ -65,7 +65,7 @@ minimal reproducing schedule. `replaySchedule(prop, schedule, seed)` reproduces 
 
 ## Verification
 
-- `@loom/dst` tests (20): `splitmix64`/`virtualClock` determinism; `faultInjectingStore`
+- `@loomwork/dst` tests (20): `splitmix64`/`virtualClock` determinism; `faultInjectingStore`
   explore→record→replay reproduces the exact durable outcome, crash semantics, capability
   forwarding; a **machinery** property where a buggy SUT (ignores write failures → log gap) is
   found, shrunk to the essential rejection, and replayed deterministically, while a correct SUT
@@ -74,5 +74,5 @@ minimal reproducing schedule. `replaySchedule(prop, schedule, seed)` reproduces 
   crashes really fire while idempotency collapses to one logical charge and all five invariants
   hold.
 - `faultStore.bench.ts` characterizes the harness's own append overhead (a small constant factor;
-  absolute hz are machine-relative). `@loom/spec` registers the `dst` capability at **L4** (bench +
+  absolute hz are machine-relative). `@loomwork/spec` registers the `dst` capability at **L4** (bench +
   tests; not L5 — it is a harness, not a wire contract).

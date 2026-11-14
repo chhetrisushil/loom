@@ -1,4 +1,4 @@
-# @loom/plugin-a2a — talk to other agents over the A2A protocol
+# @loomwork/plugin-a2a — talk to other agents over the A2A protocol
 
 Both directions of Google's Agent-to-Agent protocol. Outbound, `A2APeerClient` discovers a remote
 agent's card and registers it as a Loom tool that agents, steps and the planner can call. Inbound,
@@ -7,9 +7,9 @@ with each other or with agents built on other frameworks. A peer agent is only a
 whoever operates it, so read the notes on taint and descriptions below.
 
 ```ts
-import { EffectRuntime } from "@loom/effect-runtime";
-import { A2APeerClient, createA2AServer } from "@loom/plugin-a2a";
-import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { A2APeerClient, createA2AServer } from "@loomwork/plugin-a2a";
+import type { RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 
 declare const runtime: WorkflowRuntime;
 declare const triageFlow: RegisteredFlow;
@@ -47,7 +47,7 @@ await server.start();
 - **Server.** `createA2AServer(runtime, flow, card, options)` serves `/.well-known/agent.json`,
   `POST /tasks/send` and `GET /tasks/:id`. `LoomAgentExecutor` is the underlying submit and get logic.
 - **Cards.** `toAgentCard(agent, options?)` derives a card from an `agent$` definition. It is also
-  available from the browser-safe subpath `@loom/plugin-a2a/cards`, which pulls in no `node:http`.
+  available from the browser-safe subpath `@loomwork/plugin-a2a/cards`, which pulls in no `node:http`.
 
 ## Behaviour that surprises people
 
@@ -74,7 +74,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 - [ADR 0125](../../docs/adr/0125-tool-search.md) (D14): card text and `trustDescriptions`;
   [ADR 0085](../../docs/adr/0085-untrusted-content-integrity-axis.md): the taint model.
-- API reference: section "`@loom/plugin-a2a` — Agent-to-Agent" in
+- API reference: section "`@loomwork/plugin-a2a` — Agent-to-Agent" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/data-classification.md](../../docs/data-classification.md),
   [docs/user-guide.md](../../docs/user-guide.md), and the `a2a-mesh` and `agent-network` examples in

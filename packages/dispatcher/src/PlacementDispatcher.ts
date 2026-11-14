@@ -1,4 +1,4 @@
-import type { ExecutionPackage, ExecutionResult } from "@loom/worker-runtime";
+import type { ExecutionPackage, ExecutionResult } from "@loomwork/worker-runtime";
 import { defaultPlacementPolicy } from "./placement";
 import type {
   DispatchMetadata,

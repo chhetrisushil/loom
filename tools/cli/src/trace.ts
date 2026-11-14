@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { ReplayVM } from "@loom/replay-vm";
+import type { EventEnvelope } from "@loomwork/core";
+import { ReplayVM } from "@loomwork/replay-vm";
 
 export interface TraceEvent {
   sequence: number;

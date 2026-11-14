@@ -5,7 +5,7 @@ import {
   type ContentRef,
   type ContentStore,
   contentListPageLimit,
-} from "@loom/plugin-content";
+} from "@loomwork/plugin-content";
 import Database from "better-sqlite3";
 
 /** Bind variables per `touch` UPDATE (SQLite builds cap at 999 on old versions). */

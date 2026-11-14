@@ -25,7 +25,7 @@ Where a dialogue lives: nothing in code names a "conversation"/"session". Two sh
 | Capability | Status | Maturity | Evidence | Gap & placement |
 |---|---|---|---|---|
 | Per-turn durable agent loop (turn N journaled, crash costs one turn) | ✅ | PG for `modelToolId` path | `agentLoop$.ts:241-485`, ids `#turn:i`/`#turn:i:tool:j` :32-38; crash test file `agentLoopCrash.test.ts` | `reasoning` path not replay-safe (H4): 1P-pkg fix (wrap `reason` in `ctx.execute`/record response) |
-| Session/conversation abstraction (create, append user turn, history, close) | ❌ | - | none; grep conversation = types/memory comments only | 1P-pkg (`@loom/conversation`: turn-as-resume protocol over a suspended execution + transcript projection). Not kernel |
+| Session/conversation abstraction (create, append user turn, history, close) | ❌ | - | none; grep conversation = types/memory comments only | 1P-pkg (`@loomwork/conversation`: turn-as-resume protocol over a suspended execution + transcript projection). Not kernel |
 | User turn as signal into running agent | ⚠️ | PT | `ctx.suspend`/`resume` (`workflow-runtime/src/types.ts:177`, `WorkflowRuntime.ts:1336`); `resume` only addresses a SUSPENDED execution (ingress refuses `not-suspended`, see `orchestration.ts:~435`). No inbox/mailbox/queue, no race of "wait for user OR timeout OR tool" | A message arriving mid-turn has nowhere to go. Needs mailbox semantics: kernel question (new wait primitive) vs 1P (buffer in durable-state, poll at turn boundary). Recommend 1P first |
 | Interruption / barge-in | ⚠️ | PT | `runtime.cancel` -> `cancelled` is TERMINAL, resume refused (`WorkflowRuntime.ts` ~:1380 "K8.2 cancelled is TERMINAL"); `AgentRunner` has `AGENT_INTERRUPTED` typed failure w/ partial text (`AgentRunner.ts:70,172-180`); `agentLoop$` has zero `signal` handling (grep) | Barge-in = kill the conversation. Need turn-scoped abort that keeps the dialogue alive. 1P-pkg over AbortSignal + a typed-failure turn result; port R6 partial-capture to `agentLoop$` |
 | Streaming responses to the user | ⚠️ | PT | Providers stream SSE (`AnthropicProvider.ts:115-229`, OpenAI too; Gemini has NO stream/tools, `GeminiProvider.ts` 93 lines); `createAgentModelEffect({stream,onDelta})`; `chunkDeltas` for durable `ctx.stream` | Only an in-process callback. No transport to an end-user (no SSE/WebSocket server anywhere: grep `text/event-stream` only in MCP client). `live-query` re-folds durable events, cannot carry token deltas (`chunkDeltas.ts` header). Streamed-turn crash restarts the stream from zero. 1P-plug (HTTP/SSE gateway) |
@@ -63,12 +63,12 @@ Verdict: PARTIAL. Strong substrate (identity, authority, isolation), but orchest
 
 | Capability | Status | Maturity | Evidence | Gap & placement |
 |---|---|---|---|---|
-| Image/audio/video/file in an LLM message | ❌ | - | `LlmMessage.content: string` `llm/src/types.ts:3-6`; providers copy `{role,content}` (`AnthropicProvider.ts:54-56`, `OpenAiProvider.ts:65`); Gemini provider has no tools/stream | Core SPI change: parts model (`LlmContent` already exists for taint; extend to `Part[]`) -> 1P-pkg `@loom/llm` MAJOR bump; providers map to native blocks. Not kernel |
+| Image/audio/video/file in an LLM message | ❌ | - | `LlmMessage.content: string` `llm/src/types.ts:3-6`; providers copy `{role,content}` (`AnthropicProvider.ts:54-56`, `OpenAiProvider.ts:65`); Gemini provider has no tools/stream | Core SPI change: parts model (`LlmContent` already exists for taint; extend to `Part[]`) -> 1P-pkg `@loomwork/llm` MAJOR bump; providers map to native blocks. Not kernel |
 | Native tool_use / tool_result threading | ❌ | - | H2 | same change; also needed for parallel tool calls and correct provider caching |
 | Binary tool I/O | ⚠️ | PT | claim-check with `streamResult` + `codec:"bytes"` `middleware/src/claimCheck.ts:42-75,178`; `resolveClaimCheckBytes`; `ContentStore.put(Uint8Array)/putStream` `content/src/ContentStore.ts:64-87`; sqlite/postgres content stores | Storage exists; nothing carries a ref into a prompt part or reads it back to the model. MCP image/audio blocks are typed (`mcp/src/types.ts:54-63`) but only text is projected for the model |
 | Streaming media | ❌ | - | no audio/video stream abstraction; `putStream` is for storage only | 3P/1P-plug (realtime voice is a different transport; do not push into kernel) |
 | Renderers / generative UI out | ✅ | PG/PT | blueprint-runtime, `renderer-react` (hooks, widgets), `renderer-terminal`, `a2ui` (bridge + conformance), `mcp-app` (SEP-1865), `agent-surface` patch protocol | UI out is strong; there is no audio/image *widget* in the default registries (not checked beyond `renderer-terminal/defaultRegistry.ts`) |
-| Embeddings / vector search | ❌ in 1P | - | no embedder interface in 1P; `MemoryStore.search` contract explicitly allows similarity backends (`memory/src/types.ts:154-163`) and the 3P `loom-plugin-vector` is the stated example | SPI is ready; need `Embedder` SPI + 1P reference backend or leave 3P. Non-text embeddings: 3P |
+| Embeddings / vector search | ❌ in 1P | - | no embedder interface in 1P; `MemoryStore.search` contract explicitly allows similarity backends (`memory/src/types.ts:154-163`) and the 3P `@loomwork/plugin-vector` is the stated example | SPI is ready; need `Embedder` SPI + 1P reference backend or leave 3P. Non-text embeddings: 3P |
 | Image in -> audio out end to end | ❌ | - | requires parts model + a tool that returns bytes + TTS tool; none of the pieces compose | blocked by first row |
 
 Verdict: NOT READY for model-facing multi-modal; UI-out and blob storage are ready.
@@ -77,7 +77,7 @@ Verdict: NOT READY for model-facing multi-modal; UI-out and blob storage are rea
 
 | Capability | Status | Maturity | Evidence | Gap & placement |
 |---|---|---|---|---|
-| Planning | ⚠️ | PT | `PlannerRuntime.plan(goal)` returns an ordered list of `{capabilityId, rationale}` `planner/src/PlannerRuntime.ts:7-15,40-48`; LLM or keyword fallback `:50-76` | No arguments/bindings between steps, no dependencies, no preconditions; plan is not journaled (plain async call; the `planner-decide-scope` example wraps it manually and relies on `@loom-ui/planner`); silently falls back to keyword heuristic when the LLM output is unparseable `:44-47,128` |
+| Planning | ⚠️ | PT | `PlannerRuntime.plan(goal)` returns an ordered list of `{capabilityId, rationale}` `planner/src/PlannerRuntime.ts:7-15,40-48`; LLM or keyword fallback `:50-76` | No arguments/bindings between steps, no dependencies, no preconditions; plan is not journaled (plain async call; the `planner-decide-scope` example wraps it manually and relies on `@loomwork/ui-planner`); silently falls back to keyword heuristic when the LLM output is unparseable `:44-47,128` |
 | Intent routing | ✅ | PT | `IntentRuntime.route/run` `intent/src/IntentRuntime.ts:36-57`; single capability, keyword confidence = score share | LLM route returns confidence 1 constant :85; not journaled |
 | Plan execution | ⚠️ | PT | `dispatchPlan` sequential (`orchestrator/src/dispatchPlan.ts:28-42`); `executeGraph` flat | no dependency-aware executor (see 2) |
 | Replanning on failure / reflection / self-critique loops | ❌ | - | grep replan/reflect/critic: 0 hits | A recipe over `ctx.decide` + loops; 1P-pkg or documented example. Not kernel |
@@ -103,7 +103,7 @@ Supported kinds: contextual-bandit style policy selection with logged propensity
 | Off-policy evaluation | ✅ | PG | `evaluatePolicy` SNIPS, weight clip 100, ESS, unit-pooled, warnings `learning/src/evaluate.ts:22-177` | One estimator (SNIPS) + agreement-only; no doubly-robust, no confidence interval/bootstrap (grep: none); promotion relies on lift and ESS thresholds |
 | Promotion gate | ✅ | PG | `promotionGate` pure verdict `learning/src/promote.ts:19-60` | Gate returns a verdict only: no registry of promoted policy versions, no rollout/canary/shadow mode (grep canary/shadow: none), rollback = redeploy. 1P-pkg `policy-registry` |
 | Online vs offline learning | ⚠️ | PT | offline loop shown by `learning-router` (online select -> mine log -> evaluate -> gate) | Online update during run not modelled (frozen policy); learning-router synthesises rewards in-flow (`learning-router/src/flow.ts:84`) |
-| Memory-based in-context learning | ✅ | PT | `TieredMemory` + `recallRelevant` + `@loom/knowledge` (`KnowledgeBase.putDoc/sync/retrieve` `knowledge/src/KnowledgeBase.ts:252-391`, grounded request, citations) | Lexical retrieval; `agentLoop$` never auto-writes lessons; no reflection to semantic tier; no "skill acquisition" |
+| Memory-based in-context learning | ✅ | PT | `TieredMemory` + `recallRelevant` + `@loomwork/knowledge` (`KnowledgeBase.putDoc/sync/retrieve` `knowledge/src/KnowledgeBase.ts:252-391`, grounded request, citations) | Lexical retrieval; `agentLoop$` never auto-writes lessons; no reflection to semantic tier; no "skill acquisition" |
 | Knowledge/corpus lifecycle | ✅ | PT | `sync/planSync/removeDoc/listDocs`; default `packParagraphs` chunker `knowledge/src/chunk.ts` | Text only |
 | Analytics over the log | ✅ | PT | `analytics` (profile, advisory, outcomes, replay; 1875 LOC) | read-only lens |
 | Model / prompt / policy versioning & rollout | ⚠️ | PT | policy `version` in stamp; flow version pin/migration (K11) | No prompt versioning (prompt text not stamped on calls; grep promptVersion: none), no model-route rollout/A-B. 1P-pkg |
@@ -124,10 +124,10 @@ Verdict: PARTIAL, and honestly scoped: an excellent bandit/off-policy substrate;
 | A2A | `plugin-a2a` | `a2a-mesh`, `a2ui-*` | ✅ (non-standard) |
 | MCP | `plugin-mcp` | `mcp-app-release-approval`, `db-observability` | ✅ |
 | Memory/knowledge | memory, knowledge | `runbook-recall`, `db-sentinel` | ✅ |
-| Learning | learning | `learning-router` (needs 3P `loom-plugin-linucb`) | ✅ (synthetic rewards) |
+| Learning | learning | `learning-router` (needs 3P `@loomwork/plugin-linucb`) | ✅ (synthetic rewards) |
 | Perpetual agents | sentinel | `db-sentinel` | ✅ |
 | Multi-modal | - | none | ❌ |
-| Planning + intent | planner/intent | `agent-network`, `planner-decide-scope` (with `@loom-ui/planner`) | ✅ (thin) |
+| Planning + intent | planner/intent | `agent-network`, `planner-decide-scope` (with `@loomwork/ui-planner`) | ✅ (thin) |
 
 Overlap / canonicality of "agent loop" (three APIs):
 1. `AgentRunner` (class; whole loop in ONE step handler; hand-emits events; fake `decide` for reasoning) - used by every example.
@@ -148,9 +148,9 @@ Planner/Intent/Capability overlap with `agent-surface`/`appgen` is low; `orchest
 
 ## 8. Top gaps ranked (by blocking effect)
 
-1. Tool schemas never reach the model (H1). 1P-pkg (`@loom/agent` + `@loom/llm`): derive JSON schema from Zod `ToolDefinition.inputSchema` / MCP schema.
-2. LLM SPI string-only; no parts, no native tool_use/tool_result (H2) - blocks multi-modal and correct tool threading. 1P-pkg `@loom/llm` MAJOR.
-3. `superviseChildren` not restart-safe (H5): parents hang forever. 1P-pkg `@loom/orchestration` (rehydrate from log / recovery hook).
+1. Tool schemas never reach the model (H1). 1P-pkg (`@loomwork/agent` + `@loomwork/llm`): derive JSON schema from Zod `ToolDefinition.inputSchema` / MCP schema.
+2. LLM SPI string-only; no parts, no native tool_use/tool_result (H2) - blocks multi-modal and correct tool threading. 1P-pkg `@loomwork/llm` MAJOR.
+3. `superviseChildren` not restart-safe (H5): parents hang forever. 1P-pkg `@loomwork/orchestration` (rehydrate from log / recovery hook).
 4. `agentLoop$` reasoning path not replay-safe (H4) and agent loops diverge (H8, H3): consolidate to one canonical loop with tool-error feedback, parallel tools, abort, memory write-back, plus an example. 1P-pkg.
 5. No conversation/session layer or mailbox (user turn while running, barge-in without killing the execution). 1P-pkg first; kernel only if a durable inbox primitive is proven necessary.
 6. A2A not protocol-compliant (JSON-RPC, streaming, input-required, cancel, provideInput route, multi-part). 1P-plug.

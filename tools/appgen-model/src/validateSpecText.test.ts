@@ -1,4 +1,4 @@
-import type { AppModel, ChangeSpec } from "@loom/appgen";
+import type { AppModel, ChangeSpec } from "@loomwork/appgen";
 import { describe, expect, it } from "vitest";
 import { validateChangeSpec } from "./validateSpec";
 

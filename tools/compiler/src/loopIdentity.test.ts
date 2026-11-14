@@ -120,7 +120,7 @@ describe("loop-identity wiring: transform → manifest (ADR 0061 DX)", () => {
 
   it("a flow-bearing module with a bad loop surfaces findings in the manifest (warning + structured field)", () => {
     const src = [
-      'import { flow$, step$ } from "@loom/core";',
+      'import { flow$, step$ } from "@loomwork/core";',
       'import { z } from "zod";',
       "const io = z.object({});",
       "export const runner = async (ctx, input) => {",
@@ -150,7 +150,7 @@ describe("loop-identity wiring: transform → manifest (ADR 0061 DX)", () => {
 
   it("a clean interpreter module carries no loopIdentity field", () => {
     const src = [
-      'import { flow$, step$ } from "@loom/core";',
+      'import { flow$, step$ } from "@loomwork/core";',
       'import { z } from "zod";',
       "const io = z.object({});",
       "export const runner = async (ctx, input) => {",

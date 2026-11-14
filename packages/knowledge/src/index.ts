@@ -1,7 +1,7 @@
 export { KnowledgeBase, openKnowledgeBase } from "./KnowledgeBase";
 // Note: `DecideFn` is deliberately NOT re-exported — it is the same structural type as
-// `@loom/memory`'s and `@loom/reasoning`'s (all three mirror `ctx.decide`), and exporting
-// more than one of them collides in the `@loom/sdk` barrel. Pass `ctx.decide` directly.
+// `@loomwork/memory`'s and `@loomwork/reasoning`'s (all three mirror `ctx.decide`), and exporting
+// more than one of them collides in the `@loomwork/sdk` barrel. Pass `ctx.decide` directly.
 export type {
   KnowledgeBaseConfig,
   RetrieveOptions,

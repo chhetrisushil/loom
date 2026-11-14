@@ -1,8 +1,8 @@
-import { memoryWriteBackEffect } from "@loom/agent";
-import { agent$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import { InMemoryMemoryStore, TieredMemory } from "@loom/memory";
-import { ExecutionDeniedError, executionAccessPolicy } from "@loom/workflow-runtime";
+import { memoryWriteBackEffect } from "@loomwork/agent";
+import { agent$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryMemoryStore, TieredMemory } from "@loomwork/memory";
+import { ExecutionDeniedError, executionAccessPolicy } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import {
   Latch,

@@ -1,0 +1,44 @@
+# ADR 0148 — Publish to npm as `@loomwork/*`, 0.1.0 on the `next` dist-tag
+
+- Status: **Accepted** (2026-11-14)
+- Date: 2026-11-14
+- Placement: **release tooling only** (`scripts/publish-metadata.mjs`, `scripts/publish.mjs`, the spec guard
+  `packages/spec/src/publishMetadata.test.ts`) plus a mechanical package rename. No behaviour changes:
+  KERNEL_ABI, EVENT_SCHEMA and every SPI version are unchanged, and no persisted value names a package.
+
+## Context
+
+The framework was consumed only from a sibling checkout (`link:` overrides). Publishing needed a scope the
+owner controls. `@loom` is taken on npm, and the unscoped `create-loom-app` belongs to an unrelated project
+(LoomKit), so `npm create loom-app` would run someone else's initializer.
+
+## Decision
+
+1. **One scope, `@loomwork`, for every published package.** loom keeps its package names under it
+   (`@loomwork/core`, `@loomwork/plugin-postgres`, …); loom-ui publishes as `@loomwork/ui-*`; the five
+   plugins in loom-plugins as `@loomwork/plugin-*`. The framework is still named Loom: the `loom` CLI,
+   `loom.config.ts` and `LOOM_*` variables are unchanged. The app initializer is
+   `npm create @loomwork/loom-app`; never document the unscoped `npm create loom-app`.
+2. **0.1.0 on the `next` dist-tag**, not `latest`, until the owner promotes a release. Every public package
+   carries the same version.
+3. **Sibling dependencies are `workspace:^`**, published as `^0.1.0`, so an app installs one copy of each
+   package instead of exact pins that fail to dedupe.
+4. **One generator owns the publish fields** (`version`, `license`, `repository.directory`, a `files`
+   allowlist that ships `dist`, `src` for the sourcemaps and root subpath shims but never tests, fixtures,
+   tsconfig or build caches, `publishConfig`, `engines`). The spec guard re-runs it in memory and refuses
+   drift and a public package that depends on a private one.
+5. **Publishing is a deliberate act.** `scripts/publish.mjs` is a dry run unless given `--yes`, and refuses a
+   dirty tree, stale metadata or an unbuilt package. Order: loom first, then loom-ui and loom-plugins (their
+   `@loomwork/*` ranges name the published loom). Publish only from an account verified as an Owner of the
+   `@loomwork` org.
+
+## Consequences
+
+- The rename is mechanical (every `@loom/` became `@loomwork/`, including escaped regex literals). Event logs,
+  flow and schema hashes, effect ids and eval cassettes never contain a package name, so existing logs replay
+  unchanged.
+- **Kernel budget: +1 code line in total.** The longer specifier pushed three kernel import lines over the
+  formatter's width. `WorkflowRuntime.ts` merged two imports from one module (−1 net); `sealGuard.ts` and
+  `types.ts` each split one import into two type-only lines (+1 each). No kernel code was added.
+- Sibling repos that link to loom (loom-ui, loom-plugins, loom-examples, loom-demo) must rename their
+  `@loom/*` references when this lands; their `link:` paths do not change.

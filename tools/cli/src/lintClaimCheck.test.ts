@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { cmdLintClaimCheck, lintClaimCheckSource } from "./lintClaimCheck";
 
-const FLOW_HEADER = `import { flow$, step$ } from "@loom/core";\nconst f = flow$({ id: "sentinel" });\n`;
+const FLOW_HEADER = `import { flow$, step$ } from "@loomwork/core";\nconst f = flow$({ id: "sentinel" });\n`;
 
 describe("lintClaimCheckSource (CC-5)", () => {
   it("flags resolveClaimCheck inside a flow-defining module", () => {

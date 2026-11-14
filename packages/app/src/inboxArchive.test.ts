@@ -1,12 +1,12 @@
-import { unwrapTainted } from "@loom/classify";
-import type { FlowDefinition } from "@loom/core";
-import { type EventStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import type { FlowDefinition } from "@loomwork/core";
+import { type EventStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   InboxArchiveRequiredError,
   ReservedStreamArchiveRequiredError,
-} from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {

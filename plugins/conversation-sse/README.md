@@ -1,9 +1,9 @@
-# @loom/plugin-conversation-sse — the end-user gateway for `@loom/conversation`
+# @loomwork/plugin-conversation-sse — the end-user gateway for `@loomwork/conversation`
 
 An authenticated HTTP + Server-Sent-Events edge: a browser (or any client) starts a conversation, sends turns, and watches the durable messages and the live reply tokens arrive, resuming after a drop from where it left off.
 
 ```ts
-import { createConversationSseServer } from "@loom/plugin-conversation-sse";
+import { createConversationSseServer } from "@loomwork/plugin-conversation-sse";
 
 const server = createConversationSseServer({
   conversations, hub, eventStore,
@@ -32,7 +32,7 @@ SSE events: `status` (first), `partial` (the reply in progress), `message` (dura
 ## Security model
 
 - Authentication is required to *create* the server (`insecure: true` is the explicit, warned opt-out; refused when the runtime is strict, which is the default derived from it). Loopback by default; an insecure server also answers only loopback `Host` names. A runtime with no fail-closed execution authorizer is refused unless `allowNoRuntimeAuthz`.
-- Authorization is `@loom/conversation`'s, per conversation: OWNER-ONLY by default, or the participant set of a shared conversation (which also gets per-viewer filtering of history, the stream and live deltas, and `/participants` routes). A conversation the caller may not touch and one that does not exist are the same `404`, on every route, and authorization runs before any limit.
+- Authorization is `@loomwork/conversation`'s, per conversation: OWNER-ONLY by default, or the participant set of a shared conversation (which also gets per-viewer filtering of history, the stream and live deltas, and `/participants` routes). A conversation the caller may not touch and one that does not exist are the same `404`, on every route, and authorization runs before any limit.
 - A stream is keyed by one conversation; a cursor is a position inside that conversation's own log.
 - `Origin` must be listed in `allowedOrigins` (`Host` never proves same-origin); CORS headers ride errors too; JSON-only bodies; `nosniff`; POSTs are rate-limited per principal; request/header timeouts are set.
 - Limits: connections (total and per principal), subscribers per conversation, body size, stream lifetime, and per-connection pending bytes (a slow client's deltas are coalesced, then the client is closed and resumes from the log). Open streams re-authenticate every `reauthMs`.

@@ -1,18 +1,18 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StorageWriteError, step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { StorageWriteError, step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   CoalescingEventStore,
   type EventStore,
   InMemoryAsyncEventStore,
   TenantScopedEventStore,
-} from "@loom/event-runtime";
-import { PostgresEventStore, migratePostgresStores, postgresPool } from "@loom/plugin-postgres";
-import { SqliteEventStore } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { PostgresEventStore, migratePostgresStores, postgresPool } from "@loomwork/plugin-postgres";
+import { SqliteEventStore } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";

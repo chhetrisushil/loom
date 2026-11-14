@@ -1,4 +1,4 @@
-import { ReplayVM } from "@loom/replay-vm";
+import { ReplayVM } from "@loomwork/replay-vm";
 import { describe, expect, it } from "vitest";
 import { CountingContentStore, boot } from "./__fixtures__/claimCheckHarness";
 

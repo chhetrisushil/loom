@@ -1,4 +1,4 @@
-import { tainted } from "@loom/classify";
+import { tainted } from "@loomwork/classify";
 import { describe, expect, it } from "vitest";
 import { UngroundedCitationError, assertGrounded, checkCitations } from "./citations";
 import type { Passage } from "./types";

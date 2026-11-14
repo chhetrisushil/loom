@@ -1,4 +1,4 @@
-import { StorageWriteError, SuspendError, step$ } from "@loom/core";
+import { StorageWriteError, SuspendError, step$ } from "@loomwork/core";
 import {
   ExecutionCancelledError,
   ExecutionStoreUnavailableError,
@@ -8,7 +8,7 @@ import {
   SealedPayloadUnreadableError,
   StartFencedOutError,
   StartLeaseHeldError,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { SagaCompensationError, createSaga, withSaga } from "./saga";

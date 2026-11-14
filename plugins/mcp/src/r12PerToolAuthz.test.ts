@@ -1,6 +1,6 @@
 import * as http from "node:http";
-import { EffectRuntime, GrantTable } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
+import { EffectRuntime, GrantTable } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { McpClient } from "./McpClient";
 import { mcpToolCapability, registerMcpInvoke } from "./mcpInvoke$";

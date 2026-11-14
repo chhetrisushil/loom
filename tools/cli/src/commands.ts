@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import type { EventEnvelope } from "@loom/core";
-import { type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { type EventStore, headOf, readRangeOf } from "@loomwork/event-runtime";
 import { UsageError } from "./args";
 import {
   type EvalReport,

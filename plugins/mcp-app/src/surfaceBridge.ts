@@ -9,12 +9,12 @@
 // shipped for the A2UI adapter (ADR 0069/0070). MCP Apps is a second transport
 // binding for them, so the two surfaces cannot drift into different UI models.
 
-import { DEFAULT_SURFACE, SURFACE_PATCH, applySurfacePatches } from "@loom/agent-surface";
-import type { SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
-import { maskPaths } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
-import { defaultCatalog, describeFindings, validateComponents } from "@loom/plugin-a2ui";
-import type { A2UICatalog, ComponentInstance } from "@loom/plugin-a2ui";
+import { DEFAULT_SURFACE, SURFACE_PATCH, applySurfacePatches } from "@loomwork/agent-surface";
+import type { SurfacePatchPayload, SurfaceState } from "@loomwork/agent-surface";
+import { maskPaths } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
+import { defaultCatalog, describeFindings, validateComponents } from "@loomwork/plugin-a2ui";
+import type { A2UICatalog, ComponentInstance } from "@loomwork/plugin-a2ui";
 
 /** What the template receives as `structuredContent`. */
 export interface SurfacePayload {

@@ -1,12 +1,12 @@
-import { step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { step$ } from "@loomwork/core";
+import type { FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   CoalescingEventStore,
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryBranchRegistry,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   EncryptingArchiveStore,
   EncryptingEventStore,
@@ -14,10 +14,10 @@ import {
   InMemoryKeyStore,
   PayloadShreddedError,
   shredSubject,
-} from "@loom/plugin-crypto";
-import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
-import { foldEvents } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-crypto";
+import { SqliteEventStore, SqliteSnapshotStore } from "@loomwork/plugin-sqlite";
+import { foldEvents } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LIFECYCLE_STREAM, LogLifecycle, UnsafeCompactionError } from "./LogLifecycle";

@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { InMemoryAsyncSnapshotStore } from "./InMemoryAsyncSnapshotStore";
 import { ProfilingSnapshotStore } from "./ProfilingSnapshotStore";

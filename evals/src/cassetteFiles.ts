@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type CassetteData, CassetteProvider } from "@loom/eval";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import { type CassetteData, CassetteProvider } from "@loomwork/eval";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
 
 // Cassette files, shared by every model area (agentLoop, appgen, planner): one `<id>.json` per case under
 // `src/<area>/cassettes/`, `{ "req:<hash>": LlmResponse }`, keys sorted. The files live in `src/` whether the code

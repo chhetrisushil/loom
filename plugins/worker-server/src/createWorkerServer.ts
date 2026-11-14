@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
-import { BadRequestError, exposeError } from "@loom/core";
+import { BadRequestError, exposeError } from "@loomwork/core";
 import {
   type ExecutionPackage,
   type WorkerRuntime,
   isSupersededRefusal,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 
 export interface WorkerServerOptions {
   /** Port to listen on. 0 (default) picks a free port — read `.port` after start. */

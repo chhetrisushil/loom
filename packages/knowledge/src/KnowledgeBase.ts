@@ -1,8 +1,8 @@
-import { tainted } from "@loom/classify";
-import { canonicalJson, fnv1a64 } from "@loom/core";
-import { TieredMemory } from "@loom/memory";
-import type { MemoryEntry, MemoryStore } from "@loom/memory";
-import { declareReach } from "@loom/verify";
+import { tainted } from "@loomwork/classify";
+import { canonicalJson, fnv1a64 } from "@loomwork/core";
+import { TieredMemory } from "@loomwork/memory";
+import type { MemoryEntry, MemoryStore } from "@loomwork/memory";
+import { declareReach } from "@loomwork/verify";
 import { packParagraphs } from "./chunk";
 import type { Chunker, DocRecord, KnowledgeDoc, Passage } from "./types";
 

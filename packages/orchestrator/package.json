@@ -1,5 +1,5 @@
 {
-  "name": "@loom/orchestrator",
+  "name": "@loomwork/orchestrator",
   "version": "0.1.0",
   "description": "Composable orchestration primitives for Loom — the approval policy and plan-dispatch loop, as functions apps call (composition, not a base class)",
   "main": "./dist/index.js",

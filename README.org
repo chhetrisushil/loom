@@ -53,15 +53,15 @@ node tools/create-loom-app/dist/index.js apps/my-app   # scaffolds into the work
 pnpm install && cd apps/my-app && pnpm test
 #+end_src
 
-Once published, this becomes ~npm create loom-app@latest my-app~. Details and the sibling repos are in
+Once published, this becomes ~npm create @loomwork/loom-app@latest my-app~. Details and the sibling repos are in
 [[file:docs/getting-started.md][Getting Started]].
 
 Define a flow — schema-checked steps plus an ordinary ~async~ runner:
 
 #+begin_src ts
 import { z } from "zod";
-import { step$, handler$, flow$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { step$, handler$, flow$ } from "@loomwork/core";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 
 const greet = step$({
   id: "greet",
@@ -87,7 +87,7 @@ export const helloFlow = {
 Wire it with ~defineConfig~ and run it:
 
 #+begin_src ts
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 import { helloFlow } from "./hello";
 
 const app = defineConfig({ storage: { kind: "memory" }, flows: [helloFlow] });
@@ -168,12 +168,12 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 
 | Runtime | What it adds |
 |---------+--------------|
-| *Reasoning* (~@loom/reasoning~) | Cheap-first model routing + confidence-based elevation (Gemma → Flash → Pro → Opus); routes logged via the decision seam |
-| *Memory* (~@loom/memory~) | First-class tiers (working / episodic / semantic / procedural) with eviction/summarization/promotion + replay-safe *logged recall* |
-| *Compute placement* (~@loom/dispatcher~) | ~PlacementDispatcher~ routes each execution to a named target (local / remote-HTTP / Cloud Run) by policy |
-| *Scheduler* (~@loom/scheduler~ in the effect path) | Bounded concurrency + priority admission control; zero-overhead when unconfigured |
-| *Scale-out storage* (~@loom/plugin-postgres~) | Postgres event/snapshot/branch stores + cross-node live subscribe (~LISTEN/NOTIFY~) |
-| *Intelligence* (~@loom/analytics~) | Read-only analytics over the log + an opt-in, *logged* self-optimizing router + an advisory runtime-intelligence report |
+| *Reasoning* (~@loomwork/reasoning~) | Cheap-first model routing + confidence-based elevation (Gemma → Flash → Pro → Opus); routes logged via the decision seam |
+| *Memory* (~@loomwork/memory~) | First-class tiers (working / episodic / semantic / procedural) with eviction/summarization/promotion + replay-safe *logged recall* |
+| *Compute placement* (~@loomwork/dispatcher~) | ~PlacementDispatcher~ routes each execution to a named target (local / remote-HTTP / Cloud Run) by policy |
+| *Scheduler* (~@loomwork/scheduler~ in the effect path) | Bounded concurrency + priority admission control; zero-overhead when unconfigured |
+| *Scale-out storage* (~@loomwork/plugin-postgres~) | Postgres event/snapshot/branch stores + cross-node live subscribe (~LISTEN/NOTIFY~) |
+| *Intelligence* (~@loomwork/analytics~) | Read-only analytics over the log + an opt-in, *logged* self-optimizing router + an advisory runtime-intelligence report |
 
 *The kernel-hardening rings* — what makes it genuinely a kernel:
 
@@ -183,7 +183,7 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 - *K4 — Fault supervision.* ~SupervisingDispatcher~ adds restart/backoff + a *circuit breaker* for flaky models/tools.
 - *K5 — Event-schema ABI.* The on-disk event set is versioned and pinned; ~deploy-sim~ is the CI gate.
 
-*AI-native DX* — ~@loom/appgen~ turns a natural-language intent into a structured spec, then emits *plain, static, inspectable TypeScript you own* (no runtime NL interpretation).
+*AI-native DX* — ~@loomwork/appgen~ turns a natural-language intent into a structured spec, then emits *plain, static, inspectable TypeScript you own* (no runtime NL interpretation).
 
 → Full detail — data structures, algorithms, and diagrams — in [[file:docs/loom-2.0/00-overview.md][docs/loom-2.0/]]; the 25-slide story in [[file:docs/presentation/loom-2.0-deck.md][the Loom 2.0 deck]].
 
@@ -196,8 +196,8 @@ Loom 2.0 generalizes the durable workflow runtime into an *execution kernel for 
 | *Kernel* | ~packages/~ | mechanism + ABI: ~core~, ~event-runtime~, ~snapshot-runtime~, ~replay-vm~, ~effect-runtime~, ~workflow-runtime~, ~scheduler~, ~wire-abi~ |
 | *SPI contracts* | ~packages/~ | the seams adapters implement: ~worker-runtime~, ~projection-runtime~, ~llm~, ~blueprint-runtime~, ~registry~, ~telemetry~, ~dispatcher~, ~sandbox~ |
 | *Advisory* | ~packages/~ | optional modules: ~reasoning~, ~memory~, ~agent~, ~planner~, ~intent~, ~capability~, ~saga~, ~orchestration~, ~analytics~, ~middleware~, ~app~, ~classify~ (data-sensitivity markers), ~compliance~ (GDPR subject rights), ~knowledge~ (corpus lifecycle over the memory tier), ~isolate~, ~verify~, ~spec~, ~conformance~, … |
-| *Plugins (1P adapters)* | ~plugins/~ | ~@loom/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (client + server, incl. ~mcpInvoke$~ dynamic dispatch), ~mcp-app~ (MCP Apps egress), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~conversation-sse~ (SSE transport for conversations), ~a2a~, ~a2ui~, ~renderer-react~, ~renderer-terminal~, ~renderer-dom~ |
-| *Plugin authoring* | ~packages/~ | ~@loom/plugin-kit~ (typed presets), ~@loom/conformance~ (SPI conformance kits) |
+| *Plugins (1P adapters)* | ~plugins/~ | ~@loomwork/plugin-*~: ~sqlite~, ~postgres~, ~crypto~, ~content~ (content-store seam + batched ~getMany~ + caching), ~durable-state~, ~read-model~, ~sentinel~, ~audit-chain~, ~cloudrun~, ~worker-remote~, ~worker-server~, ~mcp~ (client + server, incl. ~mcpInvoke$~ dynamic dispatch), ~mcp-app~ (MCP Apps egress), ~sandbox~ (QuickJS eval of LLM-authored scripts), ~conversation-sse~ (SSE transport for conversations), ~a2a~, ~a2ui~, ~renderer-react~, ~renderer-terminal~, ~renderer-dom~ |
+| *Plugin authoring* | ~packages/~ | ~@loomwork/plugin-kit~ (typed presets), ~@loomwork/conformance~ (SPI conformance kits) |
 | *Tooling* | ~tools/~ | first-party dev-tooling (leaf, build/test/authoring only): ~cli~, ~compiler~, ~appgen~, ~appgen-model~, ~deploy-sim~, ~scaffold~, ~eval~, ~testing~, ~dst~, ~bench-throughput~, ~create-loom-app~ |
 
 Third-party plugins live in the sibling [[https://github.com/chhetrisushil/loom-plugins][~loom-plugins~]] repo (or anywhere, under the ~loom-plugin-*~ name). See [[file:docs/plugins.md][docs/plugins.md]] and [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][ADR 0043]].
@@ -212,73 +212,73 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 
 | Package                    | Description |
 |----------------------------+-------------|
-| ~@loom/core~               | Authoring builders (~flow$~, ~step$~, ~handler$~, ~tool$~ incl. typed ~errors:~ channels, ~agent$~, ~projection$~, …) + shared types + ~TypedFailure~ / ~fail~ (ADR 0060) + the canonical ~jsonSchemaHash~ (ADR 0063) |
-| ~@loom/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~restoreFromState~, the ~ExecutionJournal~, ~ExecutionContext~ (~ctx.execute~ / ~ctx.run~ / ~ctx.decide~ / ~ctx.parallel~), typed-failure substitution, and the versioned kernel ABI (~KERNEL_SYSCALLS~, K1) |
-| ~@loom/replay-vm~          | Deterministic replay — ~foldEvents~ / ~ReplayVM~ (pure state reconstruction) + the pinned on-disk event-schema ABI (~EVENT_SCHEMA_VERSION~, K5) |
-| ~@loom/event-runtime~      | Append-only ~EventStore~ SPI + git-style ~BranchRegistry~ + tenant-scoped stores (K12); in-memory reference impls |
-| ~@loom/snapshot-runtime~   | ~SnapshotStore~ — bounded-tail replay |
-| ~@loom/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects — plus the capability *protection ring* (~GrantTable~, K2), verifiable delegation (K12), resource-accounting context (K3), declared idempotence + error channels, and optional scheduler/warmer wiring (M6) |
-| ~@loom/sdk~                | Public re-export surface — light 1P plugins in the main barrel; native/heavy behind subpaths (~@loom/sdk/sqlite~, ~/postgres~, ~/sandbox~) |
+| ~@loomwork/core~               | Authoring builders (~flow$~, ~step$~, ~handler$~, ~tool$~ incl. typed ~errors:~ channels, ~agent$~, ~projection$~, …) + shared types + ~TypedFailure~ / ~fail~ (ADR 0060) + the canonical ~jsonSchemaHash~ (ADR 0063) |
+| ~@loomwork/workflow-runtime~   | Durable execution — ~start~ / ~resume~ / ~fork~ / ~restoreFromState~, the ~ExecutionJournal~, ~ExecutionContext~ (~ctx.execute~ / ~ctx.run~ / ~ctx.decide~ / ~ctx.parallel~), typed-failure substitution, and the versioned kernel ABI (~KERNEL_SYSCALLS~, K1) |
+| ~@loomwork/replay-vm~          | Deterministic replay — ~foldEvents~ / ~ReplayVM~ (pure state reconstruction) + the pinned on-disk event-schema ABI (~EVENT_SCHEMA_VERSION~, K5) |
+| ~@loomwork/event-runtime~      | Append-only ~EventStore~ SPI + git-style ~BranchRegistry~ + tenant-scoped stores (K12); in-memory reference impls |
+| ~@loomwork/snapshot-runtime~   | ~SnapshotStore~ — bounded-tail replay |
+| ~@loomwork/effect-runtime~     | Effect isolation for tool / LLM / human / A2A effects — plus the capability *protection ring* (~GrantTable~, K2), verifiable delegation (K12), resource-accounting context (K3), declared idempotence + error channels, and optional scheduler/warmer wiring (M6) |
+| ~@loomwork/sdk~                | Public re-export surface — light 1P plugins in the main barrel; native/heavy behind subpaths (~@loomwork/sdk/sqlite~, ~/postgres~, ~/sandbox~) |
 
 *Composition, effects & orchestration*
 
-| ~@loom/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, verify (incl. compiler-lint inputs), ~registerEffects~, and the A2A bus from one static config |
-| ~@loom/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff; skips ~TypedFailure~ by default), ~meteringMiddleware~ (K3), ~safetyMiddleware~ (K6), ~redactionMiddleware~ (~secretRef~ resolution, K10.3), ~claimCheckMiddleware~ + ~resolveClaimChecks~ (ADR 0054/0062), ~nestedBudgetMiddleware~ (K12) |
-| ~@loom/orchestration~      | Cross-execution orchestration — ~awaitChild~ (durable child await, recursion-guarded via ~maxDepth~) + ~fanout$~ (runtime-sized deterministic fan-out, ADR 0061) |
-| ~@loom/saga~               | Compensation — replay-safe rollback as ordinary ~ctx.run~ steps |
-| ~@loom/registry~           | Workflow / agent registry |
+| ~@loomwork/app~                | *Composition root* — ~defineConfig~ assembles the runtime, stores, middleware, projections, verify (incl. compiler-lint inputs), ~registerEffects~, and the A2A bus from one static config |
+| ~@loomwork/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff; skips ~TypedFailure~ by default), ~meteringMiddleware~ (K3), ~safetyMiddleware~ (K6), ~redactionMiddleware~ (~secretRef~ resolution, K10.3), ~claimCheckMiddleware~ + ~resolveClaimChecks~ (ADR 0054/0062), ~nestedBudgetMiddleware~ (K12) |
+| ~@loomwork/orchestration~      | Cross-execution orchestration — ~awaitChild~ (durable child await, recursion-guarded via ~maxDepth~) + ~fanout$~ (runtime-sized deterministic fan-out, ADR 0061) |
+| ~@loomwork/saga~               | Compensation — replay-safe rollback as ordinary ~ctx.run~ steps |
+| ~@loomwork/registry~           | Workflow / agent registry |
 
 *Projection & UI*
 
-| ~@loom/projection-runtime~ | Event → projection folding with live subscriptions |
-| ~@loom/agent-surface~      | The agent-surface patch protocol — durable patch/event UI updates (~surface(ctx).set/merge/append~). Loom's native surface mechanism, /not/ the Google A2UI wire protocol (ADR 0069 renamed it) |
-| ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprints |
-| ~@loom/plugin-renderer-react~ | React renderer (with opt-in render-side fiber) |
-| ~@loom/plugin-renderer-terminal~ | Terminal renderer — same blueprint, non-React surface |
-| ~@loom/plugin-renderer-dom~ | Framework-free DOM renderer — a web surface without React or loom-ui (ADR 0127) |
+| ~@loomwork/projection-runtime~ | Event → projection folding with live subscriptions |
+| ~@loomwork/agent-surface~      | The agent-surface patch protocol — durable patch/event UI updates (~surface(ctx).set/merge/append~). Loom's native surface mechanism, /not/ the Google A2UI wire protocol (ADR 0069 renamed it) |
+| ~@loomwork/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprints |
+| ~@loomwork/plugin-renderer-react~ | React renderer (with opt-in render-side fiber) |
+| ~@loomwork/plugin-renderer-terminal~ | Terminal renderer — same blueprint, non-React surface |
+| ~@loomwork/plugin-renderer-dom~ | Framework-free DOM renderer — a web surface without React or loom-ui (ADR 0127) |
 
 *Agentic*
 
-| ~@loom/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
-| ~@loom/reasoning~          | *Reasoning Runtime* — model routing, pluggable confidence, elevation; routes logged via the decision seam |
-| ~@loom/agent~              | ReAct-style agent loop over your tools, composing the Reasoning Runtime |
-| ~@loom/plugin-mcp~         | Model Context Protocol *client + server*. Client: tool discovery + ~mcpInvoke$~ *dynamic dispatch* — schema-hash pinning, typed ~schemaDrift~/~toolNotFound~ channels, principal-safe credentials, ~mcpDispatchIndex~ (ADR 0063); full-fidelity results (~structuredContent~/~_meta~/non-text blocks, in-band ~isError~). Server: ~createMcpServer~ exposes loom tools/resources to any MCP host, audience-scoped (ADR 0072) |
-| ~@loom/sandbox~            | Sandbox backend SPI — bring your own isolation boundary for model-written code; the effect keeps loom's limits, channels and replay rules (ADR 0144) |
-| ~@loom/plugin-sandbox~     | Hardened QuickJS/WASM eval of content-addressed, LLM-authored reshaping scripts — in-engine limits, no ambient I/O, shape-hash validation (ADR 0064) |
-| ~@loom/plugin-a2a~         | Agent-to-Agent protocol client + server |
-| ~@loom/conversation~       | A durable dialogue as one chained execution — user turns on the inbox, barge-in without killing the execution, rotation by continue-as-new, a transcript read back with bounded reads, token-aware context budgeting (ADR 0122) |
-| ~@loom/plugin-conversation-sse~ | Authenticated, resumable (~Last-Event-ID~) SSE gateway for a conversation — durable messages plus live reply deltas, existence-hiding, bounded (ADR 0122) |
-| ~@loom/plugin-a2ui~        | Google *A2UI* (Agent-to-UI) egress — projects an agent surface onto the wire protocol, plus ~callFunction~ bidirectional RPC (ADR 0069/0070) |
-| ~@loom/plugin-mcp-app~     | *MCP Apps* (SEP-1865) egress — one static content-pinned surface-host template whose payload is the A2UI catalog model, plus an ~ambient~/app-only surface cursor and decision provenance across long-held gates (ADR 0072) |
-| ~@loom/capability~ · ~@loom/intent~ · ~@loom/planner~ | Flows as intent-addressable capabilities; NL intent routing; multi-step plan composition — journaled plan DAGs with argument bindings, a dependency-aware executor, bounded replanning and a principal-scoped goal store (ADR 0123) |
-| ~@loom/memory~             | Scoped agent memory + ~TieredMemory~ with replay-safe *logged recall* |
+| ~@loomwork/llm~                | Provider-agnostic LLM abstraction (Anthropic, OpenAI, custom) |
+| ~@loomwork/reasoning~          | *Reasoning Runtime* — model routing, pluggable confidence, elevation; routes logged via the decision seam |
+| ~@loomwork/agent~              | ReAct-style agent loop over your tools, composing the Reasoning Runtime |
+| ~@loomwork/plugin-mcp~         | Model Context Protocol *client + server*. Client: tool discovery + ~mcpInvoke$~ *dynamic dispatch* — schema-hash pinning, typed ~schemaDrift~/~toolNotFound~ channels, principal-safe credentials, ~mcpDispatchIndex~ (ADR 0063); full-fidelity results (~structuredContent~/~_meta~/non-text blocks, in-band ~isError~). Server: ~createMcpServer~ exposes loom tools/resources to any MCP host, audience-scoped (ADR 0072) |
+| ~@loomwork/sandbox~            | Sandbox backend SPI — bring your own isolation boundary for model-written code; the effect keeps loom's limits, channels and replay rules (ADR 0144) |
+| ~@loomwork/plugin-sandbox~     | Hardened QuickJS/WASM eval of content-addressed, LLM-authored reshaping scripts — in-engine limits, no ambient I/O, shape-hash validation (ADR 0064) |
+| ~@loomwork/plugin-a2a~         | Agent-to-Agent protocol client + server |
+| ~@loomwork/conversation~       | A durable dialogue as one chained execution — user turns on the inbox, barge-in without killing the execution, rotation by continue-as-new, a transcript read back with bounded reads, token-aware context budgeting (ADR 0122) |
+| ~@loomwork/plugin-conversation-sse~ | Authenticated, resumable (~Last-Event-ID~) SSE gateway for a conversation — durable messages plus live reply deltas, existence-hiding, bounded (ADR 0122) |
+| ~@loomwork/plugin-a2ui~        | Google *A2UI* (Agent-to-UI) egress — projects an agent surface onto the wire protocol, plus ~callFunction~ bidirectional RPC (ADR 0069/0070) |
+| ~@loomwork/plugin-mcp-app~     | *MCP Apps* (SEP-1865) egress — one static content-pinned surface-host template whose payload is the A2UI catalog model, plus an ~ambient~/app-only surface cursor and decision provenance across long-held gates (ADR 0072) |
+| ~@loomwork/capability~ · ~@loomwork/intent~ · ~@loomwork/planner~ | Flows as intent-addressable capabilities; NL intent routing; multi-step plan composition — journaled plan DAGs with argument bindings, a dependency-aware executor, bounded replanning and a principal-scoped goal store (ADR 0123) |
+| ~@loomwork/memory~             | Scoped agent memory + ~TieredMemory~ with replay-safe *logged recall* |
 
 *Compute & distribution*
 
-| ~@loom/dispatcher~         | Execution placement — ~LocalDispatcher~ + ~PlacementDispatcher~ + ~SupervisingDispatcher~ (circuit breaker, K4) |
-| ~@loom/worker-runtime~ (~-local~) / ~@loom/plugin-worker-remote~ / ~@loom/plugin-worker-server~ | Worker SPI + ~ExecutionPackage~ (resume coordinates, never code); in-process, HTTP client, and stateless server impls |
-| ~@loom/plugin-cloudrun~    | Cloud Run adapter — ~CloudRunWorkerRuntime~ + sizing policy |
-| ~@loom/plugin-postgres~    | *Scale-out storage* — Postgres event / snapshot / branch / timer / read-model stores + cross-node live subscribe (~LISTEN/NOTIFY~) + ~postgresStorage()~ preset |
-| ~@loom/plugin-sqlite~      | Embedded SQLite stores + ~sqliteStorage()~ preset |
-| ~@loom/graph-executor~     | Distributed fan-out — per-node executions (one writer each), joined via lineage |
-| ~@loom/scheduler~          | Ephemeral cooperative scheduler — priority lanes, ~parallelLimit~, cancellation |
+| ~@loomwork/dispatcher~         | Execution placement — ~LocalDispatcher~ + ~PlacementDispatcher~ + ~SupervisingDispatcher~ (circuit breaker, K4) |
+| ~@loomwork/worker-runtime~ (~-local~) / ~@loomwork/plugin-worker-remote~ / ~@loomwork/plugin-worker-server~ | Worker SPI + ~ExecutionPackage~ (resume coordinates, never code); in-process, HTTP client, and stateless server impls |
+| ~@loomwork/plugin-cloudrun~    | Cloud Run adapter — ~CloudRunWorkerRuntime~ + sizing policy |
+| ~@loomwork/plugin-postgres~    | *Scale-out storage* — Postgres event / snapshot / branch / timer / read-model stores + cross-node live subscribe (~LISTEN/NOTIFY~) + ~postgresStorage()~ preset |
+| ~@loomwork/plugin-sqlite~      | Embedded SQLite stores + ~sqliteStorage()~ preset |
+| ~@loomwork/graph-executor~     | Distributed fan-out — per-node executions (one writer each), joined via lineage |
+| ~@loomwork/scheduler~          | Ephemeral cooperative scheduler — priority lanes, ~parallelLimit~, cancellation |
 
 *Data, security & governance*
 
-| ~@loom/plugin-content~     | Content-store seam (ADR 0046) — ~ContentResolvingEventStore~, claim-check backing, batched ~getMany~ + ~CachingContentStore~ (ADR 0062), K10.6 pinned sweep |
-| ~@loom/plugin-durable-state~ | Typed, versioned, contract-migratable carry state as recorded effects |
-| ~@loom/plugin-read-model~  | Durable, checkpointed cross-execution read models (ADR 0058) |
-| ~@loom/plugin-sentinel~    | The perpetual-agent pattern as one composition-time preset |
-| ~@loom/plugin-crypto~      | K10 encryption-at-rest + crypto-shredding (~PAYLOAD_SHREDDED~) |
-| ~@loom/plugin-audit-chain~ | Tamper-evident hash-chained ~EventStore~ wrapper |
-| ~@loom/isolate~            | K7 data-plane isolation — your own (trusted, not model-written) tool code in a scrubbed child process with brokered egress; hardening, not OS confinement. Model-written code goes through ~@loom/sandbox~ |
-| ~@loom/classify~ · ~@loom/compliance~ | Field-sensitivity markers (~secret()~/~sensitive()~) · GDPR subject export/erasure |
-| ~@loom/knowledge~         | Corpus lifecycle over the semantic memory tier (ADR 0090/0091) — retrieval, not a separate store |
-| ~@loom/verify~ · ~@loom/spec~ · ~@loom/conformance~ | Pre-flight verification (determinism/replay/capability rules incl. the ADR 0061 loop-identity lint) · evidence-derived capability manifest (ADR 0035) · SPI conformance kits |
-| ~@loom/replay-inspector~   | Read-only replay inspector (ADR 0071) — state at any point, transition diffs, projection slices, under the execution's *pinned* version; no write path, by type |
-| ~@loom/wire-abi~           | T2 wire-level kernel ABI — language-neutral JSON-RPC projection of the K1 syscalls |
-| ~@loom/learning~           | The continuous-learning *substrate* (ADR 0080) — trajectories, SNIPS off-policy evaluation with unit-level ESS, a promotion gate, and the 3P ~Policy~ SPI. The learning *algorithm* stays third-party. Since ADR 0124: a scoped policy registry with shadow/canary/rollback, content-addressed prompt/model versions, doubly-robust + bootstrap evaluation, and a taint/erasure-aware JSONL export |
-| ~@loom/live-query~ · ~@loom/fair-scheduler~ | Live cross-execution queries over the log (ADR 0040) · per-tenant fair scheduling (ADR 0038) |
+| ~@loomwork/plugin-content~     | Content-store seam (ADR 0046) — ~ContentResolvingEventStore~, claim-check backing, batched ~getMany~ + ~CachingContentStore~ (ADR 0062), K10.6 pinned sweep |
+| ~@loomwork/plugin-durable-state~ | Typed, versioned, contract-migratable carry state as recorded effects |
+| ~@loomwork/plugin-read-model~  | Durable, checkpointed cross-execution read models (ADR 0058) |
+| ~@loomwork/plugin-sentinel~    | The perpetual-agent pattern as one composition-time preset |
+| ~@loomwork/plugin-crypto~      | K10 encryption-at-rest + crypto-shredding (~PAYLOAD_SHREDDED~) |
+| ~@loomwork/plugin-audit-chain~ | Tamper-evident hash-chained ~EventStore~ wrapper |
+| ~@loomwork/isolate~            | K7 data-plane isolation — your own (trusted, not model-written) tool code in a scrubbed child process with brokered egress; hardening, not OS confinement. Model-written code goes through ~@loomwork/sandbox~ |
+| ~@loomwork/classify~ · ~@loomwork/compliance~ | Field-sensitivity markers (~secret()~/~sensitive()~) · GDPR subject export/erasure |
+| ~@loomwork/knowledge~         | Corpus lifecycle over the semantic memory tier (ADR 0090/0091) — retrieval, not a separate store |
+| ~@loomwork/verify~ · ~@loomwork/spec~ · ~@loomwork/conformance~ | Pre-flight verification (determinism/replay/capability rules incl. the ADR 0061 loop-identity lint) · evidence-derived capability manifest (ADR 0035) · SPI conformance kits |
+| ~@loomwork/replay-inspector~   | Read-only replay inspector (ADR 0071) — state at any point, transition diffs, projection slices, under the execution's *pinned* version; no write path, by type |
+| ~@loomwork/wire-abi~           | T2 wire-level kernel ABI — language-neutral JSON-RPC projection of the K1 syscalls |
+| ~@loomwork/learning~           | The continuous-learning *substrate* (ADR 0080) — trajectories, SNIPS off-policy evaluation with unit-level ESS, a promotion gate, and the 3P ~Policy~ SPI. The learning *algorithm* stays third-party. Since ADR 0124: a scoped policy registry with shadow/canary/rollback, content-addressed prompt/model versions, doubly-robust + bootstrap evaluation, and a taint/erasure-aware JSONL export |
+| ~@loomwork/live-query~ · ~@loomwork/fair-scheduler~ | Live cross-execution queries over the log (ADR 0040) · per-tenant fair scheduling (ADR 0038) |
 
 /The principal is durable (ADR 0111)./ The kernel records the principal on ~EXECUTION_STARTED~ and
 rehydrates it on every path, so a flow's effects run as its /owner/ — after an approval, a timer
@@ -289,12 +289,12 @@ CHANGELOG (Security) and [[file:docs/adr/0111-durable-principal.md][ADR 0111]].
 
 *DX & tooling* (~tools/~)
 
-| ~@loom/cli~                | The ~loom~ CLI — ~gen~ / ~new~ / ~appgen~ / ~plugin~ · ~doctor~ (one front door for the pre-flight gates) / ~check~ / ~verify~ / ~lint~ · ~logs~ / ~debug~ / ~inspect~ / ~profile~ / ~introspect~ / ~optimize~ · ~learn report~ / ~learn eval~ · ~eval~ / ~deploy check~ / ~compat~ / ~kernel-manifest~ · ~retention run~ / ~sweep content~ / ~compliance report~ |
-| ~@loom/compiler~           | Vite plugin + CLI — ~handler$~ extraction, flow-graph analysis, the three manifest-emitted source analyses that feed ~@loom/verify~ (non-determinism · loop identity, ADR 0061 · runner-body reach, ADR 0086), resumability metadata |
-| ~@loom/appgen~ (+ ~appgen-model~) | *AI-native DX* — NL → structured spec → plain, static TypeScript you own (optional local-Gemma planner) |
-| ~@loom/testing~ · ~@loom/eval~ · ~@loom/deploy-sim~ · ~@loom/dst~ | Testing kit · log-as-fixture evals · deploy simulation · deterministic simulation testing |
-| ~@loom/scaffold~           | Code templates + registration codegen (~loom gen~ / ~new~) |
-| ~@loom/analytics~ · ~@loom/telemetry~ | Read-only event intelligence + advisory reports · zero-overhead telemetry adapters |
+| ~@loomwork/cli~                | The ~loom~ CLI — ~gen~ / ~new~ / ~appgen~ / ~plugin~ · ~doctor~ (one front door for the pre-flight gates) / ~check~ / ~verify~ / ~lint~ · ~logs~ / ~debug~ / ~inspect~ / ~profile~ / ~introspect~ / ~optimize~ · ~learn report~ / ~learn eval~ · ~eval~ / ~deploy check~ / ~compat~ / ~kernel-manifest~ · ~retention run~ / ~sweep content~ / ~compliance report~ |
+| ~@loomwork/compiler~           | Vite plugin + CLI — ~handler$~ extraction, flow-graph analysis, the three manifest-emitted source analyses that feed ~@loomwork/verify~ (non-determinism · loop identity, ADR 0061 · runner-body reach, ADR 0086), resumability metadata |
+| ~@loomwork/appgen~ (+ ~appgen-model~) | *AI-native DX* — NL → structured spec → plain, static TypeScript you own (optional local-Gemma planner) |
+| ~@loomwork/testing~ · ~@loomwork/eval~ · ~@loomwork/deploy-sim~ · ~@loomwork/dst~ | Testing kit · log-as-fixture evals · deploy simulation · deterministic simulation testing |
+| ~@loomwork/scaffold~           | Code templates + registration codegen (~loom gen~ / ~new~) |
+| ~@loomwork/analytics~ · ~@loomwork/telemetry~ | Read-only event intelligence + advisory reports · zero-overhead telemetry adapters |
 
 -----
 
@@ -303,12 +303,12 @@ CHANGELOG (Security) and [[file:docs/adr/0111-durable-principal.md][ADR 0111]].
 Every example is offline-first (no API key needed — a deterministic mock LLM ships by default).
 
 The runnable examples live in the sibling repo [[https://github.com/chhetrisushil/loom-examples][~loom-examples~]] (cloned beside this one; they
-resolve ~@loom/*~ from ~../loom~ via pnpm ~overrides~). See [[file:docs/examples.md][docs/examples.md]] for the
+resolve ~@loomwork/*~ from ~../loom~ via pnpm ~overrides~). See [[file:docs/examples.md][docs/examples.md]] for the
 long-form catalogue — each example, the pattern it teaches, and the APIs/ADRs it exercises.
 
 | Example                    | What it shows |
 |----------------------------+---------------|
-| ~loom-starter~ | *Start here.* The canonical app: ~defineConfig~ + folder convention (~loom gen~) + effect middleware + ~@loom/testing~ + evals + deploy-sim + the compute seam, in one compact release-approval flow |
+| ~loom-starter~ | *Start here.* The canonical app: ~defineConfig~ + folder convention (~loom gen~) + effect middleware + ~@loomwork/testing~ + evals + deploy-sim + the compute seam, in one compact release-approval flow |
 | ~agent-network~ | Headless Node — the whole agentic pipeline end to end: LLM → ReAct agent → MCP → A2A → intent → planner → memory → terminal surface |
 | ~a2a-mesh~ | Headless Node — bidirectional interop with Google ADK / LangGraph / CrewAI over the open A2A protocol |
 | ~cloud-command-center~ | React — durable incident response: suspend / approve / resume + streaming AI triage |
@@ -331,18 +331,18 @@ beside this repo, then ~cd loom-examples && pnpm install~:
 
 #+begin_src sh
 # Headless (prints to the console)
-pnpm --filter @loom/agent-network start
-pnpm --filter @loom/a2a-mesh start
+pnpm --filter @loomwork/agent-network start
+pnpm --filter @loomwork/a2a-mesh start
 
 # Browser UIs (open the printed http://localhost:5173)
-pnpm --filter @loom/cloud-command-center dev
-pnpm --filter @loom/db-command-center dev        # or -wc for Web Components
+pnpm --filter @loomwork/cloud-command-center dev
+pnpm --filter @loomwork/db-command-center dev        # or -wc for Web Components
 
 # Server + client topologies (client :5173 + durable server :8787)
-pnpm --filter @loom/db-command-center-server dev
-pnpm --filter @loom/incident-war-room dev
-pnpm --filter @loom/incident-war-room demo:fork  # narrated headless fork → simulate → promote
-pnpm --filter @loom/schema-migration-planner dev
+pnpm --filter @loomwork/db-command-center-server dev
+pnpm --filter @loomwork/incident-war-room dev
+pnpm --filter @loomwork/incident-war-room demo:fork  # narrated headless fork → simulate → promote
+pnpm --filter @loomwork/schema-migration-planner dev
 #+end_src
 
 Inspect any run's durable log with the CLI (for apps using SQLite storage):
@@ -389,7 +389,7 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 - [[file:docs/scaling.md][Scaling]] — measured capacity, which regime a workload is in, and what each further change is waiting on
 - [[file:docs/spec/loom-kernel-specification.md][Kernel specification]] — the normative spec (syscall ABI, event model incl. typed failure channels, SPI contracts) + the [[file:docs/spec/compatibility-matrix.md][compatibility matrix]]
 - [[file:docs/api-reference.org][API Reference]] — per-package API (each package's main public surface), including [[file:docs/api-reference.org][Kernel hardening & security]]
-- [[file:docs/adr/][ADRs]] — the decision history (0001–0147;
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0148;
   [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 ·
   [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging ·
   [[file:docs/adr/0051-perpetual-agents-placement-schedule-remodel.md][0051–0057]] perpetual agents

@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { bench, describe } from "vitest";
 import { ContentResolvingEventStore } from "./ContentResolvingEventStore";
 import { type ContentStore, InMemoryContentStore } from "./ContentStore";
