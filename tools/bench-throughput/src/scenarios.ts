@@ -1,13 +1,17 @@
 import { type ChildProcess, fork } from "node:child_process";
 import { join } from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import { flow$, step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { CoalescingEventStore } from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import { NOTIFY_CHANNEL, PostgresEventStore, PostgresSnapshotStore } from "@loom/plugin-postgres";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { flow$, step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { CoalescingEventStore } from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import {
+  NOTIFY_CHANNEL,
+  PostgresEventStore,
+  PostgresSnapshotStore,
+} from "@loomwork/plugin-postgres";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { Client, type Notification, type Pool } from "pg";
 import { z } from "zod";
 import { type Measurement, drive } from "./harness";

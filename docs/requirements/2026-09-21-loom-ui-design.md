@@ -4,7 +4,7 @@
 - Supersedes in part: the move-out list in
   [the Experience/Rendering Runtime evaluation](2026-09-21-experience-rendering-runtime-evaluation.md) §5.
   That evaluation's placement verdict (separate framework, loom as substrate, kernel change zero)
-  stands. Its proposal to move `@loom/blueprint-runtime` and the two renderer plugins out of loom
+  stands. Its proposal to move `@loomwork/blueprint-runtime` and the two renderer plugins out of loom
   is **withdrawn**: the framework compiles *to* loom's Blueprint, so loom's UI is its foundation,
   not its competitor. An addendum to the evaluation records this.
 - Evaluates and reshapes: [the AI-Native Experience Runtime and Rendering Runtime TRD](2026-09-21-experience-rendering-runtime.md).
@@ -29,7 +29,7 @@ Made in review on 2026-09-21, in this order:
 | Loom's basic UI | **Kept.** `blueprint$`, the eight widgets, agent-surface and both renderer plugins remain usable with no framework. |
 | Relationship of the framework's model to loom's Blueprint | **Compile target.** Semantic nodes resolve, per surface, to loom widget kinds; the compiler emits a plain loom `Blueprint`; loom's renderers draw it. One vocabulary chain. |
 | First consumer | **Extract from genUI, then migrate genUI.** genUI's private Blueprint is deleted at the end. |
-| Where the framework lives | **Sibling repo** `../loom-ui`, `@loom-ui/*` scope (working name), consumed via `link:` like loom-plugins and loom-examples. |
+| Where the framework lives | **Sibling repo** `../loom-ui`, `@loomwork/ui-*` scope (working name), consumed via `link:` like loom-plugins and loom-examples. |
 | Who owns planning | **Pluggable Planner SPI** with one reference implementation, running on `ctx.decide`. |
 | Surfaces in v1 | **Web via loom's React renderer, web via Lit (genUI's widgets as a loom DOM renderer), terminal.** Chat surfaces are declared in the catalogue type but get no renderer work. |
 
@@ -40,8 +40,8 @@ truth that content addressing has to cover), and keeping genUI's Blueprint canon
 ## 1. Why this shape
 
 genUI is the one GenUI product on loom past the demo stage. It imports loom's kernel heavily and
-loom's durable UI channel (`@loom/agent-surface`, `@loom/plugin-a2ui`), declares
-`@loom/blueprint-runtime` and imports nothing from it, and built its own Blueprint, hydration
+loom's durable UI channel (`@loomwork/agent-surface`, `@loomwork/plugin-a2ui`), declares
+`@loomwork/blueprint-runtime` and imports nothing from it, and built its own Blueprint, hydration
 controller, Lit widgets and terminal renderer. Left alone, that is two vocabularies that never
 meet, and loom's basic UI becomes a tier nobody upgrades from.
 
@@ -71,11 +71,11 @@ closed if the token is absent.
 
 | Package | Job | Seeded from | Depends on |
 |---|---|---|---|
-| `@loom-ui/core` | Experience Model (semantic node tree, operations, lineage, replay fold, identity); semantic catalogue with per-surface resolution; compiler to a loom `Blueprint`. Pure, isomorphic. | genUI `shared/blueprint.ts`, `layout.ts`, `json.ts`, `governance.ts` | `@loom/blueprint-runtime` (types + validators) |
-| `@loom-ui/hydration` | Provider plane execution; `HydrationController`; the hydration projection compiled widgets bind to. | genUI `ui-sdk/HydrationController`, `hydrationProjection`, `shared/hydration.ts` | core, `@loom/projection-runtime`, `@loom/plugin-mcp`, `@loom/plugin-sandbox` |
-| `@loom-ui/planner` | Planner SPI, one reference implementation, a conformance kit. | genUI `apps/server/app/compose` | core, `@loom/llm` |
-| `@loom-ui/renderer-lit` | A loom DOM renderer adapter (own subpath) and genUI's Lit widgets registered into it. | genUI `widgets-lit` | core, `@loom/blueprint-runtime`, `@loom/projection-runtime` |
-| `@loom-ui/renderer-terminal` | Kind-aware string renderers registered into loom's terminal renderer. | genUI `renderer-terminal/renderShape.ts` | `@loom/plugin-renderer-terminal` |
+| `@loomwork/ui-core` | Experience Model (semantic node tree, operations, lineage, replay fold, identity); semantic catalogue with per-surface resolution; compiler to a loom `Blueprint`. Pure, isomorphic. | genUI `shared/blueprint.ts`, `layout.ts`, `json.ts`, `governance.ts` | `@loomwork/blueprint-runtime` (types + validators) |
+| `@loomwork/ui-hydration` | Provider plane execution; `HydrationController`; the hydration projection compiled widgets bind to. | genUI `ui-sdk/HydrationController`, `hydrationProjection`, `shared/hydration.ts` | core, `@loomwork/projection-runtime`, `@loomwork/plugin-mcp`, `@loomwork/plugin-sandbox` |
+| `@loomwork/ui-planner` | Planner SPI, one reference implementation, a conformance kit. | genUI `apps/server/app/compose` | core, `@loomwork/llm` |
+| `@loomwork/ui-renderer-lit` | A loom DOM renderer adapter (own subpath) and genUI's Lit widgets registered into it. | genUI `widgets-lit` | core, `@loomwork/blueprint-runtime`, `@loomwork/projection-runtime` |
+| `@loomwork/ui-renderer-terminal` | Kind-aware string renderers registered into loom's terminal renderer. | genUI `renderer-terminal/renderShape.ts` | `@loomwork/plugin-renderer-terminal` |
 
 `core` carries model, catalogue and compiler together on purpose: one type graph, all pure, and
 package names are loom's real bloat cost. It splits when a consumer needs the catalogue without
@@ -84,7 +84,7 @@ the compiler.
 **Stays in genUI:** the authoring app, the server, i18n extraction tooling, Postgres setup, and
 the three-plane merge.
 
-## 3. Experience Model (`@loom-ui/core`)
+## 3. Experience Model (`@loomwork/ui-core`)
 
 ### 3.1 Nodes
 
@@ -163,11 +163,11 @@ interface RecordedOperation { op: Operation; by: Provenance; at: string }
 ### 3.4 Persistence
 
 Composed-surfaces recipe, unchanged. `core` exports `experienceArtifact`, `encode/decode`, and
-`putExperience(content, exp) → ContentRef` (subpath `@loom-ui/core/log`, the only part that depends
-on `@loom/plugin-content`). The **app**, inside a loom execution, emits the userspace event
+`putExperience(content, exp) → ContentRef` (subpath `@loomwork/ui-core/log`, the only part that depends
+on `@loomwork/plugin-content`). The **app**, inside a loom execution, emits the userspace event
 `EXPERIENCE_COMPOSED { ref, parents, ops: RecordedOperation[] }`. `core` never touches the log.
 
-## 4. Semantic catalogue and compiler (`@loom-ui/core`)
+## 4. Semantic catalogue and compiler (`@loomwork/ui-core`)
 
 ### 4.1 Catalogue
 
@@ -228,14 +228,14 @@ so a compiler defect that emits an off-catalogue kind is caught by loom's check 
 `props.span`; the Lit renderer honours it, loom's React grid ignores it (equal columns). Visible,
 not silent; the first candidate for an additive loom change (§8).
 
-## 5. Hydration (`@loom-ui/hydration`)
+## 5. Hydration (`@loomwork/ui-hydration`)
 
 `ProviderSpec` is genUI's shape unchanged: an execution graph of MCP tool nodes each pinning
 `toolSchemaHash`, a reshaping step (`JSONPath` or a content-addressed QuickJS `scriptRef`), an
 `outputShapeHash`, and `cachePolicy { ttlSeconds, scope: "principal" | "global" }`.
 
 **The read path emits nothing.** Each graph runs through loom's `invokeTransient`; reshaping runs
-in `@loom/plugin-sandbox`; output is checked against `outputShapeHash`. Rendering a persisted
+in `@loomwork/plugin-sandbox`; output is checked against `outputShapeHash`. Rendering a persisted
 experience is a cache lookup plus these calls — no model, no log writes.
 
 **Projection shape** (declared `version`, pinned by the compiler):
@@ -267,7 +267,7 @@ bindings, never values, so sharing an experience never shares a viewer's data.
 missing kind is a startup failure, not a per-viewer placeholder. `WidgetAction.widgetId` is the
 node id.
 
-**Web / Lit — `@loom-ui/renderer-lit`.** Two parts behind two subpaths:
+**Web / Lit — `@loomwork/ui-renderer-lit`.** Two parts behind two subpaths:
 
 - `/dom`: `renderBlueprintDom(blueprint, projectionRuntime, executionId, { registry, onAction })`
   on `traverseBlueprint`, one `subscribeSelector` per widget so one handle resolving re-renders one
@@ -281,21 +281,21 @@ node id.
 **Parity is a test.** Every `web` kind the semantic catalogue resolves to must be covered by both
 the React and the Lit registries. Adding a Lit-only kind fails the suite.
 
-**Terminal — `@loom-ui/renderer-terminal` + one loom change.** Loom's `renderBlueprintToString` /
+**Terminal — `@loomwork/ui-renderer-terminal` + one loom change.** Loom's `renderBlueprintToString` /
 `TerminalRenderer` gain an optional registry of `(widget, value) => string` renderers with an
 explicit `[kind]` marker for unregistered kinds (§8). This package registers genUI's shape
 renderers (sparklines, tables). Loom's terminal renderer then covers its own catalogue — ADR 0088's
 second direction.
 
 **Chat.** Declared in `Surface`, no renderer work in v1. When it comes: compile to Blueprint,
-project through `@loom/plugin-a2ui` / `@loom/plugin-mcp-app`. Not a new renderer.
+project through `@loomwork/plugin-a2ui` / `@loomwork/plugin-mcp-app`. Not a new renderer.
 
 **Locale and theme are inputs, not mutations.** A locale change re-runs `compile` with another
 `resolveLabel`. Nothing is appended.
 
 ## 7. Planner SPI and interaction model
 
-### 7.1 Planner (`@loom-ui/planner`)
+### 7.1 Planner (`@loomwork/ui-planner`)
 
 ```ts
 interface Planner {
@@ -339,7 +339,7 @@ high-impact ones wait on loom's suspend/resume gate. Fork, simulate, promote —
 
 ## 8. Changes in loom
 
-**Unchanged:** `@loom/blueprint-runtime` (stays, in loom, as the basic tier and the compile target);
+**Unchanged:** `@loomwork/blueprint-runtime` (stays, in loom, as the basic tier and the compile target);
 `plugin-renderer-react`; `agent-surface`; `plugin-a2ui`; `plugin-mcp-app`; `subscribeSelector`;
 `KERNEL_ABI`; `EVENT_SCHEMA`. No semantic kinds join `WidgetKind`.
 

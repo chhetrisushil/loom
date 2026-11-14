@@ -1,6 +1,6 @@
-import { unwrapTainted } from "@loom/classify";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { TimerService } from "./TimerService";

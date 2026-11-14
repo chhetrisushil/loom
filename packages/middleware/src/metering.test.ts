@@ -1,4 +1,4 @@
-import type { EffectContext, ResourceSnapshot } from "@loom/effect-runtime";
+import type { EffectContext, ResourceSnapshot } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { QuotaExceededError, llmUsageTokens, meteringMiddleware } from "./metering";
 

@@ -1,7 +1,7 @@
-import type { ExecutionState } from "@loom/core";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
-import { deserializeExecution, deserializeProjections } from "@loom/workflow-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
+import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import { deserializeExecution, deserializeProjections } from "@loomwork/workflow-runtime";
 import type React from "react";
 import { createContext, useContext, useRef } from "react";
 import type { FiberConfig } from "./fiber/types";

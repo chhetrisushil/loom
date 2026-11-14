@@ -160,7 +160,7 @@ Decided:
 
 - **Every decorator between the coalescer and the backend MUST implement `appendBatch`**, and
   every decorator MUST decide each optional method explicitly. It forwards the method,
-  overrides it, or refuses it with a reason. `installOptional` (`@loom/event-runtime`) installs
+  overrides it, or refuses it with a reason. `installOptional` (`@loomwork/event-runtime`) installs
   a `DecoratorPlan`, a mapped type over the whole `OptionalEventStoreMethod` union in which
   every key is required (`-?`; a mapped type over `EventStore` would otherwise inherit the
   methods' `?` and let a plan omit one). A plan that omits a method, including one added to
@@ -169,7 +169,7 @@ Decided:
   kit and the fitness test below enforce. A method is installed only when the inner store has
   it, so capability probes are unchanged.
 - **`runEventStoreDecoratorConformance` / `runSnapshotStoreDecoratorConformance`
-  (`@loom/conformance`)** wrap a full-capability store and assert that every optional method
+  (`@loomwork/conformance`)** wrap a full-capability store and assert that every optional method
   survives or is refused with a reason. They then run the whole SPI suite THROUGH the
   decorator, so the `appendBatch` atomicity cases actually execute. A 3P decorator proves
   itself the same way. A discovery-based fitness test (`packages/spec`) fails when a decorator

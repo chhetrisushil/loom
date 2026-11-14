@@ -6,7 +6,7 @@ import type { EventEnvelope } from "./event";
  * them meaning: an effect declaring `kind: "human"` PARKS the execution for an external answer
  * (the answer is a resume). Every other value, known or custom, is advisory metadata
  * (placement compatibility, analytics, authorization displays). `"a2a"` names a protocol that
- * lives in `@loom/plugin-a2a`; the kernel attaches no behaviour to it.
+ * lives in `@loomwork/plugin-a2a`; the kernel attaches no behaviour to it.
  */
 export type KnownEffectKind = "tool" | "llm" | "human" | "a2a";
 
@@ -146,7 +146,7 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
   trustJsonSchemaText?: boolean;
   /**
    * R5 (ADR 0120) — the operator declares that this tool may return a media result
-   * (`mediaResult(parts)` from `@loom/agent`), which agent loops then hand the model as image /
+   * (`mediaResult(parts)` from `@loomwork/agent`), which agent loops then hand the model as image /
    * audio / file parts. Absent: a result shaped like a media result is just data. Only the
    * operator can set it (a tool's output cannot), and a TAINTED result is never interpreted as
    * media whatever the tool declares — so third-party output cannot choose which stored blob
@@ -217,7 +217,7 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
  * own — the menu behind a single declared unit.
  *
  * The motivating case is an agent: `agentStep$` is one step whose loop may call any
- * tool in `AgentDefinition.tools`, chosen by a model at run time. `@loom/verify` had
+ * tool in `AgentDefinition.tools`, chosen by a model at run time. `@loomwork/verify` had
  * no way to see that menu, so a flow hosting an agent contributed an empty effect
  * set and every static check over it passed vacuously.
  *
@@ -247,7 +247,7 @@ export interface StepDefinition<TIn = unknown, TOut = unknown> {
   effectClass?: string;
   /**
    * Capabilities reachable THROUGH this step (see {@link ReachableTool}). Read by
-   * `@loom/verify` via `resolveVerifyInput`; never read by the runtime, which
+   * `@loomwork/verify` via `resolveVerifyInput`; never read by the runtime, which
    * authorizes each call by `toolId` at the K2 floor regardless. Absent ⇒ nothing
    * added to the effect set, so every existing flow verifies identically (G2).
    */
@@ -327,7 +327,7 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
   effectClass?: string;
   /**
    * ADR 0113 D2 — a content hash of the flow BODY as built, supplied by the toolchain
-   * (`@loom/compiler`'s bundler plugin, a build step) or by the author. Recorded on
+   * (`@loomwork/compiler`'s bundler plugin, a build step) or by the author. Recorded on
    * `EXECUTION_STARTED.codeHash`; on resume/recovery a different value is a
    * `FlowCodeMismatchError` unless {@link compatibleWith} lists the recorded one. The kernel
    * never computes it (`Function.prototype.toString` is not stable across bundlers); absent on
@@ -433,7 +433,7 @@ export interface ProjectionDefinition<TState = unknown> {
 }
 
 // A2A skill descriptor carried on an agent. Defined structurally here (rather
-// than importing from @loom/plugin-a2a) so @loom/core stays dependency-light; @loom/plugin-a2a
+// than importing from @loomwork/plugin-a2a) so @loomwork/core stays dependency-light; @loomwork/plugin-a2a
 // maps this to its own AgentSkill when deriving an AgentCard.
 //
 // NOTE: this is A2A agent-card *metadata* — distinct from the runtime

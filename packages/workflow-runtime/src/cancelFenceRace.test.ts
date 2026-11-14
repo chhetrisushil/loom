@@ -1,8 +1,8 @@
-import { step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { EventStore } from "@loom/event-runtime";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";

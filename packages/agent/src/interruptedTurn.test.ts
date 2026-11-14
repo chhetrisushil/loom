@@ -1,8 +1,8 @@
-import { TypedFailure } from "@loom/core";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import { TypedFailure } from "@loomwork/core";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AGENT_INTERRUPTED } from "./AgentRunner";

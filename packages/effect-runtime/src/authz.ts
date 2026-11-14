@@ -151,7 +151,7 @@ export class GrantTable implements CapabilityAuthorizer {
 
   /**
    * A read-only projection of the static grants — principal → granted effect ids,
-   * or `"*"` when all effects are granted. For pre-flight tooling (e.g. `@loom/verify`)
+   * or `"*"` when all effects are granted. For pre-flight tooling (e.g. `@loomwork/verify`)
    * that needs to inspect authority without a live {@link CapabilityRequest}.
    */
   view(): Record<string, readonly string[] | "*"> {
@@ -379,7 +379,7 @@ export function attenuateDelegation(
   return signDelegation(secret, issuedTo, narrowed, nextExp);
 }
 
-import type { Scheduler } from "@loom/scheduler";
+import type { Scheduler } from "@loomwork/scheduler";
 import type { Warmer } from "./types";
 
 export interface EffectRuntimeOptions {

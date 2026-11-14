@@ -133,7 +133,7 @@ Adopted per the [K8 evaluation](../requirements/2026-07-10-kernel-hardening-eval
   mechanism.
 
   What ships instead observes the only thing a stream *does* report continuously — its own
-  output. `streamTokenBudget(budget)` (`@loom/middleware`) builds a guard that
+  output. `streamTokenBudget(budget)` (`@loomwork/middleware`) builds a guard that
   `collectStream` calls after every delta; it ESTIMATES output tokens from the text so far,
   adds what `ctx.resources` says the execution already spent, and on breach emits
   `QUOTA_EXCEEDED` and throws `QuotaExceededError` — severing the HTTP call through the same

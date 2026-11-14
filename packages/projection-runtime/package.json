@@ -1,5 +1,5 @@
 {
-  "name": "@loom/projection-runtime",
+  "name": "@loomwork/projection-runtime",
   "version": "0.1.0",
   "description": "Event-to-projection transformation runtime with live subscriptions",
   "main": "./dist/index.js",
@@ -26,8 +26,8 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/event-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

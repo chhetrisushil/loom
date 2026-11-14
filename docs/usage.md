@@ -28,7 +28,7 @@ A **step** (`step$`) is a schema-checked unit of work. The actual logic lives in
 
 ```ts
 import { z } from "zod";
-import { step$, handler$ } from "@loom/core";
+import { step$, handler$ } from "@loomwork/core";
 
 export const investigateStep = step$({
   id: "investigate",
@@ -54,8 +54,8 @@ A handler is just an `async` function. Everything you know about error handling,
 A **flow** has a declarative `flow$` definition (id, version, schemas, the list of steps) and a **runner** — an ordinary async function that orchestrates. The runner is where control flow lives.
 
 ```ts
-import { flow$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { flow$ } from "@loomwork/core";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 
 interface In { target: string }
 interface Out { summary: string }
@@ -97,10 +97,10 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 | `ctx.continueAsNew(carry)` | **Durable** end of this execution and start of its **successor** (id `<chainId>~<n>`) with `carry` as its input; never returns. The successor is started FIRST (idempotent), then a kernel-stamped `EXECUTION_CONTINUED` is **recorded** on the predecessor, which folds to the new terminal status `continued`. History stays bounded: the successor inherits the principal, the running resource totals, the inbox cursors and dedupe window and the chain's absolute deadline, and none of the fold. Refused (log untouched) inside a `ctx.parallel` scope, with a `receive` / `select` wait outstanding (a step still in flight is awaited, never refused: the call waits as `await p` would); a carry over `kernel.continuation.maxCarryBytes` (1 MiB) is refused. Needs `kernel.features.continueAsNew` (ADR 0109) |
 | `ctx.sleep(ms)` / `ctx.sleepUntil(wakeAt)` | **Durable** timer suspension — the absolute wake time is in the log, so restarts survive it and wall-clock drift never enters the fold |
 | `ctx.emit(type, payload)` | Append a domain event — **durable**, appended **once per execution**: a resume or recovery re-runs the flow from the top, and each emit the log already holds is served from it rather than appended again (ADR 0102). Load-bearing forever |
-| `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event**, once per execution like `ctx.emit` — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loom/live-query` `subscribe` or `progressHub` instead |
-| `surface(ctx).set/merge/append(path, …)` (sugar over `ctx.emit`) | Push updates to a UI surface (agent-surface; `import { surface } from "@loom/agent-surface"`, the old `ctx.ui` accessor is deprecated and injected, ADR 0114) — **durable per patch**, appended once per execution (so `append`/`increment` before a gate do not repeat on resume), and the same granularity rule as `ctx.stream` applies |
+| `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event**, once per execution like `ctx.emit` — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loomwork/live-query` `subscribe` or `progressHub` instead |
+| `surface(ctx).set/merge/append(path, …)` (sugar over `ctx.emit`) | Push updates to a UI surface (agent-surface; `import { surface } from "@loomwork/agent-surface"`, the old `ctx.ui` accessor is deprecated and injected, ADR 0114) — **durable per patch**, appended once per execution (so `append`/`increment` before a gate do not repeat on resume), and the same granularity rule as `ctx.stream` applies |
 
-**Streaming from a decider ([ADR 0119](adr/0119-decide-scope-streaming-deltas.md)).** `scope.invokeTransient(toolId, input, { onDelta })` hands a streaming effect (`createLlmEffect({ stream: true })`, `createAgentModelEffect`) a per-call sink. It receives `EffectDelta` chunks: text (`delta` is a **tainted** string, `unwrapTainted(chunk.delta)` to display it — `guardRequest` refuses it if you feed it into a prompt), a `{ reset: true, attempt }` chunk before a retried attempt (clear your view and re-render), and a final `{ done: true, usage }` sent only after the call **succeeded** — the promise's settlement is authoritative. The call is governed exactly like one without a sink (authz, middleware, kill switch, taint, budget admission, cancellation). Deltas are live-only (never journaled, silent on replay; the decision records only your return value); a throwing sink is swallowed and warned; the sink goes silent once the call settles or aborts. **Safety:** `safetyMiddleware` validators with a delta form (`piiValidator()`, `denyPatterns()` by default) check the running text and sever the stream before the offending delta is delivered. If an output validator has NO delta form (e.g. `schemaValidator`), streaming is disabled (warned): the per-call sink AND any sink configured on the effect (`createLlmEffect({ onDelta })`, `AgentRunner` `onDelta`) receive nothing and the call completes non-streamed. The configured sink is guarded the same way on durable `ctx.run` calls too, and `createLlmEffect({ onReset })` is its reset hook. A middleware that rejects or rewrites output after `next()` MUST set `inspectsOutput` (or provide a `deltaGuard`); `redactionMiddleware` does so when `redactOutput` is set. A UI that displays deltas depends on `@loom/classify` to `unwrapTainted` them. Delta checks scan the last `deltaWindow` characters (default 4096): text before a match completes is delivered, and a pattern wider than the window can evade the delta form.
+**Streaming from a decider ([ADR 0119](adr/0119-decide-scope-streaming-deltas.md)).** `scope.invokeTransient(toolId, input, { onDelta })` hands a streaming effect (`createLlmEffect({ stream: true })`, `createAgentModelEffect`) a per-call sink. It receives `EffectDelta` chunks: text (`delta` is a **tainted** string, `unwrapTainted(chunk.delta)` to display it — `guardRequest` refuses it if you feed it into a prompt), a `{ reset: true, attempt }` chunk before a retried attempt (clear your view and re-render), and a final `{ done: true, usage }` sent only after the call **succeeded** — the promise's settlement is authoritative. The call is governed exactly like one without a sink (authz, middleware, kill switch, taint, budget admission, cancellation). Deltas are live-only (never journaled, silent on replay; the decision records only your return value); a throwing sink is swallowed and warned; the sink goes silent once the call settles or aborts. **Safety:** `safetyMiddleware` validators with a delta form (`piiValidator()`, `denyPatterns()` by default) check the running text and sever the stream before the offending delta is delivered. If an output validator has NO delta form (e.g. `schemaValidator`), streaming is disabled (warned): the per-call sink AND any sink configured on the effect (`createLlmEffect({ onDelta })`, `AgentRunner` `onDelta`) receive nothing and the call completes non-streamed. The configured sink is guarded the same way on durable `ctx.run` calls too, and `createLlmEffect({ onReset })` is its reset hook. A middleware that rejects or rewrites output after `next()` MUST set `inspectsOutput` (or provide a `deltaGuard`); `redactionMiddleware` does so when `redactOutput` is set. A UI that displays deltas depends on `@loomwork/classify` to `unwrapTainted` them. Delta checks scan the last `deltaWindow` characters (default 4096): text before a match completes is delivered, and a pattern wider than the window can evade the delta form.
 
 `ctx.executionId` and `ctx.workflowId` are plain identity fields — nothing is written, so durability does not apply.
 
@@ -113,7 +113,7 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 `defineConfig` is the composition root. It assembles the `WorkflowRuntime`, stores, effect middleware, projection runtime, and A2A bus from a static config and returns a `LoomApp` — you still have direct access to every primitive.
 
 ```ts
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 
 const app = defineConfig({
   storage: sqliteStorage({ dir: ".data", branching: true }), // or { kind: "memory" }
@@ -131,13 +131,13 @@ const app = defineConfig({
 
 | Field | What it does |
 |---|---|
-| `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loom/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loom/plugin-postgres`, or your own (ADR 0043). Any other `kind` throws a `TypeError` (a stale `{ kind: "sqlite" }` or `{ kind: "postgres" }` names the preset to use) rather than silently running in memory |
+| `storage` | `{ kind: "memory" }` or `{ kind: "custom", eventStore, snapshotStore, branchRegistry? }`. Concrete backends are **presets** returning a `custom` descriptor: `sqliteStorage({ dir, branching })` from `@loomwork/plugin-sqlite`, `postgresStorage({ url, branching })` from `@loomwork/plugin-postgres`, or your own (ADR 0043). Any other `kind` throws a `TypeError` (a stale `{ kind: "sqlite" }` or `{ kind: "postgres" }` names the preset to use) rather than silently running in memory |
 | `surfaces` | agent surface ids to project — a bare id, or `{ id, redact: [...] }` to mask surface paths from egress (K10-R6) |
 | `flows` / `flowModules` | flows to register (explicit, or via `loom gen`'s `flowModules`) |
 | `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`agentSurface`), tools are exposed on `app.tools`, skills register into `app.skills` |
 | `scheduleModules` / `memoryModules` | `schedule$` / `memory$` definitions discovered by `loom gen`; schedules merge into `app.schedules` + fire via the `TimerService` (needs `timers.store`), memories register into `app.memory` |
 | `skills` / `memories` | `skill$` / `memory$` definitions registered directly (in addition to the `*Modules`) |
-| `memoryStore` | backing `MemoryStore` for `app.memory` **and every corpus `app.knowledge(scope)` opens**. Defaults to in-memory — **agent memory is lost on restart** unless you pass a durable one: `new SqliteMemoryStore(".data/events.db")` (`@loom/plugin-sqlite`) or `new PostgresMemoryStore(url)` (`@loom/plugin-postgres`). Memory is stored separately from the durable log. Both durable backends implement the optional `search` (FTS5 / `tsvector`), which `TieredMemory.recallRelevant` needs, and `remove` ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md), `MEMORY_STORE_SPI_VERSION` 2.1.0 — the query is bounded: terms come from `queryTerms`, deduplicated and capped) |
+| `memoryStore` | backing `MemoryStore` for `app.memory` **and every corpus `app.knowledge(scope)` opens**. Defaults to in-memory — **agent memory is lost on restart** unless you pass a durable one: `new SqliteMemoryStore(".data/events.db")` (`@loomwork/plugin-sqlite`) or `new PostgresMemoryStore(url)` (`@loomwork/plugin-postgres`). Memory is stored separately from the durable log. Both durable backends implement the optional `search` (FTS5 / `tsvector`), which `TieredMemory.recallRelevant` needs, and `remove` ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md), `MEMORY_STORE_SPI_VERSION` 2.1.0 — the query is bounded: terms come from `queryTerms`, deduplicated and capped) |
 | `projections` / `projectionModules` | `projection$` definitions (explicit, or discovered by `loom gen`) folded into surfaces |
 | `catalog` | the widget catalogue a model-composed blueprint is validated against (`validateBlueprint`, [ADR 0088](adr/0088-blueprint-conformance.md)) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
@@ -176,7 +176,7 @@ console.log(state.variables._output); // { summary: "…" }
 To make a start idempotent, derive the id from whatever triggered it and pass it as `executionId`. A second `start()` with an id that already exists rejects with `ExecutionAlreadyExistsError` **before the flow body runs** — no effect is invoked and `onEvent` sees nothing — so a redelivered message or a schedule occurrence fired by two nodes pays for its effects once ([ADR 0103](adr/0103-durable-bootstrap-for-caller-chosen-ids.md)):
 
 ```ts
-import { ExecutionAlreadyExistsError } from "@loom/workflow-runtime";
+import { ExecutionAlreadyExistsError } from "@loomwork/workflow-runtime";
 
 try {
   await app.runtime.start(investigateFlow, { target }, { executionId: `investigate:${msg.id}` });
@@ -205,7 +205,7 @@ Because state is `fold(events)`, you can also inspect without running: `await ap
 
 ## Step 5 — Drive a live UI with surfaces
 
-Flows push UI updates through `surface(ctx)` from `@loom/agent-surface` (the **agent-surface** patch protocol). `ctx.ui` is the deprecated spelling: the kernel no longer imports agent-surface ([ADR 0114](adr/0114-ctx-ui-leaves-the-kernel.md)), so `ctx.ui` exists only on a runtime built with the `surface` dep (`defineConfig` supplies it) and a bare `new WorkflowRuntime(...)` throws on it. These fold into named **surfaces** in the `ProjectionRuntime`, completely decoupled from durability.
+Flows push UI updates through `surface(ctx)` from `@loomwork/agent-surface` (the **agent-surface** patch protocol). `ctx.ui` is the deprecated spelling: the kernel no longer imports agent-surface ([ADR 0114](adr/0114-ctx-ui-leaves-the-kernel.md)), so `ctx.ui` exists only on a runtime built with the `surface` dep (`defineConfig` supplies it) and a bare `new WorkflowRuntime(...)` throws on it. These fold into named **surfaces** in the `ProjectionRuntime`, completely decoupled from durability.
 
 ```ts
 const runner: FlowRunner<In, Out> = async (ctx, input) => {
@@ -225,7 +225,7 @@ const view = app.projectionRuntime.getState<{ phase: string; timeline: string[] 
 );
 ```
 
-Render it with any renderer — `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, or your own (**bring-your-own-renderer**). The same backend drives React, Web Components, and Angular in the examples without changing a line of flow code.
+Render it with any renderer — `@loomwork/plugin-renderer-react`, `@loomwork/plugin-renderer-terminal`, or your own (**bring-your-own-renderer**). The same backend drives React, Web Components, and Angular in the examples without changing a line of flow code.
 
 For long-running work you can stream **numeric progress** and **log lines** out-of-band via a small pub/sub hub (see `schema-migration-planner`'s `progressHub`): handlers call `report(ctx.executionId, line)` / `reportProgress(ctx.executionId, pct)`, and an orchestrator subscribes.
 
@@ -236,7 +236,7 @@ For long-running work you can stream **numeric progress** and **log lines** out-
 Any side effect — a tool call, an LLM call, an external API — is an **Effect** registered in the `EffectRuntime` by `toolId`. A step with a `toolId` (and no inline `handler`) resolves to a registered effect. This isolation is what makes replay exactly-once.
 
 ```ts
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 
 app.effectRuntime.register(
   "lookup-metrics",
@@ -249,7 +249,7 @@ app.effectRuntime.register(
 **Middleware** wraps every effect with cross-cutting concerns as a composable chain. The reference `retryMiddleware` adds exponential backoff with deterministic jitter and never retries a suspension:
 
 ```ts
-import { retryMiddleware } from "@loom/middleware";
+import { retryMiddleware } from "@loomwork/middleware";
 
 const app = defineConfig({
   storage: { kind: "memory" },
@@ -273,14 +273,14 @@ Everything intelligent runs *inside* durable flows, so it inherits replay and re
 **LLM (provider-agnostic).** Wrap a provider in an `LlmEffect` and call it from a step. In tests, swap the real provider for the VCR provider (Step 12) so runs are deterministic and offline. Because every LLM call is a metered effect, `meteringMiddleware` can enforce token/cost budgets on it (`QUOTA_EXCEEDED`) — see Step 11.
 
 ```ts
-import { LlmEffect } from "@loom/effect-runtime";
+import { LlmEffect } from "@loomwork/effect-runtime";
 app.effectRuntime.register("triage-llm", new LlmEffect(async (input, ctx) => {
   ctx.emit("llm_call", { model: "claude-…" });
-  return await llm.complete(input); // @loom/llm LlmProvider
+  return await llm.complete(input); // @loomwork/llm LlmProvider
 }));
 ```
 
-**Agents (ReAct).** `agent$` declares a tool-using agent; `@loom/agent` runs the reason→act loop — as `agentLoop$` (the canonical loop, R10 / [ADR 0121](adr/0121-one-canonical-agent-loop.md): **one durable frame per turn**, so a crash costs one turn, the model call runs inside the K2/metering ring, and the loop can suspend mid-flight for human approval; a failing tool is feedback, `parallelTools` / `signal` / `writeBack` are options). `agentStep$` and `AgentRunner` are deprecated. See the [user guide](user-guide.md#running-the-loop-agentloop) for the trade-off and [ADR 0087](adr/0087-durable-agent-loop.md); `@loom/plugin-mcp` discovers external tools via the Model Context Protocol — and, with `createMcpServer`, exposes your own flows to any MCP host in the other direction. `@loom/plugin-mcp-app` adds the MCP Apps (`ui://`) UI layer on top of that server.
+**Agents (ReAct).** `agent$` declares a tool-using agent; `@loomwork/agent` runs the reason→act loop — as `agentLoop$` (the canonical loop, R10 / [ADR 0121](adr/0121-one-canonical-agent-loop.md): **one durable frame per turn**, so a crash costs one turn, the model call runs inside the K2/metering ring, and the loop can suspend mid-flight for human approval; a failing tool is feedback, `parallelTools` / `signal` / `writeBack` are options). `agentStep$` and `AgentRunner` are deprecated. See the [user guide](user-guide.md#running-the-loop-agentloop) for the trade-off and [ADR 0087](adr/0087-durable-agent-loop.md); `@loomwork/plugin-mcp` discovers external tools via the Model Context Protocol — and, with `createMcpServer`, exposes your own flows to any MCP host in the other direction. `@loomwork/plugin-mcp-app` adds the MCP Apps (`ui://`) UI layer on top of that server.
 
 Per-turn durability journals each turn's whole message array as its `STEP_STARTED` input, so the log grows O(n²) in turn count unless bounded. `agentLoop$`'s `compaction` folds older turns into one summary — through `ctx.execute`, so replay serves the same fold rather than re-summarizing — once **either** threshold is crossed: `afterMessages` (turn count) or `afterBytes` (a running UTF-8 byte count, cheaper to check than count when one tool result is enormous and the rest are small). At least one of the two is required. The byte trigger keeps the longest run of the newest messages whose bytes total at most `afterBytes / 2` (floored at 1, capped at `keepRecent`), and skips compacting a turn where even the newest message alone is over budget, rather than paying a summary call that folds nothing:
 
@@ -288,11 +288,11 @@ Per-turn durability journals each turn's whole message array as its `STEP_STARTE
 compaction: { toolId: "summarize", afterMessages: 20, afterBytes: 64_000, keepRecent: 4 }
 ```
 
-**State growth, and what the loop does about it ([ADR 0137](adr/0137-agent-state-growth-warning-and-builtin-summarizer.md), [ADR 0138](adr/0138-compaction-archives-what-it-removes.md), [ADR 0142](adr/0142-agent-lean-tool-call-log.md)).** Compaction stays opt-in, but a loop with no `compaction` warns ONCE per run (`onWarn` / `observability.onWarn`, else the process warning `LOOM_AGENT_STATE_GROWTH`) when its transcript passes `warnTranscriptBytes` (default 256 KiB, `false` disables); the warning only reports. `createSummarizerEffect(provider, { instruction?, maxTokens? })` from `@loom/agent` is a ready-made `{ messages } -> { summary }` effect for `compaction.toolId` (an empty summary throws `SummarizerEmptyError` rather than replacing the transcript with nothing); register it as an ordinary effect so it runs in the capability ring and is journaled once. Separately, the fold no longer copies a settled step's `input` (EVENT_SCHEMA 1.26.0), so a resume reads far less; the inputs stay in the log. **`LogLifecycle.compact` (the log-level compaction of K10.4) MOVES the events it removes into an `ArchiveStore` and REFUSES (`CompactionArchiveRequiredError`) when none is configured**: `defineConfig` supplies one for `kind: "memory"`, `sqliteStorage()` and `postgresStorage()`, and a durable custom storage must pass `storage.archiveStore` or `durability.retention.compactionArchive` (the user guide's [log and read models](user-guide/log-and-read-models.md) chapter has the audit reads, sealing and sweep rules). `agentLoop$({ toolCallLog: "lean" })` replaces each finished-step `toolCallLog` entry's `toolOutput` with `{ status, bytes, digest, stepId }` (opt in; the entry type is `LeanAgentStep`, narrowed by `isLeanAgentStep`; a reader that needs the output resolves `stepId`). `agentLoop$` also JSON-normalises each tool output once as it settles, so the live run sees what a replay sees, and an output whose JSON form is unstable fails the run; a tool result with an untrusted-content taint wrapper NESTED anywhere inside it is fenced as untrusted ([ADR 0085](adr/0085-untrusted-content-integrity-axis.md) amendment; `scanTaint` / `nestedTaintOrigin` in `@loom/classify`). Superseded snapshots can be pruned, opt in, with `LogLifecycle.pruneSnapshots` ([ADR 0134](adr/0134-snapshot-pruning.md)); the snapshot codec option is in the `durability` row above, and the Postgres-only `snapshotCompression: "lz4"` ([ADR 0136](adr/0136-snapshot-lz4-compression.md)) is a speed trade (about 1.5x MORE bytes than the default), off by default. Measurements: [scaling.md section 5](scaling.md).
+**State growth, and what the loop does about it ([ADR 0137](adr/0137-agent-state-growth-warning-and-builtin-summarizer.md), [ADR 0138](adr/0138-compaction-archives-what-it-removes.md), [ADR 0142](adr/0142-agent-lean-tool-call-log.md)).** Compaction stays opt-in, but a loop with no `compaction` warns ONCE per run (`onWarn` / `observability.onWarn`, else the process warning `LOOM_AGENT_STATE_GROWTH`) when its transcript passes `warnTranscriptBytes` (default 256 KiB, `false` disables); the warning only reports. `createSummarizerEffect(provider, { instruction?, maxTokens? })` from `@loomwork/agent` is a ready-made `{ messages } -> { summary }` effect for `compaction.toolId` (an empty summary throws `SummarizerEmptyError` rather than replacing the transcript with nothing); register it as an ordinary effect so it runs in the capability ring and is journaled once. Separately, the fold no longer copies a settled step's `input` (EVENT_SCHEMA 1.26.0), so a resume reads far less; the inputs stay in the log. **`LogLifecycle.compact` (the log-level compaction of K10.4) MOVES the events it removes into an `ArchiveStore` and REFUSES (`CompactionArchiveRequiredError`) when none is configured**: `defineConfig` supplies one for `kind: "memory"`, `sqliteStorage()` and `postgresStorage()`, and a durable custom storage must pass `storage.archiveStore` or `durability.retention.compactionArchive` (the user guide's [log and read models](user-guide/log-and-read-models.md) chapter has the audit reads, sealing and sweep rules). `agentLoop$({ toolCallLog: "lean" })` replaces each finished-step `toolCallLog` entry's `toolOutput` with `{ status, bytes, digest, stepId }` (opt in; the entry type is `LeanAgentStep`, narrowed by `isLeanAgentStep`; a reader that needs the output resolves `stepId`). `agentLoop$` also JSON-normalises each tool output once as it settles, so the live run sees what a replay sees, and an output whose JSON form is unstable fails the run; a tool result with an untrusted-content taint wrapper NESTED anywhere inside it is fenced as untrusted ([ADR 0085](adr/0085-untrusted-content-integrity-axis.md) amendment; `scanTaint` / `nestedTaintOrigin` in `@loomwork/classify`). Superseded snapshots can be pruned, opt in, with `LogLifecycle.pruneSnapshots` ([ADR 0134](adr/0134-snapshot-pruning.md)); the snapshot codec option is in the `durability` row above, and the Postgres-only `snapshotCompression: "lz4"` ([ADR 0136](adr/0136-snapshot-lz4-compression.md)) is a speed trade (about 1.5x MORE bytes than the default), off by default. Measurements: [scaling.md section 5](scaling.md).
 
 **The claim-check contract toward the model is a documented shape, not a resolve hook.** `claimCheckMiddleware` ([ADR 0054](adr/0054-claim-check-middleware.md)) offloads a tool's RESULT bytes, not the transcript an agent re-sends every turn — it does not shrink what `compaction` above bounds. A claim-checked tool's result reaches the model exactly as recorded: the envelope (`{ __loomClaimCheck: true, ref, digest }`), never resolved back to its bytes — resolving it would put those bytes into the NEXT turn's journaled input, undoing the offload. Declare a `digests[toolId]` projection for every tool a claim-checking agent calls, so the model sees the digest instead of a bare hash. For a lossless answer to the O(n²) growth itself (not just oversized results), externalize `STEP_STARTED` `input.messages` by reference with `ContentResolvingEventStore` ([ADR 0046](adr/0046-content-store-seam-thin-authoritative-log.md)) — safe under the content sweep only once the sweep respects still-referenced externalized input.
 
-**Claim-checking an agent's tool outputs is one opt-in line ([ADR 0140](adr/0140-agent-claim-check-opt-in.md)).** Tool outputs are about 80% of a mid-run agent's state; `defineConfig({ execution: { claimCheck: { store: contentStore, toolIds: ["export_report"] } } })` offloads a listed tool's result over `inlineCapBytes` (default 1 KiB of JSON text) to `store` (the content store you also give `sweepUnpinnedContent`) and records `{ __loomClaimCheck, ref, size, digest }` instead; smaller results stay inline. Off unless set. List the TOOLS only: the model effect and the summarizer must stay inline, which is why there is no "all". The model sees that envelope, never the bytes: **an offloaded tool's result is withheld from the model except its digest/preview, so list only tools whose output the model does not need in full** (a bulk export, not a search whose hits it must read). A tool WITHOUT a `digests[toolId]` entry gets the default digest `{ preview, truncated: true }`, the first `preview` characters (default 256) of its result's JSON (a declared digest replaces it; `preview: false` leaves a bare ref and size; a tainted result is recorded as a tainted envelope and never previewed, and your own digest must not echo tainted content either). Only agent tool frames are touched (never `invokeTransient`), a media result passes through, and a tool-forged envelope is treated as data. Replay and resume read the envelope from the log and touch the content store zero times, even after the blobs were erased. Auditability is intact: the envelopes are marked `retain: true`, so the content sweep keeps the blob while any log, archive segment or snapshot cites it (only erasure, or discarding the citing history, frees it); `claimCheck.reclaimable` marks genuine telemetry reclaimable (the explicit audit trade). `security.crypto` with the opt-in is REFUSED at boot unless the store declares `sealsContent: true` (wrap it with `EncryptingContentStore(inner, keys)` from `@loom/plugin-crypto`, over the same KeyStore and `subjectOf` as the log; [ADR 0143](adr/0143-encrypting-content-store.md)); `compliance.erase` needs a store with `delete()`, and `app.eraseSubject` then deletes the subject's blobs (an identical blob another subject still cites stays) and journals it, while `app.exportSubject` returns the resolved blobs. It bounds the bytes of each tool result, not the re-sent transcript; that is `compaction` above (measured in [scaling.md section 5](scaling.md)).
+**Claim-checking an agent's tool outputs is one opt-in line ([ADR 0140](adr/0140-agent-claim-check-opt-in.md)).** Tool outputs are about 80% of a mid-run agent's state; `defineConfig({ execution: { claimCheck: { store: contentStore, toolIds: ["export_report"] } } })` offloads a listed tool's result over `inlineCapBytes` (default 1 KiB of JSON text) to `store` (the content store you also give `sweepUnpinnedContent`) and records `{ __loomClaimCheck, ref, size, digest }` instead; smaller results stay inline. Off unless set. List the TOOLS only: the model effect and the summarizer must stay inline, which is why there is no "all". The model sees that envelope, never the bytes: **an offloaded tool's result is withheld from the model except its digest/preview, so list only tools whose output the model does not need in full** (a bulk export, not a search whose hits it must read). A tool WITHOUT a `digests[toolId]` entry gets the default digest `{ preview, truncated: true }`, the first `preview` characters (default 256) of its result's JSON (a declared digest replaces it; `preview: false` leaves a bare ref and size; a tainted result is recorded as a tainted envelope and never previewed, and your own digest must not echo tainted content either). Only agent tool frames are touched (never `invokeTransient`), a media result passes through, and a tool-forged envelope is treated as data. Replay and resume read the envelope from the log and touch the content store zero times, even after the blobs were erased. Auditability is intact: the envelopes are marked `retain: true`, so the content sweep keeps the blob while any log, archive segment or snapshot cites it (only erasure, or discarding the citing history, frees it); `claimCheck.reclaimable` marks genuine telemetry reclaimable (the explicit audit trade). `security.crypto` with the opt-in is REFUSED at boot unless the store declares `sealsContent: true` (wrap it with `EncryptingContentStore(inner, keys)` from `@loomwork/plugin-crypto`, over the same KeyStore and `subjectOf` as the log; [ADR 0143](adr/0143-encrypting-content-store.md)); `compliance.erase` needs a store with `delete()`, and `app.eraseSubject` then deletes the subject's blobs (an identical blob another subject still cites stays) and journals it, while `app.exportSubject` returns the resolved blobs. It bounds the bytes of each tool result, not the re-sent transcript; that is `compaction` above (measured in [scaling.md section 5](scaling.md)).
 
 **A2A (agent-to-agent).** Expose a flow as an A2A task with `LoomAgentExecutor`, and call *external* agents (Google ADK, LangGraph, CrewAI) as steps. Locally, an `InProcessA2ABus` dispatches capabilities to the owning agent with streaming callbacks:
 
@@ -312,8 +312,8 @@ const result = await app.bus.dispatch(capabilityId, input, prompt, {
 For "type a goal, do the right thing" UX, compose two stateless services:
 
 ```ts
-import { IntentRuntime } from "@loom/intent";
-import { PlannerRuntime } from "@loom/planner";
+import { IntentRuntime } from "@loomwork/intent";
+import { PlannerRuntime } from "@loomwork/planner";
 
 const intent = new IntentRuntime({ catalog, provider });   // provider optional — omit for offline keyword routing
 const planner = new PlannerRuntime({ catalog, provider });
@@ -368,7 +368,7 @@ written, leaving the execution suspended and resumable ([ADR 0077](adr/0077-type
 For **policy-driven** gates (auto-approve low risk, escalate the rest), use the composable `decideApproval` primitive:
 
 ```ts
-import { decideApproval } from "@loom/orchestrator";
+import { decideApproval } from "@loomwork/orchestrator";
 
 await decideApproval(
   { goal, riskLevel: "medium" },
@@ -386,7 +386,7 @@ An approval must mean *this* proposal, not whatever is parked when it arrives. H
 declare a digest of the proposal, and make the approver echo it ([ADR 0117](adr/0117-approvals-bound-to-what-the-approver-saw.md)):
 
 ```ts
-import { answerApproval, signResume, signedResumeAuthenticator, viewDigest } from "@loom/workflow-runtime";
+import { answerApproval, signResume, signedResumeAuthenticator, viewDigest } from "@loomwork/workflow-runtime";
 
 // in the flow
 await ctx.suspend({ on: "ApprovalGranted", viewDigest: viewDigest({ target: input.target }) });
@@ -526,7 +526,7 @@ Compaction truncates the LOG, not the fold (the re-run needs every recorded step
 bound has to be a point where the flow CHOOSES what it carries and starts over:
 
 ```ts
-import { continueEvery } from "@loom/agent";
+import { continueEvery } from "@loomwork/agent";
 
 const runner: FlowRunner<{ summary?: string }, never> = async (ctx, input) => {
   const turns = continueEvery(500);                       // a flow counts its OWN turns
@@ -556,8 +556,8 @@ still in flight is awaited (without a timeout: a timing-dependent refusal would 
 `await p` would. Do not
 rotate unconditionally (a flow that consumes nothing between calls is a runaway chain). A tainted value in the
 carry stays tainted. Children of the predecessor that are not `detached` are cancelled when the rotation
-commits (`@loom/orchestration`); a supervised child may itself rotate, and the parent resumes with the head's
-output. `@loom/analytics`'s `chainLineage(events, id)` lists a chain's generations and head;
+commits (`@loomwork/orchestration`); a supervised child may itself rotate, and the parent resumes with the head's
+output. `@loomwork/analytics`'s `chainLineage(events, id)` lists a chain's generations and head;
 `runtime.recordOutcome` on a rotated generation attaches the reward to the generation that made the decision.
 
 ### Re-open a finished execution and leave it parked: `resumeAs` (ADR 0104)
@@ -594,7 +594,7 @@ version lives in the `retention-policy` example in `loom-examples` (see [example
 Explore alternative decisions from a suspension gate, compare projected outcomes, and promote a winner — git-style, no merge. Requires `sqliteStorage({ dir, branching: true })` or `postgresStorage({ url, branching: true })` (or a `custom` storage with your own `branchRegistry`); the in-memory storage has no branch registry.
 
 ```ts
-import { parallelLimit } from "@loom/scheduler";
+import { parallelLimit } from "@loomwork/scheduler";
 
 // 1) Run to the gate; record the fork point.
 const handle = await runtime.start(RemediateFlow, { target }, { executionId: parentId });
@@ -675,11 +675,11 @@ Two things the app still has to do, because it owns the objects: pass `app.envel
 >
 > **Identity in the log.** Outside strict/compliance the identity subset is written verbatim (zero config; it cannot be redacted later, a stated non-goal). Under `security.strict` or a composed `compliance` it is never written verbatim: pass `security.crypto: { events, snapshots }` (your `EncryptingEventStore` / `EncryptingSnapshotStore`) and `principal.identity.*` is encrypted at rest and shredded with the subject, or pass `security.principalCodec` and the log carries only an opaque `ref` — otherwise `defineConfig` refuses to compose (`PrincipalRecordingRefusedError`). A shredded or unrestorable record denies every effect; it never runs as the resumer.
 
-**Fail-closed execution authorization (R3).** Without strict, `executionAuthorizer` is consulted only for a call that carries a `principal`, so a call with none bypassed it. Under strict a principal-less `start`/`resume`/`resumeAs`/`cancel`/`loadState` reaches the authorizer with `principal: undefined` and the policy decides (`strict: { requirePrincipal: false }` restores the bypass explicitly). Attach an authenticated principal at your edge: `runtime.start(flow, input, { principal })`. `executionAccessPolicy` from `@loom/workflow-runtime` is the reference policy: per-op scopes (`owner` / `tenant` / `any` / `deny`), a workflow allow-list, `requireTenant`, and `allowAnonymous` (default `false`). The kernel's own machinery (timer wakes and schedule starts, `recoverAbandoned`, `retireAbandonedBranches`, the child supervisor) presents `runtime.systemOptions()`, an unforgeable per-runtime grant that bypasses only the execution authorizer; pass `runtime.systemStateReader()` to `orphanCensus` / `reconcileTimers` / `liveQuery` and `...runtime.systemOptions()` from your own internal jobs, never from request-derived code. Until R3's kernel half the principal is not durable: the policy remembers who started an execution in memory (lost on restart; supply `resolveOwner` from your own record), and the internal paths act as the system, not as the principal that started the execution.
+**Fail-closed execution authorization (R3).** Without strict, `executionAuthorizer` is consulted only for a call that carries a `principal`, so a call with none bypassed it. Under strict a principal-less `start`/`resume`/`resumeAs`/`cancel`/`loadState` reaches the authorizer with `principal: undefined` and the policy decides (`strict: { requirePrincipal: false }` restores the bypass explicitly). Attach an authenticated principal at your edge: `runtime.start(flow, input, { principal })`. `executionAccessPolicy` from `@loomwork/workflow-runtime` is the reference policy: per-op scopes (`owner` / `tenant` / `any` / `deny`), a workflow allow-list, `requireTenant`, and `allowAnonymous` (default `false`). The kernel's own machinery (timer wakes and schedule starts, `recoverAbandoned`, `retireAbandonedBranches`, the child supervisor) presents `runtime.systemOptions()`, an unforgeable per-runtime grant that bypasses only the execution authorizer; pass `runtime.systemStateReader()` to `orphanCensus` / `reconcileTimers` / `liveQuery` and `...runtime.systemOptions()` from your own internal jobs, never from request-derived code. Until R3's kernel half the principal is not durable: the policy remembers who started an execution in memory (lost on restart; supply `resolveOwner` from your own record), and the internal paths act as the system, not as the principal that started the execution.
 
 Ownership is the principal recorded on `EXECUTION_STARTED` (a fork's owner is the forker). An execution with no recorded owner — a legacy log, an anonymous start, a supervisor child started with no principal, a schedule occurrence, a shredded record — has an unknown owner, and owner/tenant-scoped ops on it are refused unless `resolveOwner` answers (consulted for legacy logs only). `unknownOwner: "allow"` is unsafe without `resolveOwner`. `fork(…, { actAs: "owner" })` is the separate op `"actAsOwner"`, denied by default. `ExecutionAuthorizer.committed` stays on the SPI but the reference policy no longer needs it.
 
-**Late rewards (R11, [ADR 0116](adr/0116-late-outcome-attach.md)).** `runtime.recordOutcome(executionId, { decisionId, key, success?, score? }, { principal })` attaches a reward to a decision of a **finished** execution (`completed` / `failed` / `cancelled`; a running, parked or continued one throws `ExecutionNotTerminalError`, a live run uses `ctx.emit`). It is authorized as op `"annotate"` (default `"owner"`; `rules: { annotate: "tenant" }` for a tenant-wide reward pipeline) against the recorded owner, appends through the store's atomic `appendIfUnchanged` (EventStore SPI 2.2.0; a store without it is refused, never bypassed; since SPI 2.3.0 a store-assigned incarnation closes the delete-and-recreate ABA, ADR 0129; a 3P store claiming 2.3.0 must return an `anchor` that differs across incarnations of an id even for byte-identical sequence-0 envelopes, kept in store metadata and never in an event): it can neither orphan a log a retention sweep deleted nor displace a fence holder, a concurrent writer is retried (a lost race that exhausts the retries is the retryable `OutcomeContendedError`; a fence acquired after the end does not block it, and a reopen of the execution retries over it), is idempotent per `(decisionId, key)` (`{ appended: false }`; a different score is `OutcomeRefusedError`) and refuses an unknown `decisionId`. The kernel stamps `recordedBy` and `late: true`; a flow cannot forge them. `@loom/learning` `trajectories` reads it as a direct reward with no join (for an execution that may have been compacted, build the evidence from the fold: `trajectories(evidenceEvents(await runtime.loadState(id), await store.read(id)))`); `attachOutcomes` in `@loom/analytics` is the batch/retry loop. Scores must be finite with `|score| <= 1e9`; one execution takes at most 1024 late outcomes; give a reward pipeline its own `key` namespace, since an in-run outcome under the same `(decisionId, key)` makes a late one a duplicate or a conflict. Like `send`/`resume`, an authorized caller can learn that an execution exists and is terminal.
+**Late rewards (R11, [ADR 0116](adr/0116-late-outcome-attach.md)).** `runtime.recordOutcome(executionId, { decisionId, key, success?, score? }, { principal })` attaches a reward to a decision of a **finished** execution (`completed` / `failed` / `cancelled`; a running, parked or continued one throws `ExecutionNotTerminalError`, a live run uses `ctx.emit`). It is authorized as op `"annotate"` (default `"owner"`; `rules: { annotate: "tenant" }` for a tenant-wide reward pipeline) against the recorded owner, appends through the store's atomic `appendIfUnchanged` (EventStore SPI 2.2.0; a store without it is refused, never bypassed; since SPI 2.3.0 a store-assigned incarnation closes the delete-and-recreate ABA, ADR 0129; a 3P store claiming 2.3.0 must return an `anchor` that differs across incarnations of an id even for byte-identical sequence-0 envelopes, kept in store metadata and never in an event): it can neither orphan a log a retention sweep deleted nor displace a fence holder, a concurrent writer is retried (a lost race that exhausts the retries is the retryable `OutcomeContendedError`; a fence acquired after the end does not block it, and a reopen of the execution retries over it), is idempotent per `(decisionId, key)` (`{ appended: false }`; a different score is `OutcomeRefusedError`) and refuses an unknown `decisionId`. The kernel stamps `recordedBy` and `late: true`; a flow cannot forge them. `@loomwork/learning` `trajectories` reads it as a direct reward with no join (for an execution that may have been compacted, build the evidence from the fold: `trajectories(evidenceEvents(await runtime.loadState(id), await store.read(id)))`); `attachOutcomes` in `@loomwork/analytics` is the batch/retry loop. Scores must be finite with `|score| <= 1e9`; one execution takes at most 1024 late outcomes; give a reward pipeline its own `key` namespace, since an in-run outcome under the same `(decisionId, key)` makes a late one a duplicate or a conflict. Like `send`/`resume`, an authorized caller can learn that an execution exists and is terminal.
 
 **The dispatch seam is an edge.** `LocalWorkerRuntime` holds NO system grant by default. A dispatcher-routed caller acts as the `principal` on its `ExecutionPackage` (`dispatch({ ..., principal })`; `InProcessA2ABus` takes `options.principal` or `dispatch(..., { principal })`; `executeGraph` takes `options.principal`); a package with none is anonymous and a strict runtime refuses it. Only a worker that serves the kernel's own re-drives (the target of a `TimerDispatcher` / `recoverAbandoned`, not reachable by user dispatch) should be built as `new LocalWorkerRuntime(runtime, { system: runtime.systemOptions().system })`; it then runs principal-less packages as the system. `createWorkerServer` refuses to be built around such a worker without `authorize`, and honours a package's `principal` only when `authorize` is set. Cancel through the SPI carries no principal, so a worker without the grant cannot cancel on a strict runtime (it answers `false`; the caller's own store-side cancel is the durable one). The wire carrier takes `resolvePrincipal` for every `execution.*` method and `createA2AServer` takes `resolvePrincipal(req)`; without one the caller is anonymous and refused. R12: `createA2AServer` and `createMcpServer` are authenticated by default — they throw at creation without `authenticate`/`authorize` (or an explicit `insecure: true`), bind `127.0.0.1` unless `host` widens it, and refuse `insecure` under `strict: app.strict`; the A2A server scopes every task id to its caller, so one caller cannot read or resume another's task (the principal must carry a non-empty `actor`, else 401). `createWorkerServer` also binds `127.0.0.1` unless `host` widens it (the container entrypoint `startWorkerServer` binds all interfaces — `host` / `$HOST`, default `0.0.0.0` — so set `authorize` on anything reachable); `createMcpServer` without `runtime` (or an explicit `strict`) logs a one-time warning that strictness is advisory; a bare-id allow pattern (`mcp.invoke`, `mcp.*`, `mcp.invoke*`) allows EVERY resource of the effect — scope with `mcp.invoke:<server>/<tool>`, where `<server>` is the client's `serverHost` (hostname, plus `_<port>` for a non-default port); `createA2AServer` takes `publicUrl` for the agent card behind a proxy; `strict` defaults from the runtime (`requiresPrincipal`).
 
@@ -718,7 +718,7 @@ What the kill switch cannot do: it refuses the *next* effect. It does not interr
 **Capability grants (K2)** — least-privilege authority. A `GrantTable` maps a principal to the effect ids it may invoke; an ungranted effect never runs — it records `EFFECT_DENIED` and fails the step.
 
 ```ts
-import { GrantTable } from "@loom/effect-runtime";
+import { GrantTable } from "@loomwork/effect-runtime";
 
 const app = defineConfig({
   storage: sqliteStorage({ dir: ".data" }),
@@ -730,7 +730,7 @@ const app = defineConfig({
 **Declarative policies (`policy$`)** — a higher-level companion to the grant table ([ADR 0048](adr/0048-declarative-policy-enforcement.md)). Attach a `policy$` to a flow (or declare it app-global via `defineConfig({ security: { policies } })`, or on an agent via `agent$({ policies })`) and it is enforced through the *same* K2 ring by a `PolicyAuthorizer`. Rules are **deny-wins** and combine simple allow/deny effect lists with richer `match` rules (glob on effect id / `principal.tenant` / step id). A policy composes **under** any `authorizer` — both must allow — so it can *tighten* a grant but never widen it; a flow with no policy is unaffected. Policy is a **capability gate** (may this effect run?), not a data-predicate engine — value rules like "cpu > 90%" belong in flow logic / a `projection$` alert, not here (see ADR 0048).
 
 ```ts
-import { policy$ } from "@loom/core";
+import { policy$ } from "@loomwork/core";
 
 const flow = flow$({
   id: "billing",
@@ -753,7 +753,7 @@ const flow = flow$({
 **Quotas & budgets (K3)** — meter every effect onto the log and stop over-budget runs (`RESOURCE_METERED`, then `QUOTA_EXCEEDED`). Compose it in `effectMiddleware`:
 
 ```ts
-import { meteringMiddleware, llmUsageTokens } from "@loom/middleware";
+import { meteringMiddleware, llmUsageTokens } from "@loomwork/middleware";
 
 meteringMiddleware({
   pricing: ({ result }) => ({ tokens: llmUsageTokens(result) }),
@@ -764,7 +764,7 @@ meteringMiddleware({
 **Behavioral safety (K6)** — validate effect input/output; a violation blocks the effect and records `SAFETY_BLOCKED`.
 
 ```ts
-import { safetyMiddleware, piiValidator, denyPatterns, killSwitch } from "@loom/middleware";
+import { safetyMiddleware, piiValidator, denyPatterns, killSwitch } from "@loomwork/middleware";
 
 safetyMiddleware({ validators: [piiValidator(), denyPatterns([/DROP TABLE/i]), killSwitch(() => paused)] });
 ```
@@ -772,7 +772,7 @@ safetyMiddleware({ validators: [piiValidator(), denyPatterns([/DROP TABLE/i]), k
 **Secrets & redaction (K10)** — pass secrets as `secretRef("db-password")` placeholders; `redactionMiddleware` resolves them just-in-time so plaintext never enters the log. Pair with **encryption-at-rest**: wrap the store in `EncryptingEventStore` (marked fields encrypted under a per-subject key), and erase a subject with `shredSubject(...)` — crypto-shredding appends `PAYLOAD_SHREDDED` and makes later reads fail *loudly*.
 
 ```ts
-import { EncryptingEventStore } from "@loom/plugin-crypto";
+import { EncryptingEventStore } from "@loomwork/plugin-crypto";
 
 const events = new EncryptingEventStore(inner, keys, {
   sensitive: { STEP_COMPLETED: ["output.ssn", "output.email"] },
@@ -784,12 +784,12 @@ const events = new EncryptingEventStore(inner, keys, {
 `keys` must be a `KeyStore` that **survives a restart** — the key is the erasure boundary, so
 losing one is indistinguishable from shredding the subject, and nothing fails at the moment it
 happens. `InMemoryKeyStore` declares `durable: false` and `loom doctor` refuses it; back it
-with a KMS (`loom-plugin-kms`) or your own store.
+with a KMS (`@loomwork/plugin-kms`) or your own store.
 
 **Data-plane isolation & egress (K7)** — run a tool of your own (trusted, not model-written) in a scrubbed child process whose network is restricted to a static allowlist (a target off the list is denied kernel-side with `EGRESS_DENIED`, before any connection):
 
 ```ts
-import { IsolatedToolEffect } from "@loom/isolate";
+import { IsolatedToolEffect } from "@loomwork/isolate";
 
 app.effectRuntime.register("enrich", new IsolatedToolEffect({
   id: "enrich",
@@ -805,8 +805,8 @@ app.effectRuntime.register("enrich", new IsolatedToolEffect({
 **Tenancy (K12)** — scope a shared store per tenant so cross-tenant reads are impossible *by construction*, and honor signed, attenuated delegations across an A2A boundary:
 
 ```ts
-import { TenantScopedEventStore } from "@loom/event-runtime";
-import { DelegationAuthorizer, signDelegation } from "@loom/effect-runtime";
+import { TenantScopedEventStore } from "@loomwork/event-runtime";
+import { DelegationAuthorizer, signDelegation } from "@loomwork/effect-runtime";
 
 const tenantEvents = new TenantScopedEventStore(sharedEvents, "acme"); // only ever addresses tenant "acme"
 const token = signDelegation(secret, "worker-agent", ["lookup-metrics"]); // narrowable, never broadenable
@@ -815,7 +815,7 @@ const token = signDelegation(secret, "worker-agent", ["lookup-metrics"]); // nar
 **Durable timers & schedules (T1)** — `await ctx.sleep(60_000)` (or `ctx.sleepUntil(ts)`) suspends durably and wakes via a logged `TIMER_FIRED`; declare cron starts with `schedule$` and wire the `timers` slot in `defineConfig`:
 
 ```ts
-import { schedule$ } from "@loom/core";
+import { schedule$ } from "@loomwork/core";
 
 defineConfig({
   storage: sqliteStorage({ dir: ".data" }),
@@ -830,10 +830,10 @@ Each ring emits its own durable fact (`EFFECT_DENIED`, `QUOTA_EXCEEDED`, `SAFETY
 
 ## Step 12 — Test it
 
-`@loom/testing` removes the boilerplate: an in-memory app, phase-waiters, golden capture, and a VCR LLM provider.
+`@loomwork/testing` removes the boilerplate: an in-memory app, phase-waiters, golden capture, and a VCR LLM provider.
 
 ```ts
-import { createTestApp, waitForPhase, captureGolden } from "@loom/testing";
+import { createTestApp, waitForPhase, captureGolden } from "@loomwork/testing";
 
 const app = createTestApp({ surfaces: ["mission"], flows: [investigateFlow] });
 
@@ -868,7 +868,7 @@ For the full command reference — every flag, exit code, and output shape — s
 
 **Deploy safety.** `loom deploy check` replays historical logs against your *new* flow definitions and fails on breaking changes (a removed step, a missing flow) before you promote — catching resume-incompatibility that types can't.
 
-**Where it runs.** By default executions run in-process. Point `dispatcher` at a remote worker (`@loom/plugin-worker-remote` → `@loom/plugin-worker-server`) or Cloud Run (`@loom/plugin-cloudrun`) and the *same flows* run there — the public API is unchanged. See [`plugins/cloudrun/deploy.md`](../plugins/cloudrun/deploy.md).
+**Where it runs.** By default executions run in-process. Point `dispatcher` at a remote worker (`@loomwork/plugin-worker-remote` → `@loomwork/plugin-worker-server`) or Cloud Run (`@loomwork/plugin-cloudrun`) and the *same flows* run there — the public API is unchanged. See [`plugins/cloudrun/deploy.md`](../plugins/cloudrun/deploy.md).
 
 ---
 

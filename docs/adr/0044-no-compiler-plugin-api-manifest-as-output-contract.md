@@ -13,7 +13,7 @@
 
 ## Context
 
-The plugin question was raised for `@loom/compiler` — the build-time Vite plugin + CLI that does
+The plugin question was raised for `@loomwork/compiler` — the build-time Vite plugin + CLI that does
 `step$`/`flow$`/`skill$` extraction, `handler$`/`instructions$` chunking, flow-graph +
 non-determinism analysis, and emits `loom-manifest.json`. Grounded facts:
 
@@ -24,8 +24,8 @@ non-determinism analysis, and emits `loom-manifest.json`. Grounded facts:
   transform, visitor) (`tools/compiler/src/transform.ts`).
 - The emitted manifest is a **versioned contract** (`COMPILER_MANIFEST_VERSION = "1"`,
   `tools/compiler/src/manifest.ts:5`) carrying per-step/chunk **hashes**. Those hashes feed
-  **K11 flow-code versioning**, resume-refusal, and `deploy-sim` drift detection; `@loom/spec`
-  pins the version and `@loom/app` cross-checks flows against it at boot. ADR 0023 requires the
+  **K11 flow-code versioning**, resume-refusal, and `deploy-sim` drift detection; `@loomwork/spec`
+  pins the version and `@loomwork/app` cross-checks flows against it at boot. ADR 0023 requires the
   hash be computed over *"compiler-normalized manifest content, never raw bundler output"* so it
   is reproducible.
 
@@ -45,12 +45,12 @@ layer:
    hazard ADR 0023 exists to prevent.
 3. **Generic build-time extension already has a home: the Vite/Rollup plugin pipeline.** `loomPlugin`
    composes into it via `enforce: "pre"`. Building a second plugin system *inside* a Vite plugin is
-   redundant and would freeze `@loom/compiler` internals as public ABI on a young compiler.
+   redundant and would freeze `@loomwork/compiler` internals as public ABI on a young compiler.
 
 **Where build-time extensibility legitimately lives — both read-only, downstream of the pass:**
 
 4. **The manifest is the public build-time output contract.** `loom-manifest.json` is versioned and
-   already consumed by `@loom/spec` / `@loom/app`. Formalise it: a documented schema + a stability
+   already consumed by `@loomwork/spec` / `@loomwork/app`. Formalise it: a documented schema + a stability
    guarantee tied to `COMPILER_MANIFEST_VERSION`, so first- and third-party **build-time tooling**
    (custom validators, dashboards, codegen, drift reports) can depend on it **read-only**. This is
    the build-time twin of "analytics reads the event log as a lens, never hooks the fold."
@@ -61,7 +61,7 @@ layer:
 
 ## Consequences
 
-- `@loom/compiler` gains **no** public extension API; its internals stay free to refactor.
+- `@loomwork/compiler` gains **no** public extension API; its internals stay free to refactor.
 - The manifest schema is documented as the versioned public output contract (see the requirements
   doc and `docs/`); third-party build tooling targets that JSON, never the compiler's pipeline.
 - Determinism guarantees (K11, deploy-sim, resumability) remain a function of *core* code only.
@@ -71,4 +71,4 @@ layer:
 - **No** transform-hook API, custom-marker registry, or manifest-mutation hook — ever (they break
   §Decision 1–2).
 - The `FlowGraphValidator[]` seam (Decision 5) is **demand-gated**, not built now.
-- Whether `@loom/sdk` should re-export adapter packages is tracked in ADR 0043, not here.
+- Whether `@loomwork/sdk` should re-export adapter packages is tracked in ADR 0043, not here.

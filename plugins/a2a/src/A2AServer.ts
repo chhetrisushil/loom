@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
-import { BadRequestError, exposeError } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
-import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import { BadRequestError, exposeError } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import type { RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { LoomAgentExecutor, hasActor } from "./AgentExecutor";
 import type { A2ATask, AgentCard } from "./types";
 

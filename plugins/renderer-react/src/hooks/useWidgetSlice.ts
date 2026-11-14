@@ -1,6 +1,6 @@
-import type { BindingStatus, Widget } from "@loom/blueprint-runtime";
-import { resolveWidgetStatus, resolveWidgetValue } from "@loom/blueprint-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { BindingStatus, Widget } from "@loomwork/blueprint-runtime";
+import { resolveWidgetStatus, resolveWidgetValue } from "@loomwork/blueprint-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 
 // ── useWidgetSlice ───────────────────────────────────────────────────────────

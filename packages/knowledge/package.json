@@ -1,5 +1,5 @@
 {
-  "name": "@loom/knowledge",
+  "name": "@loomwork/knowledge",
   "version": "0.1.0",
   "description": "Document corpora over memory — ingest, revise, retrieve with provenance",
   "main": "./dist/index.js",
@@ -20,14 +20,14 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/llm": "workspace:^",
-    "@loom/memory": "workspace:^",
-    "@loom/verify": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/llm": "workspace:^",
+    "@loomwork/memory": "workspace:^",
+    "@loomwork/verify": "workspace:^"
   },
   "devDependencies": {
-    "@loom/plugin-sqlite": "workspace:*",
+    "@loomwork/plugin-sqlite": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

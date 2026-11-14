@@ -1,5 +1,5 @@
 {
-  "name": "@loom/eval",
+  "name": "@loomwork/eval",
   "version": "0.1.0",
   "description": "Log-as-eval-fixture and LLM evaluation harness for Loom — replay a recorded event log deterministically, diff runs for golden-fixture regression, score outcomes, and run graded suites (exact, regex, JSON Schema, LLM judge via the decide scope) over cassette-recorded providers, with no live LLM/tool calls",
   "main": "./dist/index.js",
@@ -20,16 +20,16 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/llm": "workspace:^",
-    "@loom/replay-vm": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/llm": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

@@ -1,4 +1,4 @@
-import { runKeyStoreConformance } from "@loom/conformance";
+import { runKeyStoreConformance } from "@loomwork/conformance";
 import { describe, expect, it } from "vitest";
 import { InMemoryKeyStore } from "./keystore";
 

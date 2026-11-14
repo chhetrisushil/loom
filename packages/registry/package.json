@@ -1,5 +1,5 @@
 {
-  "name": "@loom/registry",
+  "name": "@loomwork/registry",
   "version": "0.1.0",
   "description": "Workflow and tool registry for the Loom framework",
   "main": "./dist/index.js",
@@ -20,7 +20,7 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^"
+    "@loomwork/core": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

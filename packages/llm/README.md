@@ -1,14 +1,14 @@
-# @loom/llm
+# @loomwork/llm
 
 A provider-agnostic model interface (`LlmProvider`), three HTTP providers (Anthropic, OpenAI, Gemini),
 and `createLlmEffect`, which wraps a provider as a journaled effect. Use it when a flow needs a model
 call that is recorded in the log, replayed instead of re-called, and checked before it leaves the
 process. The providers use `fetch` directly and add no vendor SDK. For tool-using loops see
-`@loom/agent`; for routing across several models see `@loom/reasoning`.
+`@loomwork/agent`; for routing across several models see `@loomwork/reasoning`.
 
 ```ts
-import { tainted } from "@loom/classify";
-import { AnthropicProvider, UNTRUSTED_CONTENT_SYSTEM_NOTE, createLlmEffect } from "@loom/llm";
+import { tainted } from "@loomwork/classify";
+import { AnthropicProvider, UNTRUSTED_CONTENT_SYSTEM_NOTE, createLlmEffect } from "@loomwork/llm";
 
 const provider = new AnthropicProvider({ model: "claude-opus-4-8" }); // key from ANTHROPIC_API_KEY
 
@@ -69,7 +69,7 @@ export const summarize = createLlmEffect<{ ticket: string }, string>({
 
 ## See also
 
-- API reference: section "`@loom/llm` — provider-agnostic models" in
+- API reference: section "`@loomwork/llm` — provider-agnostic models" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [isolation and untrusted content](../../docs/user-guide/isolation-and-untrusted-content.md).
 - ADRs: [0085 untrusted content](../../docs/adr/0085-untrusted-content-integrity-axis.md),

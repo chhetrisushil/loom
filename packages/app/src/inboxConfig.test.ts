@@ -1,6 +1,6 @@
-import { unwrapTainted } from "@loom/classify";
-import type { FlowDefinition } from "@loom/core";
-import type { FlowRunner } from "@loom/workflow-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import type { FlowDefinition } from "@loomwork/core";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";

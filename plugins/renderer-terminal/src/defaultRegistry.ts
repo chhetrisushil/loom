@@ -1,4 +1,4 @@
-import { type BindingStatus, RendererRegistry, type Widget } from "@loom/blueprint-runtime";
+import { type BindingStatus, RendererRegistry, type Widget } from "@loomwork/blueprint-runtime";
 import { formatValue, indent } from "./format";
 
 // ── Kind-aware terminal renderers for loom's eight built-in widgets ──────────
@@ -100,10 +100,10 @@ const streamingText: TerminalWidgetRenderer = (w, v) => {
 };
 
 /**
- * Renderers for the eight kinds `@loom/blueprint-runtime` ships. Merge your own on top.
+ * Renderers for the eight kinds `@loomwork/blueprint-runtime` ships. Merge your own on top.
  *
  * Shared, process-wide. Do not `.register()` on it — that mutates it for every consumer,
- * including `@loom/sdk` re-exports. Build yours with `defaultTerminalRegistry.merge(mine)`,
+ * including `@loomwork/sdk` re-exports. Build yours with `defaultTerminalRegistry.merge(mine)`,
  * which returns a new registry.
  */
 export const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer> =

@@ -1,4 +1,4 @@
-import { throwIfAborted, yieldControl } from "@loom/scheduler";
+import { throwIfAborted, yieldControl } from "@loomwork/scheduler";
 import { asCell, isWidget, resolveWidgetStatus } from "./normalize";
 import { resolveWidgetValue } from "./traverseBlueprint";
 import type { Layout, Widget, WidgetAction, WidgetRendererProps } from "./types";
@@ -31,7 +31,7 @@ export interface AsyncTraversalOptions<TNode> {
   signal?: AbortSignal;
   /** Whether to yield before processing the next node. Default: every 64 nodes. */
   shouldYield?: (nodesSinceYield: number) => boolean;
-  /** How to yield. Default: @loom/scheduler yieldControl (macrotask). */
+  /** How to yield. Default: @loomwork/scheduler yieldControl (macrotask). */
   yieldTo?: () => Promise<void>;
 }
 

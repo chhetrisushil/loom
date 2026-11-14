@@ -1,6 +1,6 @@
 # ADR 0026 — T2: wire-level kernel ABI (language neutrality)
 
-- Status: Accepted (implemented 2026-07-10 — `@loom/wire-abi`: `WIRE_ABI` is a versioned
+- Status: Accepted (implemented 2026-07-10 — `@loomwork/wire-abi`: `WIRE_ABI` is a versioned
   JSON-RPC **projection** of the K1 syscalls, *generated from* `KERNEL_SYSCALLS` (T2.1 — the
   TS surface stays authoritative, no inversion), partitioned unary vs channel (`stream`/`ui`)
   per T2.2; a pure `handleRpc(runtime, request)` carrier drives executions

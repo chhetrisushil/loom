@@ -12,7 +12,7 @@
   nothing may slow resume; **nothing in loom is pruned or deleted** (compaction MOVES events); compaction
   REFUSES without an archive; the archive is a DEDICATED SPI (not content-store refs); the audit read is an
   explicit `readArchived` and `readRange` never touches the archive.
-- Version impact: **new SPI** `ARCHIVE_STORE_SPI_VERSION` **1.0.0** (`@loom/event-runtime`; unreleased, so the review round's shape changes - `incarnation` / `kind` on every header and `listExecutions` - are part of 1.0.0). Part A changes no
+- Version impact: **new SPI** `ARCHIVE_STORE_SPI_VERSION` **1.0.0** (`@loomwork/event-runtime`; unreleased, so the review round's shape changes - `incarnation` / `kind` on every header and `listExecutions` - are part of 1.0.0). Part A changes no
   `EVENT_SCHEMA`, `KERNEL_ABI`, `WIRE_ABI`, `EVENT_STORE_SPI` or `SNAPSHOT_STORE_SPI`. Part B (the fold) bumps
   `EVENT_SCHEMA` MINOR (folded bytes change, payloads do not; see D8).
 - Placement: kernel half (`LogLifecycle`, the fold) + a new storage SPI with three 1P backends and a sealing
@@ -111,7 +111,7 @@ Wiring so existing apps get a working default or a clear refusal:
 Mirror of ADR 0130 D8. When the event store seals payloads (or exposes a `KeyStore`), `compact` requires the
 archive to report `sealsSegments === true` AND share the event store's `KeyStore` by identity, else
 `PlaintextArchiveError` (`not-sealed` | `keys-not-shared`), before anything moves. `EncryptingArchiveStore`
-(`@loom/plugin-crypto`) seals each segment's envelopes as ONE AES-GCM envelope under the subject key (default:
+(`@loomwork/plugin-crypto`) seals each segment's envelopes as ONE AES-GCM envelope under the subject key (default:
 the executionId, as the event store), bound by AAD to `executionId|from|through`. In the clear: the index
 fields (`from`, `through`, `count`, `digest`) and the workflow id the subject resolves from; the digest is over
 the PLAINTEXT, which is high-entropy event JSON (ids, timestamps), so it reveals nothing guessable. A shred
@@ -251,7 +251,7 @@ exposed neither, so `hashChain(TenantScoped(acme))` + an UNSCOPED archive compac
 layers now, none depending on the others:
 
 1. **Markers are forwarded uniformly.** `installOptional` already carried the encryption markers up; the one
-   helper it calls, `forwardStoreMarkers(target, inner)` (`@loom/event-runtime`), now also carries
+   helper it calls, `forwardStoreMarkers(target, inner)` (`@loomwork/event-runtime`), now also carries
    `tenantScope` and records `target` as wrapping `inner` (`decoratedInnerOf`, a WeakMap). Every decorator
    routes through it: `EncryptingEventStore`, `EncryptingSnapshotStore`, `EncryptingArchiveStore`,
    `ContentResolvingEventStore`, `ContentTouchingSnapshotStore`, `CoalescingEventStore`, `ProfilingEventStore`,
@@ -310,7 +310,7 @@ now returns `null` without touching the archive's bodies or the snapshot store.
 
 An empty archive beside a gap used to be indistinguishable from a log compacted before the archive existed.
 An archiving compaction now writes its checkpoint with an id carrying `COMPACTION_CHECKPOINT_ID_PREFIX`
-(`ckpt-0138-`, `@loom/snapshot-runtime`; no schema change, the id is opaque to every store). `archiveCoverage`
+(`ckpt-0138-`, `@loomwork/snapshot-runtime`; no schema change, the id is opaque to every store). `archiveCoverage`
 labels an uncovered range `why: "missing"` (an archive loss to investigate) when the checkpoint at the log's
 extent carries the mark, and `why: "legacy"` when it does not (compacted before the archive existed; only the
 folded checkpoint remains). **Limit, stated:** the mark is read back through the snapshot store, which may

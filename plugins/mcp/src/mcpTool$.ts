@@ -1,5 +1,5 @@
-import { handler$, step$ } from "@loom/core";
-import type { StepDefinition } from "@loom/core";
+import { handler$, step$ } from "@loomwork/core";
+import type { StepDefinition } from "@loomwork/core";
 import { z } from "zod";
 import type { McpClient } from "./McpClient";
 import type { McpResultFidelity } from "./types";

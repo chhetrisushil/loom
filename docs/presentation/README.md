@@ -18,7 +18,7 @@ optimize for continuation, not hydration.*
 | [`loom-vs-adk-deck.md`](./loom-vs-adk-deck.md) | Engineers / architects — the "why not just ADK?" conversation | **One competitor in depth: Google ADK 2.0.** Concedes what ADK now does natively (event-sourced, memoized tool results, durable HITL pauses), then argues the four things left — resume as a fold rather than a state machine you maintain, automatic re-drive after a crash, fork-and-simulate, and decisions that carry their propensity. Covers **ADK + Temporal** and **Diagrid Catalyst** on adoption cost. Re-verified 2026-09-15 |
 | [`loom-deck.md`](./loom-deck.md) | Everyone (start here) | **The flagship overview** — mission, the problem, the thesis, core principles, the runtime model, branching, tooling, run-anywhere. The single deck to present Loom |
 | [`loom-2.0-deck.md`](./loom-2.0-deck.md) | Everyone | **Loom 2.0 — the execution kernel** — the reframe, the honest critique (kept/reshaped/dropped), principles P9/P10, the two spines, every runtime (reasoning/memory/compute/scale-out), the kernel rings (K1–K12, T1–T2), intelligence, and NL→codegen. Deep-dives in [`../loom-2.0/`](../loom-2.0/00-overview.md) |
-| [`platform-and-dx-deck.md`](./platform-and-dx-deck.md) | Engineers / architects | **Platform & DX** — `defineConfig`, the `loom` CLI, pluggable compute (dispatcher/Cloud Run), `@loom/testing`, evals & deploy-sim, orchestration primitives, perf. Everything built on top of the durable core |
+| [`platform-and-dx-deck.md`](./platform-and-dx-deck.md) | Engineers / architects | **Platform & DX** — `defineConfig`, the `loom` CLI, pluggable compute (dispatcher/Cloud Run), `@loomwork/testing`, evals & deploy-sim, orchestration primitives, perf. Everything built on top of the durable core |
 | [`leadership-deck.md`](./leadership-deck.md) | Leadership / execs | The why: platform shift, problems, value, competitive positioning, adoption path |
 | [`engineering-deck.md`](./engineering-deck.md) | Engineers / architects | The how: architecture, primitives, execution model, agentic + intelligence pipeline |
 | [`architecture-deck.md`](./architecture-deck.md) | Engineers / architects | The system design: event sourcing, deterministic replay, isomorphic core, durable suspend/resume, the compiler, resumability — distilled from `architecture.md` |
@@ -76,25 +76,25 @@ Presenter notes are in `<!-- ... -->` comments (shown in Marp presenter view, hi
 
 Full runbook: [`demo-script.md`](./demo-script.md). Quick start — **no API key needed** (offline):
 
-> **Prerequisite:** the example apps (`@loom/agent-network`, `@loom/db-command-center`, …) now live in the
+> **Prerequisite:** the example apps (`@loomwork/agent-network`, `@loomwork/db-command-center`, …) now live in the
 > sibling **[`loom-examples`](../examples.md)** repo. Check it out next to `loom`, run `pnpm install && pnpm build`
-> there, and run the `pnpm --filter @loom/<example>` commands below from that checkout.
+> there, and run the `pnpm --filter @loomwork/<example>` commands below from that checkout.
 
 ```bash
 pnpm install && pnpm build        # once
 
-pnpm --filter @loom/agent-network start          # Demo 0: whole pipeline, headless (best opener)
-pnpm --filter @loom/a2a-mesh start                # Demo 0b: A2A interop with ADK/LangGraph/CrewAI (headless)
-pnpm --filter @loom/cloud-command-center dev      # Demo 1: durable + streaming UI + approval (React)
-pnpm --filter @loom/playground dev                # Demo 2: agent-surface patch stream + Trace tab
-pnpm --filter @loom/angular-command-center dev    # Demo 3: same runtime, Angular UI (optional)
-pnpm --filter @loom/db-command-center dev         # Demo 4: agentic DB command center — planner + A2A + HITL + fiber (React)
-pnpm --filter @loom/db-command-center-wc dev      # Demo 5: the same app in vanilla Web Components (no framework)
-pnpm --filter @loom/db-command-center-server dev  # Demo 6: the same app as server + client (durable Node server + WC client over SSE)
-pnpm --filter @loom/incident-war-room demo:fork   # Demo 7: git-style branching — fork → simulate → compare → promote (headless)
-pnpm --filter @loom/incident-war-room dev         #         …or the live War Room UI (branch graph + diff + promote)
-pnpm --filter @loom/schema-migration-planner demo:fork  # Demo 8: same branching, second domain + live sim progress (headless)
-pnpm --filter @loom/schema-migration-planner dev        #         …or the live Migration Board UI (3 progress bars → promote)
+pnpm --filter @loomwork/agent-network start          # Demo 0: whole pipeline, headless (best opener)
+pnpm --filter @loomwork/a2a-mesh start                # Demo 0b: A2A interop with ADK/LangGraph/CrewAI (headless)
+pnpm --filter @loomwork/cloud-command-center dev      # Demo 1: durable + streaming UI + approval (React)
+pnpm --filter @loomwork/playground dev                # Demo 2: agent-surface patch stream + Trace tab
+pnpm --filter @loomwork/angular-command-center dev    # Demo 3: same runtime, Angular UI (optional)
+pnpm --filter @loomwork/db-command-center dev         # Demo 4: agentic DB command center — planner + A2A + HITL + fiber (React)
+pnpm --filter @loomwork/db-command-center-wc dev      # Demo 5: the same app in vanilla Web Components (no framework)
+pnpm --filter @loomwork/db-command-center-server dev  # Demo 6: the same app as server + client (durable Node server + WC client over SSE)
+pnpm --filter @loomwork/incident-war-room demo:fork   # Demo 7: git-style branching — fork → simulate → compare → promote (headless)
+pnpm --filter @loomwork/incident-war-room dev         #         …or the live War Room UI (branch graph + diff + promote)
+pnpm --filter @loomwork/schema-migration-planner demo:fork  # Demo 8: same branching, second domain + live sim progress (headless)
+pnpm --filter @loomwork/schema-migration-planner dev        #         …or the live Migration Board UI (3 progress bars → promote)
 ```
 
 **Prerequisites:** Node ≥ 20, pnpm ≥ 9. Use `vite dev` (not `vite build`) for the browser apps.
@@ -117,7 +117,7 @@ pnpm --filter @loom/schema-migration-planner dev        #         …or the live
 - [`../architecture.md`](../architecture.md) — system design, event sourcing, replay, package graph
 - [`../api-reference.org`](../api-reference.org) — full API for every package
 - [`../usage.md`](../usage.md) — step‑by‑step build guide
-- [`../usage-compiler.org`](../usage-compiler.org) — the `@loom/compiler` Vite plugin
+- [`../usage-compiler.org`](../usage-compiler.org) — the `@loomwork/compiler` Vite plugin
 - [`../../README.org`](../../README.org) — repo overview & package list
 
 > **Competitive facts re-verified 2026-09-13**, and carried into `loom-vs-adk-deck.md` on 2026-09-15.

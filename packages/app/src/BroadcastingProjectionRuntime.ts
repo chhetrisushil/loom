@@ -1,8 +1,8 @@
-import { SURFACE_PATCH } from "@loom/agent-surface";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
-import { serializeProjections } from "@loom/workflow-runtime";
+import { SURFACE_PATCH } from "@loomwork/agent-surface";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
+import type { Projection, ProjectionRuntime } from "@loomwork/projection-runtime";
+import { serializeProjections } from "@loomwork/workflow-runtime";
 
 // ── BroadcastingProjectionRuntime ─────────────────────────────────────────────
 //

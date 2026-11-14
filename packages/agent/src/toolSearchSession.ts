@@ -1,6 +1,6 @@
-import { isTainted, tainted } from "@loom/classify";
-import type { SkillDefinition, ToolDefinition } from "@loom/core";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import { isTainted, tainted } from "@loomwork/classify";
+import type { SkillDefinition, ToolDefinition } from "@loomwork/core";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import { isTerminalToolError } from "./toolFailure";
 import { WITHHELD_DESCRIPTION, isRemoteTool, toolSpecFor, validateToolInput } from "./toolSchema";
@@ -21,7 +21,7 @@ import {
 // loop's own plumbing: the allowed universe, what is loaded so far, the caps, and one recorded
 // decision per search. It is deliberately ignorant of the transcript and of frames.
 
-/** The `DECISION_RECORDED.source` of a search. `@loom/learning` treats it as a recorded fact. */
+/** The `DECISION_RECORDED.source` of a search. `@loomwork/learning` treats it as a recorded fact. */
 export const SOURCE_TOOL_SEARCH = "agent-tool-search";
 
 export const DEFAULT_SEARCH_TOOL_NAME = "search_tools";

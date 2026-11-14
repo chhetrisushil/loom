@@ -1,5 +1,5 @@
-import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "@loom/memory";
-import { clampSearchLimit, queryTerms, searchableText } from "@loom/memory";
+import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "@loomwork/memory";
+import { clampSearchLimit, queryTerms, searchableText } from "@loomwork/memory";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 

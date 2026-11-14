@@ -1,5 +1,5 @@
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { Latch, build, flow, kinds, settle, slow, tick, until } from "./__tests__/r2Harness";
 import type { Harness } from "./__tests__/r2Harness";

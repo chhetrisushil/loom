@@ -42,7 +42,7 @@ describe("scaffoldFiles", () => {
     }
 
     expect(files["package.json"]).toContain('"name": "acme-support"');
-    expect(files["package.json"]).toContain("@loom/app");
+    expect(files["package.json"]).toContain("@loomwork/app");
     expect(files["app/config.ts"]).toContain("defineConfig");
     expect(files["app/config.ts"]).toContain("flowModules");
     expect(files["app/middleware.ts"]).toContain("retryMiddleware");
@@ -123,7 +123,7 @@ describe("create-loom-app argument handling", () => {
   });
 });
 
-// ── The day-one path: where the app lives decides how @loom/* is wired ───────
+// ── The day-one path: where the app lives decides how @loomwork/* is wired ───────
 //
 // `create-loom-app demo && cd demo && pnpm install` used to fail with
 // ERR_PNPM_WORKSPACE_PKG_NOT_FOUND for everyone outside the monorepo, while printing a "Next:" line
@@ -156,12 +156,12 @@ function fakeLoom(root: string, opts: { built?: boolean } = {}): string {
     "packages:\n  - 'apps/*'\n  - 'packages/*'\n  - 'plugins/*'\n  - 'tools/*'\n"
   );
   const pkgs: [string, string][] = [
-    ["packages/core", "@loom/core"],
-    ["packages/app", "@loom/app"],
-    ["packages/middleware", "@loom/middleware"],
-    ["plugins/sentinel", "@loom/plugin-sentinel"],
-    ["tools/cli", "@loom/cli"],
-    ["tools/testing", "@loom/testing"],
+    ["packages/core", "@loomwork/core"],
+    ["packages/app", "@loomwork/app"],
+    ["packages/middleware", "@loomwork/middleware"],
+    ["plugins/sentinel", "@loomwork/plugin-sentinel"],
+    ["tools/cli", "@loomwork/cli"],
+    ["tools/testing", "@loomwork/testing"],
   ];
   for (const [dir, name] of pkgs) {
     mkdirSync(join(root, dir), { recursive: true });
@@ -188,7 +188,7 @@ describe("create-loom-app day-one wiring", () => {
     const r = cli(["apps/my-app"], loom);
     expect(r.code).toBe(0);
     const pkg = JSON.parse(readFileSync(join(loom, "apps/my-app/package.json"), "utf8"));
-    expect(pkg.dependencies["@loom/app"]).toBe("workspace:*");
+    expect(pkg.dependencies["@loomwork/app"]).toBe("workspace:*");
     expect(pkg.pnpm).toBeUndefined();
     expect(r.out).toContain("Next: cd apps/my-app && pnpm install && pnpm test && pnpm start");
   });
@@ -211,10 +211,12 @@ describe("create-loom-app day-one wiring", () => {
     const r = cli(["demo", "--loom-path", loom], cwd);
     expect(r.code).toBe(0);
     const pkg = JSON.parse(readFileSync(join(cwd, "demo/package.json"), "utf8"));
-    expect(pkg.dependencies["@loom/app"]).toBe("*");
-    expect(pkg.devDependencies["@loom/cli"]).toBe("*");
-    expect(pkg.pnpm.overrides["@loom/core"]).toBe("link:../../loom/packages/core");
-    expect(pkg.pnpm.overrides["@loom/plugin-sentinel"]).toBe("link:../../loom/plugins/sentinel");
+    expect(pkg.dependencies["@loomwork/app"]).toBe("*");
+    expect(pkg.devDependencies["@loomwork/cli"]).toBe("*");
+    expect(pkg.pnpm.overrides["@loomwork/core"]).toBe("link:../../loom/packages/core");
+    expect(pkg.pnpm.overrides["@loomwork/plugin-sentinel"]).toBe(
+      "link:../../loom/plugins/sentinel"
+    );
     expect(Object.keys(pkg.pnpm.overrides).sort()).toEqual([...loomPackages(loom).keys()].sort());
     expect(JSON.stringify(pkg)).not.toContain("workspace:");
     expect(r.out).toContain("Next: cd demo && pnpm install && pnpm test && pnpm start");
@@ -402,7 +404,7 @@ describe("create-loom-app day-one wiring", () => {
     const out = JSON.parse(
       linkPackageJson(scaffoldFiles("a")["package.json"] as string, join(base, "x/y"), loom)
     );
-    expect(out.pnpm.overrides["@loom/cli"]).toBe("link:../../loom/tools/cli");
+    expect(out.pnpm.overrides["@loomwork/cli"]).toBe("link:../../loom/tools/cli");
   });
 });
 

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   ArchiveIncarnationError,
   type ArchiveStore,
@@ -15,21 +15,21 @@ import {
   reservedLateKey,
   segmentDigest,
   senderDigestOf,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   EncryptingArchiveStore,
   EncryptingEventStore,
   InMemoryKeyStore,
   PayloadShreddedError,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import {
   PostgresArchiveStore,
   PostgresEventStore,
   migratePostgresStores,
   postgresPool,
-} from "@loom/plugin-postgres";
-import { SqliteArchiveStore, SqliteEventStore } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-postgres";
+import { SqliteArchiveStore, SqliteEventStore } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { ReservedStreamArchive, reservedIncarnation } from "./archiveMove";

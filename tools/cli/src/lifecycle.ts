@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { type ExecutionState, flowHashMatches } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
-import { isPayloadShredded } from "@loom/event-runtime";
-import type { ExecutionHandle, WorkflowRuntime } from "@loom/workflow-runtime";
+import { type ExecutionState, flowHashMatches } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import { isPayloadShredded } from "@loomwork/event-runtime";
+import type { ExecutionHandle, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { UsageError } from "./args";
 import { makeRedactor } from "./core";
 import { loadLoomApp } from "./stores";
@@ -450,7 +450,7 @@ type KillSwitchKind = "none" | "process-local" | "shared";
 
 /**
  * FAIL-CLOSED: a registry counts as shared ONLY if it affirmatively declares
- * `scope: "shared"` (`KillSwitchRegistry.scope`, @loom/middleware). Everything else - the
+ * `scope: "shared"` (`KillSwitchRegistry.scope`, @loomwork/middleware). Everything else - the
  * in-memory default, a subclass or proxy of it, a wrapper or decorator that does not re-declare
  * it, a custom `{ check }` - is treated as process-local. Guessing from the object's shape would
  * pass exactly the wrappers that hide an in-memory registry.

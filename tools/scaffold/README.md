@@ -1,4 +1,4 @@
-# @loom/scaffold — the templates and generators behind `loom new`, `loom gen` and `create-loom-app`
+# @loomwork/scaffold — the templates and generators behind `loom new`, `loom gen` and `create-loom-app`
 
 Pure functions that return file contents as strings: single constructs (a flow, tool, agent, skill,
 schedule, memory, projection or sentinel), a whole app skeleton, a plugin package for a chosen seam, and
@@ -7,7 +7,7 @@ do that. This is tooling that other tools build on, so most apps never import it
 your own generator and want the same output and escaping rules.
 
 ```ts
-import { generateRegistration, newFiles } from "@loom/scaffold";
+import { generateRegistration, newFiles } from "@loomwork/scaffold";
 
 // What `loom new flow greet --template approval` would write, as { path, content } pairs:
 const files = newFiles("flow", "greet", "approval");
@@ -50,6 +50,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 - [ADR 0011](../../docs/adr/0011-folder-convention-codegen.md): the folder convention these follow;
   [docs/plugins.md](../../docs/plugins.md): plugin authoring.
 - CLI: `loom new`, `loom gen`, `loom plugin new` ([docs/usage-cli.md](../../docs/usage-cli.md)).
-- API reference: section "`@loom/scaffold` — codegen & templates" in
+- API reference: section "`@loomwork/scaffold` — codegen & templates" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

@@ -1,6 +1,6 @@
-import { pathsOfClass } from "@loom/classify";
-import type { StepDefinition } from "@loom/core";
-import type { EffectContext, EffectMiddleware, EffectNext } from "@loom/effect-runtime";
+import { pathsOfClass } from "@loomwork/classify";
+import type { StepDefinition } from "@loomwork/core";
+import type { EffectContext, EffectMiddleware, EffectNext } from "@loomwork/effect-runtime";
 
 // ── K10.3 — redaction markers: keep secrets OUT of the log entirely ───────────
 //

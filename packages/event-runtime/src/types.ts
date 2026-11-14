@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 export type { EventEnvelope };
 
 /**
  * SPI version for the {@link EventStore} contract (ADR 0033). Bump MINOR when adding an
  * optional method, MAJOR when changing a required method's contract. Pinned by
- * `runEventStoreConformance` in `@loom/testing`.
+ * `runEventStoreConformance` in `@loomwork/testing`.
  *
  * 1.1.0: added optional `listExecutions()` (enumerate distinct executionIds — powers
  *   `loom retention run` / `loom compliance report` over cold storage).
@@ -377,7 +377,7 @@ export async function inboxStreamsOfChainDeep(
  * real Promises.
  *
  * Note there is no `nextSequence` — sequence allocation is owned by the
- * per-execution in-memory sequencer in `@loom/workflow-runtime` (ExecutionJournal),
+ * per-execution in-memory sequencer in `@loomwork/workflow-runtime` (ExecutionJournal),
  * so a backend never needs a read-then-write round-trip to append.
  */
 export interface EventStore {

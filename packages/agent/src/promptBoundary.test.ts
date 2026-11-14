@@ -1,9 +1,9 @@
-import { tainted } from "@loom/classify";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { UntrustedContentError, textOf } from "@loom/llm";
+import { tainted } from "@loomwork/classify";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
+import { UntrustedContentError, textOf } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";

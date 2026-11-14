@@ -1,5 +1,5 @@
-import { nestedTaintOrigin, tainted } from "@loom/classify";
-import type { EffectMiddleware } from "@loom/effect-runtime";
+import { nestedTaintOrigin, tainted } from "@loomwork/classify";
+import type { EffectMiddleware } from "@loomwork/effect-runtime";
 
 // ── ADR 0051 D3 / ADR 0054 — claim-check: the reference IS the recorded value ─
 //
@@ -13,7 +13,7 @@ import type { EffectMiddleware } from "@loom/effect-runtime";
 // reintroduces nondeterminism and is lintable (CC-5, tools/*).
 
 /**
- * ADR 0143 - the execution a content operation is for (structural twin of `@loom/plugin-content`'s
+ * ADR 0143 - the execution a content operation is for (structural twin of `@loomwork/plugin-content`'s
  * `ContentAccess`, ContentStore SPI 1.5.0). The middleware passes the running effect's execution on every
  * `put`, so a store that seals per subject knows whose key to use; a plain store ignores it.
  */

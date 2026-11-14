@@ -1,5 +1,5 @@
-import type { AgentLoopConfig } from "@loom/agent";
-import type { PrincipalChain } from "@loom/effect-runtime";
+import type { AgentLoopConfig } from "@loomwork/agent";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import type { Identity, ParticipantDirectory } from "./access";
 import type { BargeInSource } from "./bargeIn";
 import type { TokenCounter } from "./budget";

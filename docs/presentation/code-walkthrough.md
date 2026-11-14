@@ -6,7 +6,7 @@ A read‑along tour of real files. Open each path as you go. The **Cloud Command
 
 > Every excerpt below is copied from the repo. Line numbers drift as code evolves; open the file to follow along.
 > **The example apps (`examples/…` paths below) now live in the sibling [`loom-examples`](../examples.md) repo** —
-> open them from that checkout; the framework packages (`@loom/*`) referenced here remain in this repo.
+> open them from that checkout; the framework packages (`@loomwork/*`) referenced here remain in this repo.
 
 ---
 
@@ -158,7 +158,7 @@ export const MetricsProjection = {
 The agent surface is **also just a projection**, provided for you:
 
 ```ts
-import { agentSurfaceProjection } from "@loom/agent-surface";
+import { agentSurfaceProjection } from "@loomwork/agent-surface";
 projectionRuntime.register(agentSurfaceProjection("ui"));   // folds SURFACE_PATCH events → "ui" state
 ```
 
@@ -226,7 +226,7 @@ const startInvestigation = useCallback(async () => {
 
 ## 8. The agentic showcase (headless, offline)
 
-**`examples/agent-network/src/main.ts`** — eight numbered sections, fully runnable with `pnpm --filter @loom/agent-network start`:
+**`examples/agent-network/src/main.ts`** — eight numbered sections, fully runnable with `pnpm --filter @loomwork/agent-network start`:
 
 ```ts
 // 1. Configurable LLM — ScriptedLlmProvider (swap for AnthropicProvider)
@@ -257,7 +257,7 @@ Supporting files worth opening: `src/capabilities.ts` (capability$ + blueprint),
 **Terminal** (`packages/renderer-terminal`), used in Agent Network:
 
 ```ts
-import { TerminalRenderer } from "@loom/plugin-renderer-terminal";
+import { TerminalRenderer } from "@loomwork/plugin-renderer-terminal";
 console.log(new TerminalRenderer(projectionRuntime).render(incidentBlueprint, executionId));
 // or: renderBlueprintToString(blueprint, stateMap)
 ```

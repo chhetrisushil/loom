@@ -189,13 +189,13 @@ describe.each(Object.entries(PAYLOADS))("codegen injection: %s", (_label, payloa
 
   it("a grant name cannot break out of the generated GrantTable", () => {
     const r = wireGrantsIntoConfig(
-      'import { defineConfig } from "@loom/app";\nexport default defineConfig({});\n',
+      'import { defineConfig } from "@loomwork/app";\nexport default defineConfig({});\n',
       { [payload]: [payload] }
     );
     expect(syntaxErrors(r.after)).toEqual([]);
     expect(hasUnsafeChars(r.after.replace(/\n/g, ""))).toBe(false);
     const base = wireGrantsIntoConfig(
-      'import { defineConfig } from "@loom/app";\nexport default defineConfig({});\n',
+      'import { defineConfig } from "@loomwork/app";\nexport default defineConfig({});\n',
       { a: ["b"] }
     );
     expect(astShape(r.after)).toEqual(astShape(base.after));

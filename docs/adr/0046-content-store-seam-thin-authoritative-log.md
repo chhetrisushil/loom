@@ -1,11 +1,11 @@
 # ADR 0046 — Content-store seam: a thin, PII-light authoritative log
 
-- Status: **Accepted — first cut shipped** (`@loom/plugin-content`: SPI + `ContentResolvingEventStore`
+- Status: **Accepted — first cut shipped** (`@loomwork/plugin-content`: SPI + `ContentResolvingEventStore`
   decorator + `InMemoryContentStore` reference backend + conformance kit). Production backends,
   refcounted blob GC, and the `externalized()` marker remain follow-ups (see "Follow-ups").
 - Date: 2026-07-13 (updated 2026-07-13 — first cut landed)
 - Builds on: [ADR 0022 (K10 log lifecycle / retention / redaction / encryption)](0022-k10-log-lifecycle-retention-redaction-encryption.md),
-  the `@loom/classify` taxonomy (K10-R1), `@loom/compliance` subject rights (T3),
+  the `@loomwork/classify` taxonomy (K10-R1), `@loomwork/compliance` subject rights (T3),
   `secretRef`/`SecretResolver` (K10-R2/R3), `ctx.decide` / `DECISION_RECORDED` (Loom 2.0).
 - Part of: the "how do we log for durability/replay without the log becoming a PII system?"
   question. Additive/opt-in (G2). Not legal advice.
@@ -79,7 +79,7 @@ Three properties make this safe against the four invariants:
 
 ### Externalization is opt-in and policy-driven (above the kernel)
 
-*Which* fields externalize is policy, so it rides the `@loom/classify` seam — either a new
+*Which* fields externalize is policy, so it rides the `@loomwork/classify` seam — either a new
 `externalized()` marker (orthogonal to `secret`/`sensitive`/`internal` — it names *where* a
 value is stored, not its sensitivity) or a store-level rule ("externalize any `sensitive`
 field over N bytes"). The kernel supplies the ref-resolution mechanism; the app declares the
@@ -88,8 +88,8 @@ policy (G3).
 ### Backends are plugins
 
 `ContentStore` implementations — filesystem, S3/object-store, an encrypted blob store, an
-in-region residency store — ship as plugins (`@loom/plugin-content-*`, 1P/3P), exactly like
-storage presets (ADR 0043). `@loom/app` names no vendor.
+in-region residency store — ship as plugins (`@loomwork/plugin-content-*`, 1P/3P), exactly like
+storage presets (ADR 0043). `@loomwork/app` names no vendor.
 
 ## The four invariants — explicit analysis
 
@@ -156,7 +156,7 @@ It is **overkill** — and crypto-shredding + `ctx.decide` remain the recommende
 
 ## Status of this decision
 
-**First cut shipped in `@loom/plugin-content`** (mirrors `@loom/plugin-crypto`'s structure):
+**First cut shipped in `@loomwork/plugin-content`** (mirrors `@loomwork/plugin-crypto`'s structure):
 
 - `ContentRef` (content-addressed, `sha256:<hex>`), `isContentRef`, `contentAddress`.
 - `ContentStore` SPI (`put`/`get`/`delete`) + `InMemoryContentStore` reference backend
@@ -166,7 +166,7 @@ It is **overkill** — and crypto-shredding + `ctx.decide` remain the recommende
   `ContentMissingError` (loud, G1) when erased bytes are needed. `copyPrefix` copies refs
   verbatim, so a fork shares the parent's blobs for free (content-addressed dedup — no
   re-wrap, in contrast to the crypto plugin's key lineage).
-- `runContentStoreConformance` in `@loom/conformance` (structural type — no plugin dep).
+- `runContentStoreConformance` in `@loomwork/conformance` (structural type — no plugin dep).
 
 Verified against the four invariants by test, including a fold-equivalence test proving that
 replay over resolved-from-content events equals replay over inline values (determinism).
@@ -174,15 +174,15 @@ replay over resolved-from-content events equals replay over inline values (deter
 ### Follow-ups
 
 - ✅ **The `externalized()` marker + derive helper** — shipped. `externalized()` in
-  `@loom/classify` (its own registry — orthogonal to the secret/sensitive/internal axis, since
+  `@loomwork/classify` (its own registry — orthogonal to the secret/sensitive/internal axis, since
   a field can be both large *and* sensitive), and `externalizePathsFromSteps` in
-  `@loom/plugin-content` derives the `externalize` map from the schema marks (mirrors
+  `@loomwork/plugin-content` derives the `externalize` map from the schema marks (mirrors
   `sensitivePathsFromSteps`). The classify walker was generalized to `collectMarkedPaths` so
   both axes share one engine.
 - **Refcounted blob GC** (deferred). `deleteExecution`/`truncatePrefix` reclaim events but not
   blobs (forks share content-addressed blobs, so deletion must be refcount-aware). Erase
   content explicitly via `contentStore.delete(ref)` until then.
-- **Production backends** (`@loom/plugin-content-fs`, `-s3`, encrypted blob store) and
+- **Production backends** (`@loomwork/plugin-content-fs`, `-s3`, encrypted blob store) and
   `defineConfig` wiring — added when a real large-payload / residency requirement lands.
 
 Until externalization is wired for a given app, mark fields `sensitive()`/`secret()` and record

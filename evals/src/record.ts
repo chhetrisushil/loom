@@ -1,5 +1,5 @@
-import { type CassetteData, CassetteProvider } from "@loom/eval";
-import type { LlmProvider } from "@loom/llm";
+import { type CassetteData, CassetteProvider } from "@loomwork/eval";
+import type { LlmProvider } from "@loomwork/llm";
 import { cassettePath, writeCassette } from "./agentLoop/cassettes";
 import { type TaskOutput, runTask } from "./agentLoop/subject";
 import { TASKS, type Task } from "./agentLoop/tasks";
@@ -20,7 +20,7 @@ import { type PlannerOutcome, runPlannerCase } from "./planner/subject";
 //   - with `--live` it still needs a model (`--model gemini:<id>` or `LOOM_EVAL_RECORD_MODEL`; no default is
 //     guessed) and the Gemini key that loom's own `GeminiProvider` reads (`GEMINI_API_KEY`, else `GOOGLE_API_KEY`).
 //     The key is checked for PRESENCE only and is never printed.
-// The provider is loom's `GeminiProvider` from `@loom/llm` (the same adapter behind the CLI's `--model gemini:<m>`),
+// The provider is loom's `GeminiProvider` from `@loomwork/llm` (the same adapter behind the CLI's `--model gemini:<m>`),
 // loaded lazily, so importing this module (or running any eval) never constructs a provider or touches the network.
 //
 // What it records (the TARGETS): every agentLoop task (`single-lookup`), every appgen intent (`appgen/<id>`: the
@@ -179,7 +179,7 @@ export interface RecordDeps {
 }
 
 async function geminiProvider(modelId: string): Promise<LlmProvider> {
-  const { GeminiProvider } = await import("@loom/llm");
+  const { GeminiProvider } = await import("@loomwork/llm");
   return new GeminiProvider({ model: modelId });
 }
 

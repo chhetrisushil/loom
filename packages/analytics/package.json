@@ -1,5 +1,5 @@
 {
-  "name": "@loom/analytics",
+  "name": "@loomwork/analytics",
   "version": "0.1.0",
   "description": "Event-intelligence for Loom — pure read-only analyzers and an advisory runtime-intelligence report over the durable event log (execution / cost / reasoning / failure). A lens on the log, never a writer.",
   "main": "./dist/index.js",
@@ -21,9 +21,9 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/replay-vm": "workspace:^",
-    "@loom/verify": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^",
+    "@loomwork/verify": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

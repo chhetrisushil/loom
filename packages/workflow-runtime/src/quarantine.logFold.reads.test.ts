@@ -1,12 +1,12 @@
-import { unwrapTainted } from "@loom/classify";
-import { isPayloadShredded } from "@loom/event-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import { isPayloadShredded } from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
   type KeyStore,
-} from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import {
   OP,

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { costAnalytics } from "./analyze";
 import {
   type DecisionRecord,
@@ -145,7 +145,7 @@ function evaluateSubject(rec: Recommendation, index: CorrelationIndex): Recommen
  * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
  * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
  * compacted, build the events from the folded state first —
- * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loomwork/learning` — and
  * pass THOSE.
  */
 export function advisoryPipeline(events: EventEnvelope[], opts?: AdvisoryOptions): AdvisoryReport {

@@ -1,6 +1,6 @@
-import { canonicalJson, step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { canonicalJson, step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   ArchiveIncarnationError,
   type ArchiveStore,
@@ -9,14 +9,14 @@ import {
   InMemoryAsyncEventStore,
   TenantScopedArchiveStore,
   TenantScopedEventStore,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   EncryptingArchiveStore,
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
-} from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LogLifecycle } from "./LogLifecycle";
@@ -243,7 +243,7 @@ describe("H2 - an archive is bound to the incarnation of its log (a reused execu
   });
 
   it("the re-compact no-op does not hide a reused-id leftover: a tip-retaining store with a foreign-incarnation archive refuses instead of returning null", async () => {
-    const { buildSegment } = await import("@loom/event-runtime");
+    const { buildSegment } = await import("@loomwork/event-runtime");
     const { eventStore: inner, snapshotStore, archive } = plain();
     // a store that keeps the tip as an anchor (a hash chain): truncates through - 1
     const keepsTip = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {

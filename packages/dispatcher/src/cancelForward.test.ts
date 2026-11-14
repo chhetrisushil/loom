@@ -1,4 +1,4 @@
-import type { WorkerRuntime } from "@loom/worker-runtime";
+import type { WorkerRuntime } from "@loomwork/worker-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { LocalDispatcher } from "./LocalDispatcher";
 

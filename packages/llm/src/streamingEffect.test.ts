@@ -1,6 +1,6 @@
-import { isTainted, tainted } from "@loom/classify";
-import { TypedFailure } from "@loom/core";
-import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
+import { isTainted, tainted } from "@loomwork/classify";
+import { TypedFailure } from "@loomwork/core";
+import type { EffectContext, EffectDelta } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { LLM_INTERRUPTED } from "./assembleStream";
 import type { InterruptedGeneration } from "./assembleStream";
@@ -180,7 +180,7 @@ describe("streaming LLM effect (R9)", () => {
         yield { delta: "", done: true };
       },
     };
-    const { tainted } = await import("@loom/classify");
+    const { tainted } = await import("@loomwork/classify");
     await createLlmEffect({
       provider: capture,
       stream: true,

@@ -17,7 +17,7 @@ at the bottom of the stack, with a serializable `ExecutionPackage` that would le
 a worker "reconstruct execution only from the package." That model does not match
 the code:
 
-- `@loom/scheduler` is an ephemeral concurrency utility, not the execution
+- `@loomwork/scheduler` is an ephemeral concurrency utility, not the execution
   driver. The driver is `WorkflowRuntime.start()/resume()`.
 - `ReplayVM` is a pure `EventEnvelope[] → ExecutionState` fold with no I/O — not
   an execution sandbox.
@@ -41,15 +41,15 @@ Orchestrator / A2A boundary
 
 New packages:
 
-- `@loom/worker-runtime` — the SPI + transport types. `ExecutionPackage` is the
+- `@loomwork/worker-runtime` — the SPI + transport types. `ExecutionPackage` is the
   immutable, JSON-serializable payload carrying **identity + resume coordinates**
   (`executionId`, `workflowId`, `flowId`, `input?`, `resumeEvent?`, `snapshotId?`,
   `fromSequence?`). It references code by `flowId`; it never contains closures.
   `ExecutionResult` is what a worker returns (and the future `/execute` wire
   shape): outcome, folded state, and highest persisted sequence.
-- `@loom/worker-runtime-local` — `LocalWorkerRuntime`, the zero-cloud reference
+- `@loomwork/worker-runtime-local` — `LocalWorkerRuntime`, the zero-cloud reference
   impl. Runs a package on the in-process `WorkflowRuntime` (its "code bundle").
-- `@loom/dispatcher` — `ExecutionDispatcher` SPI + `LocalDispatcher`, which wraps
+- `@loomwork/dispatcher` — `ExecutionDispatcher` SPI + `LocalDispatcher`, which wraps
   one `WorkerRuntime`.
 
 Supporting change: `WorkflowRuntime.getFlow(flowId)` — the additive "code by id"
@@ -90,7 +90,7 @@ loop now tolerates multiple gates.
 
 - New unit tests: `LocalWorkerRuntime` (start→complete, suspend, resume,
   unregistered-flow), `LocalDispatcher` (allocate/execute/release ordering,
-  retry, health, cancel), and `@loom/worker-runtime` contract tests.
+  retry, health, cancel), and `@loomwork/worker-runtime` contract tests.
 - All five example suites (db-command-center, -wc, -server, incident-war-room,
   schema-migration-planner) pass unchanged through the dispatcher — including
   approval gates, operator reject/cancel, and the fork/simulate/promote branching

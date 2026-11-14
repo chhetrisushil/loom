@@ -1,5 +1,5 @@
-import { EraseCoordinator, SubjectIndex } from "@loom/compliance";
-import type { EventStore } from "@loom/event-runtime";
+import { EraseCoordinator, SubjectIndex } from "@loomwork/compliance";
+import type { EventStore } from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
@@ -7,7 +7,7 @@ import {
   type KeyStore,
   ShredIncompleteError,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
 import { Latch, build, eventsOf, flow, slow, until } from "./__tests__/r2Harness";

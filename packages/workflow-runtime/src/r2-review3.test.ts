@@ -1,5 +1,5 @@
-import { unwrapTainted } from "@loom/classify";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { build, flow, kinds, tick, until } from "./__tests__/r2Harness";

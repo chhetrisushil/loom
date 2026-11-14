@@ -1,5 +1,5 @@
-import type { ExecutionState } from "@loom/core";
-import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import type { RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { type JsonRpcRequest, type JsonRpcResponse, RPC_ERRORS, WIRE_ABI } from "./protocol";
 
 // ── T2.4 — the carrier: drive executions over JSON-RPC ────────────────────────

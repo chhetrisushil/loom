@@ -1,5 +1,5 @@
 // Type-level tests (checked by `pnpm typecheck:tests`); the functions are never called.
-import type { StepDefinition } from "@loom/core";
+import type { StepDefinition } from "@loomwork/core";
 import { describe, expectTypeOf, it } from "vitest";
 import type { ExecutionContext } from "./types";
 

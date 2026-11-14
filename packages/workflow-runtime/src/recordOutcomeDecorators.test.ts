@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   CoalescingEventStore,
   type EventStore,
@@ -6,9 +6,9 @@ import {
   ProfilingEventStore,
   ShardedEventStore,
   TenantScopedEventStore,
-} from "@loom/event-runtime";
-import { ContentResolvingEventStore, InMemoryContentStore } from "@loom/plugin-content";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+} from "@loomwork/event-runtime";
+import { ContentResolvingEventStore, InMemoryContentStore } from "@loomwork/plugin-content";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { build, flow } from "./__tests__/r2Harness";
 

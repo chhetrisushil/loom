@@ -1,5 +1,5 @@
-import { runEmbeddingProviderConformance, runVectorIndexConformance } from "@loom/conformance";
-import { runMemoryStoreConformance } from "@loom/conformance";
+import { runEmbeddingProviderConformance, runVectorIndexConformance } from "@loomwork/conformance";
+import { runMemoryStoreConformance } from "@loomwork/conformance";
 import { describe, expect, it } from "vitest";
 import { InMemoryMemoryStore } from "./InMemoryMemoryStore";
 import { TieredMemory } from "./TieredMemory";

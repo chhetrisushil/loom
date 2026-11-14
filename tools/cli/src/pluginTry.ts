@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
-import { defineConfig } from "@loom/app";
-import { flow$, handler$, step$ } from "@loom/core";
-import type { CustomStorage } from "@loom/plugin-kit";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { defineConfig } from "@loomwork/app";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import type { CustomStorage } from "@loomwork/plugin-kit";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import { CliError, EXIT_USAGE } from "./args";
 

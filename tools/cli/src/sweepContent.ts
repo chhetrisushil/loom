@@ -1,18 +1,18 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loom/event-runtime";
+import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loomwork/event-runtime";
 import {
   ArchiveStoresRequiredError,
   type ContentSweepReport,
   sweepUnpinnedContent,
-} from "@loom/plugin-content";
+} from "@loomwork/plugin-content";
 import {
   SqliteArchiveStore,
   SqliteContentStore,
   SqliteEventStore,
   SqliteSnapshotStore,
-} from "@loom/plugin-sqlite";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-sqlite";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 import { type StoreFlags, requireExistingFile, resolveStores } from "./stores";
 
 // ── `loom sweep content` — the operator surface for the K10.6 pinned sweep ────
@@ -244,7 +244,7 @@ export async function cmdSweepContent(
   }
   if (orphans && opts.apply && opts.snapshotsTouchContent !== true) {
     return refuse(
-      "loom sweep content --orphans --apply refuses without --snapshots-touch-content: a fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else, and only a snapshot store wrapped in ContentTouchingSnapshotStore (@loom/plugin-content) touches them. The CLI opens raw snapshot stores and cannot tell how the writing runtime built its own, so assert it: pass --snapshots-touch-content once every runtime that writes these snapshots wraps its snapshot store, or run without --apply (a dry run is exempt)."
+      "loom sweep content --orphans --apply refuses without --snapshots-touch-content: a fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else, and only a snapshot store wrapped in ContentTouchingSnapshotStore (@loomwork/plugin-content) touches them. The CLI opens raw snapshot stores and cannot tell how the writing runtime built its own, so assert it: pass --snapshots-touch-content once every runtime that writes these snapshots wraps its snapshot store, or run without --apply (a dry run is exempt)."
     );
   }
   const content = new SqliteContentStore(opts.content);

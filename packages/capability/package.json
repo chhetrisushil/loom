@@ -1,5 +1,5 @@
 {
-  "name": "@loom/capability",
+  "name": "@loomwork/capability",
   "version": "0.1.0",
   "description": "Capability catalog for Loom — flows exposed as intent-addressable capabilities",
   "main": "./dist/index.js",
@@ -20,14 +20,14 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

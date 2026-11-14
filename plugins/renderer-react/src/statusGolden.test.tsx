@@ -1,11 +1,11 @@
-import { MetricCard, blueprint$, stack } from "@loom/blueprint-runtime";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+import { MetricCard, blueprint$, stack } from "@loomwork/blueprint-runtime";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { BlueprintRenderer } from "./BlueprintRenderer";
 
 // Characterisation (ADR 0127 residual): the React markup for every status state and combination,
-// pinned BEFORE the marker decision moved into @loom/blueprint-runtime.
+// pinned BEFORE the marker decision moved into @loomwork/blueprint-runtime.
 afterEach(cleanup);
 
 const f = (message: string) => ({ code: "c", message });

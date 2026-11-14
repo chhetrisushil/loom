@@ -1,9 +1,9 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   InMemoryAsyncEventStore,
   inboxRegistryStreamId,
   inboxTopicStreamId,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";

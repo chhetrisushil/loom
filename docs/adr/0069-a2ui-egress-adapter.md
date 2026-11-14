@@ -3,14 +3,14 @@
 - Status: Accepted (2026-07-22)
 - Date: 2026-07-22
 - Builds on: plugin packaging & 1P/3P separation ([ADR 0043](0043-plugin-packaging-and-1p-3p-separation.md)),
-  K10-R6 egress redaction (`@loom/classify` `maskPaths`).
+  K10-R6 egress redaction (`@loomwork/classify` `maskPaths`).
 - Part of: the kernel/1P/3P triage discipline (P10 — bias outward). **KERNEL_ABI unchanged (1.1.0);
   EVENT_SCHEMA unchanged** — the adapter is a read-side projection + wire binding; it introduces no new
   kernel event type.
 
 ## Context
 
-The `@loom/a2ui` package was named for the Google **A2UI (Agent-to-UI) protocol** but did not implement
+The `@loomwork/a2ui` package was named for the Google **A2UI (Agent-to-UI) protocol** but did not implement
 it. It was a homegrown, event-sourced *data-model patch* protocol (`A2UI_PATCH` events carrying
 `set`/`merge`/`append`/`remove`/`increment` deltas addressed by dot-path). That is a fine, Loom-native
 mechanism — but it diverges from A2UI on every structural axis: A2UI is a component-tree + data-model
@@ -26,11 +26,11 @@ building a genuine adapter under that name.
 
 Two changes:
 
-1. **Rename** `@loom/a2ui` → `@loom/agent-surface` (package, public symbols, and the `SURFACE_PATCH`
+1. **Rename** `@loomwork/a2ui` → `@loomwork/agent-surface` (package, public symbols, and the `SURFACE_PATCH`
    event type; `defineConfig` flag `a2ui` → `agentSurface`). This is Loom's native surface mechanism and
    keeps its event-sourced, replayable design unchanged.
 
-2. **Add `@loom/plugin-a2ui`** — a real, spec-aligned A2UI **egress** adapter, as a **1P plugin**
+2. **Add `@loomwork/plugin-a2ui`** — a real, spec-aligned A2UI **egress** adapter, as a **1P plugin**
    (composition-time contributor, kernel untouched). It projects a Loom agent surface onto the A2UI wire
    protocol v1.0 so any A2UI-compliant client can render a Loom-driven UI.
 
@@ -41,7 +41,7 @@ The adapter's `A2UISurfaceBridge` (one instance per execution's surface):
 - emits `createSurface` (component tree + catalog + initial data model), `updateDataModel`, and
   `deleteSurface`;
 - **translates Loom's delta ops into A2UI's absolute value-replacement** — it folds the surface locally
-  (reusing `@loom/agent-surface`'s `applySurfacePatches`) and emits the concrete post-patch value at each
+  (reusing `@loomwork/agent-surface`'s `applySurfacePatches`) and emits the concrete post-patch value at each
   touched JSON Pointer. `remove` → `contents: null` (A2UI upsert-to-null). *This is the one real
   impedance point, and it is resolved here, in the adapter, not in the kernel.*
 - applies **K10-R6 egress redaction** on the way out (internal fold keeps true values so
@@ -83,9 +83,9 @@ The decision above shipped in full and was rolled out across the ecosystem:
 - **Documentation** — the living guides (`api-reference`, `user-guide`, `architecture`, `usage`,
   `data-classification`, …) were updated: native-protocol references renamed to `agent-surface`
   (`SURFACE_PATCH`, `SurfaceEmitter`, `agentSurfaceProjection`, config flag `agentSurface`), and a new
-  `@loom/plugin-a2ui` API section plus a "how to use" walkthrough were added. Historical records (ADRs,
+  `@loomwork/plugin-a2ui` API section plus a "how to use" walkthrough were added. Historical records (ADRs,
   requirements, presentation decks) were intentionally left unchanged as point-in-time artifacts.
-- **Downstream repos** — `@loom/a2ui` → `@loom/agent-surface` was migrated in the sibling repos that
+- **Downstream repos** — `@loomwork/a2ui` → `@loomwork/agent-surface` was migrated in the sibling repos that
   consumed it (`genUI`, `aetherOS`, `loom-examples`), each as its own PR (typecheck/tests green). Their
   own local naming (e.g. genUI's `surface/a2ui.ts`, the `a2ui-dashboard` example folder) was kept — only
   the broken package/symbol references were migrated.

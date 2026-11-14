@@ -1,14 +1,14 @@
 import { resolve } from "node:path";
-import { createAgentModelEffect } from "@loom/agent";
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import { flow$, handler$, step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
-import { CapabilityDeniedError, EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmProvider } from "@loom/llm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { ExecutionContext, FlowRunner } from "@loom/workflow-runtime";
+import { createAgentModelEffect } from "@loomwork/agent";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import type { FlowDefinition } from "@loomwork/core";
+import { CapabilityDeniedError, EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmProvider } from "@loomwork/llm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { ExecutionContext, FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -352,7 +352,7 @@ describe("fix round 1 - goals (R16)", () => {
   });
 
   it("P1: the goal owner key is the conversation identity key (one definition)", async () => {
-    // A computed specifier: planner does not depend on @loom/conversation (and its source sits outside
+    // A computed specifier: planner does not depend on @loomwork/conversation (and its source sits outside
     // this package's rootDir), but the two owner keys must stay ONE definition.
     const conversationAccess = resolve(__dirname, "../../conversation/src/access");
     const { identityKey } = (await import(conversationAccess)) as {

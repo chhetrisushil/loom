@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // ── Chain lineage (ADR 0109 D6) ───────────────────────────────────────────────
 //

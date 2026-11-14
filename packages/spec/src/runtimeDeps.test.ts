@@ -157,7 +157,7 @@ const UNREACHABLE_FROM_ENTRY = new Map<string, string>([
   [
     "packages/worker-runtime-local/src/spiShapeProof.ts",
     "compile-time SPI drift proof; must type-check in the normal build so it type-imports the " +
-      "dev-only @loom/conformance, but it is not exported and is unreachable through `exports`",
+      "dev-only @loomwork/conformance, but it is not exported and is unreachable through `exports`",
   ],
 ]);
 

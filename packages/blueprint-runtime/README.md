@@ -1,10 +1,10 @@
-# @loom/blueprint-runtime — the Blueprint rendering IR
+# @loomwork/blueprint-runtime — the Blueprint rendering IR
 
 A Blueprint is a declarative, JSON-serializable description of a screen: a layout (grid, flex, stack) of
 widgets, each bound to a path in a projection. This package defines that IR and the framework-agnostic
 tools around it: builders, a validator that checks a Blueprint against a catalogue of allowed widgets,
 identity and version-pin checks, and a traversal that every renderer is built on. It draws nothing itself;
-renderers (`@loom/plugin-renderer-terminal`, `@loom/plugin-renderer-dom`, `@loom/plugin-renderer-react`) read the same Blueprint. Use it to compose
+renderers (`@loomwork/plugin-renderer-terminal`, `@loomwork/plugin-renderer-dom`, `@loomwork/plugin-renderer-react`) read the same Blueprint. Use it to compose
 a surface in code, or to check one that a model composed, before rendering or storing it.
 
 ```ts
@@ -16,7 +16,7 @@ import {
   cell,
   grid,
   validateBlueprint,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 
 const board = blueprint$({
   id: "db-health",
@@ -78,7 +78,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/blueprint-runtime` — declarative UI" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/blueprint-runtime` — declarative UI" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [composed surfaces](../../docs/composed-surfaces.md), [user guide, section 6: projections and agent surfaces](../../docs/user-guide.md#6-projections--agent-surfaces).
 - ADRs: [0088 blueprint conformance](../../docs/adr/0088-blueprint-conformance.md), [0094 node identity](../../docs/adr/0094-blueprint-node-identity.md), [0095 binding-semantics pin](../../docs/adr/0095-binding-semantics-pin.md), [0096 stable rendering IR](../../docs/adr/0096-blueprint-stable-rendering-ir.md), [0098 placement and titles](../../docs/adr/0098-blueprint-ir-placement-and-titles.md), [0100 empty state](../../docs/adr/0100-blueprint-ir-empty-binding-state.md).
 - Source: `packages/blueprint-runtime/src`.

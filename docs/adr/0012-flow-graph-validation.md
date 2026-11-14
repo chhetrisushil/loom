@@ -13,7 +13,7 @@ that don't run the handler-extraction compiler.
 
 ## Decision
 
-**`validateFlowGraph` (pure, `@loom/app`)** — tractable structural checks:
+**`validateFlowGraph` (pure, `@loomwork/app`)** — tractable structural checks:
 - `missing-effect`: a step whose `toolId` has no registered effect.
 - `dangling-capability-agent`: a `capabilityAgents` entry with no matching
   capability.
@@ -40,8 +40,8 @@ check over what the compiler already emitted.
 
 ## Verification
 
-- `@loom/app` (+6): `validateFlowGraph` flags a missing effect / dangling
+- `@loomwork/app` (+6): `validateFlowGraph` flags a missing effect / dangling
   capability map and passes a sound graph; `defineConfig({validate})` warns at
   boot, `"error"` throws, and is silent when handler steps auto-register effects.
-- `@loom/cli` (+1): `checkManifest` collects per-flow warnings and reports ok/not.
+- `@loomwork/cli` (+1): `checkManifest` collects per-flow warnings and reports ok/not.
 - Full repo: build + typecheck clean, 79/79 test tasks green, biome clean (549).

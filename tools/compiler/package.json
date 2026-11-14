@@ -1,5 +1,5 @@
 {
-  "name": "@loom/compiler",
+  "name": "@loomwork/compiler",
   "version": "0.1.0",
   "description": "Vite plugin and CLI compiler for the Loom framework — handler$ extraction, flow graph analysis, and resumability",
   "main": "./dist/index.js",

@@ -1,4 +1,4 @@
-import type { LeaseStore } from "@loom/event-runtime";
+import type { LeaseStore } from "@loomwork/event-runtime";
 
 // ── Holding a claim for as long as the work takes (#380 L5a) ─────────────────
 //

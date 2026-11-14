@@ -1,9 +1,9 @@
-import { SURFACE_PATCH } from "@loom/agent-surface";
-import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loom/agent-surface";
-import { defineConfig } from "@loom/app";
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import type { EventEnvelope } from "@loom/core";
-import { IntentRuntime } from "@loom/intent";
+import { SURFACE_PATCH } from "@loomwork/agent-surface";
+import type { SurfacePatch, SurfacePatchPayload, SurfaceState } from "@loomwork/agent-surface";
+import { defineConfig } from "@loomwork/app";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
+import type { EventEnvelope } from "@loomwork/core";
+import { IntentRuntime } from "@loomwork/intent";
 import {
   A2UISurfaceBridge,
   A2UI_VERSION,
@@ -13,12 +13,12 @@ import {
   column,
   list,
   text,
-} from "@loom/plugin-a2ui";
-import type { A2UIServerMessage, ComponentInstance } from "@loom/plugin-a2ui";
-import { LoomProvider, useLoom } from "@loom/plugin-renderer-react";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import { ConsoleTelemetryAdapter } from "@loom/telemetry";
-import type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "@loom/telemetry";
+} from "@loomwork/plugin-a2ui";
+import type { A2UIServerMessage, ComponentInstance } from "@loomwork/plugin-a2ui";
+import { LoomProvider, useLoom } from "@loomwork/plugin-renderer-react";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
+import { ConsoleTelemetryAdapter } from "@loomwork/telemetry";
+import type { FlowTelemetryInfo, StepTelemetryInfo, TelemetryAdapter } from "@loomwork/telemetry";
 import type React from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactDOM from "react-dom/client";
@@ -1104,7 +1104,7 @@ function SurfaceTab({
 
 // ── A2UITab ─────────────────────────────────────────────────────────────────
 // The same event stream, projected onto the real Google A2UI wire protocol by
-// @loom/plugin-a2ui's egress bridge. Note the translation: Loom's native delta
+// @loomwork/plugin-a2ui's egress bridge. Note the translation: Loom's native delta
 // patches (append/increment/merge, seen on the Surface tab) become A2UI's
 // absolute `updateDataModel` value-replacements — the bridge folds locally and
 // emits the concrete post-patch value at each JSON Pointer.
@@ -1144,7 +1144,7 @@ function A2UITab({
       {messages.length === 0 ? (
         <div style={s.empty}>
           No A2UI messages yet — run the flow. Each <code>SURFACE_PATCH</code> event is projected
-          through the <code>@loom/plugin-a2ui</code> bridge into A2UI protocol v1.0 messages (
+          through the <code>@loomwork/plugin-a2ui</code> bridge into A2UI protocol v1.0 messages (
           <code>createSurface</code> / <code>updateDataModel</code>). Use{" "}
           <code>ƒ callFunction</code> above to fire an agent→client <code>callFunction</code>{" "}
           request (its <code>functionResponse</code> lands in the Event Log).

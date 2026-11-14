@@ -4,8 +4,8 @@ import {
   type RendererRegistry,
   type WidgetAction,
   preservesBlueprintNodes,
-} from "@loom/blueprint-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+} from "@loomwork/blueprint-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import { type DomWidgetRenderer, defaultDomRegistry } from "./defaultRegistry";
 import { h } from "./safeDom";
 import {

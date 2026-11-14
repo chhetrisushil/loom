@@ -1,5 +1,5 @@
-import { tainted } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+import { tainted } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { evidenceEvents } from "./evidence";
 import {

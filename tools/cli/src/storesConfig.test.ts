@@ -11,7 +11,7 @@ import { resolveStores } from "./stores";
 // config wired to stores that are not SQLite at all: if anything in the path assumed the
 // shape the commands were written against, this cannot pass.
 //
-// The temp module lives INSIDE the repo so `import "@loom/app"` resolves through the
+// The temp module lives INSIDE the repo so `import "@loomwork/app"` resolves through the
 // workspace's node_modules, the same way a built app in a deployment resolves its deps.
 
 const SCRATCH = join(__dirname, "..", ".tmp-config-test");
@@ -24,9 +24,9 @@ function writeConfig(name: string, body: string): string {
 
 /** A config module whose storage is in-memory, seeded with two stuck executions. */
 const IN_MEMORY_APP = `
-import { defineConfig } from "@loom/app";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime/memory";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 
 const eventStore = new InMemoryAsyncEventStore();
 const started = (id, ageMs) => ({
@@ -68,7 +68,7 @@ describe("S3 — resolving stores from a composition", () => {
       "app3.mjs",
       `${IN_MEMORY_APP.replace(
         "export default defineConfig({",
-        `import { InMemoryLeaseStore, InMemoryTimerStore } from "@loom/event-runtime";
+        `import { InMemoryLeaseStore, InMemoryTimerStore } from "@loomwork/event-runtime";
 export const timerStore = new InMemoryTimerStore();
 export default defineConfig({
   timers: { store: timerStore, pollMs: 1, leases: { store: new InMemoryLeaseStore(), owner: "node-a" } },`
@@ -122,7 +122,7 @@ describe("sweep content --orphans honours the config's retention archive", () =>
   afterEach(() => rmSync(SCRATCH, { recursive: true, force: true }));
 
   it("keeps a blob cited only by an archived run, and needs no --no-archive", async () => {
-    const { SqliteContentStore } = await import("@loom/plugin-sqlite");
+    const { SqliteContentStore } = await import("@loomwork/plugin-sqlite");
     const { cmdSweepContent } = await import("./sweepContent");
     const contentDb = join(SCRATCH, "content.db");
     const old = Date.now() - 60 * 24 * 3_600_000;
@@ -133,9 +133,9 @@ describe("sweep content --orphans honours the config's retention archive", () =>
     const config = writeConfig(
       "archived.mjs",
       `
-import { defineConfig } from "@loom/app";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime/memory";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 
 const archiveEvents = new InMemoryAsyncEventStore();
 await archiveEvents.append({
@@ -179,7 +179,7 @@ describe("--config hands the app's compaction archive to the operator passes (AD
   afterEach(() => rmSync(SCRATCH, { recursive: true, force: true }));
 
   it("B1: sweep content --orphans scans storage.archiveStore under --config, so a blob only an archived event cites survives", async () => {
-    const { SqliteContentStore } = await import("@loom/plugin-sqlite");
+    const { SqliteContentStore } = await import("@loomwork/plugin-sqlite");
     const { cmdSweepContent } = await import("./sweepContent");
     const contentDb = join(SCRATCH, "content.db");
     const old = Date.now() - 60 * 24 * 3_600_000;
@@ -189,10 +189,10 @@ describe("--config hands the app's compaction archive to the operator passes (AD
     const config = writeConfig(
       "compacted.mjs",
       `
-import { defineConfig } from "@loom/app";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore, buildSegment } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { ReplayVM } from "@loom/replay-vm";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore, buildSegment } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { ReplayVM } from "@loomwork/replay-vm";
 
 const ev = (sequence, eventType, payload) => ({
   id: "c-" + sequence, workflowId: "wf", executionId: "c", eventType, sequence, timestamp: ${old}, payload,
@@ -231,9 +231,9 @@ export default defineConfig({ storage: { kind: "custom", eventStore, snapshotSto
     const config = writeConfig(
       "kept.mjs",
       `
-import { defineConfig } from "@loom/app";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore, buildSegment } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore, buildSegment } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 
 const old = Date.now() - 3600000;
 const ev = (sequence, eventType, payload) => ({
@@ -264,9 +264,9 @@ export default defineConfig({
     const config = writeConfig(
       "kept-cli.mjs",
       `
-import { defineConfig } from "@loom/app";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore, buildSegment } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore, buildSegment } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 
 const old = Date.now() - 3600000;
 const ev = (sequence, eventType, payload) => ({

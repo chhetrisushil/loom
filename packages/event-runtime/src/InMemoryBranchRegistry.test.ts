@@ -10,12 +10,12 @@ const ref = (name: string, executionId: string): BranchRef => ({
   updatedAt: 1,
 });
 
-// Review round 1 (P3) — `pruneBranchRefs` (`@loom/workflow-runtime`) walks `listRefs({ after,
+// Review round 1 (P3) — `pruneBranchRefs` (`@loomwork/workflow-runtime`) walks `listRefs({ after,
 // limit })` a page at a time, deleting every dangling ref it finds INSIDE that same loop, one
 // `deleteRef` per candidate. A `listRefs` that invalidated its sorted-name cache on every
 // delete paid for a full O(n log n) re-sort on the NEXT page, every page — measured at 100k
 // refs, a full prune (every ref dangling, the worst case) took 179s. This is a self-contained
-// replica of that access pattern — `pruneBranchRefs` itself lives in `@loom/workflow-runtime`,
+// replica of that access pattern — `pruneBranchRefs` itself lives in `@loomwork/workflow-runtime`,
 // which depends on this package, not the other way around, so it cannot be imported here.
 describe("InMemoryBranchRegistry: a prune-style walk (list a page, delete what it finds, repeat)", () => {
   async function pruneStyleWalk(

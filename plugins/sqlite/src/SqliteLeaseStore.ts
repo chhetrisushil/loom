@@ -5,7 +5,7 @@ import {
   assertNoBatchSteal,
   assertSteal,
   assertTtl,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
 

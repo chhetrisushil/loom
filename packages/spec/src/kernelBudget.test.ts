@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 //   4. a budget for a file that no longer exists fails;
 //   5. a budget's `adr` names an ADR file that exists (or is "baseline").
 //
-// To update: `LOOM_KERNEL_BUDGET_UPDATE=1 pnpm --filter @loom/spec exec vitest run kernelBudget`.
+// To update: `LOOM_KERNEL_BUDGET_UPDATE=1 pnpm --filter @loomwork/spec exec vitest run kernelBudget`.
 // Shrinking needs nothing more. Growing a file or adding one also needs
 // `LOOM_KERNEL_BUDGET_ADR=<NNNN>`, the ADR that decided the kernel must hold this code (and why it
 // cannot sit behind an existing seam in a 1P package); the entry records it, so the review sees

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import type { Projection, ProjectionFoldMap, ProjectionRuntime } from "./types";
 
 /**
@@ -297,7 +297,7 @@ export class InMemoryProjectionRuntime implements ProjectionRuntime {
   ): void {
     // Own-key lookup: the fold map is user-authored and the event type is caller-controlled,
     // so `handlers["__proto__"]` would resolve to `Object.prototype` — truthy, defeating the
-    // `!handler` guard, and then called as a function. Mirrors `getHandler` in @loom/replay-vm.
+    // `!handler` guard, and then called as a function. Mirrors `getHandler` in @loomwork/replay-vm.
     if (!Object.hasOwn(handlers, event.eventType)) return;
     const handler = handlers[event.eventType];
     if (typeof handler !== "function") return;

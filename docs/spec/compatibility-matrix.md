@@ -1,6 +1,6 @@
 # Loom Kernel Compatibility Matrix
 
-> Generated from `@loom/spec` (`loom kernel-manifest --emit-docs`). Do not edit by hand — it is
+> Generated from `@loomwork/spec` (`loom kernel-manifest --emit-docs`). Do not edit by hand — it is
 > derived from the version constants + capability registry, which are the source of truth.
 
 Every kernel/SPI contract version. **Compatibility rule:** two versions are compatible iff
@@ -36,4 +36,4 @@ wire handshake advertises (`syscalls`) beside `kernelAbiVersion`. Feature-detect
 do not infer availability from `kernelAbiVersion >= 1.3.0` until the writers land.
 
 Validate a deployment: `loom compat --abi <v> --event-schema <v> [...]` (exit non-zero on a
-major mismatch), or `checkCompatibility(deploymentVersions)` from `@loom/spec`.
+major mismatch), or `checkCompatibility(deploymentVersions)` from `@loomwork/spec`.

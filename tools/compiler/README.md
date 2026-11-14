@@ -1,4 +1,4 @@
-# @loom/compiler — optional build-time pass for Loom apps
+# @loomwork/compiler — optional build-time pass for Loom apps
 
 A Vite plugin and a command-line tool that read your Loom source at build time. They move
 `handler$()` bodies into lazy chunks, analyze each flow's steps, and write a `loom-manifest.json`
@@ -9,7 +9,7 @@ nothing in your bundle depends on this package. The full walkthrough is
 
 ```ts
 // vite.config.ts: add it before the React plugin
-import { loomPlugin } from "@loom/compiler";
+import { loomPlugin } from "@loomwork/compiler";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
@@ -58,6 +58,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 - [ADR 0044](../../docs/adr/0044-no-compiler-plugin-api-manifest-as-output-contract.md): the manifest as the
   output contract; [ADR 0061](../../docs/adr/0061-step-identity-interpreter-guardrails.md) and
   [ADR 0086](../../docs/adr/0086-runner-body-reach-analysis.md): loop identity and runner reach.
-- API reference: section "`@loom/compiler` — build-time enhancement (optional)" in
+- API reference: section "`@loomwork/compiler` — build-time enhancement (optional)" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Related: `loom verify` ([docs/usage-cli.md](../../docs/usage-cli.md)).

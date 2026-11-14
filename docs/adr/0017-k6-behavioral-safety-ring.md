@@ -29,7 +29,7 @@ Add **K6 — a behavioral-safety ring** as an opt-in effect middleware, mirrorin
 metering exactly so it composes into the existing chain and inherits its replay
 semantics.
 
-- **`safetyMiddleware({ validators })`** (`@loom/middleware`). `EffectMiddleware` sees an
+- **`safetyMiddleware({ validators })`** (`@loomwork/middleware`). `EffectMiddleware` sees an
   effect's `input` before `next()` and its `result` after, so validators run in two phases:
   - **input** validators block *before* the effect runs (admission control, like K3);
   - **output** validators block the *result* from propagating.

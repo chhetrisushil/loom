@@ -8,8 +8,8 @@
   K12.1/K12.4 (`PrincipalChain`, delegation), [ADR 0117](0117-approvals-bound-to-what-the-approver-saw.md).
 - Placement: **kernel records and rehydrates; 1P decides.** Kernel: a field on the start event,
   a fold key, a resolver seam. 1P: `executionAccessPolicy` reads the recorded owner, the
-  delegation re-derivation for supervised children (`@loom/orchestration`), the DelegationAuthorizer
-  fail-closed rule (`@loom/effect-runtime`). Shares the Wave 2 bump (EVENT_SCHEMA 1.23.0). **No
+  delegation re-derivation for supervised children (`@loomwork/orchestration`), the DelegationAuthorizer
+  fail-closed rule (`@loomwork/effect-runtime`). Shares the Wave 2 bump (EVENT_SCHEMA 1.23.0). **No
   KERNEL_ABI change. DISPATCHER_SPI stays 1.2.0.**
 - Revision: round 2 — identity is never written verbatim under strict/compliance without crypto or a codec
   (D1); the resolver reads sequence 0 of the log, not a caller-supplied state, and `_principal` survives a
@@ -78,7 +78,7 @@ strip a record to regain the resumer's authority.
 
 **Crypto.** The identity subset is PII-adjacent. When a crypto plugin (K10) is composed, `defineConfig`
 registers `principal.identity.*` (tenant, actor, onBehalfOf) with the same sensitive-path seam the plugin
-uses for other payload fields (`@loom/classify` `sensitive()` markers feed `@loom/plugin-crypto`), so the
+uses for other payload fields (`@loomwork/classify` `sensitive()` markers feed `@loomwork/plugin-crypto`), so the
 subset is encrypted at rest and **shredded** with the subject (`PAYLOAD_SHREDDED`, D2 handles the result).
 
 **Plaintext identity without crypto — a decided policy, not an accident.** The `{ tenant, actor,
@@ -140,7 +140,7 @@ An app that must not put even an actor id in its log supplies
 `principalCodec: { toRef(chain): string; fromRef(ref): PrincipalChain | undefined | Promise<…> }`
 (`WorkflowRuntimeDeps`). The start records `{ v: 1, ref }` only — no `identity` — and rehydration
 asks `fromRef`. This is the mode for delegation: `fromRef` can re-issue the narrowed token from the
-app's own grant table, which the supervisor in `@loom/orchestration` does from the spawn decision it
+app's own grant table, which the supervisor in `@loomwork/orchestration` does from the spawn decision it
 already journals plus the delegation secret it holds (so a recovered child gets the *same*
 attenuation back, not a fresh one). The kernel never interprets `ref`.
 
@@ -160,7 +160,7 @@ child would be denied only by luck of composition after its first ordinary park/
    is wired. That moves the failure from "the child is mysteriously denied after its first park" to the one
    call that can still report it.
 3. **`defineConfig` composes it.** When `superviseChildren` is wired, `defineConfig` auto-composes
-   `@loom/orchestration`'s principal codec (the one that re-issues the narrowed token from the journaled
+   `@loomwork/orchestration`'s principal codec (the one that re-issues the narrowed token from the journaled
    spawn decision, D3), so the supported path needs no configuration and rule 2 only fires for apps that
    hand-build a runtime.
 

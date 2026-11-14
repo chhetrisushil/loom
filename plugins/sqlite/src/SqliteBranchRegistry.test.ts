@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BranchRef } from "@loom/event-runtime";
+import type { BranchRef } from "@loomwork/event-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 

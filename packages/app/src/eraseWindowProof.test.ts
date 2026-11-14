@@ -1,14 +1,14 @@
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { InMemoryAsyncEventStore, isKeyUnavailable } from "@loom/event-runtime";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { InMemoryAsyncEventStore, isKeyUnavailable } from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   InMemoryKeyStore,
   type KeyStore,
   ShredIncompleteError,
   shredSubject,
-} from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+} from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";

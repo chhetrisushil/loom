@@ -1,23 +1,23 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import type { EventStore, TimerStore } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import type { EventStore, TimerStore } from "@loomwork/event-runtime";
 import {
   PostgresEventStore,
   PostgresSnapshotStore,
   PostgresTimerStore,
   migratePostgresStores,
   postgresPool,
-} from "@loom/plugin-postgres";
-import { SqliteEventStore, SqliteSnapshotStore, SqliteTimerStore } from "@loom/plugin-sqlite";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-postgres";
+import { SqliteEventStore, SqliteSnapshotStore, SqliteTimerStore } from "@loomwork/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { build, eventsOf, flow, kinds, until } from "./__tests__/r2Harness";

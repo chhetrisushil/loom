@@ -1,9 +1,9 @@
-import { step$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
-import type { EventStore, LeaseStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { step$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loomwork/event-runtime";
+import type { EventStore, LeaseStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";

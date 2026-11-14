@@ -4,7 +4,7 @@
 // retention job nor an append may stack-overflow on an app-controlled payload.
 
 /**
- * The structural claim-check test, identical to `isClaimCheck` in `@loom/middleware`
+ * The structural claim-check test, identical to `isClaimCheck` in `@loomwork/middleware`
  * (kept structural so this plugin takes no middleware dependency): the flag AND a string
  * `ref.__loomContent`. An app object that merely carries the flag is app data.
  */

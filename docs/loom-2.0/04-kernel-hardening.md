@@ -35,12 +35,12 @@ Loom 2.0 provides each of these for *intelligent, long-running software*. The ma
 
 | # | Kernel responsibility | Loom mechanism | Where it lives | Milestone |
 |---|---|---|---|---|
-| **K1** | Stable ABI / syscall surface | `KERNEL_ABI` + `KERNEL_SYSCALLS` table, semver'd, pinned by a conformance test | `@loom/workflow-runtime` — [`abi.ts`](../../packages/workflow-runtime/src/abi.ts) | ABI named & versioned |
-| **K2** | Authority boundary (protection ring) | `CapabilityAuthorizer` enforced by `EffectRuntime` before every effect; denial is a durable fact | `@loom/effect-runtime` — [`authz.ts`](../../packages/effect-runtime/src/authz.ts), [`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts) | Least-privilege effects |
-| **K3** | Resource accounting & quotas | `meteringMiddleware(pricing, budget?)` meters every effect (`RESOURCE_METERED`) and admission-controls over-budget work (`QUOTA_EXCEEDED`) | `@loom/middleware` — [`metering.ts`](../../packages/middleware/src/metering.ts) | Budgeted execution |
-| **K4** | Fault supervision | `SupervisingDispatcher` — restart/backoff + per-key circuit breaker | `@loom/dispatcher` — [`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts) | Named supervision seam |
-| **K5** | On-disk ABI governance | `EVENT_SCHEMA_VERSION` + `knownEventTypes()`, pinned by a governance test; `@loom/deploy-sim` gates it at the flow level | `@loom/replay-vm` — [`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts) | Governed event log |
-| **K6** | Behavioral-safety ring | `safetyMiddleware(validators)` validates an effect's input/output; a block is a durable `SAFETY_BLOCKED` fact + `SafetyViolationError` (fails the step) | `@loom/middleware` — [`safety.ts`](../../packages/middleware/src/safety.ts) | Governed action/output safety |
+| **K1** | Stable ABI / syscall surface | `KERNEL_ABI` + `KERNEL_SYSCALLS` table, semver'd, pinned by a conformance test | `@loomwork/workflow-runtime` — [`abi.ts`](../../packages/workflow-runtime/src/abi.ts) | ABI named & versioned |
+| **K2** | Authority boundary (protection ring) | `CapabilityAuthorizer` enforced by `EffectRuntime` before every effect; denial is a durable fact | `@loomwork/effect-runtime` — [`authz.ts`](../../packages/effect-runtime/src/authz.ts), [`EffectRuntime.ts`](../../packages/effect-runtime/src/EffectRuntime.ts) | Least-privilege effects |
+| **K3** | Resource accounting & quotas | `meteringMiddleware(pricing, budget?)` meters every effect (`RESOURCE_METERED`) and admission-controls over-budget work (`QUOTA_EXCEEDED`) | `@loomwork/middleware` — [`metering.ts`](../../packages/middleware/src/metering.ts) | Budgeted execution |
+| **K4** | Fault supervision | `SupervisingDispatcher` — restart/backoff + per-key circuit breaker | `@loomwork/dispatcher` — [`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts) | Named supervision seam |
+| **K5** | On-disk ABI governance | `EVENT_SCHEMA_VERSION` + `knownEventTypes()`, pinned by a governance test; `@loomwork/deploy-sim` gates it at the flow level | `@loomwork/replay-vm` — [`eventHandlers.ts`](../../packages/replay-vm/src/eventHandlers.ts) | Governed event log |
+| **K6** | Behavioral-safety ring | `safetyMiddleware(validators)` validates an effect's input/output; a block is a durable `SAFETY_BLOCKED` fact + `SafetyViolationError` (fails the step) | `@loomwork/middleware` — [`safety.ts`](../../packages/middleware/src/safety.ts) | Governed action/output safety |
 
 Two properties of the durable core underwrite all five: **[P2 — deterministic, pure replay](../architecture.md#p2--replay-is-deterministic-and-pure)** (every ring's decision is reproducible because it is a function of logged facts) and **[P9 — non-determinism only when logged](../architecture.md#p9--non-determinism-is-allowed-but-only-when-logged-loom-20)** (a denial, a metered cost, or a quota trip is a durable event, so it replays exactly). The rings *enforce*; the log *remembers*.
 
@@ -237,7 +237,7 @@ The kernel does not "remember" your budget in memory; it *recomputes* it from th
 
 ## K4 — Fault supervision
 
-A kernel supervises its subsystems: it restarts a crashed driver, backs off, and isolates a component that keeps failing so it cannot take the system down. Loom's supervision seam is the **`SupervisingDispatcher`** in `@loom/dispatcher` ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)). It is a composite `ExecutionDispatcher` that wraps any child dispatcher (`LocalDispatcher`, `PlacementDispatcher`, the Cloud Run adapter) with two policies:
+A kernel supervises its subsystems: it restarts a crashed driver, backs off, and isolates a component that keeps failing so it cannot take the system down. Loom's supervision seam is the **`SupervisingDispatcher`** in `@loomwork/dispatcher` ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)). It is a composite `ExecutionDispatcher` that wraps any child dispatcher (`LocalDispatcher`, `PlacementDispatcher`, the Cloud Run adapter) with two policies:
 
 - **Restart / backoff** — a *throwing* dispatch is retried up to `maxRestarts` times with exponential backoff (`backoffMs × backoffFactor ** attempt`). A returned `"failed"` result is a normal outcome, not a restartable error ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts), [`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)).
 - **Per-key circuit breaker** — after `threshold` consecutive dispatch failures the circuit **opens** and further dispatches to that key fail fast with `CircuitOpenError` until a `cooldownMs` half-open trial, so a flaky model/tool/worker is not hammered ([`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts), [`SupervisingDispatcher.ts`](../../packages/dispatcher/src/SupervisingDispatcher.ts)). The key defaults to `pkg.flowId` — a per-flow breaker.
@@ -294,7 +294,7 @@ The ring events — `EFFECT_DENIED`, `RESOURCE_METERED`, `QUOTA_EXCEEDED`, `SAFE
 ### Two gates, two levels
 
 - **Unit-level:** the governance test pins the *set* of types ([`eventSchema.test.ts`](../../packages/replay-vm/src/eventSchema.test.ts)).
-- **Flow-level:** **`@loom/deploy-sim`** replays real historical logs against *new* flow definitions before promotion, catching a schema/flow change that would break stored executions in the field. It is the CI gate that proves the on-disk ABI still loads. See the [architecture overview](../architecture.md#d11--tooling-is-lenses-on-the-log-not-new-infrastructure).
+- **Flow-level:** **`@loomwork/deploy-sim`** replays real historical logs against *new* flow definitions before promotion, catching a schema/flow change that would break stored executions in the field. It is the CI gate that proves the on-disk ABI still loads. See the [architecture overview](../architecture.md#d11--tooling-is-lenses-on-the-log-not-new-infrastructure).
 
 > **Reference:** for the full event catalogue — every payload shape and its fold semantics — see **[10 — Event Schema Reference](10-event-schema-reference.md)**.
 
@@ -383,14 +383,14 @@ performance ROI, real security) in the
 
 | Item | Closes | ADR | Priority |
 |---|---|---|---|
-| **K7** | Data-plane isolation & egress control (the gap ADR 0017 deferred) | [0019](../adr/0019-k7-data-plane-isolation-and-egress-control.md) | P1 — **implemented** (`@loom/isolate`: child-process boundary, brokered egress, `EGRESS_DENIED`) |
+| **K7** | Data-plane isolation & egress control (the gap ADR 0017 deferred) | [0019](../adr/0019-k7-data-plane-isolation-and-egress-control.md) | P1 — **implemented** (`@loomwork/isolate`: child-process boundary, brokered egress, `EGRESS_DENIED`) |
 | **K8** | Cancellation, deadlines & bounded effects (a kill path for in-flight work) | [0020](../adr/0020-k8-cancellation-deadlines-bounded-effects.md) | P0 — **implemented** (K8.4 awaits streaming) |
 | **K9** | Effect delivery contract: idempotency keys, in-doubt parking, fencing tokens | [0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) | P0 — **implemented** |
 | **K10** | Log lifecycle: retention, crypto-shredding, redaction, compaction | [0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md) | P2 — **implemented** (crypto-shredding, retention, compaction, redaction markers, [at-rest config](11-encryption-at-rest.md)) |
 | **K11** | Flow-code versioning for in-flight executions (pin / migrate, never silent) | [0023](../adr/0023-k11-flow-code-versioning-in-flight-executions.md) | P1 — **implemented** (hash, pinned resumption, `resumeAs`, deploy census) |
 | **K12** | Identity, tenancy & delegated authority | [0024](../adr/0024-k12-identity-tenancy-delegated-authority.md) | P2 — **implemented** (principal chain, verified approvals, verifiable delegation, tenant-scoped stores, nested budgets) |
 | **T1** | Durable timers & scheduled executions (kernel service) | [0025](../adr/0025-t1-durable-timers-and-scheduled-executions.md) | P1 — **implemented** (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, stores ×3, `schedule$` cron, fenced firing) |
-| **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 — **implemented** (`@loom/wire-abi`: JSON-RPC projection of K1, carrier, fold conformance vectors) |
+| **T2** | Wire-level kernel ABI (language neutrality) | [0026](../adr/0026-t2-wire-level-kernel-abi.md) | P3 — **implemented** (`@loomwork/wire-abi`: JSON-RPC projection of K1, carrier, fold conformance vectors) |
 
 Every item inherits **G1** (preserve P2/P9) and **G2** (additive, opt-in per P10 — unwired
 means byte-identical), and its definition of done includes pinned conformance tests,

@@ -1,4 +1,4 @@
-import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
+import type { EffectContext, EffectMiddleware } from "@loomwork/effect-runtime";
 import {
   type Budget,
   type Pricing,

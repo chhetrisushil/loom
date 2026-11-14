@@ -1,12 +1,12 @@
-import type { EventEnvelope } from "@loom/core";
-import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loomwork/event-runtime";
 import {
   INBOX_STREAM_PREFIX,
   INBOX_TOPIC_SEQ_BASE,
   isPayloadShredded,
   isReservedStream,
   iterateExecutionIds,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
 import { retainRootsOf, visitCitedAddresses } from "./citations";
@@ -156,7 +156,7 @@ export interface ContentSweepBase {
    */
   olderThanMs?: number;
   /**
-   * ADR 0145 - an app-owned retention policy (`retentionPolicy()` from `@loom/workflow-runtime`;
+   * ADR 0145 - an app-owned retention policy (`retentionPolicy()` from `@loomwork/workflow-runtime`;
    * typed structurally here so this package takes no dependency on it). `content.unpinnedAfterMs`
    * is used as `olderThanMs`. A policy without a `content` section is an error, not a silent no-op.
    * Re-validated structurally (see `resolvePolicyTtl`): unknown keys are refused, and
@@ -633,7 +633,7 @@ export async function sweepUnpinnedContent(
 
 /**
  * ADR 0145 D3 - structural re-validation of a retention policy, WITHOUT a dependency on
- * `@loom/workflow-runtime`. Each field is read ONCE into a plain snapshot, then the snapshot is
+ * `@loomwork/workflow-runtime`. Each field is read ONCE into a plain snapshot, then the snapshot is
  * checked, so a getter answering differently on a second read cannot pass a rule-breaking value.
  * Checks what the sweep consumes: unknown keys (top level and `content`), `unpinnedAfterMs` a
  * finite integer > 0, and, when `terminalTtlMs` is present, a finite integer >= 0 with

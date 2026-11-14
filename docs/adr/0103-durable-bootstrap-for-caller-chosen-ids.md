@@ -9,7 +9,7 @@
   schedule-occurrence ids, whose dedup this closes), [ADR 0058](0058-read-model-plugin.md)
   (the catch-up read a durable-only consumer uses instead of `onEvent`),
   [ADR 0083](0083-second-consumer-rule.md) (why no `startOnce` helper is exported).
-- Placement: **kernel (`@loom/workflow-runtime`)**, approved by the maintainer (2026-09-27).
+- Placement: **kernel (`@loomwork/workflow-runtime`)**, approved by the maintainer (2026-09-27).
   **KERNEL_ABI unchanged (1.1.0)**: no syscall added, removed or renamed. **EVENT_SCHEMA
   unchanged**: no event kind, payload or fold changes; the bytes written are the same, only
   WHEN sequence 0 is written moves. **No SPI change**: it relies on the uniqueness every
@@ -63,7 +63,7 @@ in-memory store from an explicit check) — or with `StaleFenceError` (amended b
 store checks the token before the slot, so a duplicate of an execution that has since been
 fenced is refused on the fence) — AND this execution's sequence 0 is then readable
 through the same store, `start()` throws `ExecutionAlreadyExistsError(executionId)`, a new typed
-error exported from `@loom/workflow-runtime` beside `InputValidationError`. At that point no
+error exported from `@loomwork/workflow-runtime` beside `InputValidationError`. At that point no
 event has been folded, `onEvent` has seen nothing, and no effect has run. The existing execution
 is untouched.
 
@@ -87,7 +87,7 @@ store:
   an existing execution), or a failed read-back → `StorageWriteError`.
 
 The conflict and the stale fence are matched by class and, as a fallback, by `name`, so a
-bundle carrying a second copy of `@loom/event-runtime` cannot turn "already exists" into a
+bundle carrying a second copy of `@loomwork/event-runtime` cannot turn "already exists" into a
 generic storage failure.
 
 Any OTHER failure of the bootstrap append (a dead store) refuses the start with

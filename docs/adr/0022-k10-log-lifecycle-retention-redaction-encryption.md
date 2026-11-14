@@ -1,17 +1,17 @@
 # ADR 0022 — K10: log lifecycle — retention, redaction & encryption
 
-- Status: Accepted (implemented 2026-07-10 — K10.2 `@loom/store-crypto`:
+- Status: Accepted (implemented 2026-07-10 — K10.2 `@loomwork/store-crypto`:
   `EncryptingEventStore` + `EncryptingSnapshotStore` (field-level AES-256-GCM under
   per-subject keys, A4/A1), `shredSubject` destroys the key and tombstones `PAYLOAD_SHREDDED`
   at shred time (A3; event schema 1.8.0), reads of a shredded subject throw
   `PayloadShreddedError` and the fold records `variables._shredded`; fork key-lineage via
   `subjectOf` (A2); decoupled seam (A5). K10.1 retention + K10.4 compaction: `LogLifecycle`
-  (`@loom/workflow-runtime`) with `EventStore.deleteExecution`/`truncatePrefix` +
+  (`@loomwork/workflow-runtime`) with `EventStore.deleteExecution`/`truncatePrefix` +
   `SnapshotStore.deleteExecution` optional SPI (in-memory / SQLite / Postgres);
   `applyRetention` reclaims terminal-and-aged executions **archive-before-delete** (A6);
   `compact` checkpoints then truncates the prefix (sequence 0 preserved) with
   `fold(snapshot, suffix) === fold(events)` conformance-tested. K10.3 redaction markers:
-  `secretRef` + `SecretResolver` + `redactionMiddleware` (`@loom/middleware`) — a step's I/O
+  `secretRef` + `SecretResolver` + `redactionMiddleware` (`@loomwork/middleware`) — a step's I/O
   carries a deterministic reference, resolved to the real value at effect execution (the
   middleware seam, kernel-side of any K7 boundary, A5), so the secret NEVER enters the log
   (verified end-to-end); the effect-middleware `next(input?)` contract was extended (backward-

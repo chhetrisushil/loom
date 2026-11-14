@@ -1,7 +1,7 @@
 # ADR 0055 — K10.6: the pin seam — retention pin predicate + pinned mark-and-sweep for content
 
 - Status: **Accepted — shipped** (`PinPredicate` on `LogLifecycle`, `defineConfig({ retention.pinned })`,
-  `sweepUnpinnedContent`/`pinByEventKinds` in `@loom/plugin-content`)
+  `sweepUnpinnedContent`/`pinByEventKinds` in `@loomwork/plugin-content`)
 - Date: 2026-07-15
 - Builds on: [ADR 0051 D5](0051-perpetual-agents-placement-schedule-remodel.md), ADR 0022 (K10.1
   retention), ADR 0054 (claim-check envelope), ADR 0046 (content store — whose "refcounted blob GC"
@@ -60,12 +60,12 @@ deletes evidence.
 
 ### D3 — Layering
 
-`plugins/content → @loom/middleware` (for `isClaimCheck`) is plugin→kernel-package, the allowed
-direction; `@loom/workflow-runtime` gains no new dependencies (the predicate is structural). The
+`plugins/content → @loomwork/middleware` (for `isClaimCheck`) is plugin→kernel-package, the allowed
+direction; `@loomwork/workflow-runtime` gains no new dependencies (the predicate is structural). The
 envelope stays a leaf in the payload walk — digests are projections, not containers.
 
 > **Amended 2026-09-27 (see D4).** Both halves above were stale. The sweep never took the
-> `@loom/middleware` dependency: it recognises an envelope structurally, with the same test as
+> `@loomwork/middleware` dependency: it recognises an envelope structurally, with the same test as
 > `isClaimCheck` (`__loomClaimCheck === true` AND a string `ref.__loomContent`). And the envelope
 > is not a leaf in the walk. Its `ref` is reported as the one enveloped (TTL-reclaimable)
 > citation, and every other field, `digest` included, is walked as ordinary payload. A digest is
@@ -132,7 +132,7 @@ resolves. Only `resolveClaimCheck` readers observe the erasure, as ADR 0054 inte
 
 ## Amendment (2026-09-28) — D5–D7: the re-cite race, orphans, external root sets
 
-Placement: 1P (`@loom/plugin-content`, `@loom/plugin-sqlite`, `@loom/conformance`, the CLI). No
+Placement: 1P (`@loomwork/plugin-content`, `@loomwork/plugin-sqlite`, `@loomwork/conformance`, the CLI). No
 kernel change. D2 stands: a persisted refcount is still rejected, because it would have to be
 transactionally coupled to event appends in a different store. All three decisions keep the log
 as the only source of citations. They add a **store-side touch time**, which is a fact about

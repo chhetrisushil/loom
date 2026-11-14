@@ -1,18 +1,18 @@
-# @loom/plugin-read-model
+# @loomwork/plugin-read-model
 
 Durable, queryable indexes over the event log, across executions. The log is the only authority and has no
 cross-execution query; a read model is a cache of it with a watermark, so you can drop one and rebuild it
 by re-scanning. There are two kinds. A **row model** turns each matching event into indexed rows you query
 by equality (for example "high-severity findings for this target"). A **folded model** keeps one durable
 state per execution, produced by a `projection$` reducer, and is read by execution id or app key (ADR
-0058, ADR 0132). Durable backends are `SqliteReadModelStore` (`@loom/plugin-sqlite`) and
-`PostgresReadModelStore` (`@loom/plugin-postgres`).
+0058, ADR 0132). Durable backends are `SqliteReadModelStore` (`@loomwork/plugin-sqlite`) and
+`PostgresReadModelStore` (`@loomwork/plugin-postgres`).
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { projection$ } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryReadModelStore, ReadModelService } from "@loom/plugin-read-model";
+import { defineConfig } from "@loomwork/app";
+import { projection$ } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryReadModelStore, ReadModelService } from "@loomwork/plugin-read-model";
 
 const events = new InMemoryAsyncEventStore();
 const models = new ReadModelService(new InMemoryReadModelStore(), {
@@ -64,7 +64,7 @@ export async function read(executionIds: string[]) {
   `refresh` for folded states.
 - **Erasure.** `purge(modelId, where)` for rows, `purgeFolded(modelId, selector)` for folded states.
 - **Stores.** `InMemoryReadModelStore`; `ReadModelStore` is the SPI (`READ_MODEL_STORE_SPI_VERSION`
-  1.2.0), proven by `runReadModelStoreConformance` in `@loom/conformance`.
+  1.2.0), proven by `runReadModelStoreConformance` in `@loomwork/conformance`.
 
 ## Behaviour that surprises people
 
@@ -92,7 +92,7 @@ export async function read(executionIds: string[]) {
 
 ## See also
 
-- API reference: section "`@loom/plugin-read-model` — durable cross-execution indexes" in
+- API reference: section "`@loomwork/plugin-read-model` — durable cross-execution indexes" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guide: [log and read models](../../docs/user-guide/log-and-read-models.md).
 - ADRs: [0058 read-model plugin](../../docs/adr/0058-read-model-plugin.md),

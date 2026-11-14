@@ -1,10 +1,10 @@
-import { SURFACE_PATCH } from "@loom/agent-surface";
-import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { defineCatalog } from "@loom/plugin-a2ui";
-import { McpClient, createMcpServer, servedEffect } from "@loom/plugin-mcp";
-import type { McpServer } from "@loom/plugin-mcp";
+import { SURFACE_PATCH } from "@loomwork/agent-surface";
+import type { EventEnvelope } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { defineCatalog } from "@loomwork/plugin-a2ui";
+import { McpClient, createMcpServer, servedEffect } from "@loomwork/plugin-mcp";
+import type { McpServer } from "@loomwork/plugin-mcp";
 import { afterEach, describe, expect, it } from "vitest";
 import { SEEN_SEQUENCE_FIELD, isStale } from "./provenance";
 import { surfaceHostResource } from "./serve";

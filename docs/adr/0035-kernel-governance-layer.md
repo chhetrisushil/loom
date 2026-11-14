@@ -17,12 +17,12 @@ aren't unified or fully CI-gated; normative content is scattered.
 
 Unify around **one machine-readable source of truth** and layer three views + one enforcer on it.
 
-**`@loom/spec` (the manifest).** A dependency-light package that **imports** the real exported
+**`@loomwork/spec` (the manifest).** A dependency-light package that **imports** the real exported
 version constants (never hand-copies them) into `kernelManifest()`, and exposes
 `checkCompatibility(deployment)` (same-major ⇒ compatible; MAJOR mismatch ⇒ reject). It also holds
 the **capability registry**: each subsystem declares a maturity level `L0–L5` **plus the evidence**
 that backs it (version-constant name, conformance-test path, bench path). Adding
-`COMPILER_MANIFEST_VERSION` to `@loom/compiler` completes the constant set.
+`COMPILER_MANIFEST_VERSION` to `@loomwork/compiler` completes the constant set.
 
 **Maturity is evidence-derived and self-checking.** Levels are objective: `L5` needs a versioned
 contract + conformance test; `L4` needs a committed bench; `L2`/`L3` need a test suite.
@@ -51,15 +51,15 @@ non-zero on mismatch).
 - The maturity model is itself a fitness function (drift-checked evidence).
 - CI now gates typecheck + lint (previously ungated); the lint gate required a one-time mechanical
   cleanup of 41 pre-existing violations.
-- Determinism/G2 untouched: `@loom/spec` is read-only and off the execution path.
+- Determinism/G2 untouched: `@loomwork/spec` is read-only and off the execution path.
 - Honest scope: the compatibility matrix is a single row today (lockstep monorepo); the mechanism
   matters when a MAJOR diverges.
 
 ## Verification
 
-- `@loom/spec` `spec.test.ts`: manifest aggregates real semver constants; every claimed evidence
+- `@loomwork/spec` `spec.test.ts`: manifest aggregates real semver constants; every claimed evidence
   file exists; L5⇒version+conformance, L4⇒bench, L2/L3⇒test; `checkCompatibility` accepts current +
-  same-major, rejects bumped-major. `@loom/cli`: `kernel-manifest` prints/JSON/emits-docs, `compat`
+  same-major, rejects bumped-major. `@loomwork/cli`: `kernel-manifest` prints/JSON/emits-docs, `compat`
   exits non-zero on mismatch.
 - `pnpm fitness` (build→typecheck→lint→test) green; CI runs all four.
 - Generated docs match the manifest; the Kernel Specification's anchors resolve to real files.

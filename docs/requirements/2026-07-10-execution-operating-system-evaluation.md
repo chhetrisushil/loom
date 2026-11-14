@@ -62,7 +62,7 @@ deliberately dropped. Net-new, worth-building work is ~6 items, none of them the
 | P2 | Runtime Observability | **ACCEPT (DX)** | P1 | Genuinely missing: flame-graph/timeline profiler, suspend/resume/replay-cost breakdowns, hit-ratio/prediction-accuracy metrics. Read-only over log+telemetry. → ADR 0029 |
 | P3 | Kernel Extensions | **MOSTLY SHIPPED** | P3 | SPIs already exist. Accept as consolidation: uniformly document + fill gaps against the existing pattern. → folded into ADR 0033 |
 | P3 | Runtime Contracts | **PARTIAL ACCEPT** | P3 | K1 ABI + K5 event schema + conformance tests already contract the syscall surface. Extend the conformance-test pattern to every SPI. → ADR 0033 |
-| P3 | Runtime Verification | **ACCEPT (new, best ROI)** | P0 | No pre-flight verifier exists. Checking determinism/replay/suspension/placement/resource compat *before* execution is genuinely new, fits the kernel, raises safety. Partly static via `@loom/compiler`. → ADR 0028, `@loom/verify` |
+| P3 | Runtime Verification | **ACCEPT (new, best ROI)** | P0 | No pre-flight verifier exists. Checking determinism/replay/suspension/placement/resource compat *before* execution is genuinely new, fits the kernel, raises safety. Partly static via `@loomwork/compiler`. → ADR 0028, `@loomwork/verify` |
 | P3 | Autonomous Optimization Loop | **PARTIAL (mostly there)** | P3 | observe→analyze→predict→optimize→evaluate→learn already spans analytics + `runtimeIntelligence` + `rankedRouter` + outcomes. Accept: wire into one *optional advisory* loop. Reject any auto-mutation of semantics. |
 | — | Out-of-Loom list (UI, blueprints, framework integ, domain cloud-ops, marketplace/billing/fleet) | **ENDORSE** | — | Correctly assigned to GenUI/AetherOS. Keep out. |
 
@@ -91,8 +91,8 @@ Ranked by ROI-per-risk; each fits the four non-negotiables (advisory/read-only w
 optimization; kernel mechanism only where enforceable; unwired-zero-overhead). ADR + tracking
 issue per item.
 
-1. **Runtime Verification** — `@loom/verify`, pre-flight determinism/replay/suspension/
-   capability/placement/resource checks; leans on `@loom/compiler` graph analysis. **P0.**
+1. **Runtime Verification** — `@loomwork/verify`, pre-flight determinism/replay/suspension/
+   capability/placement/resource checks; leans on `@loomwork/compiler` graph analysis. **P0.**
    → [ADR 0028](../adr/0028-runtime-verification.md)
 2. **Runtime Observability / profiler** — flame-graph + latency-breakdown + hit-ratio lenses
    over log+telemetry; extends CLI `inspect`. **P1.** → [ADR 0029](../adr/0029-runtime-observability-profiler.md)

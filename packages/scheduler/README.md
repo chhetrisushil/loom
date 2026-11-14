@@ -1,15 +1,15 @@
-# @loom/scheduler — ephemeral cooperative scheduler
+# @loomwork/scheduler — ephemeral cooperative scheduler
 
 An in-process scheduler for live async work: priority ordering, a concurrency cap and `AbortSignal`
 cancellation. It decides which queued task takes a free slot, how many run at once, and how cancellation
 reaches them. It is deliberately not durable. Pausing and resuming across restarts belongs to the event log
-and `@loom/replay-vm`, and cron or timer-based starts belong to `schedule$`; nothing here is persisted.
+and `@loomwork/replay-vm`, and cron or timer-based starts belong to `schedule$`; nothing here is persisted.
 Use it to bound fan-out of model or tool calls and to let background work (planning) yield to foreground
 work (a user's turn). `IntentRuntime` and `PlannerRuntime` accept an optional shared `scheduler` and run
 their model call at `Priority.Idle`.
 
 ```ts
-import { Priority, createScheduler, parallelLimit, withTimeout } from "@loom/scheduler";
+import { Priority, createScheduler, parallelLimit, withTimeout } from "@loomwork/scheduler";
 
 const scheduler = createScheduler({ concurrency: 1 });
 const controller = new AbortController();
@@ -78,6 +78,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/scheduler` — ephemeral cooperative scheduler" in [docs/api-reference.org](../../docs/api-reference.org).
-- Guide: [architecture, compute and distribution](../../docs/architecture.md); for per-tenant fairness see `@loom/fair-scheduler` ([ADR 0038](../../docs/adr/0038-per-tenant-fair-scheduler.md)).
-- Source: `packages/scheduler/src`. Used by [`@loom/graph-executor`](../graph-executor/README.md).
+- API reference: section "`@loomwork/scheduler` — ephemeral cooperative scheduler" in [docs/api-reference.org](../../docs/api-reference.org).
+- Guide: [architecture, compute and distribution](../../docs/architecture.md); for per-tenant fairness see `@loomwork/fair-scheduler` ([ADR 0038](../../docs/adr/0038-per-tenant-fair-scheduler.md)).
+- Source: `packages/scheduler/src`. Used by [`@loomwork/graph-executor`](../graph-executor/README.md).

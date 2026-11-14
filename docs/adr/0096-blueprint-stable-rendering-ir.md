@@ -14,7 +14,7 @@
 
 ## Context
 
-`@loom/blueprint-runtime`'s `Blueprint` was a value one application authored and one renderer
+`@loomwork/blueprint-runtime`'s `Blueprint` was a value one application authored and one renderer
 drew. The [loom-ui design](../requirements/2026-09-21-loom-ui-design.md) changes what it is: a
 semantic Experience Model in a sibling repository **compiles to it**, and loom's renderers draw
 the result. From that moment the shape of `Widget`, `Layout` and `Blueprint` is an interface that
@@ -24,7 +24,7 @@ MemoryStore SPI version (ADR 0091) exists to prevent for storage backends.
 
 Two facts made the decision concrete rather than speculative:
 
-- The one GenUI product on loom past the demo stage (`genUI`) declared `@loom/blueprint-runtime`
+- The one GenUI product on loom past the demo stage (`genUI`) declared `@loomwork/blueprint-runtime`
   and imported nothing from it, building a private Blueprint instead. The
   [2026-09-21 evaluation](../requirements/2026-09-21-experience-rendering-runtime-evaluation.md)
   traced that to the vocabularies never meeting. Making loom's Blueprint the compile target is the
@@ -40,12 +40,12 @@ Two facts made the decision concrete rather than speculative:
 
 ### D1 — `BLUEPRINT_IR_VERSION`, declared beside the type
 
-`@loom/blueprint-runtime` exports `BLUEPRINT_IR_VERSION` (semver, starting at `1.0.0`). A consumer
+`@loomwork/blueprint-runtime` exports `BLUEPRINT_IR_VERSION` (semver, starting at `1.0.0`). A consumer
 that compiles to the Blueprint pins it the way a storage backend pins the MemoryStore SPI. The
 version is declared, not derived: a maintainer states that the shape changed and how much, and
 D2 makes an undeclared change fail.
 
-The version is deliberately *not* wired into `@loom/spec`'s `checkCompatibility` / compatibility
+The version is deliberately *not* wired into `@loomwork/spec`'s `checkCompatibility` / compatibility
 matrix: those grade runtime subsystems a deployment composes, and the Blueprint IR is consumed at
 build time by a compiler in another repository, which pins the constant directly.
 
@@ -102,18 +102,18 @@ flattens is legitimate; what was not legitimate was having no way to do otherwis
   `validateBlueprint` reports `props.span` as `undeclared-prop` (error) against `builtinCatalog`,
   so the compiler must either validate against the framework's own catalogue or `span` must
   become a reserved prop beside `binding`; slice 2 decides, and nothing in this ADR pre-empts it.
-- **No move-out.** The 2026-09-21 evaluation listed `@loom/blueprint-runtime` and the two renderer
+- **No move-out.** The 2026-09-21 evaluation listed `@loomwork/blueprint-runtime` and the two renderer
   plugins as candidates to leave loom. Its addendum withdraws that: a compile target has to stay
   where its consumers can pin it.
 
 ## Consequences
 
 - `KERNEL_ABI_VERSION` stays 1.1.0; `EVENT_SCHEMA_VERSION` stays 1.18.0. No new event type, no
-  fold change, no `@loom/spec` capability entry.
-- `@loom/blueprint-runtime` exports `BLUEPRINT_IR_VERSION` and `BLUEPRINT_IR_SHAPE`. A shape change
+  fold change, no `@loomwork/spec` capability entry.
+- `@loomwork/blueprint-runtime` exports `BLUEPRINT_IR_VERSION` and `BLUEPRINT_IR_SHAPE`. A shape change
   is now a two-file edit (type + manifest) plus a version bump plus a new pinned digest, and each
   omission is a red test.
-- `@loom/plugin-renderer-terminal` exports `defaultTerminalRegistry`, `TerminalWidgetRenderer` and
+- `@loomwork/plugin-renderer-terminal` exports `defaultTerminalRegistry`, `TerminalWidgetRenderer` and
   `TerminalRenderOptions`. Existing callers see identical output.
 - loom-ui slice 2 onward pins `BLUEPRINT_IR_VERSION ^1.0.0` and builds its own
   `RendererRegistry<TerminalWidgetRenderer>` and merges it over `defaultTerminalRegistry` (never

@@ -1,6 +1,6 @@
-import { unwrapTainted } from "@loom/classify";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+import { unwrapTainted } from "@loomwork/classify";
+import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { Latch, build, eventsOf, flow, kinds, slow, tick, until } from "./__tests__/r2Harness";

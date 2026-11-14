@@ -24,7 +24,7 @@ export const tagRouter: Router = {
 // ── Evidence ─────────────────────────────────────────────────────────────────
 //
 // Per-arm evidence: the mean reward AND how many samples produced it. This is
-// structurally what `outcomeAnalytics` (@loom/analytics) returns, so its output
+// structurally what `outcomeAnalytics` (@loomwork/analytics) returns, so its output
 // feeds these routers with no conversion. The count is the half that a bare
 // `Record<string, number>` ranking throws away — and without it a router cannot
 // tell `1.0 from one sample` from `0.99 from ten thousand`.
@@ -70,7 +70,7 @@ export interface RankedRouterOptions {
 }
 
 // M10 self-optimization — a "learned" router. Given a ranking (e.g. from
-// @loom/analytics `rankModels`/`outcomeAnalytics`, mined from historical logs),
+// @loomwork/analytics `rankModels`/`outcomeAnalytics`, mined from historical logs),
 // prefer the highest-ranked route that exists, falling back to cheap-first
 // (`tagRouter`) for unranked requests. Used inside ReasoningRuntime with
 // `ctx.decide`, its choice is recorded as a durable decision (P9) — auditable and

@@ -1,4 +1,4 @@
-import type { HandlerFn, HandlerLoader, HandlerRef, HandlerSpec } from "@loom/core";
+import type { HandlerFn, HandlerLoader, HandlerRef, HandlerSpec } from "@loomwork/core";
 import type { Effect, EffectContext } from "../types";
 
 function isHandlerRef<TIn, TOut>(spec: HandlerSpec<TIn, TOut>): spec is HandlerRef<TIn, TOut> {

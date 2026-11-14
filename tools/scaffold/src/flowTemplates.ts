@@ -5,7 +5,7 @@ import { commentText, templateLiteralText, tsStringLiteral } from "./emit";
 //
 // The echo flow is the default. These three are the plain-workflow on-ramp: a human gate, a
 // durable timer, and compensation. Each ships a sibling test that runs on a fresh scaffold
-// (`@loom/testing`'s time travel drives the timers; nothing sleeps for real).
+// (`@loomwork/testing`'s time travel drives the timers; nothing sleeps for real).
 
 export const FLOW_TEMPLATES = ["echo", "approval", "timer", "saga"] as const;
 export type FlowTemplate = (typeof FLOW_TEMPLATES)[number];
@@ -20,8 +20,8 @@ export function isFlowTemplate(value: string): value is FlowTemplate {
 export function approvalFlowFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { flow$, handler$, step$ } from "@loom/core";',
-    'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+    'import { flow$, handler$, step$ } from "@loomwork/core";',
+    'import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";',
     'import { z } from "zod";',
     "",
     "// The gate's contract. `resume()` parses the payload against `resumeSchemas` BEFORE it is",
@@ -78,7 +78,7 @@ export function approvalFlowFile(name: string): string {
 export function approvalTestFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { advanceTime, createTestApp, resumeWith } from "@loom/testing";',
+    'import { advanceTime, createTestApp, resumeWith } from "@loomwork/testing";',
     'import { describe, expect, it } from "vitest";',
     `import { ${P}Flow } from "./flow";`,
     "",
@@ -123,8 +123,8 @@ export function approvalTestFile(name: string): string {
 export function timerFlowFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { flow$, handler$, step$ } from "@loom/core";',
-    'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+    'import { flow$, handler$, step$ } from "@loomwork/core";',
+    'import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";',
     'import { z } from "zod";',
     "",
     `const ${P}Remind = step$({`,
@@ -164,7 +164,7 @@ export function timerFlowFile(name: string): string {
 export function timerTestFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { advanceTime, createTestApp } from "@loom/testing";',
+    'import { advanceTime, createTestApp } from "@loomwork/testing";',
     'import { describe, expect, it } from "vitest";',
     `import { ${P}Flow } from "./flow";`,
     "",
@@ -197,13 +197,13 @@ export function timerTestFile(name: string): string {
 
 // ── saga ──────────────────────────────────────────────────────────────────────
 
-/** reserve -> charge -> ship with a compensator per forward step (`@loom/saga` `withSaga`). */
+/** reserve -> charge -> ship with a compensator per forward step (`@loomwork/saga` `withSaga`). */
 export function sagaFlowFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { flow$, step$ } from "@loom/core";',
-    'import { withSaga } from "@loom/saga";',
-    'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+    'import { flow$, step$ } from "@loomwork/core";',
+    'import { withSaga } from "@loomwork/saga";',
+    'import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";',
     'import { z } from "zod";',
     "",
     "// Saga steps are TOOL steps: each names a `toolId` whose effect you register on the app",
@@ -262,8 +262,8 @@ export function sagaFlowFile(name: string): string {
 export function sagaTestFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { ToolEffect } from "@loom/effect-runtime";',
-    'import { createTestApp } from "@loom/testing";',
+    'import { ToolEffect } from "@loomwork/effect-runtime";',
+    'import { createTestApp } from "@loomwork/testing";',
     'import { describe, expect, it } from "vitest";',
     `import { ${P}Flow, ${P}Tools } from "./flow";`,
     "",

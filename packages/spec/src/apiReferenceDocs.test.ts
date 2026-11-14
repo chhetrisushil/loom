@@ -7,9 +7,9 @@ import { describe, expect, it } from "vitest";
 // `docs/api-reference.org` opens by promising every workspace package a section, which is a claim
 // about the whole workspace and therefore wrong the moment a package ships without one. It had been
 // wrong for a while, when the document still called itself exhaustive: SIXTEEN of 61 packages had no section at all —
-// `@loom/knowledge` (a package, not a helper), `@loom/classify`, `@loom/compliance`,
-// `@loom/orchestration`, `@loom/saga`, `@loom/live-query`, `@loom/plugin-read-model`,
-// `@loom/plugin-sandbox` and eight more. A reader looking one of them up found nothing and had
+// `@loomwork/knowledge` (a package, not a helper), `@loomwork/classify`, `@loomwork/compliance`,
+// `@loomwork/orchestration`, `@loomwork/saga`, `@loomwork/live-query`, `@loomwork/plugin-read-model`,
+// `@loomwork/plugin-sandbox` and eight more. A reader looking one of them up found nothing and had
 // no way to tell "undocumented" from "does not exist".
 //
 // Same shape as `seamDocs` and `ruleDocs`: enumerate the REGISTRY (here, the workspace itself),
@@ -21,9 +21,12 @@ const DOC = "docs/api-reference.org";
 
 /** Packages deliberately absent, each with the reason it is not part of the public surface. */
 const NOT_IN_REFERENCE: ReadonlyMap<string, string> = new Map([
-  ["@loom/dst", "deterministic-simulation harness — a test tool, imported by no runtime package"],
-  ["@loom/bench-throughput", "the throughput bench; not published surface"],
-  ["@loom/create-loom-app", "an npm initializer, driven by `npm create`, not imported"],
+  [
+    "@loomwork/dst",
+    "deterministic-simulation harness — a test tool, imported by no runtime package",
+  ],
+  ["@loomwork/bench-throughput", "the throughput bench; not published surface"],
+  ["@loomwork/create-loom-app", "an npm initializer, driven by `npm create`, not imported"],
 ]);
 
 /** Every workspace package that ships built typings — i.e. that a consumer can import. */
@@ -36,7 +39,7 @@ function publishedPackages(): { name: string; dir: string }[] {
       const pkgJson = join(root, entry, "package.json");
       if (!existsSync(pkgJson)) continue;
       const name = JSON.parse(readFileSync(pkgJson, "utf8")).name as string;
-      if (!name?.startsWith("@loom/")) continue;
+      if (!name?.startsWith("@loomwork/")) continue;
       out.push({ name, dir: join(root, entry) });
     }
   }
@@ -45,16 +48,16 @@ function publishedPackages(): { name: string; dir: string }[] {
 
 describe("api-reference coverage (fitness)", () => {
   const doc = readFileSync(join(REPO_ROOT, DOC), "utf8");
-  // Org headings only: `** ~@loom/x~ — …`. A mention inside another package's prose is not a
+  // Org headings only: `** ~@loomwork/x~ — …`. A mention inside another package's prose is not a
   // section, and treating it as one is how the document came to claim 61 and carry 45.
   const headed = new Set(
     doc
       .split("\n")
       .filter((line) => /^\*+\s/.test(line))
       // ALL names on the line, not the first: several sections cover a family
-      // (`@loom/capability~ / ~@loom/intent~ / ~@loom/planner~`) and capturing one would
+      // (`@loomwork/capability~ / ~@loomwork/intent~ / ~@loomwork/planner~`) and capturing one would
       // report the others missing while they are documented right there.
-      .flatMap((line) => [...line.matchAll(/~(@loom\/[\w-]+)~/g)].map((m) => m[1] as string))
+      .flatMap((line) => [...line.matchAll(/~(@loomwork\/[\w-]+)~/g)].map((m) => m[1] as string))
   );
 
   it("finds the reference and its headings (the sweep can't silently match nothing)", () => {

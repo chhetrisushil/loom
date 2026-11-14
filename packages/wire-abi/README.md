@@ -1,4 +1,4 @@
-# @loom/wire-abi — drive a Loom execution from a non-TypeScript client
+# @loomwork/wire-abi — drive a Loom execution from a non-TypeScript client
 
 A versioned JSON-RPC description of the kernel, plus a request handler that starts, resumes, reads and
 cancels executions over it. Use it when a client written in another language, or a shell script, needs
@@ -7,9 +7,9 @@ authority; the wire method table is generated from `KERNEL_SYSCALLS`, so it cann
 (ADR 0026). If every caller is TypeScript, you do not need this package.
 
 ```ts
-import { handleRpc } from "@loom/wire-abi";
-import type { JsonRpcRequest } from "@loom/wire-abi";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
+import { handleRpc } from "@loomwork/wire-abi";
+import type { JsonRpcRequest } from "@loomwork/wire-abi";
+import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
 
 declare const runtime: WorkflowRuntime; // booted, with your flows registered
 
@@ -57,6 +57,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0026](../../docs/adr/0026-t2-wire-level-kernel-abi.md): the design, and what is staged.
-- API reference: section "`@loom/wire-abi` — wire-level kernel ABI (T2)" in
+- API reference: section "`@loomwork/wire-abi` — wire-level kernel ABI (T2)" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

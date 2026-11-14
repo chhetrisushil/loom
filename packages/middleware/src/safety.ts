@@ -1,4 +1,4 @@
-import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
+import type { EffectContext, EffectMiddleware } from "@loomwork/effect-runtime";
 
 // ── Behavioral safety ring (Loom 2.0 K6) ─────────────────────────────────────
 //

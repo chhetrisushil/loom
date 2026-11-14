@@ -1,10 +1,10 @@
-# ADR 0089 — `@loom/plugin-sandbox`: worker-thread evaluation and the hard kill
+# ADR 0089 — `@loomwork/plugin-sandbox`: worker-thread evaluation and the hard kill
 
 - Status: **Accepted** (opt-in `workers` on `SandboxSpec`; in-process stays the default)
 - Date: 2026-09-05
-- Amends: ADR 0064 (`@loom/plugin-sandbox` — engine, channels, limits). Nothing
+- Amends: ADR 0064 (`@loomwork/plugin-sandbox` — engine, channels, limits). Nothing
   in 0064 is withdrawn; this adds a second place the same evaluation can run.
-- Related: K7 / `@loom/isolate` (the isolation contract 0064 follows), ADR 0060
+- Related: K7 / `@loomwork/isolate` (the isolation contract 0064 follows), ADR 0060
   (typed channels).
 - Amended by: [ADR 0144](0144-sandbox-backend-spi.md) (the worker pool is now part of `QuickJsSandboxBackend`; outcome interpretation moved into the backend).
 - No kernel changes.
@@ -70,7 +70,7 @@ what it was.
 ### D4 — A hard kill, bounded by `wallClockMs + hardKillGraceMs`
 
 The pool arms its own deadline. When it fires, the worker is terminated and
-replaced — the non-cooperative path, the one `@loom/isolate` spells `SIGKILL`.
+replaced — the non-cooperative path, the one `@loomwork/isolate` spells `SIGKILL`.
 This is the only thing that bounds the class in D2's second measurement, and it
 is why the pool is worth having even for a caller that does not care about
 concurrency.
@@ -257,7 +257,7 @@ Measured, four concurrent CPU-bound reshapes:
   holds live threads. Same contract as `IsolatedToolEffect.close()`.
 - `workers` requires the package to have been **built**: the worker entry is
   compiled output, resolved next to the pool module (`../dist` when running from
-  source, as `@loom/isolate` resolves its runner). The error says so.
+  source, as `@loomwork/isolate` resolves its runner). The error says so.
 - Worker mode costs a thread spawn and a WASM compile per worker. `warm()` pays
   both at boot; without it the first `count` evaluations each pay one.
 - The pool does not make an individual eval faster. A single reshape near the

@@ -1,12 +1,12 @@
-import { EffectRuntime } from "@loom/effect-runtime";
-import { isReservedStream } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { isReservedStream } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   WorkflowRuntime,
   pruneBranchRefs,
   recoverAbandoned,
   retireAbandonedBranches,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { UsageError } from "./args";
 import { parseDuration } from "./duration";
 import { type ResolvedStores, type StoreFlags, resolveStores } from "./stores";

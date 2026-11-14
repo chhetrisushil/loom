@@ -13,7 +13,7 @@
 // resource, and carrying it with provenance (URI + content hash) so an
 // application *can* render it. Carry, do not render.
 
-import { fnv1a64 } from "@loom/core";
+import { fnv1a64 } from "@loomwork/core";
 import type { McpCallToolResult, McpResourceContents } from "./types";
 
 /** The extension identifier a host advertises support for at `initialize`. */
@@ -40,7 +40,7 @@ export const MCP_UI_RESOURCE_URI_META_KEY = "ui/resourceUri";
  * Which callers may see a tool. `"model"` = offered to the agent; `"app"` =
  * callable by a rendered View. A host MUST reject a View's `tools/call` for a
  * tool lacking `"app"` — the mirror of that rule is enforced server-side by
- * `@loom/plugin-mcp-app`. Default when undeclared is both.
+ * `@loomwork/plugin-mcp-app`. Default when undeclared is both.
  */
 export type McpUiVisibility = "model" | "app";
 

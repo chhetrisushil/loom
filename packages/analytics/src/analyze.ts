@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   CustomDimensionTracker,
   type CustomDimensionsReport,
@@ -199,7 +199,7 @@ export function failureAnalytics(events: EventEnvelope[]): FailureAnalytics {
 /**
  * Analytics over a log. Decision and outcome counts come from the events it is given, so a
  * compacted execution (its decisions and outcomes live in the checkpoint, ADR 0106/0116) is
- * under-counted unless the events are rebuilt first: `evidenceEvents(state, log)` from `@loom/learning`.
+ * under-counted unless the events are rebuilt first: `evidenceEvents(state, log)` from `@loomwork/learning`.
  */
 export function analyze(events: EventEnvelope[], options?: AnalyzeOptions): Analytics {
   // Single pass over the log building all four lenses at once. The standalone

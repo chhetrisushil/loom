@@ -1,4 +1,4 @@
-import { runMemoryStoreConformance } from "@loom/conformance";
+import { runMemoryStoreConformance } from "@loomwork/conformance";
 import { describe, expect, it } from "vitest";
 import { InMemoryMemoryStore } from "./InMemoryMemoryStore";
 import { MEMORY_STORE_SPI_VERSION } from "./types";

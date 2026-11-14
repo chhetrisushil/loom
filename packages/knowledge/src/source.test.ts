@@ -1,4 +1,4 @@
-import { InMemoryMemoryStore } from "@loom/memory";
+import { InMemoryMemoryStore } from "@loomwork/memory";
 import { describe, expect, it } from "vitest";
 import { openKnowledgeBase } from "./KnowledgeBase";
 import type { DecideFn, KnowledgeBase } from "./KnowledgeBase";

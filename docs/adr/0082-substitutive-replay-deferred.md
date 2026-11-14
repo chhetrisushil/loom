@@ -35,7 +35,7 @@ userspace answer the submission does not consider:
 
 **Branch-from-prefix already does this.** Loom ships fork/simulate/promote over a `BranchRegistry`
 — the pattern the `incident-war-room` and `schema-migration-planner` examples exist to
-demonstrate — plus `@loom/dst` for deterministic simulation. Forking an execution at a decision
+demonstrate — plus `@loomwork/dst` for deterministic simulation. Forking an execution at a decision
 point and re-running the suffix with a different recorded choice **is** substitutive replay,
 built from primitives that already exist, with divergence semantics that are already defined
 (the fork point is the divergence point, and the branch is a first-class execution with its own
@@ -62,7 +62,7 @@ Absent (2), the requirement is satisfied in userspace and there is nothing to pr
   pending PO-5; they were in fact ruled **not needed** in
   [ADR 0051](0051-perpetual-agents-placement-schedule-remodel.md) (snapshots + K10.4 compaction
   already bound replay depth). If PO-5 ever proceeds, the fork point is the barrier.
-- **PO-4 is not deferred — it shipped.** `evaluatePolicy` (`@loom/learning`, ADR 0080) computes
+- **PO-4 is not deferred — it shipped.** `evaluatePolicy` (`@loomwork/learning`, ADR 0080) computes
   the SNIPS estimate, agreement rate and effective sample size, and `loom learn eval` runs it
   over a stored log. The Companion requirement it serves (LP-6) is satisfied today.
 - **A prerequisite is easy to lose.** Off-policy evaluation of any kind needs `P(action |

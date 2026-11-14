@@ -1,5 +1,5 @@
 {
-  "name": "@loom/replay-vm",
+  "name": "@loomwork/replay-vm",
   "version": "0.1.0",
   "description": "Deterministic replay engine for the Loom framework",
   "main": "./dist/index.js",
@@ -20,8 +20,8 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/event-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

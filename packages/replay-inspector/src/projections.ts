@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import type { ProjectionSlice, ProjectionSource, ReadOnlyEventStore } from "./types";
 import { InspectorBudgetError } from "./types";
 
@@ -7,14 +7,14 @@ import { InspectorBudgetError } from "./types";
 // The original requirement asked for "the view at event N", assuming a rendering model
 // where a view is recomputed from state. This system has no such model: `blueprint$` is
 // a STATIC layout declaration listing `projections: string[]`
-// (`@loom/blueprint-runtime` Blueprint.ts:9), and widgets bind to projection slices,
+// (`@loomwork/blueprint-runtime` Blueprint.ts:9), and widgets bind to projection slices,
 // notified change-only through `ProjectionRuntime.subscribeSelector` (ADR 0068). There
 // is no recomputed view to show. What a debugging session actually wants — and what
 // exists — is the projection SLICE at that point.
 //
 // That is a SECOND, independent fold. The kernel fold produces `ExecutionState`;
 // `projection$` is a separate user-authored fold map `{ [eventType]: (state, event) =>
-// state }` with its own state (`@loom/core` builders/projection.ts:21). Reconstructing
+// state }` with its own state (`@loomwork/core` builders/projection.ts:21). Reconstructing
 // it means running that fold too.
 //
 // Two answers from the routed claims shape this code:

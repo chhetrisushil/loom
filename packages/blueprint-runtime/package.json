@@ -1,5 +1,5 @@
 {
-  "name": "@loom/blueprint-runtime",
+  "name": "@loomwork/blueprint-runtime",
   "version": "0.1.0",
   "description": "Schema-driven UI blueprint generation — pure JSON-serializable types",
   "main": "./dist/index.js",
@@ -26,9 +26,9 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/scheduler": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/scheduler": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

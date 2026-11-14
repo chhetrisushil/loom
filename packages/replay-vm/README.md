@@ -1,16 +1,16 @@
-# @loom/replay-vm — the fold from events to state
+# @loomwork/replay-vm — the fold from events to state
 
 Loom keeps an execution as an append-only list of events and derives its state by folding them. This
 package is that fold, and nothing else: `foldEvents(events, initial?)` is a synchronous, in-memory reduce
 that applies one handler per known event type and returns an `ExecutionState`. It does no I/O, runs no flow
-code and calls no effects. "Replay" happens elsewhere: `@loom/workflow-runtime` re-runs your flow function
+code and calls no effects. "Replay" happens elsewhere: `@loomwork/workflow-runtime` re-runs your flow function
 against the folded state and, through `ReplayVM`, answers `hasCompleted(stepId)` and `getOutput(stepId)`
 from the record so a completed step is served rather than executed again. You import this directly to
 reconstruct state from a log you already hold (tools, analytics, tests) or to read the event-schema version.
 The runtime rebuilds state through this fold on resume, so a change to it changes how an existing log is read.
 
 ```ts
-import { EVENT_SCHEMA_VERSION, ReplayVM, foldEvents, knownEventTypes } from "@loom/replay-vm";
+import { EVENT_SCHEMA_VERSION, ReplayVM, foldEvents, knownEventTypes } from "@loomwork/replay-vm";
 import { app, helloFlow } from "./config"; // your defineConfig result and a registered flow
 
 const handle = await app.runtime.start(helloFlow, { name: "Ada" });
@@ -65,7 +65,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/replay-vm` — deterministic replay" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/replay-vm` — deterministic replay" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [event schema reference](../../docs/loom-2.0/10-event-schema-reference.md), [architecture, core runtime](../../docs/architecture.md), [determinism rules](../../docs/user-guide.md#14-determinism-rules--pitfalls).
 - ADRs: [0015 DSA performance optimizations](../../docs/adr/0015-dsa-performance-optimizations.md) (structural sharing), [0105 a caught step failure is not the execution's](../../docs/adr/0105-a-caught-step-failure-is-not-the-executions.md), [0138 compaction archives](../../docs/adr/0138-compaction-archives-what-it-removes.md).
-- Source: `packages/replay-vm/src`. Reading a log at a point in time: [`@loom/replay-inspector`](../replay-inspector/README.md).
+- Source: `packages/replay-vm/src`. Reading a log at a point in time: [`@loomwork/replay-inspector`](../replay-inspector/README.md).

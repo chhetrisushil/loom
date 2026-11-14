@@ -17,7 +17,7 @@ export interface InMemoryBranchRegistryOptions {
 /**
  * Ephemeral, Map-based {@link BranchRegistry} — the browser-safe / test reference impl
  * alongside the Sqlite and Postgres ones. Pure JS, no native deps. Behaviour matches
- * the durable backends (verified by `runBranchRegistryConformance` in `@loom/testing`).
+ * the durable backends (verified by `runBranchRegistryConformance` in `@loomwork/testing`).
  */
 export class InMemoryBranchRegistry implements BranchRegistry {
   private readonly refs = new Map<string, BranchRef>();

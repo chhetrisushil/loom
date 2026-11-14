@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type AppendIfUnchangedResult,
   type DecoratorPlan,
@@ -8,7 +8,7 @@ import {
   type TipObservation,
   headOf,
   installOptional,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 
 // ── Tamper-evident hash-chained event store ───────────────────────────────────
 //

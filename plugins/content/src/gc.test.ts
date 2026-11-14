@@ -1,7 +1,7 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore, brandPayloadShredded } from "@loom/event-runtime";
-import { ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore, SNAPSHOT_FRAME_SENTINEL } from "@loom/snapshot-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore, brandPayloadShredded } from "@loomwork/event-runtime";
+import { ReplayVM } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore, SNAPSHOT_FRAME_SENTINEL } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import {
   ArchiveStoresRequiredError,
@@ -1681,7 +1681,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
 
     /** A compacted log whose removed event cited a blob ONLY the archive still names (the fold ignores it). */
     async function archivedNote(content: InMemoryContentStore, clock: { now: number }) {
-      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { buildSegment, InMemoryArchiveStore } = await import("@loomwork/event-runtime");
       const note = await content.put(bytes("telemetry only the removed event cited"));
       const live = new InMemoryAsyncEventStore();
       const events = [
@@ -1764,7 +1764,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     /** ADR 0139: a reserved inbox stream trimmed through `trimInbox`: its consumed prefix MOVED to the archive. */
     async function archivedInbox(content: InMemoryContentStore, clock: { now: number }) {
       const { buildSegment, InMemoryArchiveStore, INBOX_TOPIC_SEQ_BASE } = await import(
-        "@loom/event-runtime"
+        "@loomwork/event-runtime"
       );
       const note = await content.put(bytes("telemetry only a trimmed inbox envelope cited"));
       const legacy = "__loom_inbox__:chain";
@@ -1853,7 +1853,9 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     });
 
     it("ADR 0139 - an untrimmed inbox or topic stream (it starts at INBOX_TOPIC_SEQ_BASE) is not mistaken for a compacted log", async () => {
-      const { InMemoryArchiveStore, INBOX_TOPIC_SEQ_BASE } = await import("@loom/event-runtime");
+      const { InMemoryArchiveStore, INBOX_TOPIC_SEQ_BASE } = await import(
+        "@loomwork/event-runtime"
+      );
       const { clock, content } = clockedStore(OLD);
       const live = new InMemoryAsyncEventStore();
       const note = await content.put(bytes("cited by a live topic message"));
@@ -1892,7 +1894,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     });
 
     it("ADR 0139 B2 - a DELETED reserved stream whose archive skips a range (a pre-ADR trim) is refused by the erasing pass, a whole one passes", async () => {
-      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { buildSegment, InMemoryArchiveStore } = await import("@loomwork/event-runtime");
       const { clock, content } = clockedStore(OLD);
       clock.now = NOW;
       const message = (stream: string, sequence: number) =>
@@ -1939,7 +1941,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     });
 
     it("ADR 0138 - coverage is checked regardless of the mark: a missing segment is refused; the full archive passes; the explicit acknowledgment passes AND is reported; a dry run is exempt", async () => {
-      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { buildSegment, InMemoryArchiveStore } = await import("@loomwork/event-runtime");
       const { clock, content } = clockedStore(OLD);
       const { note, live, archive, snapshotStore } = await archivedNote(content, clock);
       // an archive holding only [1..1] of the removed [1..2]
@@ -1977,7 +1979,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     });
 
     it("ADR 0138 - a GAPPED log (events kept above the removed range) is coverage-checked too, mark or no mark", async () => {
-      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { buildSegment, InMemoryArchiveStore } = await import("@loomwork/event-runtime");
       const { clock, content } = clockedStore(OLD);
       const note = await content.put(bytes("only the removed event cited this"));
       const live = new InMemoryAsyncEventStore();
@@ -2035,7 +2037,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     it("ADR 0138 B1 - a segment still SEALED (the raw inner store of a sealing archive) refuses an erasing pass", async () => {
       const { clock, content } = clockedStore(OLD);
       const { note, live, snapshotStore } = await archivedNote(content, clock);
-      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { buildSegment, InMemoryArchiveStore } = await import("@loomwork/event-runtime");
       const sealed = new InMemoryArchiveStore();
       await sealed.append("arch", {
         ...buildSegment([evt("arch", 1, "E", {}, OLD)], "inc"),

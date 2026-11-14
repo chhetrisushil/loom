@@ -1,7 +1,7 @@
 import assert from "node:assert";
-import { runSnapshotStoreConformance } from "@loom/conformance";
-import type { ExecutionState } from "@loom/core";
-import { SNAPSHOT_FRAME_SENTINEL, type Snapshot, zstdAvailable } from "@loom/snapshot-runtime";
+import { runSnapshotStoreConformance } from "@loomwork/conformance";
+import type { ExecutionState } from "@loomwork/core";
+import { SNAPSHOT_FRAME_SENTINEL, type Snapshot, zstdAvailable } from "@loomwork/snapshot-runtime";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";

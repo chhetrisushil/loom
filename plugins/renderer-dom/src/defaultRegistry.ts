@@ -3,7 +3,7 @@ import {
   RendererRegistry,
   type Widget,
   type WidgetAction,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 import { display, h, token } from "./safeDom";
 
 // ── Kind-aware DOM renderers for loom's eight built-in widgets ───────────────
@@ -227,7 +227,7 @@ const alertCard: DomWidgetRenderer = (c) => {
 };
 
 /**
- * Renderers for the eight kinds `@loom/blueprint-runtime` ships. Merge your own on top.
+ * Renderers for the eight kinds `@loomwork/blueprint-runtime` ships. Merge your own on top.
  *
  * Shared and process-wide: do not `.register()` on it. Build yours with
  * `defaultDomRegistry.merge(mine)`, which returns a new registry.

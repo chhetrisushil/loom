@@ -1,4 +1,4 @@
-import type { LlmContentPart, LlmProvider, LlmRequest } from "@loom/llm";
+import type { LlmContentPart, LlmProvider, LlmRequest } from "@loomwork/llm";
 import { expect, vi } from "vitest";
 
 /**

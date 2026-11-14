@@ -1,4 +1,4 @@
-import { EffectModeViolationError, EffectRuntime } from "@loom/effect-runtime";
+import { EffectModeViolationError, EffectRuntime } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { InMemoryDurableStateStore } from "./InMemoryDurableStateStore";

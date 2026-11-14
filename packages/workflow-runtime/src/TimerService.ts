@@ -1,11 +1,11 @@
-import type { ExecutionState, ScheduleDefinition } from "@loom/core";
+import type { ExecutionState, ScheduleDefinition } from "@loomwork/core";
 import {
   type EventStore,
   type LeaseStore,
   type TimerRecord,
   type TimerStore,
   isPayloadShredded,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { INBOX_WAKE_AT } from "./inbox";
@@ -262,7 +262,7 @@ export interface TimerServiceOptions {
 /**
  * The slice of `ExecutionDispatcher` a wake needs, typed structurally: the kernel hands a
  * package to a placement seam, it does not depend on one. An `ExecutionDispatcher` from
- * `@loom/dispatcher` satisfies this.
+ * `@loomwork/dispatcher` satisfies this.
  */
 export interface TimerDispatcher {
   dispatch(

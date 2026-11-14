@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 // ── Conformance kits for the embedding seam (R18, ADR 0124) ─────────────────────────────────
 //
 // `EmbeddingProvider` and `VectorIndex` are declared STRUCTURALLY here (as the other kits do) so
-// this package does not depend on `@loom/memory`: TypeScript matches by shape, so a real
+// this package does not depend on `@loomwork/memory`: TypeScript matches by shape, so a real
 // implementation satisfies them without an import, and a third-party provider can run the kit with
 // no dependency on loom beyond this package.
 

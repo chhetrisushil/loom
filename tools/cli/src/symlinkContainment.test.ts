@@ -285,7 +285,7 @@ describe("a --dir inside the cwd is never trusted as a containment root", () => 
     const { repo, outside, s } = clonedRepo();
     const logs: string[] = [];
     const evRuntime = createRequire(join(__dirname, "symlinkContainment.test.ts")).resolve(
-      "@loom/event-runtime"
+      "@loomwork/event-runtime"
     );
     writeFileSync(
       join(repo, "loom.config.js"),

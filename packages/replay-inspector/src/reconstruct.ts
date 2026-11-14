@@ -1,5 +1,5 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { foldEvents, normalizeSnapshotState } from "@loomwork/replay-vm";
 import { CompactedHistoryError, InspectorBudgetError } from "./types";
 import type { ReadOnlyEventStore, ReadOnlySnapshotStore } from "./types";
 
@@ -13,7 +13,7 @@ import type { ReadOnlyEventStore, ReadOnlySnapshotStore } from "./types";
 // re-copies every audit list at every step: O(n²) in audit-list length, against an
 // acceptance criterion of 10⁴ events in interactive time.
 //
-// The shape that is actually optimal, and which needs no change to `@loom/replay-vm`:
+// The shape that is actually optimal, and which needs no change to `@loomwork/replay-vm`:
 //
 //   anchor  = snapshots.loadLatestBefore(executionId, firstPosition)   ← built for fork()
 //   events  = events.readRange(executionId, anchor+1, lastPosition)    ← one bounded read
@@ -57,7 +57,7 @@ const DEFAULT_MAX_EVENTS = 1_000_000;
 /**
  * Bounded segment read. `readRange` is OPTIONAL on the EventStore SPI, so a conforming
  * store may omit it; the fallback filters `readFrom`, which is what
- * `@loom/event-runtime`'s own `readRangeOf` helper does. Preferring `readRange` pushes
+ * `@loomwork/event-runtime`'s own `readRangeOf` helper does. Preferring `readRange` pushes
  * the bound into the backend's indexed query instead of loading the tail into JS —
  * material for IX-7, since a wide read is load the writer's backend also feels.
  */

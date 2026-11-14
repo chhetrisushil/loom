@@ -8,7 +8,7 @@
   placement-verdict discipline (ADR 0051), suspension-transfer rejection (ADR 0052 D3),
   the execution runtime & decision seam (ADR 0016).
 - Part of: the kernel/1P/3P triage discipline (P10 — bias outward). **KERNEL_ABI unchanged (1.1.0);
-  EVENT_SCHEMA unchanged (1.17.0); no `@loom/spec` capability entry.**
+  EVENT_SCHEMA unchanged (1.17.0); no `@loomwork/spec` capability entry.**
 
 ## Context
 
@@ -94,7 +94,7 @@ ABI/event-schema change).
 
 - **`KERNEL_ABI_VERSION` stays 1.1.0** (`packages/workflow-runtime/src/abi.ts`); **`EVENT_SCHEMA_VERSION`
   stays 1.17.0** (`packages/replay-vm/src/eventHandlers.ts`). No new syscall, event kind, or
-  `@loom/spec` capability entry — the generated maturity table is unchanged.
+  `@loomwork/spec` capability entry — the generated maturity table is unchanged.
 - The signal/serialize-the-graph state model is a recorded permanent non-goal; future proposals
   should be closed by reference to D1 rather than re-evaluated.
 - Lazy/virtualized widget hydration remains available to `plugin-renderer-react` as an ordinary,

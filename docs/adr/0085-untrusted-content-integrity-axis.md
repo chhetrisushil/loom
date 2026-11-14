@@ -17,9 +17,9 @@
 
 ADR 0072 D6 disposed of `ui/update-model-context` — untrusted view content overwriting an
 agent's context — by saying the content "must be **tainted by classification**
-(`@loom/classify`) and never merged into a system prompt."
+(`@loomwork/classify`) and never merged into a system prompt."
 
-That mechanism does not exist. `@loom/classify` carries two axes and neither is it:
+That mechanism does not exist. `@loomwork/classify` carries two axes and neither is it:
 
 - `DataClass` = `secret` / `sensitive` / `internal` — a **confidentiality** axis, governing what
   may *leave*, enforced by `maskPaths` / redaction / crypto.
@@ -61,13 +61,13 @@ travelling.
 
 ### D2 — The check lives at the prompt boundary, because that is the only place it can
 
-The K6 safety ring (`@loom/middleware`) looks like the natural home and cannot be: a
+The K6 safety ring (`@loomwork/middleware`) looks like the natural home and cannot be: a
 `SafetyValidator` inspects the **effect input**, which for an `LlmEffect` is `TIn` — the
 application's own type, *before* `buildRequest` assembles a prompt from it. The validator never
 sees the assembled request. It is also verdict-only (`{ ok, reason }`) and this check must
 *transform*.
 
-So the check is `guardRequest`, in `@loom/llm`, running inside `createLlmEffect` between
+So the check is `guardRequest`, in `@loomwork/llm`, running inside `createLlmEffect` between
 `buildRequest` and `provider.complete`.
 
 ### D3 — The rule is positional, and narrow enough to be absolute
@@ -119,7 +119,7 @@ alone.
 
 ## Consequences
 
-- **Three surfaces, one primitive.** `@loom/classify` gains `tainted`/`isTainted`/`taintOf`/
+- **Three surfaces, one primitive.** `@loomwork/classify` gains `tainted`/`isTainted`/`taintOf`/
   `unwrapTainted` (4 functions, 2 types) — no new package, per ADR 0083. Its remit widens from
   "data protection" to "data handling", which the package description now says.
 - **Providers are untouched.** `LlmRequestInput` (what `buildRequest` returns) may carry taint;
@@ -167,7 +167,7 @@ D1 puts the wrapper on a value, and a producer may taint only PART of what it re
 `writeBack` memory entry (and, before the fix, a compaction input) was stored untainted. That is a
 durable memory-poisoning path.
 
-**Rule.** One shared walk, `scanTaint` / `nestedTaintOrigin` in `@loom/classify`, finds a wrapper at ANY
+**Rule.** One shared walk, `scanTaint` / `nestedTaintOrigin` in `@loomwork/classify`, finds a wrapper at ANY
 depth (iterative, cycle-safe, bounded: depth 64, 100,000 nodes; binary views skipped). It FAILS CLOSED:
 a value too deep or too large to scan is reported tainted with origin
 `unknown:taint-scan-bound-exceeded`, because "could not look" is not "clean". `toolResultContent`

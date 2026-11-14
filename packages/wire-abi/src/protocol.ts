@@ -1,5 +1,5 @@
-import { KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "@loom/workflow-runtime";
-import type { KernelSyscall } from "@loom/workflow-runtime";
+import { KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "@loomwork/workflow-runtime";
+import type { KernelSyscall } from "@loomwork/workflow-runtime";
 
 // ── T2 — the wire-level kernel ABI ────────────────────────────────────────────
 //

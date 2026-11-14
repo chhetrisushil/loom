@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 export type ProjectionFoldMap<TState> = {
   [eventType: string]: (state: TState, event: EventEnvelope) => TState;

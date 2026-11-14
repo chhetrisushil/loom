@@ -4,7 +4,7 @@ import {
   type WidgetValueCheck,
   describeWidgetFrame,
   describeWidgetStatus,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 import type React from "react";
 
 // ── WidgetFrame ────────────────────────────────────────────────────────────────

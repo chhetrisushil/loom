@@ -1,5 +1,5 @@
-import { pathsOfClass } from "@loom/classify";
-import type { StepDefinition } from "@loom/core";
+import { pathsOfClass } from "@loomwork/classify";
+import type { StepDefinition } from "@loomwork/core";
 
 // ── K10-R1 — derive the encryption wiring from classified schemas ──────────────
 //

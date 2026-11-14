@@ -1,6 +1,6 @@
-import { SuspendError, TypedFailure, fail } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
+import { SuspendError, TypedFailure, fail } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { retryMiddleware } from "./retry";
 import { SafetyViolationError, denyPatterns, safetyMiddleware } from "./safety";

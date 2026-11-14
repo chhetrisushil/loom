@@ -1,4 +1,4 @@
-# @loom/evals-internal
+# @loomwork/evals-internal
 
 Loom's own evals ([ADR 0131](../docs/adr/0131-loom-own-evals.md)). Private and unpublished: it exports nothing and no
 runtime package imports it.
@@ -30,7 +30,7 @@ deterministic, free, keyless and offline; a cassette miss is a `CassetteMissErro
 
 | Area | Subject | Metrics |
 | --- | --- | --- |
-| `src/appgen/` | the real `planChangesModel` (`@loom/appgen-model`: reasoning ladder, semantic validation, self-repair) over 10 intents, then the real `applyChanges` into a throwaway fixture app in a temp directory, then a tight `tsc --noEmit` over its flow files (one shared compiler host, not the repo build). `planChangesDeterministic` runs the same intents as a reference arm | validity (accepted, applied inside the fixture, typechecks; a failure carries its underlying TS or validator error), coverage (recall of the expected flows, steps, approval gates and UI surfaces read back from the applied app) |
+| `src/appgen/` | the real `planChangesModel` (`@loomwork/appgen-model`: reasoning ladder, semantic validation, self-repair) over 10 intents, then the real `applyChanges` into a throwaway fixture app in a temp directory, then a tight `tsc --noEmit` over its flow files (one shared compiler host, not the repo build). `planChangesDeterministic` runs the same intents as a reference arm | validity (accepted, applied inside the fixture, typechecks; a failure carries its underlying TS or validator error), coverage (recall of the expected flows, steps, approval gates and UI surfaces read back from the applied app) |
 | `src/planner/` | the real `IntentRuntime.route` and `PlannerRuntime.planGraph` (in a real `WorkflowRuntime`, journaled through `ctx.decide`) over 12 operator intents against a database-operations catalogue | route accuracy (by the model; a model NONE is final), graph correctness (exact structural equality of the DAG, incl. `$from` bindings and `dependsOn`) |
 
 The cassettes are **hand-authored** exactly as in S2 (`PROVENANCE.md` in each directory): the "model" is a script, so S3
@@ -45,7 +45,7 @@ out of the project — fixed 2026-10-17, #630; the pin now asserts the escape is
 
 `pnpm eval:record` is the only code here that can reach a model. It is NOT wired to `pnpm eval`, `pnpm test`, turbo,
 `eval:update-baseline`, install or any hook, it refuses under `CI=true`, and without `--live` it is a dry run that lists
-the cassettes it would rewrite. It uses loom's own `GeminiProvider` (`@loom/llm`, the adapter behind the CLI's
+the cassettes it would rewrite. It uses loom's own `GeminiProvider` (`@loomwork/llm`, the adapter behind the CLI's
 `--model gemini:<m>`); the key is read from `GEMINI_API_KEY` (else `GOOGLE_API_KEY`) and never printed; no model name
 is assumed.
 
@@ -76,7 +76,7 @@ file; raising is free.
 ```sh
 pnpm eval                    # measure everything, write evals/out/scoreboard.{json,md}, print the delta vs evals/baseline/
 pnpm eval:update-baseline    # rewrite evals/baseline/ (a reviewed diff); refuses if the Postgres leg did not run, unless --allow-partial
-pnpm --filter @loom/evals-internal test   # the gates: scores against thresholds, plus every fail-proof
+pnpm --filter @loomwork/evals-internal test   # the gates: scores against thresholds, plus every fail-proof
 ```
 
 The gates are ordinary vitest files, so `pnpm test` / turbo runs them. The Postgres leg needs `LOOM_TEST_POSTGRES_URL`

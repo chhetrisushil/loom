@@ -200,7 +200,7 @@ A golden round-trip over every stored-row fixture; `mergeExperiences` against ge
 ### 5.3 CI
 
 - genUI gains a `LOOM_UI_REF` pin. The loom commit is **derived** from loom-ui's own `LOOM_REF` at that pin — one source of truth, no second loom pin to drift.
-- CI checks out loom, loom-ui and genUI as siblings; genUI's `pnpm.overrides` gain `@loom-ui/*` → `link:` paths into the loom-ui checkout. The existing `LOOM_REPO_TOKEN` is reused for loom-ui if its scope covers the repo (the phase-2 plan verifies this).
+- CI checks out loom, loom-ui and genUI as siblings; genUI's `pnpm.overrides` gain `@loomwork/ui-*` → `link:` paths into the loom-ui checkout. The existing `LOOM_REPO_TOKEN` is reused for loom-ui if its scope covers the repo (the phase-2 plan verifies this).
 - A loom-ui bump is a genUI PR changing `LOOM_UI_REF` and running the full suite: typecheck, lint, i18n check, unit, integration, e2e, `loom doctor`.
 
 ## 6. Delivery

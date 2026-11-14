@@ -1,4 +1,4 @@
-import { InMemoryTimerStore } from "@loom/event-runtime";
+import { InMemoryTimerStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { defineConfig } from "./defineConfig";
 

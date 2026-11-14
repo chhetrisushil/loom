@@ -116,7 +116,7 @@ it is refused, and next to `--db` it is read as the execution id (`loom logs --d
 > **The preview is the pass.** Each dry run is the same code path as `--apply`, so it cannot
 > promise an outcome the real run won't deliver — and it claims no lease while looking.
 
-## Testing — `@loom/testing`
+## Testing — `@loomwork/testing`
 
 | | |
 |---|---|
@@ -130,7 +130,7 @@ it is refused, and next to `--db` it is read as the execution id (`loom logs --d
 | `captureGolden(store, id)` | freeze a log as a fixture |
 | `recordingProvider` / `replayingProvider` | VCR for LLMs: record once, replay offline |
 | `crashingEventStore` | inject a store failure — prove recovery, don't assume it |
-| `@loom/dst` | deterministic simulation: `simWorld`, `faultInjectingStore`, `virtualClock`, seeded fault schedules checked against `INVARIANTS` |
+| `@loomwork/dst` | deterministic simulation: `simWorld`, `faultInjectingStore`, `virtualClock`, seeded fault schedules checked against `INVARIANTS` |
 
 Repo evals (not a user command): `pnpm eval` scores retrieval, `agentLoop$`, appgen and planner over committed cassettes; `pnpm eval:update-baseline [--allow-partial]` after an intended change. `pnpm eval:record --live` re-records against a real model, on demand only (see `evals/README.md`).
 
@@ -143,7 +143,7 @@ Rules the repo enforces on tests: wait on a *condition*, never a fixed `sleep`; 
 ```bash
 loom plugin seams              # 20 seams, and how each is wired
 loom plugin new lease my-redis
-loom plugin check --publish    # npm-readiness too; needs a real @loom/conformance import AND a real run*Conformance( call
+loom plugin check --publish    # npm-readiness too; needs a real @loomwork/conformance import AND a real run*Conformance( call
 loom plugin try --module ./dist/index.js [--preset <name>] [--options <json>] [--verbose]
 loom plugin search <term>
 ```

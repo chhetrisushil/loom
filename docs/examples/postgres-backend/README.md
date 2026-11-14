@@ -13,7 +13,7 @@ psql "$DATABASE_URL" -f schema.sql
 
 ```ts
 import { Pool } from "pg";
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 import { PgEventStore } from "./PgEventStore";
 import { PgSnapshotStore } from "./PgSnapshotStore";
 
@@ -37,8 +37,8 @@ The stores are used verbatim (`app.stores.eventStore` is the `PgEventStore` you 
 **Or hand-wire `WorkflowRuntime`** directly, if you don't want the composition root:
 
 ```ts
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import { EffectRuntime } from "@loom/effect-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import { EffectRuntime } from "@loomwork/effect-runtime";
 
 const runtime = new WorkflowRuntime({
   eventStore: new PgEventStore(pool),      // ← your network backend

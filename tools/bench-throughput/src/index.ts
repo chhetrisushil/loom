@@ -1,5 +1,5 @@
-import { CoalescingEventStore } from "@loom/event-runtime";
-import { migratePostgresStores } from "@loom/plugin-postgres";
+import { CoalescingEventStore } from "@loomwork/event-runtime";
+import { migratePostgresStores } from "@loomwork/plugin-postgres";
 import { Pool } from "pg";
 import type { Measurement } from "./harness";
 import {
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
       "SKIP: throughput bench needs a real Postgres.\n" +
         "  Set LOOM_TEST_POSTGRES_URL (or LOOM_BENCH_POSTGRES_URL), e.g.\n" +
         "    docker run --rm -d -p 55432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust --name loom-bench postgres:16\n" +
-        "    LOOM_TEST_POSTGRES_URL=postgres://postgres@localhost:55432/postgres pnpm --filter @loom/bench-throughput bench"
+        "    LOOM_TEST_POSTGRES_URL=postgres://postgres@localhost:55432/postgres pnpm --filter @loomwork/bench-throughput bench"
     );
     return;
   }

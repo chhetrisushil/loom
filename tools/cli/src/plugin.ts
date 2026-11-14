@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { listSeams, pluginFiles } from "@loom/scaffold";
-import { KERNEL_PACKAGES, SPI_PACKAGES } from "@loom/spec";
+import { listSeams, pluginFiles } from "@loomwork/scaffold";
+import { KERNEL_PACKAGES, SPI_PACKAGES } from "@loomwork/spec";
 import { containmentRootFor } from "./gen";
 import { safeWriteFile } from "./safeWrite";
 
@@ -65,8 +65,8 @@ interface PluginManifest {
 }
 
 /** The replay fold engine — a plugin depending on it can extend the fold (forbidden). */
-const FOLD_ENGINE = "@loom/replay-vm";
-/** @loom/* SPI + kernel packages a third-party plugin should peer-depend on, not bundle. */
+const FOLD_ENGINE = "@loomwork/replay-vm";
+/** @loomwork/* SPI + kernel packages a third-party plugin should peer-depend on, not bundle. */
 const SPI_KERNEL = new Set<string>([...KERNEL_PACKAGES, ...SPI_PACKAGES]);
 
 interface Tok {
@@ -209,7 +209,7 @@ function tokenize(src: string, jsx = false): Tok[] {
       !followsKeyword(src, i)
     ) {
       // `it's` in JSX text: an apostrophe, never a string opener (valid code has no `a'b'`) —
-      // except right after a keyword (`from"@loom/conformance"`, `case"a"`), which IS code.
+      // except right after a keyword (`from"@loomwork/conformance"`, `case"a"`), which IS code.
       i++;
     } else if (jsx && c === "`" && jsxTextDepth === depth) {
       i++; // a later backtick of the same JSX text run (the closing one, or a second pair)
@@ -294,18 +294,18 @@ function tokenize(src: string, jsx = false): Tok[] {
 const WALK_CAP = 20_000;
 
 const isKit = (spec: string): boolean =>
-  spec === "@loom/conformance" || spec.startsWith("@loom/conformance/");
+  spec === "@loomwork/conformance" || spec.startsWith("@loomwork/conformance/");
 const RUN_CONFORMANCE = /^run\w*Conformance$/;
 
 /**
- * The bindings a source takes from `@loom/conformance` (or a subpath): `callable` names that count
+ * The bindings a source takes from `@loomwork/conformance` (or a subpath): `callable` names that count
  * when called, `ns` names whose `run*Conformance` member counts. Real (non-type) imports,
  * `import * as ns`, default imports, `require(...)` and dynamic `import(...)` only.
  */
 function kitBindings(toks: Tok[]): { callable: Set<string>; ns: Set<string>; inline: boolean } {
   const callable = new Set<string>();
   const ns = new Set<string>();
-  let inline = false; // `(await import("@loom/conformance")).runX(` / `require(...).runX(`
+  let inline = false; // `(await import("@loomwork/conformance")).runX(` / `require(...).runX(`
   const at = (j: number): Tok | undefined => toks[j];
   const isP = (j: number, v: string): boolean => at(j)?.k === "p" && at(j)?.v === v;
 
@@ -437,7 +437,7 @@ function kitBindings(toks: Tok[]): { callable: Set<string>; ns: Set<string>; inl
 }
 
 /**
- * True when a test source really takes something from `@loom/conformance` (a real, non-type
+ * True when a test source really takes something from `@loomwork/conformance` (a real, non-type
  * import / require / dynamic import, any alias or subpath) and really CALLS it — directly, or as
  * `ns.run*Conformance(`. Comments, string contents and regex literals are not code; a template's
  * `${ … }` is. An unrelated `obj.runFooConformance()` or a local `function runX()` does not count.
@@ -492,7 +492,7 @@ export function checkPlugin(
 ): PluginFinding[] {
   const findings: PluginFinding[] = [];
   const name = pkg.name ?? "";
-  const firstParty = name.startsWith("@loom/plugin-");
+  const firstParty = name.startsWith("@loomwork/plugin-");
   const thirdParty = /^loom-plugin-/.test(name) || /^@[^/]+\/loom-plugin-/.test(name);
 
   // Naming convention.
@@ -504,7 +504,7 @@ export function checkPlugin(
   } else {
     findings.push({
       level: "warn",
-      message: `name "${name}" is neither @loom/plugin-* (1P) nor loom-plugin-* (3P)`,
+      message: `name "${name}" is neither @loomwork/plugin-* (1P) nor loom-plugin-* (3P)`,
     });
   }
 
@@ -533,7 +533,7 @@ export function checkPlugin(
     if (spiInDeps.length > 0) {
       findings.push({
         level: "warn",
-        message: `SPI package(s) in dependencies (${spiInDeps.join(", ")}) — a 3P plugin should peer-depend on @loom/* SPI so the app supplies one kernel copy`,
+        message: `SPI package(s) in dependencies (${spiInDeps.join(", ")}) — a 3P plugin should peer-depend on @loomwork/* SPI so the app supplies one kernel copy`,
       });
     } else {
       findings.push({
@@ -553,12 +553,12 @@ export function checkPlugin(
         : wiresConformance(t.source, { jsx: t.jsx === true })
     )
   ) {
-    findings.push({ level: "ok", message: "a test wires @loom/conformance" });
+    findings.push({ level: "ok", message: "a test wires @loomwork/conformance" });
   } else {
     findings.push({
       level: "warn",
       message:
-        "no test imports @loom/conformance AND calls a run*Conformance(...) — a comment or string does not count; prove your SPI impl with the conformance kit (if one exists for your seam)",
+        "no test imports @loomwork/conformance AND calls a run*Conformance(...) — a comment or string does not count; prove your SPI impl with the conformance kit (if one exists for your seam)",
     });
   }
 

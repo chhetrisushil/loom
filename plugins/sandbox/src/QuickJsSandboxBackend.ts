@@ -3,7 +3,7 @@ import type {
   SandboxBackendCapabilities,
   SandboxOutcome,
   SandboxRequest,
-} from "@loom/sandbox";
+} from "@loomwork/sandbox";
 import { type QuickJSWASMModule, getQuickJS } from "quickjs-emscripten";
 import { SandboxWorkerPool } from "./SandboxWorkerPool";
 import { type EvalLimits, type EvalOutcome, evalInFreshRuntime } from "./evalCore";
@@ -13,7 +13,7 @@ import type { SandboxWorkers } from "./types";
 //
 // The reference backend. Everything QuickJS-specific lives here: the interrupt budget, the worker
 // pool, and the INTERPRETATION of the engine's own error text (`InternalError: out of memory`).
-// The generic effect (@loom/sandbox) maps the closed outcome vocabulary this returns to channels.
+// The generic effect (@loomwork/sandbox) maps the closed outcome vocabulary this returns to channels.
 
 export const DEFAULT_INTERRUPT_BUDGET = 10_000;
 

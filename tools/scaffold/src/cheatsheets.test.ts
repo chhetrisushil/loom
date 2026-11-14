@@ -78,7 +78,7 @@ describe("cheatsheets stay true to what they enumerate", () => {
     expect(card(DX)).toContain(`**${kits}** conformance kits`);
   });
 
-  it("every @loom/* package a card names is a real workspace package", () => {
+  it("every @loomwork/* package a card names is a real workspace package", () => {
     // A rename or removal would leave the card pointing at nothing. Workspace names come from
     // each package.json under packages/, plugins/ and tools/ (text, no runtime import).
     const names = new Set<string>();
@@ -92,7 +92,7 @@ describe("cheatsheets stay true to what they enumerate", () => {
     }
     expect(names.size).toBeGreaterThan(50);
     for (const file of [FEATURES, DX]) {
-      const named = [...card(file).matchAll(/@loom\/[a-z][a-z0-9-]*/g)].map((m) => m[0]);
+      const named = [...card(file).matchAll(/@loomwork\/[a-z][a-z0-9-]*/g)].map((m) => m[0]);
       const unknown = [...new Set(named)].filter((n) => !names.has(n));
       expect(unknown, `${file} names packages that do not exist: ${unknown.join(", ")}`).toEqual(
         []

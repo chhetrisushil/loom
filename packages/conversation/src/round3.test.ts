@@ -1,5 +1,5 @@
-import { flow$ } from "@loom/core";
-import { executionAccessPolicy } from "@loom/workflow-runtime";
+import { flow$ } from "@loomwork/core";
+import { executionAccessPolicy } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {

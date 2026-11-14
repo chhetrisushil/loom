@@ -1,4 +1,4 @@
-import type { EffectMiddleware } from "@loom/effect-runtime";
+import type { EffectMiddleware } from "@loomwork/effect-runtime";
 
 /** Effect-side timings, in milliseconds. */
 export interface EffectProfile {

@@ -2,7 +2,7 @@ import { fork } from "node:child_process";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as path from "node:path";
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IsolatedToolDisconnectedError, IsolatedToolEffect } from "./IsolatedToolEffect";
 

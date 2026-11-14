@@ -1,8 +1,8 @@
-import type { LoomApp } from "@loom/app";
+import type { LoomApp } from "@loomwork/app";
 
 /**
  * A minimal controllable clock for tests (epoch ms). It matches the `now()` / `advanceBy()`
- * shape of `@loom/dst`'s `virtualClock`, kept here so `@loom/testing` does not depend on the
+ * shape of `@loomwork/dst`'s `virtualClock`, kept here so `@loomwork/testing` does not depend on the
  * simulation kit.
  */
 export interface TestClock {

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 /** The stable `code` of {@link KeyUnavailableError}. */
 export const KEY_UNAVAILABLE_CODE = "KEY_UNAVAILABLE" as const;

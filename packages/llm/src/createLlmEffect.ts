@@ -1,11 +1,11 @@
-import { type TaintedValue, tainted, unwrapTainted } from "@loom/classify";
-import { LlmEffect } from "@loom/effect-runtime";
+import { type TaintedValue, tainted, unwrapTainted } from "@loomwork/classify";
+import { LlmEffect } from "@loomwork/effect-runtime";
 import type {
   EffectContext,
   EffectDelta,
   EffectReasoningDefaults,
   EffectReasoningHook,
-} from "@loom/effect-runtime";
+} from "@loomwork/effect-runtime";
 import { collectStream } from "./assembleStream";
 import type { StreamProgress } from "./assembleStream";
 import { assertRequestSupported } from "./capabilities";
@@ -80,7 +80,7 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
    * a token stream through it is a choice an author makes deliberately, at a
    * granularity they pick.
    *
-   * The natural sink is `progressHub` (or the app's own `onDelta` handler). `@loom/live-query`
+   * The natural sink is `progressHub` (or the app's own `onDelta` handler). `@loomwork/live-query`
    * is NOT such a sink: it has no delta-push API — `subscribe` re-folds DURABLE events
    * (`snapshot` + `EventStore.subscribe`), so there is nothing there to push a per-token
    * delta into (2026-09-27 audit).
@@ -109,7 +109,7 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
    * generation. Curried over the effect context so it can read `ctx.resources`
    * and emit a durable fact before throwing.
    *
-   * `@loom/middleware`'s `streamTokenBudget(budget)` is the budget-shaped one.
+   * `@loomwork/middleware`'s `streamTokenBudget(budget)` is the budget-shaped one.
    * Streaming-only by nature: `complete` produces nothing to observe until it is
    * already finished, which is the whole reason K8.4 waited on streaming effects.
    */

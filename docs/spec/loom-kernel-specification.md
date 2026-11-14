@@ -89,9 +89,9 @@ load-bearing, plus the global guardrails that gate every additive capability:
   grow via structural sharing within a single fold pass (`packages/replay-vm/src/eventHandlers.ts`).
 - **Snapshots** (`SnapshotStore`, §7) bound the replay tail: `state = fold(snapshot, suffix)` MUST
   equal `fold(events)`. Snapshots are out-of-band (there is no snapshot event in the log).
-- Determinism is enforced by golden-log replay (`@loom/eval` `replayAsFixture`/`diffRuns`), the
+- Determinism is enforced by golden-log replay (`@loomwork/eval` `replayAsFixture`/`diffRuns`), the
   wire fold-vectors (`packages/wire-abi/src/wire-abi.test.ts`), and deploy-simulation
-  (`@loom/deploy-sim`).
+  (`@loomwork/deploy-sim`).
 
 ## 4. Event model (K5)
 
@@ -222,7 +222,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   identity rule: a deliberate retry mints a new id). Untyped failures keep the legacy
   at-least-once re-execution.
 - There is **no `ctx.fail` syscall** — `TypedFailure` is a userspace throw (`fail(channel,
-  payload)` in `@loom/core`); `KERNEL_ABI` is unchanged.
+  payload)` in `@loomwork/core`); `KERNEL_ABI` is unchanged.
 
 ## 5. Suspension semantics
 
@@ -231,7 +231,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
 - Resume routing is by **`executionId`**: `WorkflowRuntime.resume(executionId, event)` addresses the
   parked execution directly, and nothing in the runtime matches on `correlationKey`. A
   `correlationKey` is OPTIONAL metadata for an external dispatcher that holds a business key instead
-  of an execution id. *(A normative "MUST carry a `correlationKey`" here, and the `@loom/verify` rule
+  of an execution id. *(A normative "MUST carry a `correlationKey`" here, and the `@loomwork/verify` rule
   that enforced it, were both wrong; ADR 0086 removed the rule once the input that would have made it
   fire finally existed.)*
 - A **timed** suspend (`sleep`/`sleepUntil`/`suspend({timeout})`) MUST record a durable `wakeAt`,
@@ -328,7 +328,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
 - **Resume is migration.** Because workers are stateless and state is durable, re-dispatch to any
   worker resumes from the journal; fencing (K9.4) fences a zombie predecessor; `EXECUTION_MIGRATED`
   records a cross-code migration verdict. A pinned `computeTarget` MUST resolve to a registered
-  dispatcher target (checked by `@loom/verify` placement-compat).
+  dispatcher target (checked by `@loomwork/verify` placement-compat).
 
 ## 7. SPI contracts
 
@@ -337,13 +337,13 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
 
 | Seam | Interface | Version constant | Conformance kit |
 |---|---|---|---|
-| Event log | `EventStore` (`@loom/event-runtime`) | `EVENT_STORE_SPI_VERSION` | `runEventStoreConformance` |
-| Snapshots | `SnapshotStore` (`@loom/snapshot-runtime`) | `SNAPSHOT_STORE_SPI_VERSION` | `runSnapshotStoreConformance` |
-| Branches | `BranchRegistry` (`@loom/event-runtime`) | `BRANCH_REGISTRY_SPI_VERSION` | `runBranchRegistryConformance` |
-| Compaction archive | `ArchiveStore` (`@loom/event-runtime`) | `ARCHIVE_STORE_SPI_VERSION` | `runArchiveStoreConformance` |
-| Dispatch | `ExecutionDispatcher` (`@loom/dispatcher`) | `DISPATCHER_SPI_VERSION` | `runExecutionDispatcherConformance` |
-| Worker | `WorkerRuntime` (`@loom/worker-runtime`) | — | (staged) |
-| Effect / middleware / authority | `Effect` / `EffectMiddleware` / `CapabilityAuthorizer` (`@loom/effect-runtime`) | — | (staged) |
+| Event log | `EventStore` (`@loomwork/event-runtime`) | `EVENT_STORE_SPI_VERSION` | `runEventStoreConformance` |
+| Snapshots | `SnapshotStore` (`@loomwork/snapshot-runtime`) | `SNAPSHOT_STORE_SPI_VERSION` | `runSnapshotStoreConformance` |
+| Branches | `BranchRegistry` (`@loomwork/event-runtime`) | `BRANCH_REGISTRY_SPI_VERSION` | `runBranchRegistryConformance` |
+| Compaction archive | `ArchiveStore` (`@loomwork/event-runtime`) | `ARCHIVE_STORE_SPI_VERSION` | `runArchiveStoreConformance` |
+| Dispatch | `ExecutionDispatcher` (`@loomwork/dispatcher`) | `DISPATCHER_SPI_VERSION` | `runExecutionDispatcherConformance` |
+| Worker | `WorkerRuntime` (`@loomwork/worker-runtime`) | — | (staged) |
+| Effect / middleware / authority | `Effect` / `EffectMiddleware` / `CapabilityAuthorizer` (`@loomwork/effect-runtime`) | — | (staged) |
 
 - **Required vs optional:** each interface marks optional methods (e.g. `EventStore.readRange`,
   `acquireFence`, `acquireFenceIf` (the conditional fence, SPI 2.1.0, [ADR 0118](../adr/0118-acquire-if-parked-fence.md)), `appendIfUnchanged` (the conditional append a late outcome needs, SPI 2.2.0, [ADR 0116](../adr/0116-late-outcome-attach.md); since SPI 2.3.0, [ADR 0129](../adr/0129-creation-marker-incarnation.md), the observation `anchor` MUST differ between two incarnations of an execution id even when their sequence-0 envelopes are byte-identical, so a store claiming 2.3.0 assigns a monotonic incarnation in store metadata only, never in an event), `storeNow` (the store's own clock in epoch ms, SPI 2.4.0, [ADR 0110](../adr/0110-durable-inbox-and-receive-select.md) D10a: optional, additive; Postgres reports database time, so a fleet ages an inbox message on one clock; a single-process store omits it and callers fall back to their injected clock), `deleteThrough` (one atomic delete of every event with `sequence <= through`, sequence 0 included; SPI 2.6.0, [ADR 0139](../adr/0139-reserved-streams-archive-before-removal.md) D8: optional, additive - a caller that archived a reserved stream up to `through` removes exactly that, so a concurrent append survives; a caller facing a store without it refuses the delete rather than falling back to `deleteExecution`), `sealingCapability` (what the store seals and therefore opens, SPI 2.5.0, [ADR 0130](../adr/0130-sealed-payload-delivery-guard.md) D7: optional, additive, reserved - declared and forwarded by every decorator, no caller yet; absent or `undefined` means it seals and opens nothing, and `ShardedEventStore` returns one only when every shard agrees; the SPI also reserves the control stream prefix `__loom_quarantine__:<chainId>`),
@@ -361,9 +361,9 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
   `ContentStore` (incl. the ADR 0059 `putStream` outcome contract and, since SPI 1.5.0, the optional owner argument
   `ContentAccess` plus the `sealsContent` marker, [ADR 0143](../adr/0143-encrypting-content-store.md)), `DurableStateStore`, and
   `ReadModelStore` (incl. query limit/cursor validation) each ship a `run…Conformance` kit in
-  `@loom/conformance`.
+  `@loomwork/conformance`.
 - **Compatibility:** an SPI version is semver; a MINOR bump adds an optional method, a MAJOR bump
-  changes a required-method contract. Kits import from `@loom/conformance`.
+  changes a required-method contract. Kits import from `@loomwork/conformance`.
 
 ## 8. Resource semantics
 
@@ -378,7 +378,7 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
 ## 9. Compatibility guarantees
 
 - The kernel's contract versions are aggregated, machine-readable, in the **kernel manifest**
-  (`@loom/spec` `kernelManifest()`; `loom kernel-manifest --json`). It is built by importing the
+  (`@loomwork/spec` `kernelManifest()`; `loom kernel-manifest --json`). It is built by importing the
   real exported constants, so it can never drift from the code.
 - **`checkCompatibility(deploymentVersions)`** validates a deployment's declared versions: two
   versions are compatible iff they share a **major** version. `loom compat --abi <v> …` exits
@@ -393,12 +393,12 @@ checks — not reviewer memory:
 
 - **ABI/schema pins:** `abi.test.ts` (K1), `eventSchema.test.ts` (K5), `wire-abi.test.ts` (T2
   fold-vectors) fail on undocumented drift.
-- **SPI conformance kits:** `run<Spi>Conformance` (`@loom/conformance`), run against the
+- **SPI conformance kits:** `run<Spi>Conformance` (`@loomwork/conformance`), run against the
   in-memory + SQLite reference impls.
-- **Replay-unchanged:** golden-log replay (`@loom/eval`) + deploy-simulation (`@loom/deploy-sim`).
+- **Replay-unchanged:** golden-log replay (`@loomwork/eval`) + deploy-simulation (`@loomwork/deploy-sim`).
 - **Zero-overhead (G2):** behavioural disabled-path tests + a relative-ratio bench gate
   (`packages/verify/src/g2ratio.perf.test.ts`, perf suite).
-- **Maturity is self-checking:** `@loom/spec` `spec.test.ts` fails if a capability's badge claims
+- **Maturity is self-checking:** `@loomwork/spec` `spec.test.ts` fails if a capability's badge claims
   evidence (a version constant / conformance test / bench) it does not have.
 
 These are enumerated, with their enforcement location, in

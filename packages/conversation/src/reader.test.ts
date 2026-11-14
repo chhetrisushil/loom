@@ -1,4 +1,4 @@
-import type { EventStore } from "@loom/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { boot, messages } from "./__fixtures__/harness";
 import { InvalidCursorError, createConversationReader, formatCursor, parseCursor } from "./index";

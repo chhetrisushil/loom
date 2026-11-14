@@ -1,5 +1,5 @@
 {
-  "name": "@loom/effect-runtime",
+  "name": "@loomwork/effect-runtime",
   "version": "0.1.0",
   "description": "Effect isolation layer for tool, LLM, human, and A2A effects",
   "main": "./dist/index.js",
@@ -20,11 +20,11 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/replay-vm": "workspace:^",
-    "@loom/scheduler": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^",
+    "@loomwork/scheduler": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

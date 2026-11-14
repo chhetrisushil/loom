@@ -10,7 +10,7 @@ import {
   newFiles,
   templateNotes,
   tsStringLiteral,
-} from "@loom/scaffold";
+} from "@loomwork/scaffold";
 import { UsageError } from "./args";
 import { containmentRootFor, safeWriteFile } from "./safeWrite";
 import { type TreeChange, watchTree } from "./watch";
@@ -108,7 +108,7 @@ export function discoverProjections(dir: string, skipped: string[] = []): string
   return discoverFlat(dir, "projections", skipped);
 }
 
-/** Re-exported: the symlink-containment root, decided by filesystem identity (see `@loom/appgen`). */
+/** Re-exported: the symlink-containment root, decided by filesystem identity (see `@loomwork/appgen`). */
 export { containmentRootFor };
 
 /**
@@ -324,7 +324,7 @@ function nearestManifest(dir: string): Record<string, unknown> | undefined {
 
 /**
  * The exact `"pkg": "spec"` lines the app's `package.json` is missing for the packages the
- * generated files import. `@loom/*` take the spec the app already uses for `@loom/core`
+ * generated files import. `@loomwork/*` take the spec the app already uses for `@loomwork/core`
  * (`workspace:*` in the monorepo, `*` + a `link:` override elsewhere). Never edits the file.
  */
 function missingDependencies(dir: string, contents: string[]): string[] {
@@ -338,11 +338,13 @@ function missingDependencies(dir: string, contents: string[]): string[] {
       for (const [k, v] of Object.entries(table)) have.set(k, String(v));
     }
   }
-  const loomSpec = have.get("@loom/core") ?? "workspace:*";
+  const loomSpec = have.get("@loomwork/core") ?? "workspace:*";
   const wanted = new Set(contents.flatMap(importedPackages));
   return [...wanted]
     .filter((p) => !have.has(p))
-    .map((p) => `"${p}": "${p.startsWith("@loom/") ? loomSpec : (THIRD_PARTY_SPECS[p] ?? "*")}"`);
+    .map(
+      (p) => `"${p}": "${p.startsWith("@loomwork/") ? loomSpec : (THIRD_PARTY_SPECS[p] ?? "*")}"`
+    );
 }
 
 /**

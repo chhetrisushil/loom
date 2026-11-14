@@ -1,6 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { ed25519Signer, ed25519Verifier } from "./ed25519";
 import { hashChainedEventStore } from "./hashChain";

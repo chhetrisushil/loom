@@ -1,5 +1,5 @@
 {
-  "name": "@loom/middleware",
+  "name": "@loomwork/middleware",
   "version": "0.1.0",
   "description": "Reference effect middleware for Loom — cross-cutting concerns (retries, and later logging/idempotency/tracing) around effect execution, replay-safe and statically ordered",
   "main": "./dist/index.js",
@@ -20,9 +20,9 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

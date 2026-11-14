@@ -1,4 +1,4 @@
-# @loom/plugin-cloudrun — decide where an execution runs, then send it to a worker
+# @loomwork/plugin-cloudrun — decide where an execution runs, then send it to a worker
 
 `CloudRunWorkerRuntime` is a `WorkerRuntime` that sizes a dispatch from its metadata, asks a
 `CloudRunPlatform` for an endpoint of that size, and sends the package there through
@@ -8,8 +8,8 @@ trusted, registered flows. It is not a sandbox for model-written code (ADR 0144)
 anything for you.
 
 ```ts
-import { LocalDispatcher } from "@loom/dispatcher";
-import { CloudRunWorkerRuntime, StaticCloudRunPlatform } from "@loom/plugin-cloudrun";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { CloudRunWorkerRuntime, StaticCloudRunPlatform } from "@loomwork/plugin-cloudrun";
 
 const platform = new StaticCloudRunPlatform(process.env.WORKER_URL!);
 const worker = new CloudRunWorkerRuntime(platform, { requestTimeoutMs: 55 * 60_000 });
@@ -52,7 +52,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 (see [AGENTS.md](../../AGENTS.md)).
 
 - [Cloud Run deploy guide](deploy.md) and [ADR 0003](../../docs/adr/0003-cloud-run-worker-runtime.md).
-- The container side is [`@loom/plugin-worker-server`](../worker-server/README.md); the transport is
-  [`@loom/plugin-worker-remote`](../worker-remote/README.md).
-- API reference: section "`@loom/plugin-cloudrun`" in [docs/api-reference.org](../../docs/api-reference.org).
+- The container side is [`@loomwork/plugin-worker-server`](../worker-server/README.md); the transport is
+  [`@loomwork/plugin-worker-remote`](../worker-remote/README.md).
+- API reference: section "`@loomwork/plugin-cloudrun`" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/scaling.md](../../docs/scaling.md), [docs/user-guide.md](../../docs/user-guide.md).

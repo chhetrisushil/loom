@@ -98,7 +98,7 @@ Round-1 review decisions are recorded as "Decided (user, 2026-10-06)" below.
     middleware that REJECTS or REWRITES the effect's output after `next()` MUST set `inspectsOutput: true` (or
     provide a `deltaGuard`), otherwise streamed text bypasses it. loom's own `redactionMiddleware` now sets it
     when `redactOutput` is configured (deltas would bypass its masking). The scaffold's middleware template
-    states the obligation. Consumers displaying deltas depend on `@loom/classify` to `unwrapTainted` them.
+    states the obligation. Consumers displaying deltas depend on `@loomwork/classify` to `unwrapTainted` them.
 ## Consequences
 
 - A streaming planner is expressible inside the scope with no governance bypass.
@@ -106,7 +106,7 @@ Round-1 review decisions are recorded as "Decided (user, 2026-10-06)" below.
 - The terminal chunk's `usage` is advisory (what the provider reported), not a metering record.
 - `EffectContext.onDelta` is a sever channel: a middleware delta guard's throw propagates out of it, and an
   effect MUST NOT catch it around the call (`createLlmEffect` does not).
-- `@loom/effect-runtime` now depends on `@loom/classify` (types and the taint wrapper; classify has no loom deps).
+- `@loomwork/effect-runtime` now depends on `@loomwork/classify` (types and the taint wrapper; classify has no loom deps).
 
 ## Rejected
 

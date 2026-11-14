@@ -1,4 +1,4 @@
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
 import { Latch, build, eventsOf, flow, kinds, slow, until } from "./__tests__/r2Harness";

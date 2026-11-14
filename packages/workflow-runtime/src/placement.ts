@@ -1,4 +1,4 @@
-import { type EventStore, readRangeOf } from "@loom/event-runtime";
+import { type EventStore, readRangeOf } from "@loomwork/event-runtime";
 
 // ── Where an execution belongs, after the process that decided has gone ───────
 //

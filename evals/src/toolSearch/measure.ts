@@ -3,8 +3,8 @@ import {
   type ToolRanker,
   type ToolRankerFactory,
   ToolSearchSession,
-} from "@loom/agent";
-import { type ToolDefinition, tool$ } from "@loom/core";
+} from "@loomwork/agent";
+import { type ToolDefinition, tool$ } from "@loomwork/core";
 import { z } from "zod";
 import { type Scores, type Thresholds, toRows } from "../gate";
 import { mean, precision, recallAtK, reciprocalRank } from "../metrics";

@@ -4,10 +4,10 @@ import {
   type AgentOutput,
   agentLoop$,
   createAgentModelEffect,
-} from "@loom/agent";
-import type { AgentDefinition, EventEnvelope, FlowDefinition } from "@loom/core";
-import type { ExecutionStatus } from "@loom/core";
-import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
+} from "@loomwork/agent";
+import type { AgentDefinition, EventEnvelope, FlowDefinition } from "@loomwork/core";
+import type { ExecutionStatus } from "@loomwork/core";
+import type { EffectRuntime, PrincipalChain } from "@loomwork/effect-runtime";
 import { z } from "zod";
 import { type LoomConfig, defineConfig } from "./defineConfig";
 
@@ -19,7 +19,7 @@ import { type LoomConfig, defineConfig } from "./defineConfig";
  */
 let permissiveNoticeShown = false;
 
-/** The model provider `createAgentModelEffect` takes (derived, so `@loom/app` need not depend on `@loom/llm`). */
+/** The model provider `createAgentModelEffect` takes (derived, so `@loomwork/app` need not depend on `@loomwork/llm`). */
 type Provider = Parameters<typeof createAgentModelEffect>[0];
 
 export interface RunAgentOnceOptions {

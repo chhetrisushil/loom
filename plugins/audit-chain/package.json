@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-audit-chain",
+  "name": "@loomwork/plugin-audit-chain",
   "version": "0.1.0",
   "description": "Tamper-evident hash-chained EventStore wrapper for Loom — each event carries H(prevHash ‖ canonical(event)) plus an optional HMAC signature, so the durable log is cryptographically verifiable. Fold-invisible: replay is byte-identical.",
   "main": "./dist/index.js",
@@ -20,16 +20,16 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/event-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/conformance": "workspace:*",
-    "@loom/dst": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/plugin-content": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/conformance": "workspace:*",
+    "@loomwork/dst": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/plugin-content": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

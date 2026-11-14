@@ -7,7 +7,7 @@ loom-examples/loom-plugins/loom-demo importing the package (consumer evidence, n
 
 Headline: the kernel is genuinely domain-free (no DB/dashboard/incident/ticket nouns anywhere in core, event-runtime,
 replay-vm, effect-runtime, workflow-runtime, no hardcoded tool ids as semantics, no vendor SDKs; vendors appear only as
-fetch-based adapters inside @loom/llm with replaceable model/baseUrl). The genericity debt is NOT domain nouns. It is
+fetch-based adapters inside @loomwork/llm with replaceable model/baseUrl). The genericity debt is NOT domain nouns. It is
 (1) an LLM-text-chat worldview baked into several "generic" seams, (2) one UI syscall + one UI package wired into the
 kernel, (3) example-extraction leftovers living in 1P packages, (4) English-only heuristics with no locale seam, and
 (5) 5 packages with zero code consumers.
@@ -24,7 +24,7 @@ Verdicts: GENERIC / MOSTLY (minor leaks) / DOMAIN-SPECIFIC / INERT.
 | snapshot-runtime | snapshot store SPI + in-mem | GENERIC | |
 | replay-vm | pure fold of the log to ExecutionState | MOSTLY | RESOURCE_METERED fold hardcodes 6 dimensions (packages/replay-vm/src/eventHandlers.ts:780-825) |
 | effect-runtime | effect registry, authz, policy, Llm/Human/A2A/Tool effects | MOSTLY | built-in `LlmEffect`/`A2AEffect` classes (src/effects/LlmEffect.ts:12, A2AEffect.ts:4); `ResourceSnapshot` = tokens/costUsd/ms (src/types.ts:36-46) |
-| workflow-runtime | the kernel: interpreter, ctx syscalls, timers, lifecycle, recovery | MOSTLY | `ctx.ui` is a KERNEL_ABI syscall + hard dep on @loom/agent-surface (see L1) |
+| workflow-runtime | the kernel: interpreter, ctx syscalls, timers, lifecycle, recovery | MOSTLY | `ctx.ui` is a KERNEL_ABI syscall + hard dep on @loomwork/agent-surface (see L1) |
 | scheduler | cooperative priority scheduler | GENERIC | |
 | wire-abi | portable fold vectors / ABI | GENERIC | |
 | dispatcher | ExecutionDispatcher SPI + Local/Placement | GENERIC | "cloudrun" only in doc comments (src/types.ts:29) |
@@ -106,15 +106,15 @@ Tally: 72 total = 41 GENERIC, 25 MOSTLY, 1 DOMAIN-SPECIFIC, 5 INERT.
 
 L1. UI is a kernel syscall. `ctx.ui` is one of the ABI syscalls (packages/workflow-runtime/src/abi.ts:80-86, kind "accessor"),
 constructed in every WorkflowContext (WorkflowContext.ts:1-2,168 `createSurfaceEmitter`), typed in the public
-`ExecutionContext` (workflow-runtime/src/types.ts:1,201), and @loom/workflow-runtime has a hard `dependencies` edge on
-@loom/agent-surface (the only non-kernel edge of any kernel package; computed from package.json). A headless/batch/voice/robotics
+`ExecutionContext` (workflow-runtime/src/types.ts:1,201), and @loomwork/workflow-runtime has a hard `dependencies` edge on
+@loomwork/agent-surface (the only non-kernel edge of any kernel package; computed from package.json). A headless/batch/voice/robotics
 agent pays for and is versioned against a UI protocol. The layering guard (packages/spec/src/layering.ts:18-27) only forbids
 kernel -> `plugins/*`, so this edge is invisible to it. `ctx.ui` is nothing but `ctx.emit("SURFACE_PATCH", ...)` (agent-surface/src/emitter.ts), and the
 event is explicitly a userspace event the fold skips, so nothing in the kernel needs it.
-Fix: move `ui` out of the syscall table into a userspace helper (`surfaceOf(ctx)` exported by @loom/agent-surface), drop the
+Fix: move `ui` out of the syscall table into a userspace helper (`surfaceOf(ctx)` exported by @loomwork/agent-surface), drop the
 dependency, bump KERNEL_ABI major or deprecate. Stay in 1P (agent-surface), leave the kernel.
 
-L2. `@loom/orchestrator` is app policy shipped as a framework package. `autoApprovalAllowed(goal)` = `/low risk|automatically|auto[- ]?fix|auto/i.test(goal)`
+L2. `@loomwork/orchestrator` is app policy shipped as a framework package. `autoApprovalAllowed(goal)` = `/low risk|automatically|auto[- ]?fix|auto/i.test(goal)`
 (packages/orchestrator/src/approval.ts:12-13) - an English-only keyword regex over the user's goal decides whether a human is skipped; the bare `auto` alternative
 matches "author", "automotive", "audit the auto-scaling..." so it also OVER-approves. `riskLevel === "low"` (approval.ts:42) is a string vocabulary
 the framework does not define anywhere else. Comment admits "identical across every example orchestrator" (approval.ts:5-8): it is extracted example code.
@@ -149,7 +149,7 @@ move card metadata into an A2A-owned `metadata?: Record<string,unknown>` extensi
 
 A3. Keyword fallbacks are ASCII-only and not replaceable. `CapabilityCatalog.find` (packages/capability/src/CapabilityCatalog.ts:97) and `SkillRegistry.find`
 (packages/agent/src/SkillRegistry.ts:55) tokenize with `split(/\W+/)` + `length > 2`. In JS `\W` is ASCII-only: "café"-style accents fragment and CJK/Arabic/Cyrillic
-queries yield zero terms, so offline intent/plan/skill selection silently returns nothing for non-English users. The sibling @loom/memory tokenizer already does it right
+queries yield zero terms, so offline intent/plan/skill selection silently returns nothing for non-English users. The sibling @loomwork/memory tokenizer already does it right
 (`/[^\p{L}\p{N}]+/u`, memory/src/searchText.ts:19) - the duplication is the defect. No scorer seam on either class. Fix: share memory's `tokenize` (or accept `scorer`). 1P.
 
 A4. Planner/Intent prompts are hardcoded English and the plan shape is one kind. System prompts at planner/src/PlannerRuntime.ts:68-70 and intent/src/IntentRuntime.ts:77-79,
@@ -164,14 +164,14 @@ A6. `learning` is shaped for one-step discrete choice: `Policy.select(context, a
 evaluator is SNIPS over such records. Continuous actions, sequential credit (beyond a terminal-reward assignment), or ranking/slate decisions need a different record. The substrate
 is honestly labelled "not RL", so MOSTLY; note that "learning" over-promises. Keep, but document the bandit scope in the package name/description.
 
-A7. @loom/app carries example-conductor leftovers (packages/app/src/): `BroadcastingProjectionRuntime` (constructor `missionId`, SSE comment, filters `SURFACE_PATCH` for one mission,
+A7. @loomwork/app carries example-conductor leftovers (packages/app/src/): `BroadcastingProjectionRuntime` (constructor `missionId`, SSE comment, filters `SURFACE_PATCH` for one mission,
 BroadcastingProjectionRuntime.ts:11-21,58), `InProcessA2ABus` ("This app runs entirely in the browser", InProcessA2ABus.ts:9-14; `onApproval` HITL baked in) and `progressHub`
 (process-wide singleton; `onReport` is ONE subscriber per execution, `subscribers.set` overwrites, progressHub.ts:18; second subscriber silently steals the first's feed). All
-three are consumed only by loom-examples (ex>=1 each), not by `defineConfig` itself except the bus. Fix: move Broadcasting/progressHub to examples or a `@loom/plugin-*`; make hub
-multi-subscriber. `defineConfig` also hard-links `@loom/plugin-a2a` and `@loom/agent-surface` (defineConfig.ts:2,46,1124-1125) for two boolean flags - protocol choice in the composition root.
+three are consumed only by loom-examples (ex>=1 each), not by `defineConfig` itself except the bus. Fix: move Broadcasting/progressHub to examples or a `@loomwork/plugin-*`; make hub
+multi-subscriber. `defineConfig` also hard-links `@loomwork/plugin-a2a` and `@loomwork/agent-surface` (defineConfig.ts:2,46,1124-1125) for two boolean flags - protocol choice in the composition root.
 
-A8. @loom/sdk "umbrella" forces everything: `export *` of llm, reasoning, agent, both protocol plugins, agent-surface, blueprint-runtime, terminal renderer (packages/sdk/src/index.ts:1-31) and hard
-`dependencies` on plugin-postgres/-sqlite/-sandbox (package.json:40-60) so `pnpm add @loom/sdk` installs pg/better-sqlite3/WASM even for a UI-less, DB-less app, despite the lean-import comment (index.ts:11-14).
+A8. @loomwork/sdk "umbrella" forces everything: `export *` of llm, reasoning, agent, both protocol plugins, agent-surface, blueprint-runtime, terminal renderer (packages/sdk/src/index.ts:1-31) and hard
+`dependencies` on plugin-postgres/-sqlite/-sandbox (package.json:40-60) so `pnpm add @loomwork/sdk` installs pg/better-sqlite3/WASM even for a UI-less, DB-less app, despite the lean-import comment (index.ts:11-14).
 Zero examples import it. Fix: delete, or make store/sandbox plugins optional peer deps.
 
 A9. Opinionated wording in UI renderers: "No pending approval" (plugins/renderer-react/src/renderers/ApprovalCardRenderer.tsx:46), "no rows" (DataTableRenderer.tsx:26), defaults "Approve"/"Reject"
@@ -186,9 +186,9 @@ with `z.object({prompt: z.string()})` (tools/appgen/src/generate.ts:60,69; stepT
 ### COSMETIC
 
 C1. Hard-coded vendor model defaults that go stale: "claude-opus-4-8" (packages/llm/src/providers/AnthropicProvider.ts:46), "gpt-4o" (OpenAiProvider.ts:60), "gemini-2.0-flash"
-(GeminiProvider.ts:36). Vendor adapters live inside the SPI package @loom/llm (index.ts:20-25); acceptable (fetch-only, baseUrl/model configurable), but a required `model` would be more honest and the adapters could be separate plugins.
+(GeminiProvider.ts:36). Vendor adapters live inside the SPI package @loomwork/llm (index.ts:20-25); acceptable (fetch-only, baseUrl/model configurable), but a required `model` would be more honest and the adapters could be separate plugins.
 C2. `UNTRUSTED_CONTENT_SYSTEM_NOTE` is an English constant (packages/llm/src/untrusted.ts:61) appended by `groundedRequest` (knowledge/src/prompt.ts); no locale option.
-C3. @loom/analytics advice strings are English and USD-formatted ("Prefer model ... for future routing", "Set a cost budget near $...", advisory.ts:175,187); the `RecommendationKind` set is
+C3. @loomwork/analytics advice strings are English and USD-formatted ("Prefer model ... for future routing", "Set a cost budget near $...", advisory.ts:175,187); the `RecommendationKind` set is
 "model-ranking"|"budget"|"hot-failure" (advisory.ts:21) - LLM-ops vocabulary in a log-analytics package.
 C4. Domain-branded metadata: "db-copilot infra" in plugins/read-model/package.json:4, plugins/read-model/src/types.ts:3, plugins/sentinel/package.json, packages/conformance/src/index.ts:2010,
 packages/event-runtime/src/types.ts:12, plugins/sqlite/src/SqliteContentStore.ts:13; example names referenced from packages/spec/src/capabilities.ts:223,547. No code impact; scrub.
@@ -215,26 +215,26 @@ Graph computed from package.json `dependencies` (workspace edges) across package
 3. Feature-SPI types live in feature plugins, so storage engines depend on features: plugin-postgres and plugin-sqlite import `DurableStateStore`/`RevisionConflictError`
    (plugin-durable-state), `ReadModelStore` helpers `assertPurgeFilter/clampQueryLimit/parseQueryCursor` (plugin-read-model) and sqlite imports plugin-content (sqlite/src/SqliteDurableStateStore.ts,
    SqliteReadModelStore.ts, SqliteContentStore.ts; postgres/src/PostgresDurableStateStore.ts, PostgresReadModelStore.ts). Result: a Postgres-only app that never uses read models still installs
-   plugin-read-model/durable-state, and a 3P store for those seams must depend on a feature plugin. Fix: SPI + pure helpers into a neutral package (or @loom/plugin-kit).
+   plugin-read-model/durable-state, and a 3P store for those seams must depend on a feature plugin. Fix: SPI + pure helpers into a neutral package (or @loomwork/plugin-kit).
 4. plugin -> plugin edges: mcp-app -> a2ui + mcp; cloudrun -> worker-remote; sentinel -> content, durable-state, middleware; sqlite/postgres -> kit/durable-state/read-model/content.
    mcp-app->a2ui is legitimate (it reuses the catalog validator); sentinel is a pure bundler.
 5. UI stack is triplicated without a shared core: agent-surface (SURFACE_PATCH state tree), blueprint-runtime (widget IR), plugin-a2ui and plugin-mcp-app (wire projections of agent-surface),
    plus renderer-react/terminal over blueprint. renderer-react depends on workflow-runtime + projection-runtime + agent-surface + blueprint-runtime; plugin-a2ui depends on both agent-surface and blueprint-runtime.
    Two vocabularies (surface paths vs widgets) for "agent drives a UI" is real duplication a newcomer must choose between.
-6. @loom/app depends on 19 workspace packages incl. plugin-a2a and agent-surface, and tools/cli on 22 incl. app/appgen/learning/knowledge: acceptable for top-level composition, but `app` is the
+6. @loomwork/app depends on 19 workspace packages incl. plugin-a2a and agent-surface, and tools/cli on 22 incl. app/appgen/learning/knowledge: acceptable for top-level composition, but `app` is the
    only way in for config, so its protocol/UI defaults are effectively framework defaults (A7).
-7. @loom/spec depends on compiler, plugin-content, wire-abi and dispatcher: a docs/manifest package reaching into a tool and a plugin; benign but inverts tiers.
+7. @loomwork/spec depends on compiler, plugin-content, wire-abi and dispatcher: a docs/manifest package reaching into a tool and a plugin; benign but inverts tiers.
 8. No cycles found among package.json edges.
 
 ## (d) INERT or redundant
 Evidence = no importer in packages/*/src, plugins/*/src, tools/*/src (test files excluded) AND no import in loom-examples / loom-plugins / loom-demo.
-- @loom/replay-inspector (1,102 loc): ex=0, zero src importers; the CLI's `inspect` is a separate implementation (tools/cli/src/inspector.ts imports only core/event-runtime/./core/./trace). Delete or make the CLI use it.
-- @loom/isolate (1,231 loc): ex=0, zero importers; plugin-sandbox cites it only in comments (plugins/sandbox/src/types.ts:5, SandboxWorkerPool.ts:147). Overlaps plugin-sandbox (both are "run untrusted
+- @loomwork/replay-inspector (1,102 loc): ex=0, zero src importers; the CLI's `inspect` is a separate implementation (tools/cli/src/inspector.ts imports only core/event-runtime/./core/./trace). Delete or make the CLI use it.
+- @loomwork/isolate (1,231 loc): ex=0, zero importers; plugin-sandbox cites it only in comments (plugins/sandbox/src/types.ts:5, SandboxWorkerPool.ts:147). Overlaps plugin-sandbox (both are "run untrusted
   tool code with limits"). Keep one; move the other to loom-plugins.
-- @loom/saga (107 loc) and @loom/fair-scheduler (322 loc): ex=0, zero importers (only spec/capabilities.ts names them). Move to examples/3P or delete.
-- @loom/plugin-sentinel (111 loc): ex=0; only the scaffold template emits it. The db-sentinel example uses `sentinelState` directly. Fold into scaffold output or delete; drop `loom new sentinel`.
-- @loom/orchestrator (102 loc) - not inert (ex=3) but wrong tier: move to examples (L2).
-- @loom/sdk: zero importers anywhere; pure re-export (A8). @loom/registry: 44 lines, only sdk + a comment in plugin-a2a; ex=4 but trivial.
+- @loomwork/saga (107 loc) and @loomwork/fair-scheduler (322 loc): ex=0, zero importers (only spec/capabilities.ts names them). Move to examples/3P or delete.
+- @loomwork/plugin-sentinel (111 loc): ex=0; only the scaffold template emits it. The db-sentinel example uses `sentinelState` directly. Fold into scaffold output or delete; drop `loom new sentinel`.
+- @loomwork/orchestrator (102 loc) - not inert (ex=3) but wrong tier: move to examples (L2).
+- @loomwork/sdk: zero importers anywhere; pure re-export (A8). @loomwork/registry: 44 lines, only sdk + a comment in plugin-a2a; ex=4 but trivial.
 - Redundancy: `agentStep$` vs `agentLoop$` vs `AgentRunner` (three agent loops; agentLoop$ doc admits AgentRunner "fakes" the decide seam, agentLoop$.ts:70-80) - pick one canonical;
   `IntentRuntime` + `PlannerRuntime` + `capability` duplicate the same prompt/complete/scheduler plumbing (`complete()` copied in both: IntentRuntime.ts:~100-125, PlannerRuntime.ts:~76-100).
 
@@ -242,10 +242,10 @@ Evidence = no importer in packages/*/src, plugins/*/src, tools/*/src (test files
 1. Take `ctx.ui` + the agent-surface dependency out of the kernel (L1) and harden the layering guard.
 2. Widen the LLM message/agent I/O model beyond text; fix `String(entry.content)` (L3).
 3. Open the metering dimensions (A1).
-4. Delete @loom/orchestrator from 1P (L2).
+4. Delete @loomwork/orchestrator from 1P (L2).
 5. Replace `\W+` tokenizer with memory's unicode tokenizer, add a scorer seam (A3).
 6. Prompt/plan-shape seams for planner/intent (A4).
-7. Move Broadcasting/progressHub/InProcessA2ABus out of @loom/app; multi-subscriber hub (A7).
+7. Move Broadcasting/progressHub/InProcessA2ABus out of @loomwork/app; multi-subscriber hub (A7).
 8. Prune 5 inert packages + sdk (section d).
 9. Move feature-SPI types out of feature plugins (c.3).
 10. Timezone seam for schedules (A5).

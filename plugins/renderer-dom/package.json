@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-renderer-dom",
+  "name": "@loomwork/plugin-renderer-dom",
   "version": "0.1.0",
   "description": "Framework-free DOM renderer for Loom blueprints — a web surface without React or loom-ui",
   "main": "./dist/index.js",
@@ -20,13 +20,13 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/blueprint-runtime": "workspace:^",
-    "@loom/projection-runtime": "workspace:^"
+    "@loomwork/blueprint-runtime": "workspace:^",
+    "@loomwork/projection-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/plugin-renderer-react": "workspace:*",
-    "@loom/plugin-renderer-terminal": "workspace:*",
+    "@loomwork/core": "workspace:*",
+    "@loomwork/plugin-renderer-react": "workspace:*",
+    "@loomwork/plugin-renderer-terminal": "workspace:*",
     "@testing-library/react": "^16.0.0",
     "@types/node": "^22.0.0",
     "@types/react": "^18.3.12",

@@ -1,5 +1,5 @@
-import { TypedFailure } from "@loom/core";
-import { InMemoryContentStore } from "@loom/plugin-content";
+import { TypedFailure } from "@loomwork/core";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
 import { describe, expect, it } from "vitest";
 import { SandboxEvalEffect } from "./SandboxEvalEffect";
 

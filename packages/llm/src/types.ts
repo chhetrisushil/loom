@@ -33,7 +33,7 @@ export interface LlmToolSpec {
 
 // ── The input side of the prompt boundary ────────────────────────────────────
 //
-// `buildRequest` may hand back content that is still tainted (`@loom/classify`);
+// `buildRequest` may hand back content that is still tainted (`@loomwork/classify`);
 // `guardRequest` refuses it outside a `user` message and fences it inside one,
 // so what reaches an `LlmProvider` is always the plain-string `LlmRequest` above.
 // Splitting the two types is what keeps every provider ignorant of taint — and

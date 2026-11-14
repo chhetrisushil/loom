@@ -1,6 +1,6 @@
-import { GrantTable } from "@loom/effect-runtime";
-import { signedResumeAuthenticator } from "@loom/workflow-runtime";
-import type { ExecutionAuthorizer } from "@loom/workflow-runtime";
+import { GrantTable } from "@loomwork/effect-runtime";
+import { signedResumeAuthenticator } from "@loomwork/workflow-runtime";
+import type { ExecutionAuthorizer } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { defineConfig as defineConfigRaw } from "./defineConfig";
 import { withPrincipalCodec } from "./principalTestSupport";

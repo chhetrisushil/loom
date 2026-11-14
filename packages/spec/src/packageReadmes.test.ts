@@ -74,11 +74,11 @@ describe("package READMEs (fitness)", () => {
       mkdirSync(join(root, "docs"), { recursive: true });
       writeFileSync(
         join(root, "docs/api-reference.org"),
-        "** ~@loom/alpha~ - alpha\n** ~@loom/plugin-beta~ - beta\n"
+        "** ~@loomwork/alpha~ - alpha\n** ~@loomwork/plugin-beta~ - beta\n"
       );
       const fixtures = [
-        { rel: "packages/alpha", name: "@loom/alpha" },
-        { rel: "plugins/beta", name: "@loom/plugin-beta" },
+        { rel: "packages/alpha", name: "@loomwork/alpha" },
+        { rel: "plugins/beta", name: "@loomwork/plugin-beta" },
       ];
       for (const { rel, name } of fixtures) {
         mkdirSync(join(root, rel), { recursive: true });
@@ -111,11 +111,11 @@ describe("package READMEs (fitness)", () => {
         const pg = join(root, "plugins/beta/README.md");
         writeFileSync(
           pg,
-          readFileSync(pg, "utf8").replace("# @loom/plugin-beta", "# something else")
+          readFileSync(pg, "utf8").replace("# @loomwork/plugin-beta", "# something else")
         );
         expect(violations(root).sort()).toEqual(
           [
-            'plugins/beta: README title "something else" does not name @loom/plugin-beta',
+            'plugins/beta: README title "something else" does not name @loomwork/plugin-beta',
             "packages/alpha: no README.md",
             "plugins/beta/README.md: generated README is stale",
           ].sort()

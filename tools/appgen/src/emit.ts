@@ -5,7 +5,7 @@
 // user's project, which makes any unescaped interpolation a code-injection channel
 // (a newline ends a `//` comment, `*/` ends a block comment, `"` ends a string literal,
 // `${` opens a template substitution; bidi / zero-width / tag characters spoof what a
-// reviewer reads). The helpers live in `@loom/scaffold` (the lowest package every
+// reviewer reads). The helpers live in `@loomwork/scaffold` (the lowest package every
 // generator shares, so `loom gen` uses the very same ones) and are re-exported here;
 // they are the ONLY sanctioned way to put such text into generated source. Defence is at
 // the sink, whatever the validators did.
@@ -17,7 +17,7 @@ export {
   markdownText,
   templateLiteralText,
   tsStringLiteral,
-} from "@loom/scaffold";
+} from "@loomwork/scaffold";
 
 /**
  * The shape of a NEW capability / step id (a created flow or step). Both become generated

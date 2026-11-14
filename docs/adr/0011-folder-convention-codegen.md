@@ -21,7 +21,7 @@ app/ flows/<name>/flow.ts   tools/<name>.ts   agents/<name>.ts   skills/<name>.t
      middleware.ts  config.ts  loom.gen.ts (generated)
 ```
 
-**Build-time codegen (`@loom/scaffold` + `loom gen`).**
+**Build-time codegen (`@loomwork/scaffold` + `loom gen`).**
 `generateRegistration(flowPaths, agentPaths, toolPaths, skillPaths, schedulePaths, memoryPaths, projectionPaths)`
 emits `loom.gen.ts` — a **static** module that imports each discovered module and
 re-exports `flowModules` / `agentModules` / `toolModules` / `skillModules` /
@@ -54,7 +54,7 @@ drag it in.
 **Sub-generators (`loom new [flow|agent|tool|skill|schedule|memory|projection] <name>`).**
 Emit one file into the convention location; won't overwrite an existing file.
 
-**Shared templating (`@loom/scaffold`).** Per-file templates (`flowFile`,
+**Shared templating (`@loomwork/scaffold`).** Per-file templates (`flowFile`,
 `toolFile`, `agentFile`, `skillFile`, `scheduleFile`, `memoryFile`, `projectionFile`,
 `newFile`) + the
 whole-app `appFiles` (now convention-following, with a pre-generated `loom.gen.ts`
@@ -71,15 +71,15 @@ in-project growth is `loom new`.
   done — no editing a central list. Replay-safe because it's static codegen.
 - `create-loom-app`'s starter now follows the convention and demonstrates the full
   `loom new` → `loom gen` loop.
-- New package `@loom/scaffold`; `@loom/cli` gains `gen`/`new`; `create-loom-app`
-  slimmed to consume `@loom/scaffold`.
+- New package `@loomwork/scaffold`; `@loomwork/cli` gains `gen`/`new`; `create-loom-app`
+  slimmed to consume `@loomwork/scaffold`.
 
 ## Verification
 
-- `@loom/scaffold` (7): `pascal`; `generateRegistration` (imports + array, empty);
+- `@loomwork/scaffold` (7): `pascal`; `generateRegistration` (imports + array, empty);
   per-file templates export PascalCase constructs with no unresolved `${`;
   `newFile` routing; `appFiles` convention layout + pre-generated gen.
-- `@loom/cli` (+4): `cmdNew` scaffolds / doesn't overwrite / rejects unknown kind;
+- `@loomwork/cli` (+4): `cmdNew` scaffolds / doesn't overwrite / rejects unknown kind;
   `discoverFlows` sorted; `cmdGen` writes a static module (and an empty array for
   an empty app). End-to-end binary smoke: `loom new flow ×2` → `loom gen` → a
   2-flow `loom.gen.ts`.

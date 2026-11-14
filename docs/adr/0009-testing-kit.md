@@ -1,4 +1,4 @@
-# ADR 0009 — @loom/testing fixtures kit
+# ADR 0009 — @loomwork/testing fixtures kit
 
 - Status: Accepted (DX tooling — Phase 1)
 - Date: 2026-07-07
@@ -13,14 +13,14 @@ layer over what already exists, not new infrastructure.
 
 ## Decision
 
-New `@loom/testing`, entirely over `defineConfig` and the existing runtime:
+New `@loomwork/testing`, entirely over `defineConfig` and the existing runtime:
 
 - `createTestApp(config?)` → the full `LoomApp`, defaulting to in-memory storage.
   Same objects production uses (the app still builds its own orchestrator on top).
 - Wait helpers: `waitFor(pred, {timeoutMs, intervalMs})` (throws on timeout — fails
   loud, unlike the silent example loops), `waitForPhase`, `getSurfaceState`,
   `driveToSuspend`, `resumeWith`, `captureGolden` (reads the durable log for use
-  as an `@loom/eval` fixture).
+  as an `@loomwork/eval` fixture).
 - **VCR LLM provider**: `recordingProvider(real, cassette)` / `replayingProvider(cassette)`
   keyed by a deterministic `hashRequest` that excludes the non-serializable
   `signal` (and uses no `Math.random`/time). Record once against a live model,
@@ -32,16 +32,16 @@ New `@loom/testing`, entirely over `defineConfig` and the existing runtime:
 - Test wiring collapses to a `createTestApp(...)` call; polling loops collapse to
   `waitForPhase(...)`. Zero coupling — it returns the same DI objects.
 - Full `createTestApp`-replaces-`wire()` substitution applies to examples once
-  they're on `@loom/app` (TS treats the per-example `InProcessA2ABus`'s private
+  they're on `@loomwork/app` (TS treats the per-example `InProcessA2ABus`'s private
   members nominally, so the promoted bus can't type-substitute into examples not
-  yet migrated). `incident-war-room` (already on `@loom/app`) was migrated to the
+  yet migrated). `incident-war-room` (already on `@loomwork/app`) was migrated to the
   wait helpers as the proof.
-- New package: `@loom/testing` (deps: app, core, event-runtime, llm,
+- New package: `@loomwork/testing` (deps: app, core, event-runtime, llm,
   projection-runtime, workflow-runtime).
 
 ## Verification
 
-- `@loom/testing`: 6 tests — `createTestApp` runs a flow suspend→resume and
+- `@loomwork/testing`: 6 tests — `createTestApp` runs a flow suspend→resume and
   `captureGolden` reads the log; `waitFor` resolves and times out; VCR
   `hashRequest` is deterministic + signal-agnostic, records once then replays,
   and throws on a cassette miss.

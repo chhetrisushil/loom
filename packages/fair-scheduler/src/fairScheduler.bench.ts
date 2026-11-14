@@ -1,4 +1,4 @@
-import { createScheduler } from "@loom/scheduler";
+import { createScheduler } from "@loomwork/scheduler";
 import { bench, describe } from "vitest";
 import { createFairScheduler } from "./fairScheduler";
 

@@ -1,6 +1,6 @@
-import type { EventEnvelope } from "@loom/core";
-import { type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
-import { createInboxSource, inboxStreamId, inboxTopicStreamId } from "@loom/workflow-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { type EventStore, headOf, readRangeOf } from "@loomwork/event-runtime";
+import { createInboxSource, inboxStreamId, inboxTopicStreamId } from "@loomwork/workflow-runtime";
 import { senderKey } from "./access";
 import { CONVERSATION_TOPIC } from "./types";
 

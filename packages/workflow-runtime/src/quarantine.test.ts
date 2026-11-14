@@ -1,4 +1,4 @@
-import { quarantineStreamId } from "@loom/event-runtime";
+import { quarantineStreamId } from "@loomwork/event-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import type { WorkflowRuntimeDeps } from "./WorkflowRuntime";
@@ -238,7 +238,7 @@ for (const backend of inboxBackends("quarantine")) {
         const raw = backend.make();
         const fl = fleet(raw, { a: {}, b: {} });
         const { flow } = await import("./__tests__/r2Harness");
-        const { unwrapTainted } = await import("@loom/classify");
+        const { unwrapTainted } = await import("@loomwork/classify");
         const f = flow("gated", async (ctx) => {
           await ctx.suspend({ on: "Go" });
           return unwrapTainted(await ctx.receive<unknown>("a"));
@@ -482,7 +482,7 @@ for (const backend of inboxBackends("quarantine")) {
         const { flow, Latch, slow } = await import("./__tests__/r2Harness");
         const { build, sealedSnapshots } = await import("./__tests__/r2Harness");
         const { sealingStore } = await import("./__tests__/quarantineHarness");
-        const { InMemoryKeyStore } = await import("@loom/plugin-crypto");
+        const { InMemoryKeyStore } = await import("@loomwork/plugin-crypto");
         const latch = new Latch();
         const b = build({}, { ...raw, latch });
         const sealing = sealingStore(raw.eventStore, new InMemoryKeyStore());

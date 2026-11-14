@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "@loomwork/event-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteEventStore } from "./SqliteEventStore";
 

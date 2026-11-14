@@ -1,12 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { DuplicateSequenceError } from "@loom/event-runtime";
-import { SqliteEventStore } from "@loom/plugin-sqlite";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { DuplicateSequenceError } from "@loomwork/event-runtime";
+import { SqliteEventStore } from "@loomwork/plugin-sqlite";
 
-import { foldEvents } from "@loom/replay-vm";
-import type { Snapshot } from "@loom/snapshot-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
+import type { Snapshot } from "@loomwork/snapshot-runtime";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
@@ -33,7 +33,7 @@ function makeEnvelope(executionId: string, sequence: number, payload: unknown = 
   };
 }
 
-suite("@loom/plugin-postgres", () => {
+suite("@loomwork/plugin-postgres", () => {
   let admin: Pool;
 
   beforeAll(async () => {

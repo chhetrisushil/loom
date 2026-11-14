@@ -1,5 +1,5 @@
-import { type LoomApp, type LoomConfig, defineConfig } from "@loom/app";
-import { InMemoryTimerStore } from "@loom/event-runtime";
+import { type LoomApp, type LoomConfig, defineConfig } from "@loomwork/app";
+import { InMemoryTimerStore } from "@loomwork/event-runtime";
 import { type TestClock, bindClock, createTestClock } from "./time";
 
 export type TestAppConfig = Omit<LoomConfig, "storage"> &

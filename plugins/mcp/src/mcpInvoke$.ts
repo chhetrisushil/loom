@@ -1,8 +1,8 @@
-import { tainted, unwrapTainted } from "@loom/classify";
-import { fail, projection$, step$ } from "@loom/core";
-import type { EventEnvelope, ProjectionDefinition, StepDefinition } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
+import { tainted, unwrapTainted } from "@loomwork/classify";
+import { fail, projection$, step$ } from "@loomwork/core";
+import type { EventEnvelope, ProjectionDefinition, StepDefinition } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectRuntime, PrincipalChain } from "@loomwork/effect-runtime";
 import { z } from "zod";
 import type { McpClient } from "./McpClient";
 import { projectToolResult, throwIfToolError } from "./McpClient";
@@ -176,8 +176,8 @@ export interface McpInvokeOptions {
    */
   resolveUi?: boolean;
   /**
-   * Wrap every result as untrusted (`@loom/classify`'s `tainted`), stamped with
-   * origin `mcp:<server>/<toolName>`. The prompt boundary in `@loom/llm` then
+   * Wrap every result as untrusted (`@loomwork/classify`'s `tainted`), stamped with
+   * origin `mcp:<server>/<toolName>`. The prompt boundary in `@loomwork/llm` then
    * REFUSES that content in any instruction position — system prompt, assistant
    * turn, tool description — and fences it in a `user` message.
    *

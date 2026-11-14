@@ -21,7 +21,7 @@ const PROBE = join(REPO_ROOT, ".tmp-template-types");
  * Every workspace package → its built declaration file.
  *
  * Keyed by the package's declared NAME, not its directory: `plugins/content` publishes
- * `@loom/plugin-content`, and assuming the two match silently omits exactly the seams whose
+ * `@loomwork/plugin-content`, and assuming the two match silently omits exactly the seams whose
  * SPI lives in a plugin package.
  */
 function loomPaths(): Record<string, string[]> {
@@ -81,15 +81,15 @@ describe("a scaffolded package declares what its own code needs", () => {
   });
 });
 
-describe("a scaffolded package declares exactly the @loom/* packages its source imports", () => {
+describe("a scaffolded package declares exactly the @loomwork/* packages its source imports", () => {
   /** Peer dependencies a seam declares without importing them in src/index.ts (none today). */
   const JUSTIFIED_UNIMPORTED: Record<string, string[]> = {};
 
-  /** `@loom/*` module specifiers in non-comment import/export-from statements. */
+  /** `@loomwork/*` module specifiers in non-comment import/export-from statements. */
   function importedLoom(source: string): string[] {
     const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
     const out = new Set<string>();
-    for (const m of code.matchAll(/from\s+"(@loom\/[a-z0-9-]+)(?:\/[^"]*)?"/g))
+    for (const m of code.matchAll(/from\s+"(@loomwork\/[a-z0-9-]+)(?:\/[^"]*)?"/g))
       out.add(m[1] as string);
     return [...out];
   }
@@ -108,14 +108,14 @@ describe("a scaffolded package declares exactly the @loom/* packages its source 
         (p) => !imported.includes(p) && !(JUSTIFIED_UNIMPORTED[seam] ?? []).includes(p)
       );
       expect(extra, `${seam}: peer dependencies nothing imports`).toEqual([]);
-      // the sandbox backend never touches @loom/core
-      if (seam === "sandbox") expect(peers).not.toContain("@loom/core");
+      // the sandbox backend never touches @loomwork/core
+      if (seam === "sandbox") expect(peers).not.toContain("@loomwork/core");
       // first-party tsconfig references follow the same list
       const fp = pluginFiles(seam, "probe", { firstParty: true })[
         "plugins/probe/tsconfig.json"
       ] as string;
       for (const i of imported) {
-        expect(fp, `${seam}: ${i}`).toContain(`../../packages/${i.replace("@loom/", "")}`);
+        expect(fp, `${seam}: ${i}`).toContain(`../../packages/${i.replace("@loomwork/", "")}`);
       }
     }
   });

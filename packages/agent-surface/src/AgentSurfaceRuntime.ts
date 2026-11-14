@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { applySurfacePatches } from "./applyPatch";
 import { DEFAULT_SURFACE, SURFACE_PATCH } from "./types";
 import type { SurfacePatchPayload, SurfaceState } from "./types";

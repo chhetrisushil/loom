@@ -46,7 +46,7 @@ bodies (`for`/`for-of`/`for-in`/`while`/`do` and `.map`/`.forEach`/`.flatMap`
 callbacks), flag `*.run(...)`/`*.execute(...)` whose first argument is a static
 step reference (id cannot vary per iteration) or whose id-producing subtree
 contains no loop-scoped binding. Quiet on anything unresolvable — false
-negatives are acceptable; false positives kill lints. Wired to `@loom/verify`
+negatives are acceptable; false positives kill lints. Wired to `@loomwork/verify`
 like the nondeterminism pass; handler bodies exempt (memoized by the kernel).
 
 ### D3 — Kernel crash-matrix test
@@ -58,7 +58,7 @@ form of the DE-5 acceptance criteria.
 
 ### D4 — DE-1 residue: `fanout$` (userspace)
 
-`fanout$(ctx, baseStep, items, { limit })` in `@loom/orchestration`: mints
+`fanout$(ctx, baseStep, items, { limit })` in `@loomwork/orchestration`: mints
 `${baseStep.id}#${i}` per item and delegates to `ctx.parallel` (input-order
 results). Runtime-sized fan-out, deterministic join by construction,
 crash-mid-fan-out recovery re-executes only missing frames — every DE-1

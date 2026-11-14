@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import {
   ARCHIVE_LEGACY_CHECKPOINT_EVENT,
   ArchiveIncarnationError,
@@ -20,16 +20,16 @@ import {
   reservedLateKey,
   reservedLateOrigin,
   segmentDigest,
-} from "@loom/event-runtime";
-import { appendBatchOf } from "@loom/event-runtime";
-import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
+} from "@loomwork/event-runtime";
+import { appendBatchOf } from "@loomwork/event-runtime";
+import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loomwork/replay-vm";
 import {
   COMPACTION_CHECKPOINT_ID_PREFIX,
   type Snapshot,
   type SnapshotStore,
   assertSnapshotIdentity,
   isArchivingCompactionCheckpointId,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import { ulid } from "ulid";
 import { ReservedStreamArchive, appendMoved, reservedIncarnationOf } from "./archiveMove";
 import {
@@ -159,7 +159,7 @@ export interface ArchiveStores {
  * K10.6 (ADR 0055) — the pin seam: retention consults this predicate before
  * reclaiming an execution; `true` exempts it. The kernel checks the predicate;
  * WHAT pins is app/plugin policy (G3) — e.g. "executions whose log carries
- * finding events" via `@loom/plugin-content`'s `pinByEventKinds`. Content-blob
+ * finding events" via `@loomwork/plugin-content`'s `pinByEventKinds`. Content-blob
  * pinning is the companion seam (`sweepUnpinnedContent`), keyed by ref so pins
  * survive archival.
  */
@@ -205,7 +205,7 @@ export class UnsafeCompactionError extends Error {
 
 /**
  * The structural encryption marker (`keys`) an encrypting store exposes — the same probe
- * `loom doctor` uses, so this package does not depend on `@loom/plugin-crypto`. Decorators
+ * `loom doctor` uses, so this package does not depend on `@loomwork/plugin-crypto`. Decorators
  * carry it up (`installOptional`), so a store wrapped above the encrypting one still shows it.
  */
 function keysOf(store: unknown): object | undefined {
@@ -455,7 +455,7 @@ export class LogLifecycle {
       pinnedEventTypes?: readonly string[];
       /**
        * Retention pins an execution whose log holds an event of one of `pinnedEventTypes`
-       * (outcome `"pinned"`), the check `pinByEventKinds(store, kinds)` from `@loom/plugin-content`
+       * (outcome `"pinned"`), the check `pinByEventKinds(store, kinds)` from `@loomwork/plugin-content`
        * makes, read from the events retention already loaded: no second list to keep in step, no
        * extra read. ORed with `pinned`. Compaction keeps those events in place (ADR 0106), so the
        * check holds on a compacted log. Off by default; `true` with no `pinnedEventTypes` throws,

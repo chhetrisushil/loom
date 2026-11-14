@@ -103,7 +103,7 @@ export const AGENT_CARDS = Object.fromEntries(FLEET.map((a) => [a.id, toAgentCar
 ```
 
 - The **A2A protocol shapes** are real (`AgentCard`, `A2ATask`, `A2ATaskResult`, status transitions); `toAgentCard` maps an `agent$` to its card — one source of truth.
-- `InProcessA2ABus` is a **bring-your-own transport** — the same contract `@loom/plugin-a2a`'s HTTP `createA2AServer` serves, but in-process for the browser.
+- `InProcessA2ABus` is a **bring-your-own transport** — the same contract `@loomwork/plugin-a2a`'s HTTP `createA2AServer` serves, but in-process for the browser.
 - The Diagnostics agent runs a genuine **ReAct loop** (`AgentRunner`) that calls the metrics tool, then reasons.
 
 ---
@@ -211,7 +211,7 @@ src/
 ## Run it
 
 ```bash
-pnpm --filter @loom/db-command-center dev        # http://localhost:5173
+pnpm --filter @loomwork/db-command-center dev        # http://localhost:5173
 ```
 
 1. Click the **CPU** example → watch the plan compose, tasks stream, CPU gauge recover — **auto-fixed**.

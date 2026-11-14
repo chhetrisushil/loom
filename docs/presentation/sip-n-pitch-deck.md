@@ -515,7 +515,7 @@ alternatives. If challenged, that's the precise distinction.
 #3 is the one nobody expects and the one worth slowing down for. Everyone else
 logs the OUTCOME. Loom logs the outcome, the policy that produced it, and the
 propensity — so you can ask "what would a different policy have scored?" without
-re-running anything. That's off-policy evaluation, and it's in @loom/learning.
+re-running anything. That's off-policy evaluation, and it's in @loomwork/learning.
 If you only defend one thing in Q&A, defend this one. It's true and it's checkable.
 -->
 

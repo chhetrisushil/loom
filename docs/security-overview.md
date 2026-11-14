@@ -14,8 +14,8 @@ This document lists the guardrails loom ships, what each one guarantees, and whe
 
 **Conventions used below**
 
-- *Kernel*: `@loom/workflow-runtime`, `@loom/event-runtime`, `@loom/effect-runtime` and the event-store SPI. Code that every execution passes through.
-- *1P plugin*: a first-party package in this repo (`plugins/*`, `@loom/plugin-*`) that an app opts into.
+- *Kernel*: `@loomwork/workflow-runtime`, `@loomwork/event-runtime`, `@loomwork/effect-runtime` and the event-store SPI. Code that every execution passes through.
+- *1P plugin*: a first-party package in this repo (`plugins/*`, `@loomwork/plugin-*`) that an app opts into.
 - *Durable fact*: an event appended to the execution's log, replayed identically and visible to audit.
 - *Residual*: a known gap, stated in the ADR, that is accepted rather than fixed.
 
@@ -24,9 +24,9 @@ This document lists the guardrails loom ships, what each one guarantees, and whe
 Every side effect in loom crosses the same five boundaries in a fixed order, and each boundary records its refusals in the log. A tool call, model call or child start is an *effect*; flow code cannot reach the outside world except through one.
 
 1. **Edge** (app-owned). HTTP worker, A2A server, SSE conversation transport, MCP App server. Loom ships an `authorize(req)` hook on each server (ADR 0045 D1), not a fixed scheme. The edge authenticates the caller and attaches a `PrincipalChain` (`tenant`, `actor`, `onBehalfOf`, optional delegation token).
-2. **Lifecycle gate** (`@loom/workflow-runtime`). `ExecutionAuthorizer` rules on `start`, `resume`, `cancel`, `loadState`, `send`, `fork` and related ops (ADR 0039). Resume payloads are schema-checked before append (ADR 0077), bound to what the approver saw, and checked by a `ResumeAuthenticator` (ADR 0117).
+2. **Lifecycle gate** (`@loomwork/workflow-runtime`). `ExecutionAuthorizer` rules on `start`, `resume`, `cancel`, `loadState`, `send`, `fork` and related ops (ADR 0039). Resume payloads are schema-checked before append (ADR 0077), bound to what the approver saw, and checked by a `ResumeAuthenticator` (ADR 0117).
 3. **Kernel**. The deterministic fold and replay, the durable principal (ADR 0111), deadlines and cancellation (ADR 0020, 0112), fencing (ADR 0021), and the replay-divergence detector (ADR 0113).
-4. **Effect chain** (`@loom/effect-runtime`). The K2 capability authorizer runs first, then middleware outermost-first: kill switch, secret redaction, rate limit, budget, then app middleware such as the K6 safety validators (`packages/app/src/defineConfig.ts`). Model calls also pass `guardRequest` between prompt assembly and the provider (ADR 0085). The innermost link can be an isolated executor: a child process (ADR 0019) or the sandbox worker pool (ADR 0064, 0089).
+4. **Effect chain** (`@loomwork/effect-runtime`). The K2 capability authorizer runs first, then middleware outermost-first: kill switch, secret redaction, rate limit, budget, then app middleware such as the K6 safety validators (`packages/app/src/defineConfig.ts`). Model calls also pass `guardRequest` between prompt assembly and the provider (ADR 0085). The innermost link can be an isolated executor: a child process (ADR 0019) or the sandbox worker pool (ADR 0064, 0089).
 5. **Store**. Composable `EventStore` decorators: tenant scoping, field encryption, hash-chain audit, fencing, over SQLite or Postgres (ADR 0022, 0024, 0037, 0074).
 
 ```mermaid
@@ -57,7 +57,7 @@ The capability authorizer runs before any middleware, and isolation is innermost
 | Approvers | Authenticated only with a `ResumeAuthenticator` | HMAC proof bound to one park of one execution, with expiry (ADR 0117). |
 | Model output (text, tool calls, reasoning) | Untrusted | Tool names checked against the menu, inputs schema-checked, approval gates, budgets (ADR 0121). |
 | Third-party content: MCP results, A2A peers, fetched documents, remote tool descriptions | Untrusted | Tainted at ingress, refused in any instruction position (ADR 0085, 0125 D14). |
-| LLM-authored code | Untrusted | Run only behind a `SandboxBackend` (`@loom/sandbox`): by default `@loom/plugin-sandbox`, QuickJS compiled to WASM with no I/O, plus an optional worker-thread pool with a hard kill (ADR 0064, 0089); or your own isolation boundary (ADR 0144). |
+| LLM-authored code | Untrusted | Run only behind a `SandboxBackend` (`@loomwork/sandbox`): by default `@loomwork/plugin-sandbox`, QuickJS compiled to WASM with no I/O, plus an optional worker-thread pool with a hard kill (ADR 0064, 0089); or your own isolation boundary (ADR 0144). |
 | Other tenants | Untrusted | Key-prefixed stores, owner-checked lifecycle ops, per-tenant budgets and fair scheduling (ADR 0024, 0038, 0039). |
 | Store operator, database at rest | Partly trusted | Field-level AES-256-GCM and crypto-shred for confidentiality; hash chain with Ed25519 signatures for tamper evidence (ADR 0022, 0037). |
 | Network path between nodes | Not addressed by loom | TLS and mTLS are the deployment's job; the `authorize` hook sees `req.socket` for mTLS. |
@@ -71,7 +71,7 @@ The capability authorizer runs before any middleware, and isolation is innermost
 
 ## 3. Integrity of the durable log
 
-The log is append-only, single-writer and replay-deterministic, and with `@loom/plugin-audit-chain` wired it is cryptographically tamper-evident. Current contract versions: `EVENT_SCHEMA` 1.26.0, `KERNEL_ABI` 1.3.0, `EVENT_STORE_SPI` 2.6.0.
+The log is append-only, single-writer and replay-deterministic, and with `@loomwork/plugin-audit-chain` wired it is cryptographically tamper-evident. Current contract versions: `EVENT_SCHEMA` 1.26.0, `KERNEL_ABI` 1.3.0, `EVENT_STORE_SPI` 2.6.0.
 
 ### Single writer and fencing (ADR 0021, 0118, 0129)
 
@@ -86,7 +86,7 @@ Effects are at-least-once; steps are exactly-once with respect to the log. The k
 
 ### Tamper evidence (ADR 0037)
 
-`@loom/plugin-audit-chain` wraps any `EventStore`. Each event's metadata carries `prevHash`, `hash = SHA-256(prevHash ‖ canonical(event))` and an optional signature. `verifyChain` recomputes the chain and reports the first break and its reason.
+`@loomwork/plugin-audit-chain` wraps any `EventStore`. Each event's metadata carries `prevHash`, `hash = SHA-256(prevHash ‖ canonical(event))` and an optional signature. `verifyChain` recomputes the chain and reports the first break and its reason.
 
 - **Canonicalisation** sorts keys recursively and drops `undefined`, so key reordering cannot preserve a hash.
 - **Two signature modes, mutually exclusive.** HMAC-SHA256 gives tamper *evidence* against third parties, but the verifier can also forge. Ed25519 (`ed25519Signer` / `ed25519Verifier`) gives third-party *verifiability*: an auditor holding only the public key can check authorship. `keyId` supports rotation without invalidating history.
@@ -143,7 +143,7 @@ It also turns on defaults that do not depend on the workload: principal required
 
 - `CapabilityAuthorizer` runs before any middleware; a denial is a durable `EFFECT_DENIED`. Per-resource grants (R12) let an effect expose `resourceOf(input)`; a resolver that throws matches only effect-wide grants.
 - `policy$` rules (allow/deny globs over effect, tenant and step; deny wins) compose *under* the base authorizer. Policy can tighten a grant, never widen it.
-- **Effect classes** (ADR 0084) are a static ceiling checked at composition: a flow declared `read-only` that can reach an `external-write` tool fails `@loom/verify`, even though K2 would allow the call.
+- **Effect classes** (ADR 0084) are a static ceiling checked at composition: a flow declared `read-only` that can reach an `external-write` tool fails `@loomwork/verify`, even though K2 would allow the call.
 - **Effect mode** (ADR 0073): an `ambient` tool cannot enter a durable execution, and a `journaled` one cannot run through `invokeTransient`. The seam is passed by the entry point, never inferred from spoofable context fields.
 
 ### Delegation (ADR 0024 K12.4, 0045 D2)
@@ -154,9 +154,9 @@ It also turns on defaults that do not depend on the workload: principal required
 
 - `TenantScopedEventStore` and `TenantScopedSnapshotStore` prefix every key, so a tenant store can only address its own executions; fork stays in-tenant (ADR 0024 K12.5).
 - `nestedBudgetMiddleware`: tenant, workflow and execution budgets, most restrictive wins, each `QUOTA_EXCEEDED` attributed to its level. A streaming model call that crosses its budget is cut mid-stream (ADR 0020 K8.4).
-- `@loom/fair-scheduler`: weighted round-robin per tenant so no tenant monopolises concurrency (ADR 0038).
+- `@loomwork/fair-scheduler`: weighted round-robin per tenant so no tenant monopolises concurrency (ADR 0038).
 - Kill switch, deadlines, cancellation and structured-concurrency cancel cascades (ADR 0020, 0112); `rateLimitMiddleware` for per-effect rate limits.
-- `@loom/compliance` partitions its subject index by tenant, so two tenants' `"alice"` never merge in an access or erasure request.
+- `@loomwork/compliance` partitions its subject index by tenant, so two tenants' `"alice"` never merge in an access or erasure request.
 
 ## 5. Untrusted content and LLM guardrails
 
@@ -207,7 +207,7 @@ Each model response and each tool outcome is a recorded decision, so a resume re
 
 ## 6. Isolation and code execution
 
-Loom has two isolation boundaries: a child process for your own tool code (`@loom/isolate`: trusted code, not model-written, kept off ambient authority; hardening, not OS confinement, ADR 0144) and, for model-written code, a capability-empty WASM VM (`@loom/plugin-sandbox`) or a backend you bring (`@loom/sandbox`, ADR 0144). Both sit innermost in the effect chain, so authorization, metering and validation stay on the trusted side.
+Loom has two isolation boundaries: a child process for your own tool code (`@loomwork/isolate`: trusted code, not model-written, kept off ambient authority; hardening, not OS confinement, ADR 0144) and, for model-written code, a capability-empty WASM VM (`@loomwork/plugin-sandbox`) or a backend you bring (`@loomwork/sandbox`, ADR 0144). Both sit innermost in the effect chain, so authorization, metering and validation stay on the trusted side.
 
 ### Isolated tool executor (ADR 0019, K7)
 
@@ -226,7 +226,7 @@ Loom has two isolation boundaries: a child process for your own tool code (`@loo
 - **Provenance:** scripts are content-addressed; a blueprint pins a script by hash, and a rewrite is a new version, never a mutation. Output shape is checked against a pinned hash (`shapeMismatch`).
 - **Error text is data:** script exception text is bounded (2,048 characters, no stack) and is never used as a prompt instruction.
 - One guard implementation (`evalCore.ts`) serves both engines, and the same security test list runs against both.
-- **Bring your own sandbox (ADR 0144):** a `SandboxBackend` is only the engine; `SandboxEffect` (`@loom/sandbox`) keeps the input and output ceilings, the content-address check, the typed channels, bounded error text, cancellation precedence and the JSON round-trip of the result, so a third-party backend cannot weaken them. The backend declares its `capabilities`, and the effect refuses at construction one that declares egress (`network` other than `"none"`) or a reused environment (`freshPerRun: false`) unless the operator passes `allowNetwork` / `allowReusedEnvironment`; the step is `idempotent` only for `network: "none"` with `freshPerRun: true`. A backend that never settles loses to abort and to a `wallClockMs + backendGraceMs` deadline, and whatever it throws is untyped and bounded. `runSandboxBackendConformance` (`@loom/conformance`) runs the security list through the effect, including a realm-escape probe, fresh-per-run runs and a mid-run abort. Loom vouches for QuickJS only; a third-party backend's isolation is the operator's to review.
+- **Bring your own sandbox (ADR 0144):** a `SandboxBackend` is only the engine; `SandboxEffect` (`@loomwork/sandbox`) keeps the input and output ceilings, the content-address check, the typed channels, bounded error text, cancellation precedence and the JSON round-trip of the result, so a third-party backend cannot weaken them. The backend declares its `capabilities`, and the effect refuses at construction one that declares egress (`network` other than `"none"`) or a reused environment (`freshPerRun: false`) unless the operator passes `allowNetwork` / `allowReusedEnvironment`; the step is `idempotent` only for `network: "none"` with `freshPerRun: true`. A backend that never settles loses to abort and to a `wallClockMs + backendGraceMs` deadline, and whatever it throws is untyped and bounded. `runSandboxBackendConformance` (`@loomwork/conformance`) runs the security list through the effect, including a realm-escape probe, fresh-per-run runs and a mid-run abort. Loom vouches for QuickJS only; a third-party backend's isolation is the operator's to review.
 
 ### Developer tooling: file writes and codegen
 
@@ -240,12 +240,12 @@ The CLI, `appgen` and scaffolders write into a project directory, so a cloned re
 
 Sensitive data is classified once at the schema, and the runtime derives redaction, encryption and masking from that classification. Secrets never enter the log; sensitive fields are encrypted per subject and erased by destroying the key; erased data fails loudly instead of replaying silently.
 
-### Classification marks (`@loom/classify`)
+### Classification marks (`@loomwork/classify`)
 
 | Mark | What happens | Mechanism |
 | --- | --- | --- |
 | `secret()` | Never persisted. The log records a deterministic reference; the effect receives the real value. | `secretRef` + `SecretResolver` + `redactionMiddleware`, outermost in the chain (ADR 0022 K10.3) |
-| `sensitive()` | Persisted encrypted, shreddable per subject | `@loom/plugin-crypto` `EncryptingEventStore` / `EncryptingSnapshotStore` (K10.2) |
+| `sensitive()` | Persisted encrypted, shreddable per subject | `@loomwork/plugin-crypto` `EncryptingEventStore` / `EncryptingSnapshotStore` (K10.2) |
 | `internal()` | Persisted; masked on egress | Telemetry adapters, agent surfaces and CLI output are masked to `[redacted]` (K10-R6) |
 | `externalized()` | Bytes leave the log for a content store; the log holds an address | Claim-check (ADR 0046, 0054) |
 
@@ -258,9 +258,9 @@ A verifier (`classification-reachability`) fails the build when a mark sits insi
 - **Identity:** when crypto is composed, the principal's `tenant`, `actor` and `onBehalfOf` are registered as sensitive automatically (ADR 0111).
 - **Storage layer:** SQLite and Postgres at-rest encryption are documented as a third layer (`docs/loom-2.0/11-encryption-at-rest.md`).
 - **Key management is the integrator's.** The `KeyStore` SPI is the erasure primitive. Loom ships only `InMemoryKeyStore` (tests, ephemeral apps) and a scaffold template; production must back it with a KMS or HSM. A store declares `durable`, and `loom doctor` flags one that does not.
-- **Residual:** field-level event envelopes are sealed without AAD, so they are not bound to their event or path. A party with write access to the store could move one ciphertext to another field of the same subject undetected by GCM; `@loom/plugin-audit-chain` detects such an edit.
+- **Residual:** field-level event envelopes are sealed without AAD, so they are not bound to their event or path. A party with write access to the store could move one ciphertext to another field of the same subject undetected by GCM; `@loomwork/plugin-audit-chain` detects such an edit.
 
-### Erasure: crypto-shredding and subject rights (ADR 0022, `@loom/compliance`)
+### Erasure: crypto-shredding and subject rights (ADR 0022, `@loomwork/compliance`)
 
 - `shredSubject` destroys the key and appends a `PAYLOAD_SHREDDED` tombstone at shred time. Replay of a shredded field throws `PayloadShreddedError`; it never succeeds silently. A tolerant read mode exists for off-log consumers only.
 - Shredding covers snapshots and compaction checkpoints. `compact` refuses (`UnsafeCompactionError`) and retention returns `unsafe-archive` when the destination does not share the source's keys, so archiving cannot turn shreddable ciphertext into plaintext (2026-09-27 amendment).
@@ -286,11 +286,11 @@ Every server loom ships binds `127.0.0.1` by default. The A2A and conversation s
 
 | Surface | Package | Authentication | Notable hardening |
 | --- | --- | --- | --- |
-| A2A server (`/tasks/*`) | `@loom/plugin-a2a` | `authenticate(req)` returns a principal (non-empty `actor`), or a boolean `authorize(req)` | Refuses creation with neither unless `insecure: true`, which is refused under strict. Principal is derived from connection facts, never the task body. Task ownership keyed by actor. Non-string `task.id` rejected. 10 MiB body cap |
-| HTTP worker (`/execute`, `/cancel`) | `@loom/plugin-worker-server` | `authorize(req)` | Throws at creation if the worker runs as the kernel system identity and no `authorize` is set. A dispatcher's claimed principal is honoured only behind `authorize`. 10 MiB body cap |
-| Conversation SSE gateway | `@loom/plugin-conversation-sse` | `authenticate(req)` required (or `insecure`, refused under strict) | See below |
-| MCP App surface | `@loom/plugin-mcp-app` | Served through the host's MCP server | Declares no CSP domains by default, so the host applies its restrictive iframe policy; inbound `ui/update-model-context` is tainted (ADR 0072, 0085) |
-| Remote and Cloud Run workers | `@loom/plugin-worker-remote`, `@loom/plugin-cloudrun` | Deployment-supplied | Fencing tokens stop a zombie worker writing after re-dispatch (section 3) |
+| A2A server (`/tasks/*`) | `@loomwork/plugin-a2a` | `authenticate(req)` returns a principal (non-empty `actor`), or a boolean `authorize(req)` | Refuses creation with neither unless `insecure: true`, which is refused under strict. Principal is derived from connection facts, never the task body. Task ownership keyed by actor. Non-string `task.id` rejected. 10 MiB body cap |
+| HTTP worker (`/execute`, `/cancel`) | `@loomwork/plugin-worker-server` | `authorize(req)` | Throws at creation if the worker runs as the kernel system identity and no `authorize` is set. A dispatcher's claimed principal is honoured only behind `authorize`. 10 MiB body cap |
+| Conversation SSE gateway | `@loomwork/plugin-conversation-sse` | `authenticate(req)` required (or `insecure`, refused under strict) | See below |
+| MCP App surface | `@loomwork/plugin-mcp-app` | Served through the host's MCP server | Declares no CSP domains by default, so the host applies its restrictive iframe policy; inbound `ui/update-model-context` is tainted (ADR 0072, 0085) |
+| Remote and Cloud Run workers | `@loomwork/plugin-worker-remote`, `@loomwork/plugin-cloudrun` | Deployment-supplied | Fencing tokens stop a zombie worker writing after re-dispatch (section 3) |
 
 ### Conversation gateway (ADR 0122 D6, D10)
 
@@ -321,10 +321,10 @@ Loom's guardrails are pinned by tests that include the negative case (the attack
 - **Test suite:** 652 test files, run as build, test, typecheck (including tests) and lint on every ready pull request. Tests import sibling packages' built `dist`, so they check what ships.
 - **Negative controls.** Security tests assert the guard fires *and* that the attack works with the guard off, for example `plugins/mcp/src/taintedIngress.test.ts` shows an injection reaching the system prompt when `taintResults` is off.
 - **Fitness functions** (`packages/spec/src`): event-kind writers, layering, seal-guard coverage, decorator conformance (every store decorator forwards every optional SPI method), test servers bound to `127.0.0.1`, and an error-classification sweep that forces every exported error class to be labelled terminal or feedback.
-- **Conformance kits** (`@loom/conformance` and SPI kits) for event stores, snapshot stores, resume authenticators and execution authorizers, run against in-memory, SQLite and Postgres.
+- **Conformance kits** (`@loomwork/conformance` and SPI kits) for event stores, snapshot stores, resume authenticators and execution authorizers, run against in-memory, SQLite and Postgres.
 - **Deterministic simulation testing** (`tools/dst`): seeded crash schedules over a fault-injecting store; the audit chain must verify across the whole schedule space.
 - **Internal audits:** security and denial-of-service sweeps on 2026-08-09, 2026-09-07 and 2026-09-10, an agentic-readiness audit on 2026-10-05, and multi-round reviews on each kernel or security ADR. Findings and fixes are recorded in the ADR amendments cited above.
-- **Pre-flight tooling:** `@loom/verify` checks at composition (effect classes, classification reachability, capability compatibility), and `loom doctor` flags non-durable key stores and mismatched encryption.
+- **Pre-flight tooling:** `@loomwork/verify` checks at composition (effect classes, classification reachability, capability compatibility), and `loom doctor` flags non-durable key stores and mismatched encryption.
 
 ### Known residual risks
 
@@ -350,12 +350,12 @@ Loom's guardrails are pinned by tests that include the negative case (the attack
 1. Set `security.strict: true`, and fix every problem it reports.
 2. Supply `security.authorizer` (a `GrantTable` with least-privilege grants per flow), `security.executionAuthorizer` (`executionAccessPolicy()`), and `security.resumeAuthenticator` (`signedResumeAuthenticator()` with secrets of at least 16 bytes from a secret store).
 3. Put `authenticate` / `authorize` on every server you expose; terminate TLS or mTLS in front of it; set `allowedOrigins` and `allowedHosts` for browser-facing endpoints.
-4. Classify schemas with `secret()`, `sensitive()` and `externalized()`; wire `security.secrets.resolver` to a vault; compose `@loom/plugin-crypto` with a KMS-backed `KeyStore` declared `durable`.
-5. Wrap stores per tenant (`TenantScopedEventStore`) and add `@loom/plugin-audit-chain` with an Ed25519 signer; verify chains before archiving.
+4. Classify schemas with `secret()`, `sensitive()` and `externalized()`; wire `security.secrets.resolver` to a vault; compose `@loomwork/plugin-crypto` with a KMS-backed `KeyStore` declared `durable`.
+5. Wrap stores per tenant (`TenantScopedEventStore`) and add `@loomwork/plugin-audit-chain` with an Ed25519 signer; verify chains before archiving.
 6. Enable `taintResults` on MCP and A2A producers; paste `UNTRUSTED_CONTENT_SYSTEM_NOTE` into system prompts; set `needsApproval` for destructive tools and declare `idempotent: false` on non-idempotent ones.
-7. Run tool code that should not hold ambient authority (yours, not model-written) under `@loom/isolate` with an egress allowlist inside an OS sandbox or container with egress rules; run model-written code only in `@loom/plugin-sandbox` with `workers` set, or in a backend whose declared capabilities (`network: "none"`, `freshPerRun: true`, hard wall clock, memory and CPU caps) pass `runSandboxBackendConformance` against the deployed backend: a declaration is earned by the kit, not by reading it.
+7. Run tool code that should not hold ambient authority (yours, not model-written) under `@loomwork/isolate` with an egress allowlist inside an OS sandbox or container with egress rules; run model-written code only in `@loomwork/plugin-sandbox` with `workers` set, or in a backend whose declared capabilities (`network: "none"`, `freshPerRun: true`, hard wall clock, memory and CPU caps) pass `runSandboxBackendConformance` against the deployed backend: a declaration is earned by the kit, not by reading it.
 8. Configure budgets, rate limits, spawn limits and a kill switch; declare per-flow deadlines.
-9. Run `loom doctor` and `@loom/verify` in CI, and treat their warnings as findings.
+9. Run `loom doctor` and `@loomwork/verify` in CI, and treat their warnings as findings.
 
 ### Out of scope for loom
 
@@ -367,28 +367,28 @@ ADRs live in `docs/adr/`; each one's amendments record review findings and fixes
 
 | ADR | Guardrail | Main code |
 | --- | --- | --- |
-| 0017 | K6 behavioural-safety ring, `SAFETY_BLOCKED` | `@loom/middleware` |
-| 0019 | K7 isolated tool executor, egress allowlist | `@loom/isolate` |
-| 0020, 0112 | Cancellation, deadlines, structured concurrency | `@loom/workflow-runtime` |
-| 0021, 0118, 0129 | Idempotency, fencing, `EFFECT_INDOUBT`, incarnation anchor | `@loom/event-runtime`, store plugins |
-| 0022, 0055, 0106 | Retention, crypto-shredding, redaction, compaction integrity | `@loom/plugin-crypto`, `LogLifecycle` |
-| 0024, 0111 | Principal chain, delegation, tenant-scoped stores, durable principal | `@loom/effect-runtime`, `@loom/event-runtime` |
-| 0037 | Hash-chained, signed audit log | `@loom/plugin-audit-chain` |
-| 0038 | Per-tenant fair scheduling | `@loom/fair-scheduler` |
+| 0017 | K6 behavioural-safety ring, `SAFETY_BLOCKED` | `@loomwork/middleware` |
+| 0019 | K7 isolated tool executor, egress allowlist | `@loomwork/isolate` |
+| 0020, 0112 | Cancellation, deadlines, structured concurrency | `@loomwork/workflow-runtime` |
+| 0021, 0118, 0129 | Idempotency, fencing, `EFFECT_INDOUBT`, incarnation anchor | `@loomwork/event-runtime`, store plugins |
+| 0022, 0055, 0106 | Retention, crypto-shredding, redaction, compaction integrity | `@loomwork/plugin-crypto`, `LogLifecycle` |
+| 0024, 0111 | Principal chain, delegation, tenant-scoped stores, durable principal | `@loomwork/effect-runtime`, `@loomwork/event-runtime` |
+| 0037 | Hash-chained, signed audit log | `@loomwork/plugin-audit-chain` |
+| 0038 | Per-tenant fair scheduling | `@loomwork/fair-scheduler` |
 | 0039 | Execution-lifecycle authorization, authorize-before-fold | `executionAccessPolicy.ts` |
-| 0045 | HTTP authorize seam, delegation expiry, lockfile id checks | `@loom/plugin-a2a`, `@loom/plugin-worker-server`, `tools/appgen` |
-| 0046, 0054, 0120 | Thin log, claim-check, media `ContentResolver` | `@loom/plugin-content`, `@loom/llm` |
-| 0048, 0084, 0073 | `policy$`, effect classes, effect mode | `@loom/app`, `@loom/verify`, `@loom/effect-runtime` |
-| 0063 | MCP dispatch, principals kept out of the log | `@loom/plugin-mcp` |
-| 0064, 0089, 0144 | WASM sandbox, worker pool hard kill, sandbox backend SPI | `@loom/plugin-sandbox`, `@loom/sandbox` |
-| 0077, 0117 | Typed resume payloads, bound and signed approvals | `@loom/workflow-runtime` |
-| 0085, 0125 | Taint and the prompt boundary, withheld third-party descriptions | `@loom/classify`, `@loom/llm`, `@loom/agent` |
-| 0104 | Recovery never answers a gate | `@loom/workflow-runtime` |
-| 0113 | SHA-256 flow fingerprint, replay-divergence detection | `@loom/core`, `@loom/workflow-runtime` |
+| 0045 | HTTP authorize seam, delegation expiry, lockfile id checks | `@loomwork/plugin-a2a`, `@loomwork/plugin-worker-server`, `tools/appgen` |
+| 0046, 0054, 0120 | Thin log, claim-check, media `ContentResolver` | `@loomwork/plugin-content`, `@loomwork/llm` |
+| 0048, 0084, 0073 | `policy$`, effect classes, effect mode | `@loomwork/app`, `@loomwork/verify`, `@loomwork/effect-runtime` |
+| 0063 | MCP dispatch, principals kept out of the log | `@loomwork/plugin-mcp` |
+| 0064, 0089, 0144 | WASM sandbox, worker pool hard kill, sandbox backend SPI | `@loomwork/plugin-sandbox`, `@loomwork/sandbox` |
+| 0077, 0117 | Typed resume payloads, bound and signed approvals | `@loomwork/workflow-runtime` |
+| 0085, 0125 | Taint and the prompt boundary, withheld third-party descriptions | `@loomwork/classify`, `@loomwork/llm`, `@loomwork/agent` |
+| 0104 | Recovery never answers a gate | `@loomwork/workflow-runtime` |
+| 0113 | SHA-256 flow fingerprint, replay-divergence detection | `@loomwork/core`, `@loomwork/workflow-runtime` |
 | 0121 | Canonical agent loop: menu, schema, approval, terminal errors | `packages/agent/src/agentLoop$.ts` |
-| 0122 | Conversation layer, SSE gateway, shared mode | `@loom/conversation`, `@loom/plugin-conversation-sse` |
-| 0130 | Sealed-payload delivery guard | `@loom/workflow-runtime` |
-| 0133 | Model reasoning sidecar | `@loom/llm`, `@loom/conversation` |
+| 0122 | Conversation layer, SSE gateway, shared mode | `@loomwork/conversation`, `@loomwork/plugin-conversation-sse` |
+| 0130 | Sealed-payload delivery guard | `@loomwork/workflow-runtime` |
+| 0133 | Model reasoning sidecar | `@loomwork/llm`, `@loomwork/conversation` |
 
 **Docs:** `docs/data-classification.md`, `docs/data-protection-patterns.md`, `docs/compliance.md`, `docs/loom-2.0/11-encryption-at-rest.md`, `docs/spec/loom-kernel-specification.md`.
 

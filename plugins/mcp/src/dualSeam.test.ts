@@ -1,4 +1,4 @@
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { MCP_INVOKE_TOOL_ID } from "./mcpInvoke$";
 

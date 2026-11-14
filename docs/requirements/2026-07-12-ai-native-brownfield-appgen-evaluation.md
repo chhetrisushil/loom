@@ -31,7 +31,7 @@ the gaps found, and how the completeness follow-up closes them.
 ## Gaps found in the audit (and resolution)
 
 1. **Docs stale.** `docs/usage-cli.md` still described only `--from`/`--dir`. → Rewritten to cover
-   scan → plan → apply → validate, all flags, the safety gate, the lockfile, and `@loom/appgen-model`.
+   scan → plan → apply → validate, all flags, the safety gate, the lockfile, and `@loomwork/appgen-model`.
 2. **No `delete` op.** Only create/extend/modify. → Added `delete` to the grammar
    (`delete/remove <name>`), the model JSON schema, and `applyChanges` (removes generated flow files
    and steps; tracked in `FilePlan.deletes`; honored by dry-run).
@@ -55,7 +55,7 @@ the gaps found, and how the completeness follow-up closes them.
 - **A runnable `examples/` package.** A brownfield walkthrough is provided as documentation
   (`examples/appgen-brownfield/README.md`, no `package.json`) to avoid adding a build/test target for
   what is a doc-first demonstration.
-- **Full `tsc` integration test on a generated project.** A generated project imports `@loom/*`, which
+- **Full `tsc` integration test on a generated project.** A generated project imports `@loomwork/*`, which
   will not resolve in a bare temp dir without an install, so a real `tsc` run there would only produce
   module-resolution noise. Instead, an integration test asserts that the AST-edited flow **parses with
   zero TypeScript syntax diagnostics** — a hermetic, meaningful check that our surgical edits produce
@@ -66,5 +66,5 @@ the gaps found, and how the completeness follow-up closes them.
 - Unit + integration tests for every new behavior (delete, runner-wiring, wireGrants, self-repair,
   diff rendering, confirm).
 - Full workspace `build` + `typecheck` + `test` + `lint` green.
-- Kernel-untouched invariant reconfirmed: touched packages are `@loom/appgen`, `@loom/appgen-model`,
-  `@loom/cli`, plus docs.
+- Kernel-untouched invariant reconfirmed: touched packages are `@loomwork/appgen`, `@loomwork/appgen-model`,
+  `@loomwork/cli`, plus docs.

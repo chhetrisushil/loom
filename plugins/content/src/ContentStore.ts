@@ -5,7 +5,7 @@ import { type ContentRef, contentAddress } from "./content";
 //
 // A key→blob store for externalized payload bytes, addressed by content hash. Back it with
 // object storage / a filesystem / an encrypted blob store in production (as separate
-// `@loom/plugin-content-*` backends); the reference implementation here is in-memory.
+// `@loomwork/plugin-content-*` backends); the reference implementation here is in-memory.
 
 /**
  * ContentStore SPI version (introduced retroactively by ADR 0062 — the SPI had

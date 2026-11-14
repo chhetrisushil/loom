@@ -5,13 +5,13 @@ import type {
   RendererRegistry,
   Widget,
   WidgetValueCheck,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 import {
   describeWidgetFrame,
   describeWidgetStatus,
   traverseBlueprint,
-} from "@loom/blueprint-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+} from "@loomwork/blueprint-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import type { TerminalWidgetRenderer } from "./defaultRegistry";
 import { formatValue, indent } from "./format";
 

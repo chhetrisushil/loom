@@ -1,4 +1,4 @@
-import { SANDBOX_MESSAGE_LIMIT, SANDBOX_NAME_LIMIT, boundText } from "@loom/sandbox";
+import { SANDBOX_MESSAGE_LIMIT, SANDBOX_NAME_LIMIT, boundText } from "@loomwork/sandbox";
 import type { QuickJSWASMModule } from "quickjs-emscripten";
 
 // ── ADR 0089 — the one implementation of the guarded eval ────────────────────
@@ -57,7 +57,7 @@ export type EvalOutcome =
       duringSeed?: true;
     };
 
-/** Script-authored text bounds (ADR 0144: `boundText` lives in @loom/sandbox, which re-bounds it anyway). */
+/** Script-authored text bounds (ADR 0144: `boundText` lives in @loomwork/sandbox, which re-bounds it anyway). */
 export const MESSAGE_LIMIT = SANDBOX_MESSAGE_LIMIT;
 export const NAME_LIMIT = SANDBOX_NAME_LIMIT;
 export { boundText };

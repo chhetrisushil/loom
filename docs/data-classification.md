@@ -1,4 +1,4 @@
-# Data classification (`@loom/classify`)
+# Data classification (`@loomwork/classify`)
 
 > **K10-R1.** Classify a field's sensitivity **once, at its schema**, and let every
 > mechanism — encryption, redaction, egress-scrubbing — derive its wiring from that mark.
@@ -14,7 +14,7 @@ happen — not just "this is secret-ish":
 | Class | Persistence | Mechanism |
 |---|---|---|
 | `secret` | **never persisted** | substituted / redacted before the value reaches the log (K10-R2 `secretRef`, K10.3 redaction) |
-| `sensitive` | encrypted-at-rest, crypto-shreddable | field-level encryption ([`@loom/plugin-crypto`](adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)) + scrubbed from egress |
+| `sensitive` | encrypted-at-rest, crypto-shreddable | field-level encryption ([`@loomwork/plugin-crypto`](adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)) + scrubbed from egress |
 | `internal` | persisted in the clear | scrubbed from **external** egress only (telemetry / agent-surface / CLI, K10-R6); never crosses the trust boundary |
 
 An unmarked field is unclassified and handled by nothing — omitting the marker is a true
@@ -27,7 +27,7 @@ The markers return the **same Zod schema** (validation untouched), so they drop 
 
 ```ts
 import { z } from "zod";
-import { sensitive, secret, internal } from "@loom/classify";
+import { sensitive, secret, internal } from "@loomwork/classify";
 
 const payoutOutput = z.object({
   ssn: sensitive(z.string()),      // encrypt-at-rest + shred on erasure
@@ -62,7 +62,7 @@ simply skipped.
 Marking the array *itself* is still supported and means something different: the whole array
 is covered as one unit, so masking yields `"[redacted]"` in place of the list.
 
-Writing a *fourth* sink? `@loom/classify` exports `expandPaths(root, paths)` and
+Writing a *fourth* sink? `@loomwork/classify` exports `expandPaths(root, paths)` and
 `hasWildcard(paths)` — resolve `[]` against the value with those rather than teaching another
 walker about arrays, so array semantics stay in one place.
 
@@ -72,8 +72,8 @@ The kernel stays ignorant of the taxonomy (G3 — the vocabulary lives here, the
 lives in the crypto plugin / middleware). Each mechanism reads the marks it cares about:
 
 ```ts
-import { sensitivePathsFromSteps } from "@loom/plugin-crypto";
-import { EncryptingEventStore } from "@loom/plugin-crypto";
+import { sensitivePathsFromSteps } from "@loomwork/plugin-crypto";
+import { EncryptingEventStore } from "@loomwork/plugin-crypto";
 
 // Fields marked `sensitive(...)` in a step's outputSchema become STEP_COMPLETED
 // dot-paths `output.<path>` — the encryption map is derived, not hand-authored.
@@ -147,7 +147,7 @@ keeps them off the log and telemetry entirely.
 
 Telemetry sits at the effect boundary, so it derives its scrub paths from step schemas
 (`scrubPathsByStep`). The other two egress surfaces are **not** schema-bound, so they take
-explicit paths — but all three share one masking primitive (`maskPaths` from `@loom/classify`,
+explicit paths — but all three share one masking primitive (`maskPaths` from `@loomwork/classify`,
 masking to `[redacted]`):
 
 - **agent-surface** — surface state is *app-authored* (agents emit free-form patches, not step
@@ -199,7 +199,7 @@ server returned it, and which one it is cannot be known until runtime. So taint 
 value, at ingress, by the code that acquired it:
 
 ```ts
-import { tainted, unwrapTainted } from "@loom/classify";
+import { tainted, unwrapTainted } from "@loomwork/classify";
 
 const doc = tainted(await fetchThirdPartyDoc(), "mcp:acme/fetch_doc");
 ```
@@ -210,7 +210,7 @@ still tainted**.
 
 ### What it buys you
 
-`@loom/llm`'s `guardRequest` runs inside every `createLlmEffect`, unconditionally, between
+`@loomwork/llm`'s `guardRequest` runs inside every `createLlmEffect`, unconditionally, between
 `buildRequest` and the provider:
 
 > **Tainted content may appear only in a `user` message, and only fenced.**
@@ -273,7 +273,7 @@ kept out of the step value and out of the log:
 |---|---|---|
 | Readable reasoning text | the reasoning sidecar store (`observability.reasoning.store`), content-addressed | at least the request's class; erasable on its own schedule (the store's); returned **tainted** (`llm-reasoning:<stepId>`) by `readReasoning`, so it cannot reach a prompt instruction position; served to a client only at a transport edge, to the turn's asker and the conversation's owner alone |
 | Signature / opaque continuation bytes | inline in the step value | no readable content; recorded so a resumed tool loop can send the blocks back |
-| `LLM_REASONING_CAPTURED` | the log (userspace event, ignored by the fold) | references and digests only, never text and never signatures; hash-chained under `@loom/audit-chain` |
+| `LLM_REASONING_CAPTURED` | the log (userspace event, ignored by the fold) | references and digests only, never text and never signatures; hash-chained under `@loomwork/audit-chain` |
 
 Put the store under the same tenant scoping, encryption and retention you give the request
 payloads. Reasoning is corroborating evidence for an audit, not an explanation of what caused the
@@ -290,7 +290,7 @@ output.
 
 ## Triage (why a package, not the kernel)
 
-`@loom/classify` is a small **authoring-tier** package above the kernel. The taxonomy is
+`@loomwork/classify` is a small **authoring-tier** package above the kernel. The taxonomy is
 policy *vocabulary*; the kernel supplies no data-protection semantics (G3). It is 1P shared
 authoring (not a vendor adapter, so not a `plugin-*`), consumed by the crypto plugin, the
 redaction middleware, egress scrubbing (K10-R6) and the subject

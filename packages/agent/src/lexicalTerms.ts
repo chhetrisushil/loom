@@ -1,6 +1,6 @@
 /**
  * Terms of a free-text question for the keyword scorers (`CapabilityCatalog.find`,
- * and a byte-identical copy in `@loom/agent`'s `SkillRegistry`; a test pins the two together).
+ * and a byte-identical copy in `@loomwork/agent`'s `SkillRegistry`; a test pins the two together).
  *
  * - NFKC first, then lowercase: width / compatibility / decomposed forms fold together.
  * - Split on anything that is not a letter, a number, a combining mark or `_` (the underscore

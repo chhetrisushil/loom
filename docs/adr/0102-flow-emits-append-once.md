@@ -208,7 +208,7 @@ either.
 
 ### D6 — `fnv1a64` gets its hot-path implementation
 
-`@loom/core`'s `fnv1a64` said a faster formulation was "deferred until a hot-path caller exists".
+`@loomwork/core`'s `fnv1a64` said a faster formulation was "deferred until a hot-path caller exists".
 Digesting every flow-level emit is that caller. It now uses four 16-bit limbs in plain Number
 arithmetic, which works because the FNV prime is 2^40 + 0x1b3. The output is bit-identical, pinned
 by a randomized differential test against the BigInt definition.

@@ -148,7 +148,7 @@ export class FlowEditor {
 
   /** Insert a durable UI surface write into the runner, unless one already exists. */
   ensureUi(): void {
-    // ADR 0114: `ctx.ui` is typed by @loom/agent-surface (declaration merging), so the documented
+    // ADR 0114: `ctx.ui` is typed by @loomwork/agent-surface (declaration merging), so the documented
     // spelling is `surface(ctx)`, and the file must import it to type-check. Reuse an existing
     // import of `surface` in ANY form (multi-line, aliased, namespace); alias ours around a clash.
     const existing = this.surfaceImportCallee();
@@ -166,7 +166,7 @@ export class FlowEditor {
       this.splices.push({
         start: lineStart,
         end: lineStart,
-        text: `import { ${spec} } from "@loom/agent-surface";\n`,
+        text: `import { ${spec} } from "@loomwork/agent-surface";\n`,
       });
     }
     this.insertBeforeRunnerReturn(
@@ -176,13 +176,13 @@ export class FlowEditor {
   }
 
   /**
-   * The expression that calls `surface` via an existing VALUE import from `@loom/agent-surface`
+   * The expression that calls `surface` via an existing VALUE import from `@loomwork/agent-surface`
    * (`surface`, the alias in `surface as s`, or `ns.surface` for a namespace import), if any.
    */
   private surfaceImportCallee(): string | undefined {
     for (const stmt of this.sf.statements) {
       if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
-      if (stmt.moduleSpecifier.text !== "@loom/agent-surface") continue;
+      if (stmt.moduleSpecifier.text !== "@loomwork/agent-surface") continue;
       const clause = stmt.importClause;
       if (clause === undefined || clause.isTypeOnly) continue;
       const bindings = clause.namedBindings;

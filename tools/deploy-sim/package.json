@@ -1,5 +1,5 @@
 {
-  "name": "@loom/deploy-sim",
+  "name": "@loomwork/deploy-sim",
   "version": "0.1.0",
   "description": "Deploy-simulation for Loom — replay historical event logs (especially in-flight suspended executions) against new flow definitions to catch resume-breaking changes before promoting",
   "main": "./dist/index.js",
@@ -20,14 +20,14 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/eval": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/eval": "workspace:^"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

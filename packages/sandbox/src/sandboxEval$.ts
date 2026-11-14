@@ -1,6 +1,6 @@
-import { step$ } from "@loom/core";
-import type { StepDefinition } from "@loom/core";
-import type { EffectRuntime } from "@loom/effect-runtime";
+import { step$ } from "@loomwork/core";
+import type { StepDefinition } from "@loomwork/core";
+import type { EffectRuntime } from "@loomwork/effect-runtime";
 import { z } from "zod";
 import { SandboxEffect, type SandboxEffectOptions } from "./SandboxEffect";
 import { SANDBOX_ERRORS, SandboxEvalInput, type SandboxEvalInputValue } from "./errors";

@@ -1,4 +1,4 @@
-import type { MemoryDefinition } from "@loom/core";
+import type { MemoryDefinition } from "@loomwork/core";
 import { MemoryRuntime } from "./MemoryRuntime";
 import type { MemoryEntry, MemoryStore } from "./types";
 

@@ -84,7 +84,7 @@ story (`plugins/a2a/src/A2AServer.ts`) told for a much larger ecosystem, and it 
 essentially all the value sits.
 
 **It is blocked on a prerequisite nobody has named: loom has no MCP server.**
-`@loom/plugin-mcp` is client-only — `McpClient` issues `tools/list`
+`@loomwork/plugin-mcp` is client-only — `McpClient` issues `tools/list`
 (`plugins/mcp/src/McpClient.ts:89`) and `tools/call`
 (`plugins/mcp/src/McpClient.ts:107`) outbound, and there is no inbound counterpart
 anywhere in the repo. loom speaks A2A as a server and nothing else.
@@ -178,7 +178,7 @@ Three consequences follow directly, each landing on machinery that already exist
   in `structuredContent`. The template is a catalog renderer; the catalog work is reused
   wholesale rather than re-derived.
 - **Pin the template exactly as ADR 0063 pins tool schemas.** Store the template in
-  `@loom/plugin-content` (`contentAddress`, `ContentStore`, `pinByEventKinds`); hash it
+  `@loomwork/plugin-content` (`contentAddress`, `ContentStore`, `pinByEventKinds`); hash it
   with `jsonSchemaHash`'s sibling discipline — pin at plan time, verify at serve time,
   fail typed (`templateDrift`) through an ADR 0060 channel. A replay that renders a
   *different* UI than the original run is a silent correctness bug; this is precisely the
@@ -196,7 +196,7 @@ from the model's tool list.
 **Proposal.** Expose a single app-visibility cursor tool —
 `loom.surface.since(surfaceId, fromSeq)` — returning the `SURFACE_PATCH` events after a
 sequence number. This maps directly onto `readRangeOf` / `EventStore.readRange`
-(`packages/event-runtime`), and is the same read-model shape as `@loom/live-query`
+(`packages/event-runtime`), and is the same read-model shape as `@loomwork/live-query`
 (`snapshot` / `subscribe` over `loadState` + `EventStore.subscribe`). No new event type,
 no fold change, no syscall.
 
@@ -217,8 +217,8 @@ late-joining-client handshake `A2UISurfaceBridge.snapshot()` already implements
 | # | Concern | Disposition |
 |---|---|---|
 | S1 | **Egress redaction.** Surface state shipped as `structuredContent` crosses the trust boundary. | Mandatory, not optional. `A2UISurfaceBridge` already models this correctly (K10-R6 `maskPaths`; internal fold keeps true values so `increment`/`append`/`merge` stay correct). Any MCP Apps bridge inherits it, and `redact` should be **required by configuration** rather than defaulting to empty — a default-empty redaction list is a silent leak. |
-| S2 | **View-initiated `tools/call` is an authorization event, not a continuation.** The caller is the user's UI, not the flow. | It must run under a **distinct principal with its own grants**, never inheriting the execution's authority. `@loom/capability` (`CapabilityInvokeAuthorizer`), execution-authz (ADR 0039), and the K2 GrantTable / `EFFECT_DENIED` path already model exactly this. The mistake to avoid is letting the view borrow the flow's principal. |
-| S3 | **`ui/update-model-context` is a prompt-injection surface.** It lets untrusted view content overwrite the agent's context for future turns, with overwrite semantics. | If loom ever ingests it, the content must be **tainted by classification** (`@loom/classify`) and never merged into a system prompt. Cheap to decide now and impossible to retrofit onto an immutable log — the same argument ADR 0063 D3 made about principals. |
+| S2 | **View-initiated `tools/call` is an authorization event, not a continuation.** The caller is the user's UI, not the flow. | It must run under a **distinct principal with its own grants**, never inheriting the execution's authority. `@loomwork/capability` (`CapabilityInvokeAuthorizer`), execution-authz (ADR 0039), and the K2 GrantTable / `EFFECT_DENIED` path already model exactly this. The mistake to avoid is letting the view borrow the flow's principal. |
+| S3 | **`ui/update-model-context` is a prompt-injection surface.** It lets untrusted view content overwrite the agent's context for future turns, with overwrite semantics. | If loom ever ingests it, the content must be **tainted by classification** (`@loomwork/classify`) and never merged into a system prompt. Cheap to decide now and impossible to retrofit onto an immutable log — the same argument ADR 0063 D3 made about principals. |
 | S4 | **`visibility` must be enforced server-side.** The spec obliges hosts to reject app-originated calls to tools lacking `"app"`. | If loom serves, it enforces the mirror. Otherwise the §4 polling seam becomes a bypass around the model's tool boundary — an app-visibility tool that any caller can reach is not a boundary. |
 | S5 | **The view's `result` is untrusted input.** | Same rule ADR 0070 already recorded for `functionResponse`: validate against the declared schema before acting on anything sensitive. Nothing new is required; the discipline transfers. |
 
@@ -234,9 +234,9 @@ leaves the boundary and both would ship as defaults.
 | MCP Apps **host** (iframe/CSP/postMessage) | **reject** | app layer, or 3P `../loom-plugins` | Browser-security concern; loom-the-kernel has no browser (§1 Direction B). |
 | Per-flow HTML generation | **reject** | — | Breaks replay determinism and the extension's pre-declaration security model (§3). |
 | Two-way binding sync | **reject** | — | Already out of scope for A2UI (ADR 0069/0070); MCP Apps does not even offer the push channel to implement it (P-B). |
-| D1 — preserve `structuredContent` / `_meta` / non-text content | **accept, do now** | `@loom/plugin-mcp` | Prerequisite for everything; independently a live lossy-flattening defect (§2). |
-| D2 — protocol-version drift | **accept, track** | `@loom/plugin-mcp` | Known twelve-month deadline, not an outage (§2). |
-| Ingress UI-resource awareness (carry, don't render) | **accept** | `@loom/plugin-mcp` | Carry the resource URI + content hash with provenance so an app *can* render. |
+| D1 — preserve `structuredContent` / `_meta` / non-text content | **accept, do now** | `@loomwork/plugin-mcp` | Prerequisite for everything; independently a live lossy-flattening defect (§2). |
+| D2 — protocol-version drift | **accept, track** | `@loomwork/plugin-mcp` | Known twelve-month deadline, not an outage (§2). |
+| Ingress UI-resource awareness (carry, don't render) | **accept** | `@loomwork/plugin-mcp` | Carry the resource URI + content hash with provenance so an app *can* render. |
 | `ui://` egress + surface-host template | **accept, gated** | new 1P plugin | The real deliverable; gated on §7. |
 | MCP **server** | **accept, gated** | 1P | The actual prerequisite and the actual value (§1 Direction A). |
 
@@ -247,7 +247,7 @@ leaves the boundary and both would ship as defaults.
 **Step 0 — fix `McpClient` (now, unconditional).** D1 and D2. Small, self-justifying, no
 ADR needed, and no UI work is reachable without it.
 
-**Step 1 — ingress awareness in `@loom/plugin-mcp`.** Carry a UI-bearing tool result
+**Step 1 — ingress awareness in `@loomwork/plugin-mcp`.** Carry a UI-bearing tool result
 through the log with provenance (resource URI + content hash). Carry, do not render.
 
 **Step 2 — MCP server + `ui://` egress, evidence-gated.** Gate on a concrete consumer,
@@ -269,7 +269,7 @@ The instructive result here is that the *stated* request ("support MCP Apps") an
 *actual* work ("be an MCP server") differ by roughly a factor of five in cost and point at
 different justifications. The UI extension itself is genuinely cheap — one static
 template, one cursor tool, and a payload contract loom already ships in
-`@loom/plugin-a2ui`. What is not cheap is the server it must attach to, and that decision
+`@loomwork/plugin-a2ui`. What is not cheap is the server it must attach to, and that decision
 deserves to be made on its own merits rather than smuggled in behind a UI feature.
 
 Second, P-D ("it ships code") looked like the fatal objection and turned out to be the

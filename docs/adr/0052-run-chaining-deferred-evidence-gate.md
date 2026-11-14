@@ -4,7 +4,7 @@
 - Date: 2026-07-15
 - Builds on: [ADR 0051 (perpetual-agents placement)](0051-perpetual-agents-placement-schedule-remodel.md),
   T1 timers/schedules (ADR 0025), K9 idempotency (ADR 0021), K11 code versioning (ADR 0023),
-  `@loom/orchestration` child supervision (ADR 0040).
+  `@loomwork/orchestration` child supervision (ADR 0040).
 - Part of: keeping speculative kernel primitives out until a workload demonstrably needs them
   (P10). Companion to the T4 draft in
   [the requirements rewrite](../requirements/2026-07-15-perpetual-agents-sentinel-workloads.md) §5.
@@ -48,7 +48,7 @@ with a written failure report as the promotion evidence:
 2. **A genuinely unrotatable long-lived run** that must hold live suspensions across months
    *and* cross deploys that `resumeAs` + K11.5 (ADR 0051 D6) cannot bridge. Long-lived human
    gates alone do not qualify: model the gate as a child execution
-   (`@loom/orchestration` `awaitChild`) — the child survives its parent's completion.
+   (`@loomwork/orchestration` `awaitChild`) — the child survives its parent's completion.
 
 Before promotion, the userland approximation must be attempted and its failure documented:
 deterministic successor ids (`chainId@n+1`) + K9 idempotent starts + a supervisor projection

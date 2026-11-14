@@ -1,4 +1,4 @@
-import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
+import type { EffectContext, EffectMiddleware } from "@loomwork/effect-runtime";
 
 // ── Effect rate limiting (R9 — autonomy envelope) ────────────────────────────
 //

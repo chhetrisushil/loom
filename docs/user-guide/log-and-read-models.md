@@ -4,12 +4,12 @@
 
 ## Read models: durable cross-execution queries (ADR 0058)
 
-Projections are per-execution and in-process; **read models** (`@loom/plugin-read-model`) are
+Projections are per-execution and in-process; **read models** (`@loomwork/plugin-read-model`) are
 the durable, cross-execution query layer — "every FINDING_RECORDED for table `orders`, newest
 first", over months of runs, answered from an index instead of a re-fold:
 
 ```ts
-import { InMemoryReadModelStore, ReadModelService } from "@loom/plugin-read-model";
+import { InMemoryReadModelStore, ReadModelService } from "@loomwork/plugin-read-model";
 // durable backends: SqliteReadModelStore / PostgresReadModelStore
 
 const readModels = new ReadModelService(new InMemoryReadModelStore());
@@ -49,7 +49,7 @@ verified match ([ADR 0095](../adr/0095-binding-semantics-pin.md)). The same decl
 `projection$` / `Projection` for the folds a composed surface binds to; see
 [the composed-surface recipe](../composed-surfaces.md).
 
-## Live queries: watching one execution as it runs (`@loom/live-query`)
+## Live queries: watching one execution as it runs (`@loomwork/live-query`)
 
 Read models answer questions **across** executions. A live query is the other axis: the state
 of **one** execution, pushed again every time an event lands — a progress view, a dashboard
@@ -61,7 +61,7 @@ changed; a live query is the two composed, which keeps it a read-model concern (
 than a kernel primitive.
 
 ```ts
-import { liveQuery } from "@loom/live-query";
+import { liveQuery } from "@loomwork/live-query";
 
 const lq = liveQuery({
   eventStore: app.stores.eventStore,
@@ -114,7 +114,7 @@ lifecycle without ever creating a silent third behavior between "replays identic
 **Pinning (K10.6, ADR 0055).** Retention consults an optional `PinPredicate`
 (`defineConfig({ durability: { retention: { pinned } } })`) before reclaiming an execution — `pinByEventKinds(store,
 ["FINDING_RECORDED"])` pins runs carrying your designated domain events. The companion
-`sweepUnpinnedContent` (in `@loom/plugin-content`) reclaims content-store blobs on a TTL while
+`sweepUnpinnedContent` (in `@loomwork/plugin-content`) reclaims content-store blobs on a TTL while
 refs cited by pinned event kinds survive — across archival, re-derived from the log on every
 sweep (mark-and-sweep, no mutable index). Over a store with ContentStore SPI 1.3.0 (SQLite,
 in-memory) every erase is conditional on the blob's touch time, so a blob re-cited mid-sweep is
@@ -147,14 +147,14 @@ the kinds are declared once instead of again in a `pinByEventKinds` predicate. T
 a WHOLE log uncompacted — a legal hold by tag — use `retention.compactionExempt`, which
 `compact` always consults.
 The whole pattern — schedule, carry state, claim-check, pin policy — is one declaration via
-`sentinelPreset()` (`@loom/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.
+`sentinelPreset()` (`@loomwork/plugin-sentinel`), and `loom new sentinel <name>` scaffolds it.
 
-**Crypto-shredding (K10.2, `@loom/plugin-crypto`).** Encrypt sensitive fields at rest under a
+**Crypto-shredding (K10.2, `@loomwork/plugin-crypto`).** Encrypt sensitive fields at rest under a
 per-subject key; satisfy erasure by **destroying the key** — no history rewrite:
 
 ```ts
 import { EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore, shredSubject }
-  from "@loom/plugin-crypto";
+  from "@loomwork/plugin-crypto";
 
 const keys = new InMemoryKeyStore(); // tests only — `loom doctor` FAILS this in an app
                                      // (keys are the erasure boundary; losing them erases)
@@ -178,7 +178,7 @@ parent's **subject** so its copied ciphertext stays readable and shreds with the
 **Retention & compaction (K10.1 / K10.4, `LogLifecycle`).** A kernel reclaims resources:
 
 ```ts
-import { LogLifecycle } from "@loom/workflow-runtime";
+import { LogLifecycle } from "@loomwork/workflow-runtime";
 
 const life = new LogLifecycle(eventStore, snapshotStore, {
   archive: { eventStore: archiveEvents, snapshotStore: archiveSnaps }, // A6 — archive first
@@ -205,8 +205,8 @@ all three, so the windows cannot drift apart, and a `content.unpinnedAfterMs` be
 `RetentionPolicyError` at construction.
 
 ```ts
-import { retentionPolicy } from "@loom/workflow-runtime";
-import { sweepUnpinnedContent } from "@loom/plugin-content";
+import { retentionPolicy } from "@loomwork/workflow-runtime";
+import { sweepUnpinnedContent } from "@loomwork/plugin-content";
 
 const DAY = 86_400_000;
 const policy = retentionPolicy({
@@ -285,7 +285,7 @@ redaction keeps a secret **out of the log entirely** — a step carries a determ
 reference, resolved to the real value only at effect execution:
 
 ```ts
-import { redactionMiddleware, secretRef, InMemorySecretResolver } from "@loom/middleware";
+import { redactionMiddleware, secretRef, InMemorySecretResolver } from "@loomwork/middleware";
 const resolver = new InMemorySecretResolver(/* vault/KMS in production */);
 new EffectRuntime([redactionMiddleware({ resolver })]);
 
@@ -309,7 +309,7 @@ above are the low level. In practice, mark the field **once** on its schema and 
 derives its wiring — encryption, redaction, and egress scrubbing:
 
 ```ts
-import { sensitive, secret, internal, externalized } from "@loom/classify";
+import { sensitive, secret, internal, externalized } from "@loomwork/classify";
 
 const output = z.object({
   ssn: sensitive(z.string()),        // encrypt-at-rest + crypto-shreddable + scrubbed from egress
@@ -330,7 +330,7 @@ const app = defineConfig({
 See **[Data classification](../data-classification.md)** for the full taxonomy + derive helpers,
 and the [content-store seam](../adr/0046-content-store-seam-thin-authoritative-log.md) for `externalized()`.
 
-**Data-subject rights (T3, `@loom/compliance`).** Event-sourcing makes GDPR Art. 15/20 (access,
+**Data-subject rights (T3, `@loomwork/compliance`).** Event-sourcing makes GDPR Art. 15/20 (access,
 portability) and Art. 17 (erasure) a *fold*. Wire a `subjectOf` resolver (and `tenantOf` for
 multi-tenant isolation) and get a live subject index + export + erasure:
 
@@ -347,12 +347,12 @@ Operator sweeps over cold storage: `loom compliance report` (subject inventory) 
 
 ## Wire-level ABI (T2)
 
-`@loom/wire-abi` lets a **non-TypeScript client** (any language, even a shell script) drive
+`@loomwork/wire-abi` lets a **non-TypeScript client** (any language, even a shell script) drive
 executions over JSON-RPC. The wire protocol is a versioned *projection* of the K1 syscalls —
 generated from `KERNEL_SYSCALLS`, so the hand-written `ctx` surface stays authoritative:
 
 ```ts
-import { handleRpc, WIRE_ABI, FOLD_VECTORS, runFoldVectors } from "@loom/wire-abi";
+import { handleRpc, WIRE_ABI, FOLD_VECTORS, runFoldVectors } from "@loomwork/wire-abi";
 
 // Mount the carrier on any transport (node:http, the A2A server, worker-server):
 const response = await handleRpc(runtime, jsonRpcRequest);

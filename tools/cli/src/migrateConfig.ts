@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
-import { GROUPED_OPTIONS } from "@loom/app";
-import { assertNoSymlinkPath, containmentRootFor } from "@loom/appgen";
+import { GROUPED_OPTIONS } from "@loomwork/app";
+import { assertNoSymlinkPath, containmentRootFor } from "@loomwork/appgen";
 import { UsageError } from "./args";
 
 /**
  * `loom migrate-config` — rewrite the flat `defineConfig` option spellings (which now throw)
- * into their namespaces. The old→new mapping is `GROUPED_OPTIONS` in `@loom/app`, the same
+ * into their namespaces. The old→new mapping is `GROUPED_OPTIONS` in `@loomwork/app`, the same
  * table the flat-key error is built from; there is no second copy here.
  *
  * It is a text-span edit driven by a small tokenizer (strings, templates, comments, regex
@@ -410,7 +410,7 @@ export function analyzeConfig(src: string): FileAnalysis {
   if (names.size === 0 && spaces.size === 0) {
     return refuse(
       src,
-      "no import of `defineConfig` from `@loom/app` — this does not look like a loom config"
+      "no import of `defineConfig` from `@loomwork/app` — this does not look like a loom config"
     );
   }
   const edits: Edit[] = [];
@@ -434,7 +434,7 @@ export function analyzeConfig(src: string): FileAnalysis {
       toks[k + 1]?.text === "." &&
       toks[k + 2]?.text === "defineConfig"
     ) {
-      callee = k + 2; // `app.defineConfig(` through `import * as app from "@loom/app"`
+      callee = k + 2; // `app.defineConfig(` through `import * as app from "@loomwork/app"`
     } else continue;
     let open = callee + 1;
     while (toks[open]?.kind === "comment") open++;
@@ -461,8 +461,8 @@ export function analyzeConfig(src: string): FileAnalysis {
 }
 
 /**
- * The local names under which `defineConfig` is imported from `@loom/app` (`names`, honouring
- * `import { defineConfig as dc }`) and the namespace names of `import * as ns from "@loom/app"`
+ * The local names under which `defineConfig` is imported from `@loomwork/app` (`names`, honouring
+ * `import { defineConfig as dc }`) and the namespace names of `import * as ns from "@loomwork/app"`
  * (`spaces`). A `defineConfig` from any other module (vite's, say) is not in either set.
  */
 function loomAppBindings(toks: Tok[]): { names: Set<string>; spaces: Set<string> } {
@@ -480,7 +480,7 @@ function loomAppBindings(toks: Tok[]): { names: Set<string>; spaces: Set<string>
         break;
       }
     }
-    if (from < 0 || (toks[from + 1] as Tok).text.slice(1, -1) !== "@loom/app") continue;
+    if (from < 0 || (toks[from + 1] as Tok).text.slice(1, -1) !== "@loomwork/app") continue;
     const first = toks[k + 1];
     if (first?.text === "type" && toks[k + 2]?.text !== "," && toks[k + 2]?.text !== "from")
       continue;

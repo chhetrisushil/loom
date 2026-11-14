@@ -4,7 +4,7 @@
 
 > New here? Follow the **[Getting Started](getting-started.md)** quickstart first, then the **[Usage Guide](usage.md)** (Step 13 introduces the CLI in context). This doc is the command-by-command reference.
 
-The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`"scripts": { "loom": "loom" }` → `pnpm loom …`), or the local `node_modules/.bin/loom`. Starting a brand-new project? `create-loom-app <dir> --loom-path <your built loom checkout>` (see [Getting Started](getting-started.md)); `npm create loom-app` does not work until the packages are published.
+The binary ships in `@loomwork/cli`. Run it with `npx loom …`, a package script (`"scripts": { "loom": "loom" }` → `pnpm loom …`), or the local `node_modules/.bin/loom`. Starting a brand-new project? `create-loom-app <dir> --loom-path <your built loom checkout>` (see [Getting Started](getting-started.md)); `npm create loom-app` does not work until the packages are published.
 
 > **Working in the Loom monorepo?** The dev-tooling bins (`loom`, `loom-compile`, `create-loom-app`) live under `tools/`. Expose them globally against your local build with **`pnpm link:global`** (and `pnpm unlink:global` to remove) — a root script that re-links all three from `tools/*`. Run it after a fresh clone, or any time the tooling packages move (a stale global link left over from an old path is what breaks `loom` otherwise).
 
@@ -58,7 +58,7 @@ validate
                                                   the named ones must have run)
   loom check --manifest <path> [--json]           static flow-graph checks (compiler manifest)
   loom lint claim-check [--dir .] [--json]        CC-5: flag claim-check reach-through inside flows
-  loom verify --config <module> [--manifest <path>] [--json]  pre-flight runtime verification (@loom/verify)
+  loom verify --config <module> [--manifest <path>] [--json]  pre-flight runtime verification (@loomwork/verify)
                                                   (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
   loom migrate-config [<file>...] [--config <file>] [--apply] [--json]  rewrite flat defineConfig options into their groups
                                                   (dry run prints a diff; --apply writes; refuses a
@@ -171,7 +171,7 @@ deploy
 help
   loom help [command]                             this summary, or one command's usage
   loom <command> --help                           same as `loom help <command>`
-  loom version                                    print the @loom/cli version (also --version)
+  loom version                                    print the @loomwork/cli version (also --version)
   loom completion <zsh|bash|fish>                 print a shell completion script
 
   <store-flags>  where a command reads storage — FLAGS, never a positional path (a bare path is refused;
@@ -198,7 +198,7 @@ There are no global flags — each command declares its own. The recurring ones 
 - `loom help` prints the grouped summary above (scaffold · validate · observe · operate · maintain · plugin · deploy).
 - `loom <command> --help`, `loom <command> -h` and `loom help <command>` print **that command's** summary, synopsis lines and flags (exit `0`) — the text comes from the same command table the strict flag parser uses, so it cannot name a flag the command rejects. `loom <command> <subcommand> --help` (e.g. `loom branches retire --help`) narrows to that subcommand's synopsis and the flags it names. `loom help --help` prints help's own help.
 - `--help` / `-h` is recognised **in flag position**. For commands whose later words are free text, a `-h` after them is a literal word: `loom appgen make a cli with -h flag` is an intent, not a help request (`appgen` reads help only before its first positional; `knowledge` only before its query). A `--` ends help scanning everywhere. `loom logs --db x --help` still prints help.
-- `loom version` / `loom --version` prints the `@loom/cli` package version.
+- `loom version` / `loom --version` prints the `@loomwork/cli` package version.
 - `loom completion zsh|bash|fish` prints a completion script generated from the command table (commands, subcommands, flags): `eval "$(loom completion bash)"`, `loom completion zsh > "${fpath[1]}/_loom"`, or `loom completion fish > ~/.config/fish/completions/loom.fish`. Value flags take a value in every shell (fish `-r`; zsh `--db=[db]:file:_files`; bash completes the next word as a file for path flags such as `--db`/`--config`/`--dir`, and as nothing for the others), and subcommand words are offered only right after the command.
 
 `loom help`, `loom --version` and `loom completion` load none of the command implementations (each command's modules are imported when it runs), so they answer in roughly node's own startup time.
@@ -238,7 +238,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 Several commands are **two words** — the first positional selects the subcommand: `deploy check`, `lint claim-check`, `repair blank-stream`, `retention run`, `sweep content`, `compliance report`, `learn report|eval`, and `plugin new|check|try|search|seams`.
 
-> **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: sqliteStorage({ dir: ".data" })` (from `@loom/plugin-sqlite`) in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.data/events.db`. In-memory apps leave nothing to inspect.
+> **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: sqliteStorage({ dir: ".data" })` (from `@loomwork/plugin-sqlite`) in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.data/events.db`. In-memory apps leave nothing to inspect.
 
 ---
 
@@ -260,7 +260,7 @@ Scaffolds a single file from a template, then runs `loom gen` so the new file is
 
 ```bash
 npx loom new flow greet          # → creates app/flows/greet/flow.ts
-npx loom new sentinel pg-lag     # → app/flows/pg-lag/flow.ts — a schedule-driven sentinel starter (@loom/plugin-sentinel)
+npx loom new sentinel pg-lag     # → app/flows/pg-lag/flow.ts — a schedule-driven sentinel starter (@loomwork/plugin-sentinel)
 npx loom new agent triager       # → creates app/agents/triager.ts
 npx loom new skill refunds       # → creates app/skills/refunds.ts
 npx loom new schedule nightly    # → creates app/schedules/nightly.ts
@@ -269,23 +269,23 @@ npx loom new projection counter  # → creates app/projections/counter.ts
 npx loom new tool lookup --dir src
 ```
 
-`loom new flow` also writes a sibling `app/flows/<name>/flow.test.ts` that runs the flow through [`@loom/testing`](../tools/testing/README.md)'s `createTestApp` (it passes on a fresh scaffold; the other kinds have no natural test and get none).
+`loom new flow` also writes a sibling `app/flows/<name>/flow.test.ts` that runs the flow through [`@loomwork/testing`](../tools/testing/README.md)'s `createTestApp` (it passes on a fresh scaffold; the other kinds have no natural test and get none).
 
 #### Non-agentic flow templates: `loom new flow <name> --template approval|timer|saga`
 
-The default flow is an echo step. These three are the plain-workflow starting points; each writes `flow.ts` plus a sibling `flow.test.ts` that passes on a fresh scaffold and uses [`@loom/testing`](../tools/testing/README.md) time travel (`createTestApp({ clock: true })`, `advanceTime`) instead of real waiting:
+The default flow is an echo step. These three are the plain-workflow starting points; each writes `flow.ts` plus a sibling `flow.test.ts` that passes on a fresh scaffold and uses [`@loomwork/testing`](../tools/testing/README.md) time travel (`createTestApp({ clock: true })`, `advanceTime`) instead of real waiting:
 
 | Template | What it shows | Test |
 |---|---|---|
 | `approval` | `ctx.suspend` on a typed gate (`flow$({ resumeSchemas })`) with a 24h timeout, and a note on wiring `security.resumeAuthenticator` for who may approve | approve → applied; no answer for 24h → expired |
 | `timer` | a durable `ctx.sleep` (1 day) between steps (`ctx.sleepUntil` for an absolute instant) | one millisecond short of a day: still suspended; then due: completed |
-| `saga` | `withSaga` from `@loom/saga`: each forward step registers a compensator, a later failure runs them in reverse | success keeps the work; a failure undoes it in reverse |
+| `saga` | `withSaga` from `@loomwork/saga`: each forward step registers a compensator, a later failure runs them in reverse | success keeps the work; a failure undoes it in reverse |
 
-`saga` imports `@loom/saga`, which a fresh `create-loom-app` project does not declare, so `loom new` prints the line to add (the same hint as above). Saga steps are **tool steps** (a compensator runs under a derived step id, so an inline `handler$` cannot be one): the flow exports `<Name>Tools` and `<Name>Grants`, and under the scaffold's `security.strict` you must spread `<Name>Grants` into the `GrantTable` in `app/security.ts` or the app refuses to start with a `capability-compat` finding; register an effect per tool id on `app.effectRuntime` (the generated test stubs them). The `timer` and `approval` templates need a `TimerService` in the app that runs them (`defineConfig({ timers: { store } })`); the generated tests provide one through `clock: true`. After writing, `loom new` prints these follow-ups as `note - ...` lines.
+`saga` imports `@loomwork/saga`, which a fresh `create-loom-app` project does not declare, so `loom new` prints the line to add (the same hint as above). Saga steps are **tool steps** (a compensator runs under a derived step id, so an inline `handler$` cannot be one): the flow exports `<Name>Tools` and `<Name>Grants`, and under the scaffold's `security.strict` you must spread `<Name>Grants` into the `GrantTable` in `app/security.ts` or the app refuses to start with a `capability-compat` finding; register an effect per tool id on `app.effectRuntime` (the generated test stubs them). The `timer` and `approval` templates need a `TimerService` in the app that runs them (`defineConfig({ timers: { store } })`); the generated tests provide one through `clock: true`. After writing, `loom new` prints these follow-ups as `note - ...` lines.
 
 It **never overwrites** an existing file: it prints `created <path>` (exit `0`) or `skipped <path> (already exists)` (exit `1`). A refused name exits `1` with nothing written.
 
-When a generated file imports a package the nearest `package.json` does not declare (`loom new sentinel` imports `@loom/plugin-sentinel`; every other kind needs nothing a fresh `create-loom-app` project lacks), `loom new` prints the exact line to add — `"@loom/plugin-sentinel": "workspace:*"` inside the Loom workspace, `"*"` in an app created with `--loom-path` (its `pnpm.overrides` already map every `@loom/*` package). It never edits `package.json`; without the dependency the whole app fails to load, not just the new file.
+When a generated file imports a package the nearest `package.json` does not declare (`loom new sentinel` imports `@loomwork/plugin-sentinel`; every other kind needs nothing a fresh `create-loom-app` project lacks), `loom new` prints the exact line to add — `"@loomwork/plugin-sentinel": "workspace:*"` inside the Loom workspace, `"*"` in an app created with `--loom-path` (its `pnpm.overrides` already map every `@loomwork/*` package). It never edits `package.json`; without the dependency the whole app fails to load, not just the new file.
 
 ### `loom gen [--dir app] [--watch]`
 
@@ -352,13 +352,13 @@ Feed the generated modules to `defineConfig({ flowModules, agentModules, toolMod
 
 Re-run `loom gen` whenever you add or remove any construct (`loom new` does it for you; `loom gen --watch` and `loom dev` keep it current). Exit `0` on a successful write.
 
-**Projections load their fold code on demand** ([ADR 0049](adr/0049-projection-on-demand-fold-code.md)). When the `@loom/compiler` plugin builds a `projection$`, it extracts the whole `handlers` fold map into its own `import()` chunk (exactly like `handler$`/`instructions$`) and records the handled event-type keys. At runtime the projection stays **code-dormant** until an event whose type it folds first fires — then it imports the chunk once (buffering until ready) and folds normally after. A projection whose events never fire never loads its code. Uncompiled (dev), the handlers are inline and eager.
+**Projections load their fold code on demand** ([ADR 0049](adr/0049-projection-on-demand-fold-code.md)). When the `@loomwork/compiler` plugin builds a `projection$`, it extracts the whole `handlers` fold map into its own `import()` chunk (exactly like `handler$`/`instructions$`) and records the handled event-type keys. At runtime the projection stays **code-dormant** until an event whose type it folds first fires — then it imports the chunk once (buffering until ready) and folds normally after. A projection whose events never fire never loads its code. Uncompiled (dev), the handlers are inline and eager.
 
 > `policy$` is **not** `loom gen`-discovered: it **is** enforced (a `PolicyAuthorizer` reads each flow's `policies` + `defineConfig({ security: { policies } })` — see the [user guide](user-guide.md#7-agents-tools--a2a)), but it's carried *inline on the flow definition*, not from an `app/policies/*` folder, so there's no separate module to generate. Discovery stays gated on "a runtime consumes a discovered *file*."
 
 ### `loom appgen <intent> | --from <file> | --from-spec <file> [--dir .] [flags]`
 
-Turns a **natural-language intent** into a change to a Loom app, following the **[folder convention](#scaffold--wire-new-gen-appgen)**. It is **brownfield-aware**: it scans what already exists and applies a *delta* rather than only scaffolding from scratch. Four stages, with **NL understanding isolated to exactly one** and everything else deterministic and offline ([`@loom/appgen`](../tools/appgen)); the generated output is ordinary, statically-wired Loom code with `TODO` handlers you own (P5, P11):
+Turns a **natural-language intent** into a change to a Loom app, following the **[folder convention](#scaffold--wire-new-gen-appgen)**. It is **brownfield-aware**: it scans what already exists and applies a *delta* rather than only scaffolding from scratch. Four stages, with **NL understanding isolated to exactly one** and everything else deterministic and offline ([`@loomwork/appgen`](../tools/appgen)); the generated output is ordinary, statically-wired Loom code with `TODO` handlers you own (P5, P11):
 
 1. **scan** — `scanApp(dir)` summarizes the app (flows, steps, gates, and whether each handler is still a generated stub or hand-edited). Never raw file contents.
 2. **plan** — the intent is parsed into a `ChangeSpec` that tags each capability/step `create | extend | modify | delete`. This is the only stage that reads NL. Deterministic by default; a **model of your choice** can drive it (see `--model`) and can plan all four ops, deletes included (a delete of a flow or step the scan does not see is rejected and the model is asked to repair it).
@@ -378,7 +378,7 @@ Turns a **natural-language intent** into a change to a Loom app, following the *
 | `--dry-run` | render the plan as a unified diff and write nothing |
 | `--yes` | apply without the interactive confirmation prompt. A plan that **deletes** a flow or a step (from either planner, including `--model`) lists every deletion under `DESTRUCTIVE:` and asks first; with no TTY it is refused (exit 1, nothing written) unless `--yes` is given - this includes scripted or CI `--from-spec` replays whose lockfile deletes, which need `--yes`. Deleting a flow removes its flow file and its registration in `app/loom.gen.ts`; it does not edit grants in `app/config.ts` or any test, so clean those up yourself. Library callers of `cmdAppgen` must pass `confirm` or `allowDeletes: true` to apply a plan with deletes |
 | `--check` | typecheck the app (`tsc`) after applying |
-| `--model <spec>` | plan with a **model of your choice**: `anthropic:<model>`, `openai:<model>`, `gemini:<model>` (API key from the provider's env var), or a local `.gguf` path / `gemma:<path>` (needs [`@loom/appgen-model`](../tools/appgen-model) + `node-llama-cpp`) |
+| `--model <spec>` | plan with a **model of your choice**: `anthropic:<model>`, `openai:<model>`, `gemini:<model>` (API key from the provider's env var), or a local `.gguf` path / `gemma:<path>` (needs [`@loomwork/appgen-model`](../tools/appgen-model) + `node-llama-cpp`) |
 | `--model-big <spec>` | a stronger model the reasoning ladder elevates to on low confidence (any provider spec) |
 | `--model-tier <e2b\|e4b\|12b>` | tier label for a **local** `--model` (default `e4b`; ignored for API providers) |
 | `--offline` | force the deterministic, model-free planner (overrides `--model`) |
@@ -400,12 +400,12 @@ npx loom appgen --from-spec ./planner/.loom/appgen/1783875332959.spec.json --dir
 
 **Model of your choice (`--model`).** Optional. The planner is **provider-agnostic** — it reasons over whichever model you name:
 
-- `--model anthropic:claude-opus-4-8` — via `@loom/llm`'s `AnthropicProvider` (`ANTHROPIC_API_KEY`).
+- `--model anthropic:claude-opus-4-8` — via `@loomwork/llm`'s `AnthropicProvider` (`ANTHROPIC_API_KEY`).
 - `--model openai:gpt-4o` — `OpenAiProvider` (`OPENAI_API_KEY`).
 - `--model gemini:gemini-2.0-flash` — `GeminiProvider` (`GEMINI_API_KEY`).
-- `--model ./model.gguf` (or `gemma:<path>`) — a **local** model via the optional `@loom/appgen-model` + `node-llama-cpp` (fully offline).
+- `--model ./model.gguf` (or `gemma:<path>`) — a **local** model via the optional `@loomwork/appgen-model` + `node-llama-cpp` (fully offline).
 
-Planning runs through a cheap-first elevation ladder (`--model-big <spec>` names a stronger tier). If the provider/key is missing, the model is too weak, or it produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. Any `@loom/llm` `LlmProvider` works; these four are wired by name for convenience.
+Planning runs through a cheap-first elevation ladder (`--model-big <spec>` names a stronger tier). If the provider/key is missing, the model is too weak, or it produces an invalid plan, `appgen` **falls back to the deterministic parser** — it is never left without a valid `ChangeSpec`. Any `@loomwork/llm` `LlmProvider` works; these four are wired by name for convenience.
 
 **Which planner ran.** The plan header (and `--dry-run` output) is tagged `[deterministic]` or `[model]` (with any `[model, elevated e4b→12b]` ladder steps), and the spec lockfile records `changeSpec.planner`. When you pass `--model` but the model can't produce a usable plan, `appgen` prints a loud warning and falls back — so a `[deterministic]` tag after `--model` means the model bailed (try a stronger tier / Node LTS, or name steps explicitly). The generated *code* is identical either way; provenance lives in the header and lockfile, not the files.
 
@@ -503,7 +503,7 @@ Output is either `✓ no issues` (exit `0`) or one line per problem followed by 
 
 ### `loom verify --config <module> [--manifest <path>]`
 
-Pre-flight **runtime** verification over a built app ([`@loom/verify`](../packages/verify)). Unlike `check`, this one loads real wiring: the config module must export a `LoomApp` — the result of `defineConfig({…})` — as its **default export or as `app`**. The command calls `app.verify()`, which is read-only and off-log, prints the report, and exits `1` on any error-severity finding.
+Pre-flight **runtime** verification over a built app ([`@loomwork/verify`](../packages/verify)). Unlike `check`, this one loads real wiring: the config module must export a `LoomApp` — the result of `defineConfig({…})` — as its **default export or as `app`**. The command calls `app.verify()`, which is read-only and off-log, prints the report, and exits `1` on any error-severity finding.
 
 | Flag | Required | Meaning |
 |---|---|---|
@@ -524,7 +524,7 @@ Pass `--manifest` explicitly, or leave it off and a `loom-manifest.json` next to
 
 ```text
 [manifest] none found — runner bodies were not analysed, so suspend points and undeclared
-`ctx.run` targets are invisible to three rules (ADR 0086). Build with @loom/compiler, or
+`ctx.run` targets are invisible to three rules (ADR 0086). Build with @loomwork/compiler, or
 pass --manifest <loom-manifest.json>.
 loom verify: 2 finding(s) — 1 error(s), 0 warning(s), 1 coverage note(s)
   [info] suspension-safety: 1 of 1 flow(s) had no runner-body analysis ("checkout"), so no
@@ -563,7 +563,7 @@ is reported unresolved, naming the key to add (ADR 0086, L32).
 
 ### `loom migrate-config [<file>...] [--config <file>] [--apply] [--json]`
 
-`defineConfig` options were grouped into `security`, `observability`, `durability`, `execution` and `checks`; the old flat spellings (`strict: true`, `telemetry`, `now`, ...) now **throw** at boot. This codemod rewrites them for you. The old-to-new table is `GROUPED_OPTIONS` in `@loom/app`, the same one the error message is built from.
+`defineConfig` options were grouped into `security`, `observability`, `durability`, `execution` and `checks`; the old flat spellings (`strict: true`, `telemetry`, `now`, ...) now **throw** at boot. This codemod rewrites them for you. The old-to-new table is `GROUPED_OPTIONS` in `@loomwork/app`, the same one the error message is built from.
 
 - It **reads** the config as text and never imports or runs it, so it is safe on any file. With no argument it uses `./loom.config.js` or `./loom.config.ts`; otherwise name the file(s) (positional or `--config`).
 - **Dry run by default**: it prints a unified diff and exits `0`, like every other verb with `--apply`. `--apply` writes the files. Run it again and it reports `nothing to migrate`.
@@ -747,7 +747,7 @@ loom start  <flowId>      --config <module> --as <principal> [--tenant <t>] (--i
 
 **The `--config` module must be the side-effect-free composition module** (the file that calls `defineConfig` and exports the app), not a server entry that also calls `app.start()` or `listen()` - importing the module runs it. The CLI sets `LOOM_NO_AUTOSTART=1`, which suppresses only `defineConfig`'s own timer start; a module that starts services itself still does. So after the import the CLI checks `app.timerService.running`: if it is running it warns on stderr and **refuses `--apply` (exit `2`)**. A flow that parks again leaves its timer row in the store for your real workers to fire.
 
-**What carries over and what does not.** The capability ring and policies are composed from config and apply here. The **kill switch, budgets and rate limits are per process**: under `security.strict` the default kill switch is an `InMemoryKillSwitch`, so an operator `stopTenant` issued in the running app is invisible to the CLI. The dry run says "kill switch / budgets / rate limits are process-local: a stop issued in the running app does NOT apply here", and `resume --apply` / `start --apply` **refuse (exit `2`) unless you pass `--allow-local-controls`**. **Fail-closed:** a kill switch counts as shared only if it *affirmatively declares* `scope: "shared"` — the optional `KillSwitchRegistry.scope` marker (`"process" | "shared"`, `@loom/middleware`; `InMemoryKillSwitch` declares `"process"`). A store-backed registry opts in with `readonly scope = "shared" as const;`. A registry with no marker, a subclass or proxy of `InMemoryKillSwitch`, a wrapper or decorator that does not re-declare `scope`, and a custom `{ check }` are all treated as process-local and need `--allow-local-controls`. `cancel` runs no effects and is exempt. Budgets and rate limits are per process either way.
+**What carries over and what does not.** The capability ring and policies are composed from config and apply here. The **kill switch, budgets and rate limits are per process**: under `security.strict` the default kill switch is an `InMemoryKillSwitch`, so an operator `stopTenant` issued in the running app is invisible to the CLI. The dry run says "kill switch / budgets / rate limits are process-local: a stop issued in the running app does NOT apply here", and `resume --apply` / `start --apply` **refuse (exit `2`) unless you pass `--allow-local-controls`**. **Fail-closed:** a kill switch counts as shared only if it *affirmatively declares* `scope: "shared"` — the optional `KillSwitchRegistry.scope` marker (`"process" | "shared"`, `@loomwork/middleware`; `InMemoryKillSwitch` declares `"process"`). A store-backed registry opts in with `readonly scope = "shared" as const;`. A registry with no marker, a subclass or proxy of `InMemoryKillSwitch`, a wrapper or decorator that does not re-declare `scope`, and a custom `{ check }` are all treated as process-local and need `--allow-local-controls`. `cancel` runs no effects and is exempt. Budgets and rate limits are per process either way.
 
 **Effects must be registered.** The dry run checks the effects the flow *declares* and has not yet run (each such step's `toolId`, else its id; for `resume`, steps already completed in the folded state are skipped) against `app.effectRuntime`; a missing handler would fail the execution permanently, so `--apply` is refused (exit `2`) listing them. If the execution is pinned to a different flow version than the registered one (the runtime does not expose older versions' steps) the check is skipped and the dry run says so. A step the flow runs without declaring it cannot be known ahead of time. `--skip-effect-check` bypasses the check: you accept that a missing handler will fail the execution.
 
@@ -814,7 +814,7 @@ npx loom branches prune --config dist/app.js --protect main,release
 
 ## Analyze a run: `profile`, `introspect`, `optimize`
 
-Three read-only lenses from [`@loom/analytics`](../packages/analytics), all with the same shape: `--db <path>` plus a positional `<executionId>`. They fold one execution's log and print — nothing is mutated, no effect re-runs. An unknown id is an error — `no such execution <id> (N executions in this store — try loom census)` on stderr, exit `1` (it used to print `(no execution "<id>")` and exit `0`, which read as "nothing happened" when the id was merely mistyped). `--graph` must be one of `executions|tasks|decisions|resources`, else exit `2`.
+Three read-only lenses from [`@loomwork/analytics`](../packages/analytics), all with the same shape: `--db <path>` plus a positional `<executionId>`. They fold one execution's log and print — nothing is mutated, no effect re-runs. An unknown id is an error — `no such execution <id> (N executions in this store — try loom census)` on stderr, exit `1` (it used to print `(no execution "<id>")` and exit `0`, which read as "nothing happened" when the id was merely mistyped). `--graph` must be one of `executions|tasks|decisions|resources`, else exit `2`.
 
 ### `loom profile --db <path> <executionId>`
 
@@ -845,13 +845,13 @@ npx loom optimize --db .data/events.db 01J8…
 
 ## Learn from the log: `learn report`, `learn eval`
 
-The offline half of the learning loop ([ADR 0080](adr/0080-learning-substrate.md), [`@loom/learning`](../packages/learning)). Both are read-only over the log and run out of band — neither touches a live execution, and adopting a policy remains an explicit wiring change in application code.
+The offline half of the learning loop ([ADR 0080](adr/0080-learning-substrate.md), [`@loomwork/learning`](../packages/learning)). Both are read-only over the log and run out of band — neither touches a live execution, and adopting a policy remains an explicit wiring change in application code.
 
 Both take `--db <path>` and an **optional positional `<executionId>`**. Omit it to sweep every execution — which requires the store to implement the optional `listExecutions` SPI (1.1.0); a store without it errors and asks for an explicit id.
 
 ### `loom learn report --db <path> [executionId]`
 
-What the log can — and cannot — teach. Folds `DECISION_RECORDED` into trajectories and reports decision-step coverage (how many steps carry a `context`, how many carry a `policy.propensity`), reward attribution (`direct` / `terminal` / `none`), and per-arm evidence best-first — the same shape `@loom/reasoning`'s `ucb1` consumes.
+What the log can — and cannot — teach. Folds `DECISION_RECORDED` into trajectories and reports decision-step coverage (how many steps carry a `context`, how many carry a `policy.propensity`), reward attribution (`direct` / `terminal` / `none`), and per-arm evidence best-first — the same shape `@loomwork/reasoning`'s `ucb1` consumes.
 
 It also prints **blocking gaps** — e.g. no outcome naming a `decisionId`, meaning rewards are aggregated globally rather than per decision. Read this before you write a policy: it tells you whether off-policy evaluation is even possible on the log you have.
 
@@ -906,7 +906,7 @@ Replays **golden logs** against declared expectations, a deterministic regressio
 }
 ```
 
-The `expect` block (and each key in it) is optional. Capture a `log` with `@loom/testing`'s `captureGolden` (see [Usage Step 12](usage.md#step-12--test-it)).
+The `expect` block (and each key in it) is optional. Capture a `log` with `@loomwork/testing`'s `captureGolden` (see [Usage Step 12](usage.md#step-12--test-it)).
 
 ```bash
 npx loom eval --dir evals/
@@ -972,14 +972,14 @@ npx loom retention run --db .data/events.db --snap .data/snapshots.db --ttl 90d 
 
 **`--policy <module>`** (opt-in, [ADR 0145](adr/0145-app-owned-retention-policy.md)) reads the TTL from
 an app-owned retention policy instead of a flag: the module exports the value as `retention` (or as its
-default export), built with `retentionPolicy()` from `@loom/workflow-runtime`. `--ttl` still works and
+default export), built with `retentionPolicy()` from `@loomwork/workflow-runtime`. `--ttl` still works and
 **overrides** the policy's `terminalTtlMs` (the result is validated again); with neither flag the
 command refuses as above. A non-finite or oversized `--ttl` is a usage error (exit 2). A `snapshots` section is validated but **not** applied by this command (use
 `LogLifecycle.pruneSnapshots`, whose `dryRun: true` previews the count).
 
 ```ts
 // retention.ts - the app owns the value; loom owns the type, the validator and the consumers
-import { retentionPolicy } from "@loom/workflow-runtime";
+import { retentionPolicy } from "@loomwork/workflow-runtime";
 
 export const retention = retentionPolicy({
   terminalTtlMs: 90 * 86_400_000,
@@ -1013,7 +1013,7 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--ttl` | no | `2592000000` (30 days) | age threshold in ms |
 | `--policy` | no | — | an app-owned retention policy module ([ADR 0145](adr/0145-app-owned-retention-policy.md)): its `content.unpinnedAfterMs` is the age threshold; `--ttl` overrides it. A policy with no `content` section is refused (exit 2): add one or pass `--ttl`. |
 | `--orphans` | no | off | also erase blobs that NO scanned event cites and that were untouched for the TTL: runs deleted without an archive, crashes between `put` and the append ([ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6). Needs the snapshot store (`--snap`, `--archive-snap`), because a compacted execution's prefix refs live only in its checkpoint. **Every archive must be scanned**: under `--config` the app's `durability.retention.archive` is scanned automatically; on the `--db` path pass `--archive-db`. With `--apply` and no archive the command refuses. A fork or an append that carries an existing ref touches the blob (ContentStore SPI 1.4.0 `touch`, [ADR 0055](adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment 2), so a fork made mid-sweep is safe; `--orphans --apply` therefore refuses a `--content` store that lacks `touch` (the SQLite store has it). The touch only protects a write shorter than the TTL, so `--orphans --apply` also refuses `--ttl` below 60000 ms (`--ttl 0` included); a dry run is exempt. `--orphans --apply` also needs `--snapshots-touch-content` (below), and a `--content` store with `touchClock` as well as `touch` (the SQLite store has both). |
-| `--snapshots-touch-content` | with `--orphans --apply` | off | assert that the runtime which WROTE the snapshot stores wrapped them in `ContentTouchingSnapshotStore` (`@loom/plugin-content`, outside any encrypting snapshot store, over the same content store). A fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else; only that wrapper touches them. The CLI opens raw snapshot stores and cannot tell, so without the flag `--orphans --apply` refuses and erases nothing; a dry run is exempt. loom does not build the wrapper for you: wire it where you build your `ContentResolvingEventStore`. |
+| `--snapshots-touch-content` | with `--orphans --apply` | off | assert that the runtime which WROTE the snapshot stores wrapped them in `ContentTouchingSnapshotStore` (`@loomwork/plugin-content`, outside any encrypting snapshot store, over the same content store). A fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else; only that wrapper touches them. The CLI opens raw snapshot stores and cannot tell, so without the flag `--orphans --apply` refuses and erases nothing; a dry run is exempt. loom does not build the wrapper for you: wire it where you build your `ContentResolvingEventStore`. |
 | `--compaction-archive` / `--no-compaction-archive` | with `--orphans --apply` over a compacted log | `archive.db` beside `--db`, if it exists; under `--config` the app's `storage.archiveStore` | the compaction archive ([ADR 0138](adr/0138-compaction-archives-what-it-removes.md)): compaction MOVES events there, so a blob only an archived event cites is an orphan without it. An erasing pass over a compacted log refuses without one; `--no-compaction-archive` asserts that none exists, which alone no longer passes a compacted log: the archive's headers must cover its removed range, or `--acknowledge-unarchived` states that the history is already gone (logs compacted before the archive; fork children) and erasing their orphan blobs is accepted - the executions are printed. An explicit path that does not exist is refused, not created. |
 | `--no-archive` | no | off | with `--orphans --apply`: assert that retention archives nowhere. The command then warns on stderr before erasing anything. |
 | `--snap` / `--archive-snap` | with `--orphans` (`--archive-snap` whenever `--archive-db` is given) | — | the live / archive snapshot stores, where compaction checkpoints live |
@@ -1149,7 +1149,7 @@ npx loom compliance report --db .data/events.db --subject-path input.userId
 
 ## Operate a corpus: `knowledge sync`, `list`, `search`
 
-A document corpus ([`@loom/knowledge`](adr/0091-corpus-lifecycle-and-the-knowledge-package.md))
+A document corpus ([`@loomwork/knowledge`](adr/0091-corpus-lifecycle-and-the-knowledge-package.md))
 lives in the app's `memoryStore`, so operating one needs the built config module — the same
 input `verify` and `deploy check` take. All three subcommands **refuse an app with no
 configured `memoryStore`**: that app's corpus lives in the in-memory default, so this process
@@ -1213,7 +1213,7 @@ execution to record into. Never read a transcript of this command as what an exe
 
 ## Deployment contracts: `kernel-manifest`, `compat`
 
-The kernel-governance surface ([ADR 0035](adr/0035-kernel-governance-layer.md), [`@loom/spec`](../packages/spec)). Neither reads a log — they report and check the **versioned contracts** a deployment depends on.
+The kernel-governance surface ([ADR 0035](adr/0035-kernel-governance-layer.md), [`@loomwork/spec`](../packages/spec)). Neither reads a log — they report and check the **versioned contracts** a deployment depends on.
 
 ### `loom kernel-manifest [--json] [--emit-docs <dir>]`
 
@@ -1278,7 +1278,7 @@ A major-version mismatch prints one `✗ <component>: <reason>` line per issue a
 
 ## Author a plugin: `plugin …`
 
-Plugin authoring tooling ([ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md)). First-party plugins are `@loom/plugin-*` and live in this repo; third-party plugins are `loom-plugin-*` and live in your own — `--first-party` selects which naming and layout the scaffold uses.
+Plugin authoring tooling ([ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md)). First-party plugins are `@loomwork/plugin-*` and live in this repo; third-party plugins are `loom-plugin-*` and live in your own — `--first-party` selects which naming and layout the scaffold uses.
 
 ### `loom plugin seams`
 
@@ -1304,21 +1304,21 @@ Note that `policy` is wired in **flow code** (`decideWithPolicy(ctx, id, policy,
 
 ### `loom plugin new <seam> <name> [--first-party] [--dir .]`
 
-Scaffolds a plugin package for a seam: a `package.json` (peer dependencies are per seam: only the `@loom/*` packages the stub imports; `@types/node`, plus `engines` and `files` for third-party), `tsconfig.json`, a `vitest.config.ts` (first-party also gets `tsconfig.test.json`), a preset/SPI stub, a conformance-wired test, and a README. Class names do not repeat the seam's noun (`cloudrun-sandbox` gives `CloudrunSandboxBackend`). It **never overwrites** an existing file.
+Scaffolds a plugin package for a seam: a `package.json` (peer dependencies are per seam: only the `@loomwork/*` packages the stub imports; `@types/node`, plus `engines` and `files` for third-party), `tsconfig.json`, a `vitest.config.ts` (first-party also gets `tsconfig.test.json`), a preset/SPI stub, a conformance-wired test, and a README. Class names do not repeat the seam's noun (`cloudrun-sandbox` gives `CloudrunSandboxBackend`). It **never overwrites** an existing file.
 
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
 | `<seam>` | yes | — | one of the seams above |
-| `<name>` | yes | — | the bare name — `redis` becomes `loom-plugin-redis`, or `@loom/plugin-redis` with `--first-party` |
+| `<name>` | yes | — | the bare name — `redis` becomes `loom-plugin-redis`, or `@loomwork/plugin-redis` with `--first-party` |
 | `--first-party` (`--1p`) | no | third-party | first-party naming + monorepo layout (`workspace:*` deps) |
 | `--dir` | no | `.` | where the package directory is created |
 
 ```bash
 npx loom plugin new store redis                 # → loom-plugin-redis/
-npx loom plugin new store redis --first-party   # → packages/… as @loom/plugin-redis
+npx loom plugin new store redis --first-party   # → packages/… as @loomwork/plugin-redis
 ```
 
-Exit `0` when at least one file was written, `1` when everything was skipped (the package already exists). For most seams the scaffold's conformance test ships commented out — un-comment it once your SPI impl is real (the `sandbox` seam ships it live, and the printed `next:` line says which applies). For a third-party plugin the command also prints the `@loom/*` packages it depends on: an unpublished Loom checkout needs a `pnpm.overrides` `link:` entry for each (the command never edits your root `package.json`). Run your formatter over the generated files.
+Exit `0` when at least one file was written, `1` when everything was skipped (the package already exists). For most seams the scaffold's conformance test ships commented out — un-comment it once your SPI impl is real (the `sandbox` seam ships it live, and the printed `next:` line says which applies). For a third-party plugin the command also prints the `@loomwork/*` packages it depends on: an unpublished Loom checkout needs a `pnpm.overrides` `link:` entry for each (the command never edits your root `package.json`). Run your formatter over the generated files.
 
 ### `loom plugin check [--dir .] [--publish]`
 
@@ -1330,7 +1330,7 @@ npx loom plugin check --dir ./loom-plugin-redis --publish
 
 ```text
   ✓ package name loom-plugin-redis matches the third-party convention
-  ⚠ no test imports @loom/conformance — prove your SPI impl with the conformance kit (if one exists for your seam)
+  ⚠ no test imports @loomwork/conformance — prove your SPI impl with the conformance kit (if one exists for your seam)
 
 plugin check: passed (0 error, 1 warn)
 ```
@@ -1446,11 +1446,11 @@ Note that `inspect`/`dev` start a long-lived server and stay in the foreground u
 
 ## Programmatic use
 
-The core commands are also exported as functions from `@loom/cli`, so you can build the same checks into your own scripts or tests without shelling out:
+The core commands are also exported as functions from `@loomwork/cli`, so you can build the same checks into your own scripts or tests without shelling out:
 
 ```ts
 import { cmdLogs, cmdDebug, cmdEval, cmdCheck, cmdGen, cmdNew, cmdAppgen,
-         cmdDeployCheck, serveInspector, parseArgs } from "@loom/cli";
+         cmdDeployCheck, serveInspector, parseArgs } from "@loomwork/cli";
 
 // The first argument is the store flags — `{ db }` or `{ config }`, same as the CLI's.
 const timeline: string = await cmdLogs({ db: ".data/events.db" }, executionId);
@@ -1458,9 +1458,9 @@ const { report } = cmdEval("evals/");
 if (!report.ok) process.exit(1);
 ```
 
-See the **[API reference → `@loom/cli`](api-reference.org)** for the full export surface (`foldAt`, `formatLog`, `describeState`, `evaluateGoldens`, `discoverFlows`, `buildTrace`, `runDeployCheck`, …).
+See the **[API reference → `@loomwork/cli`](api-reference.org)** for the full export surface (`foldAt`, `formatLog`, `describeState`, `evaluateGoldens`, `discoverFlows`, `buildTrace`, `runDeployCheck`, …).
 
-> The public export surface is a **subset** of the command set. The newer commands — `verify`, `lint claim-check`, `profile`, `introspect`, `optimize`, `learn …`, `kernel-manifest`, `compat`, `plugin …`, `retention run`, `sweep content`, `compliance report` — are reachable through the binary only. Their underlying logic lives in the packages they wrap (`@loom/verify`, `@loom/analytics`, `@loom/learning`, `@loom/spec`, `@loom/compliance`), so import from there rather than from `@loom/cli`.
+> The public export surface is a **subset** of the command set. The newer commands — `verify`, `lint claim-check`, `profile`, `introspect`, `optimize`, `learn …`, `kernel-manifest`, `compat`, `plugin …`, `retention run`, `sweep content`, `compliance report` — are reachable through the binary only. Their underlying logic lives in the packages they wrap (`@loomwork/verify`, `@loomwork/analytics`, `@loomwork/learning`, `@loomwork/spec`, `@loomwork/compliance`), so import from there rather than from `@loomwork/cli`.
 
 ---
 

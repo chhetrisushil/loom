@@ -3,7 +3,7 @@
 - Status: **Accepted** (on merge)
 - Date: 2026-10-09
 - Closes: R18 (agentic-readiness audit §Learning, recommendation 10)
-- Builds on: [ADR 0078–0080](0080-learning-substrate.md) (the decision seam, propensity, `@loom/learning`),
+- Builds on: [ADR 0078–0080](0080-learning-substrate.md) (the decision seam, propensity, `@loomwork/learning`),
   [ADR 0116](0116-late-outcome-attach.md) (late rewards), [ADR 0121](0121-one-canonical-agent-loop.md) (response decisions stamped
   `agent-response`, excluded from trajectories), [ADR 0123](0123-planning-depth-plan-graphs-replanning-and-goals.md) (the CAS-store,
   principal-scoped state pattern), [ADR 0119](0119-decide-scope-streaming-deltas.md) (`DecideScope`), [ADR 0085](0085-untrusted-content-integrity-axis.md)
@@ -14,8 +14,8 @@
   planner is a policy that must be canaried and attributable to a prompt/model version) and the **reference planner's propensity**
   (R16's planner decisions stamp a policy; a shadow candidate is how a new planner is judged on live traffic before it acts). The example
   specified for this ADR is `policy-rollout` in `loom-examples` (see the PR; this repo does not edit that one).
-- Placement: **1P, kernel untouched.** `@loom/learning` (registry, rollout, versions, estimators, export), `@loom/memory` (the
-  embedding SPI and a reference), `@loom/conformance` (two kits), `tools/eval` (the harness) and one additive option on `@loom/agent`.
+- Placement: **1P, kernel untouched.** `@loomwork/learning` (registry, rollout, versions, estimators, export), `@loomwork/memory` (the
+  embedding SPI and a reference), `@loomwork/conformance` (two kits), `tools/eval` (the harness) and one additive option on `@loomwork/agent`.
   `KERNEL_ABI`, `EVENT_SCHEMA` and every existing SPI are unchanged; no syscall, event kind or payload field. The one new SPI
   (`EmbeddingProvider` / `VectorIndex`, 1.0.0) is optional and lives beside `MemoryStore`.
 
@@ -166,12 +166,12 @@ context across executions, with a reward margin), and a summary.
 
 ### D6 — An embedding SPI, a reference index, and a semantic MemoryStore
 
-In `@loom/memory`: `EmbeddingProvider { modelId, dimensions, maxBatchSize?, embed(texts, {signal}) }`, `VectorIndex`
+In `@loomwork/memory`: `EmbeddingProvider { modelId, dimensions, maxBatchSize?, embed(texts, {signal}) }`, `VectorIndex`
 (add/remove/clear/search/size, per-key), `InMemoryVectorIndex` (exact cosine, bounded top-k heap), `HashingEmbeddingProvider`
 (deterministic feature hashing: lexical, not semantic; the offline reference every provider is held to) and
 `EmbeddingMemoryStore({ store, provider, minScore })`, a `MemoryStore` decorator whose `search` is cosine ranking. SPI version
 `EMBEDDING_PROVIDER_SPI_VERSION = "1.0.0"`; kits `runEmbeddingProviderConformance` and `runVectorIndexConformance` in
-`@loom/conformance` (structural, so a 3P provider needs no dependency on loom beyond it). `EmbeddingMemoryStore` itself passes
+`@loomwork/conformance` (structural, so a 3P provider needs no dependency on loom beyond it). `EmbeddingMemoryStore` itself passes
 `runMemoryStoreConformance`, floor included, and `KnowledgeBase` works over it unchanged.
 
 - **The wrapped store stays the system of record.** The index is a derived cache, hydrated lazily on a key's first search (batched,
@@ -225,9 +225,9 @@ no random, results in case order whatever the concurrency; `reportDigest` is a s
 
 Nothing existing changes meaning. `evaluatePolicy` without the new options returns the same report (a regression test pins it);
 `PolicyStamp` gains optional `refs`/`rollout` (stored verbatim by the fold, ignored by replay); `agentLoop$` gains an optional
-`versions`; `@loom/memory` gains exports; `@loom/conformance` gains two kits. A log written before this ADR reads and replays as it
-did. `@loom/learning` gains `@loom/classify` (a kernel leaf with no workspace dependencies) as a dependency; `@loom/eval` gains
-`@loom/llm` (types).
+`versions`; `@loomwork/memory` gains exports; `@loomwork/conformance` gains two kits. A log written before this ADR reads and replays as it
+did. `@loomwork/learning` gains `@loomwork/classify` (a kernel leaf with no workspace dependencies) as a dependency; `@loomwork/eval` gains
+`@loomwork/llm` (types).
 
 ### D9 — What this does not do
 

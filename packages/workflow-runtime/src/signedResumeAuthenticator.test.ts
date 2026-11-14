@@ -1,4 +1,4 @@
-import { runResumeAuthenticatorConformance } from "@loom/conformance";
+import { runResumeAuthenticatorConformance } from "@loomwork/conformance";
 import { describe, expect, it } from "vitest";
 import { signResume, signedResumeAuthenticator } from "./signedResumeAuthenticator";
 import type { ResumeEvent, ResumeVerificationContext } from "./types";

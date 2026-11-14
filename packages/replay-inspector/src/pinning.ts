@@ -1,5 +1,5 @@
-import { flowHashMatches } from "@loom/core";
-import type { ExecutionState, FlowDefinition } from "@loom/core";
+import { flowHashMatches } from "@loomwork/core";
+import type { ExecutionState, FlowDefinition } from "@loomwork/core";
 import type { VersionPin } from "./types";
 
 // ── IX-5 — version-pinned reconstruction ──────────────────────────────────────
@@ -11,7 +11,7 @@ import type { VersionPin } from "./types";
 //
 // The pin is read from the FOLD, not from a second store round-trip: `EXECUTION_STARTED`
 // folds `payload.flowHash` into the reserved key `variables._flowHash`
-// (`@loom/replay-vm` eventHandlers.ts:72-93). Any reconstruction the inspector has
+// (`@loomwork/replay-vm` eventHandlers.ts:72-93). Any reconstruction the inspector has
 // already performed therefore carries its own pin, at zero additional read cost.
 //
 // The reserved key is read with `Object.hasOwn` and a typeof guard rather than a bare

@@ -1,4 +1,4 @@
-# @loom/bench-throughput
+# @loomwork/bench-throughput
 
 Sustained-throughput harness for Loom's durable write path, against a **real Postgres**.
 
@@ -28,9 +28,9 @@ pg_ctl -D /tmp/loom-bench-pg -o "-p 55432 -c max_connections=300" -l /tmp/loom-b
 Then:
 
 ```bash
-pnpm --filter @loom/bench-throughput build
+pnpm --filter @loomwork/bench-throughput build
 LOOM_TEST_POSTGRES_URL=postgres://postgres@localhost:55432/postgres \
-  pnpm --filter @loom/bench-throughput bench
+  pnpm --filter @loomwork/bench-throughput bench
 ```
 
 Without the env var it prints a skip notice and exits 0, so `pnpm bench` stays green on a
@@ -130,7 +130,7 @@ mitigation for the writer-side cost that bucketing alone does not fix.
 
 ## Other scripts
 
-Each is a separate entry under `src/`, run with `pnpm --filter @loom/bench-throughput <script>`. Unlike the A-H
+Each is a separate entry under `src/`, run with `pnpm --filter @loomwork/bench-throughput <script>`. Unlike the A-H
 suite they default to the in-memory backend when no Postgres URL is set.
 
 | script | file | what it measures |
@@ -152,7 +152,7 @@ suite they default to the in-memory backend when no Postgres URL is set.
 
 ## Comparing hosts
 
-`pnpm --filter @loom/bench-throughput hardware` emits one self-describing markdown report —
+`pnpm --filter @loomwork/bench-throughput hardware` emits one self-describing markdown report —
 CPU, memory, Postgres version and settings, **database round-trip time**, and the four
 measurements that characterise a host: where the write path saturates, the durable execution
 ceiling, Little's-Law efficiency under a realistic effect, and where the write/effect

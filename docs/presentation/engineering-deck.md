@@ -54,7 +54,7 @@ Intent → Planner → Workflow → Agent → Effect → Event Log
 
 **DX / tooling** — `cli` (`loom`), `testing`, `eval`, `deploy-sim`, `scaffold`, `compiler`, `dst`, `appgen`, `telemetry`, `sdk`
 
-<!-- Presenter: everything is re-exported from @loom/sdk; apps import from there. Adapters live in plugins/ under the @loom/plugin-* name (ADR 0043); tools/ is dev-time only (ADR 0047). -->
+<!-- Presenter: everything is re-exported from @loomwork/sdk; apps import from there. Adapters live in plugins/ under the @loomwork/plugin-* name (ADR 0043); tools/ is dev-time only (ADR 0047). -->
 
 ---
 
@@ -75,8 +75,8 @@ This is the single idea the whole framework is built on.
 All in `packages/core/src/builders/` — declarative `$` builders:
 
 ```ts
-import { flow$, step$, handler$, tool$, agent$, skill$, instructions$, projection$, memory$, policy$ } from "@loom/core";
-import { capability$ } from "@loom/capability";
+import { flow$, step$, handler$, tool$, agent$, skill$, instructions$, projection$, memory$, policy$ } from "@loomwork/core";
+import { capability$ } from "@loomwork/capability";
 
 const FetchMetrics = step$({
   id: "fetch-metrics",
@@ -117,8 +117,8 @@ onEvent → ProjectionRuntime → UI
 You don't hand-wire that pipeline. One static config assembles it — and returns the same primitives, so nothing is hidden:
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { retryMiddleware } from "@loom/middleware";
+import { defineConfig } from "@loomwork/app";
+import { retryMiddleware } from "@loomwork/middleware";
 
 const app = defineConfig({
   storage: { kind: "sqlite", dir: ".loom", branching: true },
@@ -191,7 +191,7 @@ branchRegistry.promote("spec/scale-replicas", "main");  // keep the winner
 ```
 
 - **`fork`** copies the parent prefix `[0..S]` into a child id (COW) + a seed snapshot → identical replay, cached steps not re-run, **parent untouched**. No new event type.
-- **`BranchRegistry`** (`@loom/event-runtime`): movable refs + fork lineage; **`promote` is a pointer move, not a merge**.
+- **`BranchRegistry`** (`@loomwork/event-runtime`): movable refs + fork lineage; **`promote` is a pointer move, not a merge**.
 - **Branch-only by design** — divergent `ExecutionState`s have no principled join. **Proof/demo:** `packages/workflow-runtime/src/fork.test.ts` · `demo:fork` in `db-command-center-server`.
 
 ---
@@ -206,17 +206,17 @@ interface Effect<TIn, TOut> {
 ```
 
 - `ToolEffect` — any async work (HTTP, DB, compute)
-- `LlmEffect` — a model call (see `@loom/llm`)
+- `LlmEffect` — a model call (see `@loomwork/llm`)
 - `HumanEffect` — throws `SuspendError` → human‑in‑the‑loop
 - `A2AEffect` — delegate to a remote agent
 
 Same execution + replay semantics for all four. **AI calls are just effects** — so they're durable too.
 
-**Middleware** wraps every effect as a composable `(ctx, input, next) => …` chain (the HTTP-middleware model): `retryMiddleware` (`@loom/middleware`) adds exponential backoff + **deterministic** jitter and never retries a suspension. Wire it once via `defineConfig({ execution: { effectMiddleware } })`.
+**Middleware** wraps every effect as a composable `(ctx, input, next) => …` chain (the HTTP-middleware model): `retryMiddleware` (`@loomwork/middleware`) adds exponential backoff + **deterministic** jitter and never retries a suspension. Wire it once via `defineConfig({ execution: { effectMiddleware } })`.
 
 ---
 
-## Data governance — classify once, enforce everywhere (`@loom/classify`, `@loom/compliance`)
+## Data governance — classify once, enforce everywhere (`@loomwork/classify`, `@loomwork/compliance`)
 
 The event log is durable *and* compliance-safe — the same log. Mark a field once; the framework derives the wiring.
 
@@ -229,18 +229,18 @@ const output = z.object({
 ```
 
 - **`ctx.decide` for shreddable data** — branch on the *decision*, not the raw value; the decision is durable + replayable, the value becomes erasable. This is how you replay deterministically *and* forget PII.
-- **GDPR/CCPA out of the box** — `@loom/compliance`: subject index (who a record concerns), `exportSubject` (Art. 15/20), `eraseSubject` (Art. 17, liveness-gated), tenant-scoped.
+- **GDPR/CCPA out of the box** — `@loomwork/compliance`: subject index (who a record concerns), `exportSubject` (Art. 15/20), `eraseSubject` (Art. 17, liveness-gated), tenant-scoped.
 - **Egress boundary** — sensitive/internal fields are scrubbed from telemetry / agent-surface / CLI (K10-R6); crypto-shredding + `loom retention run` bound log lifetime.
 - **One config key** — `defineConfig({ secrets, retention, compliance })`; empty ⇒ byte-identical (G2).
 
 ---
 
-## Configurable LLM — `@loom/llm`
+## Configurable LLM — `@loomwork/llm`
 
 The model is chosen in exactly **one** place:
 
 ```ts
-import { AnthropicProvider, createLlmEffect } from "@loom/llm";
+import { AnthropicProvider, createLlmEffect } from "@loomwork/llm";
 
 const provider = new AnthropicProvider({ model: "claude-opus-4-8" });
 // or new OpenAiProvider({ model: "gpt-4o" }) — or your own LlmProvider
@@ -255,7 +255,7 @@ Providers talk to vendor HTTP APIs over `fetch` — **no SDK dependency**. Swap 
 
 ---
 
-## Agents — `@loom/agent`
+## Agents — `@loomwork/agent`
 
 ```ts
 const runner = new AgentRunner({ definition: agent$({ id, tools }), provider, effectRuntime, memory, skills });
@@ -270,7 +270,7 @@ const out = await runner.run({ prompt, memoryScope: "user-1" }, ctx);
 
 ---
 
-## Tools from anywhere — `@loom/plugin-mcp`
+## Tools from anywhere — `@loomwork/plugin-mcp`
 
 Model Context Protocol client — discover a server's tools and register them as effects automatically:
 
@@ -286,7 +286,7 @@ One call turns an external MCP server into first‑class, replayable Loom effect
 
 ---
 
-## Agent‑to‑Agent — `@loom/plugin-a2a`
+## Agent‑to‑Agent — `@loomwork/plugin-a2a`
 
 **Expose** a Loom flow as an agent, and **call** remote agents as effects:
 
@@ -305,7 +305,7 @@ Built on Node `http` + `fetch` — no framework HTTP dependency. Because A2A is 
 
 ---
 
-## Generated UI — the agent-surface protocol (`@loom/agent-surface`)
+## Generated UI — the agent-surface protocol (`@loomwork/agent-surface`)
 
 Agents drive the UI with **typed, durable patches** — not ad‑hoc messages:
 
@@ -318,11 +318,11 @@ surface(ctx).append("timeline", "root cause found");   // set / merge / append /
 - Each call emits one `SURFACE_PATCH` event → **durable & replayable**.
 - `agentSurfaceProjection("ui")` folds patches into a projection; widgets bind with `{ projectionId: "ui", path }` — **zero renderer changes**.
 - `StreamingText` widget grows live as tokens arrive. Refresh/resume rebuilds the exact screen.
-- **A2UI interop** — `@loom/plugin-a2ui` projects a surface onto the external [A2UI](https://a2ui.org) wire protocol (v1.0), so any A2UI‑compliant client can render it — egress, the inbound `action` leg, and the `callFunction` bidirectional RPC (the agent invokes a client function; its result re-enters as a recorded fact, keyed by a deterministic `callId`). Kernel untouched (ADR 0069, ADR 0070).
+- **A2UI interop** — `@loomwork/plugin-a2ui` projects a surface onto the external [A2UI](https://a2ui.org) wire protocol (v1.0), so any A2UI‑compliant client can render it — egress, the inbound `action` leg, and the `callFunction` bidirectional RPC (the agent invokes a client function; its result re-enters as a recorded fact, keyed by a deterministic `callId`). Kernel untouched (ADR 0069, ADR 0070).
 
 ---
 
-## Capabilities Over APIs — `@loom/capability`
+## Capabilities Over APIs — `@loomwork/capability`
 
 A **capability** = a flow + intent metadata, exposable four ways (API · UI action · A2A endpoint · workflow node):
 
@@ -341,7 +341,7 @@ await catalog.invoke(workflowRuntime, "investigate-incident", input);
 
 ---
 
-## Intent Over Routes — `@loom/intent` + `@loom/planner`
+## Intent Over Routes — `@loomwork/intent` + `@loomwork/planner`
 
 Users express **goals**, not routes:
 
@@ -371,7 +371,7 @@ UI is a **projection**, not a source of truth.
 
 ---
 
-## Cooperative scheduling & cancellation — `@loom/scheduler`
+## Cooperative scheduling & cancellation — `@loomwork/scheduler`
 
 **Fiber principles land in the *agentic* layer** — an ephemeral cooperative scheduler, not a UI reconciler. **All opt-in, default-off, latency-safe** (no regression to sync fast paths — `docs/benchmarks.md`).
 
@@ -409,14 +409,14 @@ A placement seam between orchestration and the runtime lets the **same flows** r
 
 ```
 defineConfig({ execution: { dispatcher } })
-   └─ ExecutionDispatcher ─┬─ local     (@loom/worker-runtime-local, in-process)
-                           ├─ remote    (HTTP → @loom/worker-server)
-                           └─ Cloud Run (@loom/plugin-cloudrun)
+   └─ ExecutionDispatcher ─┬─ local     (@loomwork/worker-runtime-local, in-process)
+                           ├─ remote    (HTTP → @loomwork/worker-server)
+                           └─ Cloud Run (@loomwork/plugin-cloudrun)
 ```
 
 - An **`ExecutionPackage`** carries resume coordinates (identity + sequence) — **never code**. Workers ship their own bundle and resolve flows **by id** from a static registry; suspension is a normal outcome across the wire.
 - **Crash recovery:** a stateless worker folds durable state and resumes — completed steps aren't re-run.
-- **Distributed fan-out:** `@loom/graph-executor` runs graph nodes as **per-node executions** (one writer each), joined via lineage — never multi-writer on one execution.
+- **Distributed fan-out:** `@loomwork/graph-executor` runs graph nodes as **per-node executions** (one writer each), joined via lineage — never multi-writer on one execution.
 - Public SDK unchanged whether you run local or in the cloud. *(ADRs 0001–0005)*
 
 ---
@@ -433,22 +433,22 @@ loom check · gen · new                flow-graph validation · folder-conventi
 ```
 
 ```ts
-import { createTestApp, waitForPhase, captureGolden } from "@loom/testing";
+import { createTestApp, waitForPhase, captureGolden } from "@loomwork/testing";
 const app = createTestApp({ surfaces: ["mission"], flows: [myFlow] }); // in-memory
 ```
 
-- **`@loom/testing`** — `createTestApp`, `waitForPhase`, `captureGolden`, VCR LLM provider (record once, replay deterministically). *(ADR 0009)*
-- **`@loom/eval`** replays a recorded log as a fixture; **`@loom/deploy-sim`** replays history against your *new* flow defs to catch resume-breaking changes before promoting. The log *is* the fixture. *(ADRs 0008, 0010–0014)*
+- **`@loomwork/testing`** — `createTestApp`, `waitForPhase`, `captureGolden`, VCR LLM provider (record once, replay deterministically). *(ADR 0009)*
+- **`@loomwork/eval`** replays a recorded log as a fixture; **`@loomwork/deploy-sim`** replays history against your *new* flow defs to catch resume-breaking changes before promoting. The log *is* the fixture. *(ADRs 0008, 0010–0014)*
 
 ---
 
 ## Build‑time & observability
 
-**`@loom/compiler`** (Vite plugin + CLI)
+**`@loomwork/compiler`** (Vite plugin + CLI)
 - Extracts co‑located `handler$` bodies into lazy chunks
 - Statically validates flow graphs; emits resumability metadata
 
-**`@loom/telemetry`**
+**`@loomwork/telemetry`**
 - `createTelemetryHook(adapter)` on `onEvent` → per‑step timings
 - `ConsoleTelemetryAdapter`, OTel‑ready; playground **Trace tab** visualizes it
 
@@ -458,7 +458,7 @@ const app = createTestApp({ surfaces: ["mission"], flows: [myFlow] }); // in-mem
 
 - **Monorepo:** pnpm workspaces + Turborepo
 - **Language:** TypeScript → CommonJS (`tsc --build`)
-- **Tests:** Vitest — **green across every package** (`@loom/testing` kit + log-as-fixture evals)
+- **Tests:** Vitest — **green across every package** (`@loomwork/testing` kit + log-as-fixture evals)
 - **Lint/format:** Biome
 - **Commands:** `pnpm build` · `pnpm test` · `pnpm typecheck` · `pnpm dev` · the **`loom`** CLI (`logs`/`debug`/`eval`/`deploy check`/`gen`/`inspect`)
 
@@ -474,9 +474,9 @@ The folder convention (`loom new` scaffolds, `loom gen` wires):
 app/flows/<name>/flow.ts   agents/  tools/  surfaces/   → loom gen → loom.gen.ts
 ```
 
-- Wire it with **`defineConfig({ storage, surfaces, flowModules, effectMiddleware })`** — one composition root; import builders from **`@loom/core`**/**`@loom/sdk`**.
+- Wire it with **`defineConfig({ storage, surfaces, flowModules, effectMiddleware })`** — one composition root; import builders from **`@loomwork/core`**/**`@loomwork/sdk`**.
 - Start with **one flow** (an approval/ops process) → add a **blueprint** → expose it as a **capability** → route by **intent**.
-- Test with **`@loom/testing`**; gate CI with **`loom eval`** + **`loom deploy check`**.
+- Test with **`@loomwork/testing`**; gate CI with **`loom eval`** + **`loom deploy check`**.
 - Copy from **`examples/loom-starter`** — the canonical new-architecture app.
 
 **Docs:** `docs/getting-started.md` · `docs/usage.md` · `docs/user-guide.md` · `docs/architecture.md`
@@ -489,5 +489,5 @@ app/flows/<name>/flow.ts   agents/  tools/  surfaces/   → loom gen → loom.ge
 
 `code-walkthrough.md` (annotated tour) · `demo-script.md` (runbook)
 
-**Start here:** `pnpm --filter @loom/agent-network start`
-· interop: `pnpm --filter @loom/a2a-mesh start`
+**Start here:** `pnpm --filter @loomwork/agent-network start`
+· interop: `pnpm --filter @loomwork/a2a-mesh start`

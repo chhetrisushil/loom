@@ -5,8 +5,8 @@ import type {
   ScheduleDefinition,
   SkillDefinition,
   ToolDefinition,
-} from "@loom/core";
-import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/core";
+import type { RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 
 /** A statically-imported module namespace holding definitions (flows / agents / tools / …). */
 export type FlowModule = Record<string, unknown>;

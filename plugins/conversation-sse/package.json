@@ -1,7 +1,7 @@
 {
-  "name": "@loom/plugin-conversation-sse",
+  "name": "@loomwork/plugin-conversation-sse",
   "version": "0.1.0",
-  "description": "Authenticated Server-Sent-Events gateway for @loom/conversation: streams a conversation's durable messages (resumable from Last-Event-ID) and live reply deltas to an end user, and carries the user's turns back in",
+  "description": "Authenticated Server-Sent-Events gateway for @loomwork/conversation: streams a conversation's durable messages (resumable from Last-Event-ID) and live reply deltas to an end user, and carries the user's turns back in",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,17 +20,17 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/conversation": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/llm": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/conversation": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/llm": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/agent": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
+    "@loomwork/agent": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

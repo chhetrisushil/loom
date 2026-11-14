@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type ArchiveStore,
   type AtRestEventReader,
@@ -11,7 +11,7 @@ import {
   type SealingCapability,
   inboxChainOf,
   installOptional,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { EncryptingArchiveStore } from "./EncryptingArchiveStore";
 import {
   CIPHER_ID,
@@ -82,7 +82,7 @@ export interface EncryptingEventStoreOptions {
   /**
    * Deterministic cipher seam (ADR 0130 residuals D7, simulation only): derive each AES-GCM IV from
    * `(stream, sequence, path)` instead of `randomBytes(12)`. Build one with `seededIvSource` from
-   * `@loom/plugin-crypto/testing`. Allowed only under `NODE_ENV=test` or `VITEST` (fail closed): a predictable IV breaks
+   * `@loomwork/plugin-crypto/testing`. Allowed only under `NODE_ENV=test` or `VITEST` (fail closed): a predictable IV breaks
    * GCM confidentiality.
    */
   ivSource?: IvSource;
@@ -220,7 +220,7 @@ export class EncryptingEventStore implements EventStore {
     /**
      * PUBLIC so a pre-flight check can ask whether these keys outlive the process — see
      * `KeyStore.durable`. `loom doctor` looks for this property structurally, which is how it
-     * checks an encrypting store without depending on @loom/plugin-crypto.
+     * checks an encrypting store without depending on @loomwork/plugin-crypto.
      */
     readonly keys: KeyStore,
     options: EncryptingEventStoreOptions

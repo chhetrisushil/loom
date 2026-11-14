@@ -1,17 +1,22 @@
-import { type FlowDefinition, TypedFailure, step$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectDelta, EffectMiddleware } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { LLM_INTERRUPTED, type LlmProvider, type LlmStreamChunk, createLlmEffect } from "@loom/llm";
+import { type FlowDefinition, TypedFailure, step$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectDelta, EffectMiddleware } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import {
+  LLM_INTERRUPTED,
+  type LlmProvider,
+  type LlmStreamChunk,
+  createLlmEffect,
+} from "@loomwork/llm";
 import {
   SafetyViolationError,
   piiValidator,
   retryMiddleware,
   safetyMiddleware,
-} from "@loom/middleware";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner } from "@loom/workflow-runtime";
+} from "@loomwork/middleware";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
@@ -19,7 +24,7 @@ import { z } from "zod";
 //
 // The REAL `createLlmEffect({ stream: true })` — real `collectStream`, real taint, real
 // safety/retry middleware — driven through `ctx.decide`'s scope inside a real
-// `WorkflowRuntime`. `workflow-runtime` cannot depend on `@loom/llm`, so its own tests use
+// `WorkflowRuntime`. `workflow-runtime` cannot depend on `@loomwork/llm`, so its own tests use
 // a stand-in effect; this is where the two meet, and where a mismatch between what the
 // effect sends and what the runtime expects would show.
 

@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac } from "node:crypto";
-import type { EventEnvelope } from "@loom/core";
-import { KeyUnavailableError } from "@loom/event-runtime";
-import type { ContentAccess, ContentRef, ContentStore } from "@loom/plugin-content";
+import type { EventEnvelope } from "@loomwork/core";
+import { KeyUnavailableError } from "@loomwork/event-runtime";
+import type { ContentAccess, ContentRef, ContentStore } from "@loomwork/plugin-content";
 import {
   ContentAccessRequiredError,
   ContentUndecryptableError,

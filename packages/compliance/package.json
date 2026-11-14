@@ -1,5 +1,5 @@
 {
-  "name": "@loom/compliance",
+  "name": "@loomwork/compliance",
   "version": "0.1.0",
   "description": "Data-subject rights for Loom (T3, GDPR/CCPA-enabling) — a subject index (subjectId → executions) fed by the event stream, exportSubject for Art. 15/20 access + portability, and eraseSubject for Art. 17 erasure (crypto-shredding, plus deletion of archived copies). Event-sourcing makes these a fold; this productizes that. Not legal advice.",
   "main": "./dist/index.js",
@@ -19,10 +19,10 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/replay-vm": "workspace:^",
-    "@loom/snapshot-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^",
+    "@loomwork/snapshot-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

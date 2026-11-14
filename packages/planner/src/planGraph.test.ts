@@ -1,7 +1,7 @@
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import { isTainted, tainted } from "@loom/classify";
-import { flow$, handler$, step$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
+import { isTainted, tainted } from "@loomwork/classify";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {

@@ -11,9 +11,9 @@
 - Consumers: `agentLoop$` apps with large MCP menus (a GenUI catalogue, `db-command-center`) and the loom-ui reference planner's
   capability selection. The example specified for this ADR is `tool-search-mcp-menu` in `loom-examples` (see the PR; this repo
   does not edit that one).
-- Placement: **1P, `@loom/agent`.** Not kernel, not a plugin. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are unchanged; no
+- Placement: **1P, `@loomwork/agent`.** Not kernel, not a plugin. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are unchanged; no
   syscall, no event kind. Two optional metadata fields are added to authoring types (`ToolDefinition.tags` / `aliases`,
-  `SkillDefinition.aliases`, `CapabilityDefinition.aliases`); `@loom/learning` gains one entry in its list of recorded-fact sources.
+  `SkillDefinition.aliases`, `CapabilityDefinition.aliases`); `@loomwork/learning` gains one entry in its list of recorded-fact sources.
 
 ## Context
 
@@ -52,7 +52,7 @@ the decider, so a replay serves the record: **zero ranking calls**, the identica
 non-deterministic ranker (an embedding model) replay-safe by construction. The search and the menu growth are one atomic record:
 the loaded set is a pure function of `results` and the caps, re-derived on replay. The ids are pure functions of the recorded
 model response, as every other `#turn:<i>:tool:<j>` id; the divergence detector (ADR 0113) in `"fail"` mode is clean. A refusal
-(invalid input, `search_limit_reached`) is a result computed from recorded input and writes nothing. `@loom/learning` lists the
+(invalid input, `search_limit_reached`) is a result computed from recorded input and writes nothing. `@loomwork/learning` lists the
 source in `RECORDED_FACT_SOURCES`: a search is a fact, not a choice among alternatives, and carries no reward.
 
 **D5 — Ranking: deterministic BM25F over a prebuilt inverted index.** Fields and weights: name 3, aliases 2, tags 2, description 1;
@@ -395,7 +395,7 @@ The first adversarial review (verdict: not approved as drafted; design holds) fo
   the default index is built on the first search; the ask over-asks by the hidden (namespace-filtered) count as well as the loaded
   count and, if a shared ranker over a wider catalog still leaves the page short, widens (doubling, at most 4 rounds and 1000 hits).
   `maxMenuChars` counts only tools a search loaded (`alwaysLoaded` tools do not count against it). `agent-skill-activation` is a
-  recorded-fact source for `@loom/learning`.
+  recorded-fact source for `@loomwork/learning`.
 
 ## Alternatives rejected
 

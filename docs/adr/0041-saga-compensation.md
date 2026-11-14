@@ -1,4 +1,4 @@
-# ADR 0041 — Saga / Compensation (`@loom/saga`)
+# ADR 0041 — Saga / Compensation (`@loomwork/saga`)
 
 - Status: Accepted (2026-07-11)
 - Date: 2026-07-11
@@ -25,7 +25,7 @@ re-executing). So a userspace saga is replay-safe *for free*:
 - a crash **mid-rollback** recovers correctly — already-run compensators are served from the log, the
   remaining ones run.
 
-So `@loom/saga` ships as a **userspace library with NO new syscall, NO new event type, and NO fold
+So `@loomwork/saga` ships as a **userspace library with NO new syscall, NO new event type, and NO fold
 change** — `KERNEL_ABI` stays 1.1.0, `EVENT_SCHEMA_VERSION` stays 1.12.0. This is the fullest P10
 outcome and carries **zero G1 risk** (the kernel's failure path is untouched), unlike the proposed
 syscall + failure-path surgery.
@@ -58,7 +58,7 @@ longer aborts on the first failing compensator: it runs the rest and throws `Sag
   (byte-identical); on failure, compensators run in **reverse** (`reserve, charge, ship, refund,
   unreserve`) and the error re-throws; the rollback is recorded as durable `STEP_COMPLETED` frames
   (`refund#compensate:1`, `unreserve#compensate:0`) alongside `EXECUTION_FAILED` — proving it replays.
-- `saga.dst.test.ts` (`@loom/dst`): the failing saga driven under seeded crash schedules never
+- `saga.dst.test.ts` (`@loomwork/dst`): the failing saga driven under seeded crash schedules never
   double-compensates — no step (forward or compensation) completes more than once in the durable log,
   across the crash-schedule space (crashes really fire).
-- `@loom/spec` registers `saga` at L2. `abi.test.ts` and `eventSchema.test.ts` are **unchanged**.
+- `@loomwork/spec` registers `saga` at L2. `abi.test.ts` and `eventSchema.test.ts` are **unchanged**.

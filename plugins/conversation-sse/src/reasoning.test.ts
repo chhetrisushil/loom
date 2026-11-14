@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { LlmStreamChunk, ReasoningStore } from "@loom/llm";
+import type { LlmStreamChunk, ReasoningStore } from "@loomwork/llm";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type Booted,

@@ -1,5 +1,9 @@
-import type { EventEnvelope } from "@loom/core";
-import type { EventStore, InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type {
+  EventStore,
+  InMemoryAsyncEventStore,
+  InMemoryLeaseStore,
+} from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { TimerService } from "./TimerService";

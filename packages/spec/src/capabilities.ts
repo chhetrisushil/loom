@@ -58,7 +58,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "workflow-runtime",
     title: "Workflow Runtime",
-    package: "@loom/workflow-runtime",
+    package: "@loomwork/workflow-runtime",
     level: "L5",
     summary: "Execution model + the K1 kernel syscall ABI.",
     evidence: {
@@ -69,7 +69,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "replay-vm",
     title: "Replay VM",
-    package: "@loom/replay-vm",
+    package: "@loomwork/replay-vm",
     level: "L5",
     summary: "Deterministic fold + the K5 on-disk event-schema ABI.",
     evidence: {
@@ -80,7 +80,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "wire-abi",
     title: "Wire ABI",
-    package: "@loom/wire-abi",
+    package: "@loomwork/wire-abi",
     level: "L5",
     summary: "T2 wire-protocol projection of the K1 syscalls + fold-vector conformance.",
     evidence: {
@@ -91,7 +91,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "event-store",
     title: "Event Store SPI",
-    package: "@loom/event-runtime",
+    package: "@loomwork/event-runtime",
     level: "L5",
     summary: "Durable append-only log SPI (in-memory / SQLite / Postgres).",
     evidence: {
@@ -103,7 +103,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "snapshot-store",
     title: "Snapshot Store SPI",
-    package: "@loom/snapshot-runtime",
+    package: "@loomwork/snapshot-runtime",
     level: "L5",
     summary:
       "Point/latest/before snapshot SPI, bounding replay tail; superseded snapshots are pruned without losing a compaction checkpoint or a fork point (ADR 0134).",
@@ -115,7 +115,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "archive-store",
     title: "Compaction Archive SPI",
-    package: "@loom/event-runtime",
+    package: "@loomwork/event-runtime",
     level: "L5",
     summary:
       "Append-only archive of the events `LogLifecycle.compact` removes (ADR 0138): compaction MOVES them, never deletes them, so archive ∪ surviving log is the original log byte-exact (in-memory / SQLite / Postgres, sealed under the log's KeyStore for an encrypting store); reserved-stream trims and deletes (inbox, topic, quarantine) archive the same way before removal (ADR 0139).",
@@ -129,7 +129,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "branch-registry",
     title: "Branch Registry SPI",
-    package: "@loom/event-runtime",
+    package: "@loomwork/event-runtime",
     level: "L5",
     summary: "Fork/promote lineage DAG SPI (no merge, by design).",
     evidence: {
@@ -140,7 +140,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "dispatcher",
     title: "Execution Dispatcher SPI",
-    package: "@loom/dispatcher",
+    package: "@loomwork/dispatcher",
     level: "L5",
     summary: "Placement-agnostic dispatch/cancel/health SPI.",
     evidence: {
@@ -151,7 +151,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "cancellation-deadlines",
     title: "Cancellation, Deadlines & Bounded Effects",
-    package: "@loom/workflow-runtime",
+    package: "@loomwork/workflow-runtime",
     level: "L3",
     summary:
       "The kernel's kill path, end to end (K8). `EffectContext.signal` reaches every effect and the built-in LLM/tool/A2A effects forward it to providers; `ExecutionRuntime.cancel(executionId)` fences then appends a durable `EXECUTION_CANCELLED` that replay reconstructs at the same sequence; declared deadlines (`ExecutionPolicy.deadlineMs`, step `timeoutMs`) are enforced BY THE KERNEL against the logged `EXECUTION_STARTED`, never wall-clock at re-run; cancellation crosses the dispatch seam (`WorkerRuntime.cancel`, worker-server `POST /cancel`) as best-effort delivery with durable-fact settlement; and `streamTokenBudget` severs a streaming generation mid-flight on an estimated token budget, emitting the same `QUOTA_EXCEEDED` fact metering writes.",
@@ -165,7 +165,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "verification",
     title: "Runtime Verification",
-    package: "@loom/verify",
+    package: "@loomwork/verify",
     level: "L4",
     summary: "Pre-flight determinism/replay/capability/placement/resource checks.",
     evidence: {
@@ -177,7 +177,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "dst",
     title: "Deterministic Simulation Testing",
-    package: "@loom/dst",
+    package: "@loomwork/dst",
     level: "L4",
     summary:
       "Seeded virtual clock + fault-injecting store/network that drive the kernel under adversarial schedules and reproduce/minimize any invariant violation.",
@@ -190,7 +190,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "audit-chain",
     title: "Tamper-Evident Audit Chain",
-    package: "@loom/plugin-audit-chain",
+    package: "@loomwork/plugin-audit-chain",
     level: "L3",
     summary:
       "Hash-chained (optionally HMAC-signed) EventStore wrapper; verifyChain detects any edit/insert/reorder/drop. Fold-invisible — replay byte-identical.",
@@ -204,7 +204,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "fair-scheduler",
     title: "Per-Tenant Fair Scheduler",
-    package: "@loom/fair-scheduler",
+    package: "@loomwork/fair-scheduler",
     level: "L4",
     summary:
       "Drop-in Scheduler with weighted round-robin across tenants behind a concurrency cap; no tenant can starve another. Zero-overhead Infinity fast path.",
@@ -217,7 +217,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "execution-authz",
     title: "Execution-Lifecycle Authorization",
-    package: "@loom/workflow-runtime",
+    package: "@loomwork/workflow-runtime",
     level: "L2",
     summary:
       "Pluggable ExecutionAuthorizer gating start/resume/cancel/query at the trust boundary; denied resume/cancel record a durable EXECUTION_DENIED audit fact.",
@@ -229,7 +229,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "blueprint-conformance",
     title: "Blueprint Conformance",
-    package: "@loom/blueprint-runtime",
+    package: "@loomwork/blueprint-runtime",
     level: "L3",
     summary:
       "validateBlueprint checks a composed blueprint against a declared widget catalogue (closure + bindings-not-data + silent-omission checks, findings never throws); catalogCoverage checks the other direction, that a renderer implements everything the catalogue declares.",
@@ -242,7 +242,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "live-query",
     title: "Live Query",
-    package: "@loom/live-query",
+    package: "@loomwork/live-query",
     level: "L3",
     summary:
       "Read current folded state and subscribe to updates on an in-flight execution, over loadState + EventStore.subscribe.",
@@ -256,19 +256,19 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "conversation",
     title: "Conversation Layer",
-    package: "@loom/conversation",
+    package: "@loomwork/conversation",
     level: "L2",
     summary:
       "A durable dialogue as ONE chained execution: `conversation$` parks on the inbox for each user turn, answers it with `agentLoop$` (history fitted to a token budget by a recorded verdict, evicted turns folded into a rolling summary through a compaction-contract effect), records every message as a decision (exactly once), and rotates by continue-as-new with a bounded carry. A new user message BARGES IN on the running turn through a host-side abort signal read only at the loop's recorded checkpoints (partial kept as an `interrupted` reply, the execution never cancelled). `createConversations` is the authorized client (start / sendTurn / close / history / status over runtime start, send and query); `followConversation` tails the log across rotations from a cursor.",
     evidence: {
       conformanceTest: "packages/conversation/src/bargeIn.test.ts",
     },
-    note: "ADR 0122 (R17). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged; the three additive seams on `@loom/agent` are `loopId`, `AgentInput.history` and `AgentInput.promptOrigin`. The finding that shaped it: a registered `ctx.receive` is NOT woken while a step is in flight (ADR 0110 delivers at the owner's quiescence commit, and a model call is a step), so barge-in cannot be built from the inbox primitives and the signal comes from OUTSIDE the body (a store subscription on the conversation's inbox stream) — safe because `agentLoop$` records every checkpoint it reads. Records are decisions (`source: conversation-record`), not `ctx.emit`: an emit is served on a re-run only when the log proves the replay, and an interrupted turn leaves an unsettled step that defeats the proof, so the transcript was appended again on every wake. L2: the suite is the evidence (barge-in kept consistent across a restart with divergence \"fail\" and across a crash between the interrupting message and its consumption; rotation preserving history and dedupe; a recorded budget verdict that a changed counter cannot re-decide; bounded history reads); no example consumes it yet — the `chat-agent` loom-examples example named in the ADR is the L3 step. Fix round 1: OWNER-ONLY by default (the runtime's tenant-scope `send` would have let any same-tenant principal drive the owner's agent with the owner's authority) and an explicit SHARED mode (D10, hardened in fix round 2: host-signed bound envelopes in both modes, an owner-scoped runtime policy required, a service-owned coordinator, verified unguessable turn ids): participants, each turn run as its asker, answers classified and filtered per viewer, summaries built only from unrestricted turns.",
+    note: "ADR 0122 (R17). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged; the three additive seams on `@loomwork/agent` are `loopId`, `AgentInput.history` and `AgentInput.promptOrigin`. The finding that shaped it: a registered `ctx.receive` is NOT woken while a step is in flight (ADR 0110 delivers at the owner's quiescence commit, and a model call is a step), so barge-in cannot be built from the inbox primitives and the signal comes from OUTSIDE the body (a store subscription on the conversation's inbox stream) — safe because `agentLoop$` records every checkpoint it reads. Records are decisions (`source: conversation-record`), not `ctx.emit`: an emit is served on a re-run only when the log proves the replay, and an interrupted turn leaves an unsettled step that defeats the proof, so the transcript was appended again on every wake. L2: the suite is the evidence (barge-in kept consistent across a restart with divergence \"fail\" and across a crash between the interrupting message and its consumption; rotation preserving history and dedupe; a recorded budget verdict that a changed counter cannot re-decide; bounded history reads); no example consumes it yet — the `chat-agent` loom-examples example named in the ADR is the L3 step. Fix round 1: OWNER-ONLY by default (the runtime's tenant-scope `send` would have let any same-tenant principal drive the owner's agent with the owner's authority) and an explicit SHARED mode (D10, hardened in fix round 2: host-signed bound envelopes in both modes, an owner-scoped runtime policy required, a service-owned coordinator, verified unguessable turn ids): participants, each turn run as its asker, answers classified and filtered per viewer, summaries built only from unrestricted turns.",
   },
   {
     id: "planning-depth",
     title: "Planning Depth",
-    package: "@loom/planner",
+    package: "@loomwork/planner",
     level: "L2",
     summary:
       "A plan is a validated DAG of steps with arguments, `$from` bindings between steps, dependencies and preconditions. `planGoal` journals the model call through `ctx.decide` (replay makes no model call; unparseable or invalid output is fed back, then a typed `PlanFailedError` - no silent fallback), `executePlan` runs the DAG in `ctx.parallel` waves with bounded concurrency and fail-fast or continue-independent semantics, `makeReviser` replans a bounded number of times without re-running or redeclaring a completed step, and a principal-scoped `GoalStore` (in-memory or over any CAS store such as DurableStateStore) holds long-horizon goals with subgoals and a status machine.",
@@ -280,10 +280,10 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "learning-lifecycle",
     title: "Learning Lifecycle",
-    package: "@loom/learning",
+    package: "@loomwork/learning",
     level: "L2",
     summary:
-      "The lifecycle of a learned policy past the verdict: a principal-scoped `PolicyRegistry` over any CAS store (immutable content-hashed versions, `promote` only with a passing `promotionGate` verdict for that exact version, shadow / canary / full, one-write rollback), `decideWithRollout` (shadow never acts; canary is a deterministic sha256(salt, unit) split; the decision's policy stamp records who acted and what the other arm chose, so replay is identical), content-addressed prompt/model versions in `policy.refs`, doubly-robust evaluation with seeded cluster-bootstrap intervals and a CI-lower-bound gate, and a scoped, taint- and erasure-aware, bounded, deterministic JSONL trajectory/preference export. Beside it: an optional `EmbeddingProvider`/`VectorIndex` SPI with a semantic `EmbeddingMemoryStore` (`@loom/memory`) and an LLM evaluation harness with cassette providers and graders (`@loom/eval`).",
+      "The lifecycle of a learned policy past the verdict: a principal-scoped `PolicyRegistry` over any CAS store (immutable content-hashed versions, `promote` only with a passing `promotionGate` verdict for that exact version, shadow / canary / full, one-write rollback), `decideWithRollout` (shadow never acts; canary is a deterministic sha256(salt, unit) split; the decision's policy stamp records who acted and what the other arm chose, so replay is identical), content-addressed prompt/model versions in `policy.refs`, doubly-robust evaluation with seeded cluster-bootstrap intervals and a CI-lower-bound gate, and a scoped, taint- and erasure-aware, bounded, deterministic JSONL trajectory/preference export. Beside it: an optional `EmbeddingProvider`/`VectorIndex` SPI with a semantic `EmbeddingMemoryStore` (`@loomwork/memory`) and an LLM evaluation harness with cassette providers and graders (`@loomwork/eval`).",
     evidence: {
       conformanceTest: "packages/learning/src/rollout.test.ts",
     },
@@ -292,7 +292,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "tool-search",
     title: "Tool Search",
-    package: "@loom/agent",
+    package: "@loomwork/agent",
     level: "L2",
     summary:
       "`agentLoop$({ toolSearch })` offers an opt-in `search_tools` meta-tool instead of a large menu: each search is ONE recorded decision (`<loop>#turn:<i>:tool:<j>:search`, source `agent-tool-search`, so a replay re-ranks nothing and reproduces the menu), results are only tools the run is already authorized for, and matches are appended to the menu (stable prefix). Ranking is a deterministic, bounded BM25F inverted index (name > aliases/tags > description) behind a pluggable `ToolRanker`; trusted author/host `aliases` and `tags` close the vocabulary gap, a remote tool's own are never trusted, an un-vouched third-party description is neither ranked nor shown, and a result naming a third-party tool is tainted.",
@@ -306,7 +306,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "unicode-locale",
     title: "Unicode Scoring, Prompt Overrides and Schedule Time Zones",
-    package: "@loom/core",
+    package: "@loomwork/core",
     level: "L2",
     summary:
       "`CapabilityCatalog.find` and `SkillRegistry.find` tokenize Unicode (NFKC, letters/numbers/marks in any script; unspaced scripts become overlapping bigrams); `PlannerRuntime`, `IntentRuntime`, `planGoal` and `makeReviser` accept prompt overrides with the English text as default and the untrusted-content note always appended; `schedule$({ timeZone })` reads the cron fields on an IANA zone's wall clock (default UTC; skipped wall time runs once shifted by the gap, repeated wall time runs once at its first occurrence; the occurrence id stays the UTC epoch ms).",
@@ -320,22 +320,22 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "dom-renderer",
     title: "Framework-free DOM Renderer",
-    package: "@loom/plugin-renderer-dom",
+    package: "@loomwork/plugin-renderer-dom",
     level: "L2",
     summary:
       "`mountBlueprint(host, blueprint, { projectionRuntime, executionId })` draws a Blueprint into the DOM with no React, Lit or loom-ui and keeps it live (a projection change re-draws only the widgets whose value or status changed; `update(next)` is a keyed reconcile that keeps the node of every surviving widget/container id); `renderBlueprintToDom` is the one-shot form. Covers the eight built-in kinds and the canonical status matrix, asserted equal to the React and terminal registries. Every element is built through an allowlisting `h()` (text nodes, no `innerHTML`, `href` through `safeUrl`).",
     evidence: {
       conformanceTest: "plugins/renderer-dom/src/parity.test.ts",
     },
-    note: "ADR 0127 (U21). 1P plugin, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged; depends only on blueprint-runtime and projection-runtime and is not in the @loom/sdk barrel. Written from the Blueprint and the two existing renderers rather than moved from loom-ui's renderer-lit, whose adapter is bound to loom-ui's action stamping, i18n and Lit handle contract. No consumer outside its own suite yet (L2, not L3): the candidates are the a2ui-dashboard and db-observability examples.",
+    note: "ADR 0127 (U21). 1P plugin, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged; depends only on blueprint-runtime and projection-runtime and is not in the @loomwork/sdk barrel. Written from the Blueprint and the two existing renderers rather than moved from loom-ui's renderer-lit, whose adapter is bound to loom-ui's action stamping, i18n and Lit handle contract. No consumer outside its own suite yet (L2, not L3): the candidates are the a2ui-dashboard and db-observability examples.",
   },
   {
     id: "model-reasoning",
     title: "Model Reasoning as Audit Evidence",
-    package: "@loom/llm",
+    package: "@loomwork/llm",
     level: "L2",
     summary:
-      "Provider reasoning (Anthropic thinking blocks, Gemini thought parts) captured at the `@loom/llm` seam: readable text goes to a sidecar content store sealed to its execution, the step value holds only signatures, refs and digests, and a userspace `LLM_REASONING_CAPTURED` event the fold ignores records the audit fact. `readReasoning` reads it back tainted. Continuation sends the blocks back unchanged in vendor block order and drops them on any history edit, unresolvable part, tool-set change or model switch; compaction is simple compaction when reasoning is carried. Opt-in live reasoning stream (asker and owner in shared conversations) with reconnect catch-up and a durable endpoint; `observability.reasoning` config with a boot warning.",
+      "Provider reasoning (Anthropic thinking blocks, Gemini thought parts) captured at the `@loomwork/llm` seam: readable text goes to a sidecar content store sealed to its execution, the step value holds only signatures, refs and digests, and a userspace `LLM_REASONING_CAPTURED` event the fold ignores records the audit fact. `readReasoning` reads it back tainted. Continuation sends the blocks back unchanged in vendor block order and drops them on any history edit, unresolvable part, tool-set change or model switch; compaction is simple compaction when reasoning is carried. Opt-in live reasoning stream (asker and owner in shared conversations) with reconnect catch-up and a durable endpoint; `observability.reasoning` config with a boot warning.",
     evidence: {
       conformanceTest: "packages/llm/src/reasoning.test.ts",
     },
@@ -344,7 +344,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "conversation-sse",
     title: "Conversation SSE Gateway",
-    package: "@loom/plugin-conversation-sse",
+    package: "@loomwork/plugin-conversation-sse",
     level: "L2",
     summary:
       "Authenticated end-user transport for a conversation: start / send a turn / close / history / status over JSON, and an SSE stream of the conversation's durable messages (the SSE `id` is the history cursor, so `Last-Event-ID` resumes across rotations) plus live reply deltas, resets and an in-progress catch-up. Fails closed: authentication is required to create the server, existence is hidden behind one 404, authorization is the runtime's per-conversation policy, open streams re-authorize, loopback by default, Origin-checked, with connection / body / pending-byte / lifetime limits.",
@@ -356,7 +356,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "orchestration",
     title: "Child-Workflow Orchestration",
-    package: "@loom/orchestration",
+    package: "@loomwork/orchestration",
     level: "L2",
     summary:
       "Spawn child workflows and durably await their results via decide/suspend/resume + a completion-correlating supervisor — one child (awaitChild, throws childFailed on failure), a concurrent group (awaitChildren, wait-all settled ChildResult[] in input order), or the all-or-nothing awaitAll (unwrapped outputs, throws on any failure).",
@@ -368,19 +368,19 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "sandbox-eval",
     title: "Sandboxed Reshaping Executor",
-    package: "@loom/plugin-sandbox",
+    package: "@loomwork/plugin-sandbox",
     level: "L2",
     summary:
       "QuickJS-in-WASM eval of content-addressed, LLM-authored reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction, output shape-hash validation — typed scriptMissing/limitExceeded/shapeMismatch/scriptError channels (a script's own throw is an outcome; infrastructure failures stay untyped). Opt-in worker-thread evaluation keeps a synchronous eval off the caller's event loop and adds the hard kill the in-engine guards cannot do.",
     evidence: {
       conformanceTest: "plugins/sandbox/src/sandbox.test.ts",
     },
-    note: "ADR 0064 — engine choice: quickjs-emscripten (capability-EMPTY VM vs @loom/isolate's subtractively-scrubbed child process; the isolation CONTRACT follows IsolatedToolSpec). idempotent:true (pure function of script+input); resource kills are typed so replay never re-burns CPU. Written once, audited once — the security test list is the audit's executable form. ADR 0089 adds an opt-in worker pool (`workers`, off by default): both engines share ONE `evalInFreshRuntime`, so the 0064 security list is parameterized over them rather than copied, and the pool contributes what the in-engine guards structurally cannot — a hard kill for a script that never reaches the interrupt handler (measured: 790ms against a 50ms wall clock, one interrupt callback). Pool evidence: plugins/sandbox/src/workerPool.test.ts.",
+    note: "ADR 0064 — engine choice: quickjs-emscripten (capability-EMPTY VM vs @loomwork/isolate's subtractively-scrubbed child process; the isolation CONTRACT follows IsolatedToolSpec). idempotent:true (pure function of script+input); resource kills are typed so replay never re-burns CPU. Written once, audited once — the security test list is the audit's executable form. ADR 0089 adds an opt-in worker pool (`workers`, off by default): both engines share ONE `evalInFreshRuntime`, so the 0064 security list is parameterized over them rather than copied, and the pool contributes what the in-engine guards structurally cannot — a hard kill for a script that never reaches the interrupt handler (measured: 790ms against a 50ms wall clock, one interrupt callback). Pool evidence: plugins/sandbox/src/workerPool.test.ts.",
   },
   {
     id: "sandbox-backend-spi",
     title: "Sandbox Backend SPI",
-    package: "@loom/sandbox",
+    package: "@loomwork/sandbox",
     level: "L5",
     summary:
       "Bring your own isolation boundary for model-written code: a SandboxBackend is only the engine (one verified script, one bounded input, a closed outcome vocabulary), and SandboxEffect owns the input/output ceilings, content-address check, typed channels, cancellation precedence and the JSON replay form. Backends declare network/memory/CPU/fresh-per-run capabilities; the effect refuses egress and reused environments unless opted in.",
@@ -388,24 +388,24 @@ export const CAPABILITIES: readonly Capability[] = [
       versionConstant: "SANDBOX_BACKEND_SPI_VERSION",
       conformanceTest: "plugins/sandbox/src/conformance.test.ts",
     },
-    note: "ADR 0144 — QuickJS (in-process and worker mode) passes the same runSandboxBackendConformance kit a 3P Cloud Run / Firecracker / E2B backend must pass. @loom/isolate stays separate: it runs TRUSTED tool code, this seam runs UNTRUSTED scripts.",
+    note: "ADR 0144 — QuickJS (in-process and worker mode) passes the same runSandboxBackendConformance kit a 3P Cloud Run / Firecracker / E2B backend must pass. @loomwork/isolate stays separate: it runs TRUSTED tool code, this seam runs UNTRUSTED scripts.",
   },
   {
     id: "mcp-dynamic-dispatch",
     title: "MCP Dynamic Dispatch",
-    package: "@loom/plugin-mcp",
+    package: "@loomwork/plugin-mcp",
     level: "L2",
     summary:
       'ONE registered `mcp.invoke` effect; tool name/args/schema-pin are runtime data on dynamically-minted steps. Pinned jsonSchemaHash verified per call → typed schemaDrift/toolNotFound channels; principals ride ctx.principal/secretRef, never the log; MCP_DISPATCHED indexed by projection. Opt-in `resultFidelity: "full"` yields the whole CallToolResult, and a UI-bearing result records MCP_UI_OBSERVED with an explicit four-state pin.',
     evidence: {
       conformanceTest: "plugins/mcp/src/mcpInvoke.test.ts",
     },
-    note: "ADR 0063 — plugin placement per the ADR 0043 litmus (vendor-specific). Canonical hashing lives in @loom/core (one implementation for drift check + registry change detection). MCP_DISPATCHED/MCP_UI_OBSERVED are userspace domain events (fold skips unknown types — no EVENT_SCHEMA bump). ADR 0072 follow-up (plugins/mcp/src/uiDispatch.test.ts): the ingress UI layer was reachable only from McpClient, because every step seam dispatched through the projection that erases `_meta` — asserted now through the EFFECT, which is the level a flow actually traverses.",
+    note: "ADR 0063 — plugin placement per the ADR 0043 litmus (vendor-specific). Canonical hashing lives in @loomwork/core (one implementation for drift check + registry change detection). MCP_DISPATCHED/MCP_UI_OBSERVED are userspace domain events (fold skips unknown types — no EVENT_SCHEMA bump). ADR 0072 follow-up (plugins/mcp/src/uiDispatch.test.ts): the ingress UI layer was reachable only from McpClient, because every step seam dispatched through the projection that erases `_meta` — asserted now through the EFFECT, which is the level a flow actually traverses.",
   },
   {
     id: "effect-mode-boundary",
     title: "Effect Mode Boundary (journaled vs ambient)",
-    package: "@loom/effect-runtime",
+    package: "@loomwork/effect-runtime",
     level: "L2",
     summary:
       "`tool$({ mode })` declares which side of the determinism boundary a tool may be invoked from. `execute` refuses an `ambient` effect; `invokeTransient` refuses a `journaled` one (EffectModeViolationError). Undeclared effects are byte-identical on both seams (G2).",
@@ -417,7 +417,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "mcp-server",
     title: "MCP Server",
-    package: "@loom/plugin-mcp",
+    package: "@loomwork/plugin-mcp",
     level: "L2",
     summary:
       "Serves loom tools/resources over MCP JSON-RPC (initialize / tools/list / tools/call / resources/list / resources/read) — the A2AServer analogue for the MCP ecosystem. Audience-scoped listing and dispatch; app-originated calls to `journaled` tools denied by default. Authenticated by default (R12): refuses creation without `authenticate`/`authorize` or an explicit `insecure: true`, loopback-bound, per-tool `authorizeTool`.",
@@ -429,7 +429,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "mcp-apps-ui-egress",
     title: "MCP Apps `ui://` Egress",
-    package: "@loom/plugin-mcp-app",
+    package: "@loomwork/plugin-mcp-app",
     level: "L2",
     summary:
       "Projects a loom agent surface onto MCP Apps (SEP-1865) as ONE static content-pinned surface-host template whose payload is the existing A2UI catalog model, plus an `ambient`/app-visibility surface cursor tool over EventStore.readRange that substitutes for the extension's missing server push.",
@@ -441,7 +441,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "content-batch-resolution",
     title: "Batched Content Resolution",
-    package: "@loom/plugin-content",
+    package: "@loomwork/plugin-content",
     level: "L4",
     summary:
       "ContentStore.getMany (CONTENT_STORE_SPI_VERSION 1.2.0) + batch-scoped two-phase resolution: one round-trip per read batch, plus a byte-budgeted cache-forever LRU decorator (delete evicts first).",
@@ -454,7 +454,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "storage-scale-out",
     title: "Storage Scale-Out Decorators",
-    package: "@loom/event-runtime",
+    package: "@loomwork/event-runtime",
     level: "L2",
     summary:
       "CoalescingEventStore (cross-execution append batching, per-row fencing preserved) and ShardedEventStore (hash-routed fan-out over N backends) as EventStore DECORATORS — so a BYO store inherits scale-out without implementing it (EVENT_STORE_SPI 1.3.0 appendBatch, optional-with-fallback).",
@@ -467,7 +467,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "shard-rebalancing",
     title: "Shard Rebalancing",
-    package: "@loom/event-runtime",
+    package: "@loomwork/event-runtime",
     level: "L2",
     summary:
       "Virtual buckets + minimal-movement reassignment + lazy drain, so a sharded log can grow its shard count without a stop-the-world migration and without a coordinator.",
@@ -479,19 +479,19 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "classification-path-reach",
     title: "Classification Path Reach (array crossings)",
-    package: "@loom/classify",
+    package: "@loomwork/classify",
     level: "L2",
     summary:
       "`[]` array-crossing segments in classification dot-paths, expanded once against the concrete value (expandPaths) so telemetry masking, field-level encryption and content externalization all reach marks inside array elements.",
     evidence: {
       conformanceTest: "packages/classify/src/expand.test.ts",
     },
-    note: "ADR 0076 — closes a SILENT gap: a sensitive() mark inside an array element collected no path, so it was masked nowhere, encrypted nowhere, externalized nowhere. The @loom/verify `classification-reachability` rule now covers only what remains unaddressable (record/union/tuple/intersection).",
+    note: "ADR 0076 — closes a SILENT gap: a sensitive() mark inside an array element collected no path, so it was masked nowhere, encrypted nowhere, externalized nowhere. The @loomwork/verify `classification-reachability` rule now covers only what remains unaddressable (record/union/tuple/intersection).",
   },
   {
     id: "untrusted-content-integrity",
     title: "Untrusted-Content Integrity Axis",
-    package: "@loom/classify",
+    package: "@loomwork/classify",
     level: "L2",
     summary:
       "`tainted(value, origin)` attaches provenance to a VALUE at ingress (plain JSON, so it survives the log and replay). `guardRequest` REFUSES tainted content in system / assistant / tool-description position and fences it in a `user` message, and it runs at every site that hands a request to an `LlmProvider`: `createLlmEffect`, `AgentRunner.complete`, `ReasoningRuntime.call`, and the direct-provider form of `llmSkillSelector` (R9 closed that last one — it was the one site that did not run it). Producers (both opt-in): `registerMcpInvoke({ taintResults })` taints the whole result; `A2APeerClient({ taintResults })` taints `content` only, its flag's literal type selecting the output type.",
@@ -505,7 +505,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "durable-agent-loop",
     title: "Durable Agent Loop",
-    package: "@loom/agent",
+    package: "@loomwork/agent",
     level: "L2",
     summary:
       '`agentLoop$(ctx, config, input)` runs a ReAct loop from a RUNNER BODY, one durable frame per turn: ids minted `#turn:<i>` / `#turn:<i>:tool:<j>` per the ADR 0061 identity rule, the model call resolved through the EffectRuntime by `modelToolId` (so K2, metering, retry, idempotency and `guardRequest` all apply) — or, with `reasoning` + `reasoningToolId` (R9), each routed call as a journaled effect frame, and with `requireEffectRing` any model call outside the ring is refused, and `requireApproval` parking the execution on a gate BEFORE a destructive tool runs. `agentStep$` is retained as the cheap opaque form — one frame instead of 2N. R10 (ADR 0121) makes `agentLoop$` the one canonical loop (`AgentRunner` and `agentStep$` are deprecated, not removed): a failing tool is an `isError` result and does not fail the run (its outcome is a recorded decision, so a resume never re-runs it; `toolErrors: "fail"` opts out), `parallelTools` runs a turn\'s calls through `ctx.parallel` under the unchanged `#turn:<i>:tool:<j>` ids, `signal` (each checkpoint a recorded decision) / `turnTimeoutMs` / `toolTimeoutMs` bound a run, `writeBack` persists the prompt and answer to memory idempotently, and a `reasoning` model response is journaled (a decision) so a resume makes no model call for a completed turn.',
@@ -514,12 +514,12 @@ export const CAPABILITIES: readonly Capability[] = [
       usedIn:
         "packages/agent/src/agentLoopApproval.test.ts — mid-loop HITL parking before the effect, approved and refused",
     },
-    note: "ADR 0087 — nothing was missing from the kernel; the loop was on the wrong side of it. A step handler receives `StepHandlerContext` (emit, and nothing else), so 40 model calls were ONE frame, approval had to be hoisted out of the agent, and DECISION_RECORDED was hand-emitted in a shape @loom/learning cannot evaluate. Per-turn durability grows the log with conversation length: the two mitigations already ship (ADR 0054 claim-check for bytes, TieredMemory summarization for turns), and the summarize pass is deliberately NOT wired yet because a lossy nondeterministic summary must be journaled to stay replay-safe. Skill selection is likewise left out until it can go through ctx.decide.",
+    note: "ADR 0087 — nothing was missing from the kernel; the loop was on the wrong side of it. A step handler receives `StepHandlerContext` (emit, and nothing else), so 40 model calls were ONE frame, approval had to be hoisted out of the agent, and DECISION_RECORDED was hand-emitted in a shape @loomwork/learning cannot evaluate. Per-turn durability grows the log with conversation length: the two mitigations already ship (ADR 0054 claim-check for bytes, TieredMemory summarization for turns), and the summarize pass is deliberately NOT wired yet because a lossy nondeterministic summary must be journaled to stay replay-safe. Skill selection is likewise left out until it can go through ctx.decide.",
   },
   {
     id: "runner-body-reach",
     title: "Runner-Body Reach Analysis",
-    package: "@loom/compiler",
+    package: "@loomwork/compiler",
     level: "L2",
     summary:
       "`analyzeRunnerReach` reads a flow runner's ctx.run targets and ctx.suspend conditions, closing the 'reachable = DECLARED steps' bound that limited capability-compat, effect-class and suspension-safety. Targets it cannot resolve are REPORTED, so each rule states its own coverage instead of reporting clean.",
@@ -533,7 +533,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "typed-resume-payloads",
     title: "Typed Resume Payloads",
-    package: "@loom/workflow-runtime",
+    package: "@loomwork/workflow-runtime",
     level: "L3",
     summary:
       "Per-gate resume contracts (`flow$({ resumeSchemas })`) parsed BEFORE the append, so a wrongly-shaped resume is refused instead of becoming a permanent fold input; the parsed value is what is recorded. `ctx.suspend<T>` types the call site.",
@@ -546,19 +546,19 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "step-identity-guardrails",
     title: "Step Identity & Interpreter Pattern",
-    package: "@loom/workflow-runtime",
+    package: "@loomwork/workflow-runtime",
     level: "L2",
     summary:
       "The ADR 0061 identity rule (durable-step ids are a pure function of logged inputs; dynamic ids minted `${id}#${index}`), linted by the compiler's analyzeLoopIdentity and pinned by the kernel's interpreter crash-matrix test.",
     evidence: {
       conformanceTest: "packages/workflow-runtime/src/interpreterLoop.test.ts",
     },
-    note: "No kernel changes — a documented contract + compiler lint (tools/compiler loopIdentity.ts, surfaced via @loom/verify's determinism rule) + crash-matrix tests. Dynamic steps are deliberately outside flowContentHash (K11.1 covers the compiled skeleton only).",
+    note: "No kernel changes — a documented contract + compiler lint (tools/compiler loopIdentity.ts, surfaced via @loomwork/verify's determinism rule) + crash-matrix tests. Dynamic steps are deliberately outside flowContentHash (K11.1 covers the compiled skeleton only).",
   },
   {
     id: "typed-failure-channels",
     title: "Typed Failure Channels",
-    package: "@loom/workflow-runtime",
+    package: "@loomwork/workflow-runtime",
     level: "L2",
     summary:
       "Contracts declare `errors:` channels; a TypedFailure on a declared channel is logged with its validated payload and SUBSTITUTED on replay — flows branch on failure deterministically.",
@@ -570,7 +570,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "saga",
     title: "Saga / Compensation",
-    package: "@loom/saga",
+    package: "@loomwork/saga",
     level: "L2",
     summary:
       "Register compensators as a flow progresses; run them in reverse on failure. Compensators are ordinary ctx.run steps, so rollback is replay-safe.",
@@ -582,7 +582,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "scheduler",
     title: "Cooperative Scheduler",
-    package: "@loom/scheduler",
+    package: "@loomwork/scheduler",
     level: "L4",
     summary: "Bounded concurrency + priority; zero-overhead-when-unwired.",
     evidence: {
@@ -593,7 +593,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "reasoning-router",
     title: "Reasoning Router",
-    package: "@loom/reasoning",
+    package: "@loomwork/reasoning",
     level: "L4",
     summary: "M3 model routing/elevation with O(1) ranked selection.",
     evidence: {
@@ -604,7 +604,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "projection-runtime",
     title: "Projection Runtime",
-    package: "@loom/projection-runtime",
+    package: "@loomwork/projection-runtime",
     level: "L4",
     summary: "Fold events into read-model surfaces; coalescing + bounded retention.",
     evidence: {
@@ -615,7 +615,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "analytics",
     title: "Analytics & Observability",
-    package: "@loom/analytics",
+    package: "@loomwork/analytics",
     level: "L4",
     summary: "Read-only lenses: analyze / profile / introspect / decision graph / advisory.",
     evidence: {
@@ -626,7 +626,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "decision-materialization",
     title: "Decision Materialization",
-    package: "@loom/analytics",
+    package: "@loomwork/analytics",
     level: "L3",
     summary: "DecisionStore / DecisionGraph read-models over the log (ADR 0030).",
     evidence: {
@@ -638,7 +638,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "compiler",
     title: "Compiler",
-    package: "@loom/compiler",
+    package: "@loomwork/compiler",
     level: "L3",
     summary: "handler$ extraction, flow-graph + non-determinism analysis, manifest.",
     evidence: {
@@ -651,7 +651,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "memory",
     title: "Tiered Memory",
-    package: "@loom/memory",
+    package: "@loomwork/memory",
     level: "L5",
     summary:
       "M5 working/episodic/semantic/procedural tiers with deterministic recall, over a versioned MemoryStore SPI with durable SQLite/Postgres backends and optional relevance search (ADR 0090).",
@@ -660,12 +660,12 @@ export const CAPABILITIES: readonly Capability[] = [
       conformanceTest: "packages/memory/src/conformance.test.ts",
       usedIn: "loom-examples: runbook-recall, agent-network",
     },
-    note: "ADR 0090/0091 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P loom-plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. ADR 0091 took the SPI to 2.0.0: entry `id` (REQUIRED to round-trip, so the read-filter-replace fallback has something to match) plus the optional `remove`, because `search` ranks within one key while a document — the unit a corpus is actually edited in — is a subset of it. MAJOR because a backend that decomposes an entry into columns drops a field nobody told it to keep, which is silent in every case that only checks `content`. L3 → L5 once MEMORY_STORE_SPI_VERSION landed: the level bar is a versioned contract pinned by a conformance kit, and this seam is the first whose implementations live OUTSIDE this repo, which is what made an unversioned contract an actual hazard rather than a formality. As with every SPI here, nothing forces the constant to be bumped when the shape changes — the version is a declaration, the kit is the check.",
+    note: "ADR 0090/0091 — `search` is proven portable by FOUR independent implementations of one kit (in-memory IDF, SQLite FTS5, Postgres tsvector, and the 3P @loomwork/plugin-vector's cosine similarity), which is what makes the seam a contract rather than a description of an inverted index. ADR 0091 took the SPI to 2.0.0: entry `id` (REQUIRED to round-trip, so the read-filter-replace fallback has something to match) plus the optional `remove`, because `search` ranks within one key while a document — the unit a corpus is actually edited in — is a subset of it. MAJOR because a backend that decomposes an entry into columns drops a field nobody told it to keep, which is silent in every case that only checks `content`. L3 → L5 once MEMORY_STORE_SPI_VERSION landed: the level bar is a versioned contract pinned by a conformance kit, and this seam is the first whose implementations live OUTSIDE this repo, which is what made an unversioned contract an actual hazard rather than a formality. As with every SPI here, nothing forces the constant to be bumped when the shape changes — the version is a declaration, the kit is the check.",
   },
   {
     id: "knowledge",
     title: "Document Corpora",
-    package: "@loom/knowledge",
+    package: "@loomwork/knowledge",
     level: "L3",
     summary:
       "KnowledgeBase over a memory tier: upsert/sync/remove by document, provenance-preserving prompt assembly, and decidable citation checking (ADR 0091).",
@@ -679,7 +679,7 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "placement-adapters",
     title: "Placement Adapters",
-    package: "@loom/dispatcher + workers",
+    package: "@loomwork/dispatcher + workers",
     level: "L2",
     summary: "WorkerRuntime SPI + local/remote/CloudRun adapters.",
     evidence: {

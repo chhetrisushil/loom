@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { type TaintedValue, unwrapTainted } from "@loom/classify";
-import { fail } from "@loom/core";
-import { LLM_INTERRUPTED } from "@loom/llm";
-import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
+import { type TaintedValue, unwrapTainted } from "@loomwork/classify";
+import { fail } from "@loomwork/core";
+import { LLM_INTERRUPTED } from "@loomwork/llm";
+import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loomwork/llm";
 
 // ── The live (transient) channel of a conversation (ADR 0122 D5) ───────────────────────────────
 //

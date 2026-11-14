@@ -1,7 +1,7 @@
 import * as http from "node:http";
 import * as path from "node:path";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IsolatedToolEffect } from "./IsolatedToolEffect";
 import { EgressDeniedError, brokeredFetch } from "./broker";

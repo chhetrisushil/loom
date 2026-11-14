@@ -1,16 +1,16 @@
-# @loom/plugin-sandbox — run model-written JavaScript in QuickJS
+# @loomwork/plugin-sandbox — run model-written JavaScript in QuickJS
 
 The reference backend for the sandbox seam (ADR 0144). It runs a short JavaScript snippet that a model
 wrote, typically one that reshapes raw tool output into a known shape, inside QuickJS compiled to
 WebAssembly, and returns the result as step output. Scripts are stored by content hash, have
 resource limits, and their result can be checked against a pinned shape hash. Other isolation
-boundaries (gVisor, Firecracker, a hosted sandbox) are third-party backends against the `@loom/sandbox`
+boundaries (gVisor, Firecracker, a hosted sandbox) are third-party backends against the `@loomwork/sandbox`
 interface; this package is only the QuickJS one.
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { InMemoryContentStore } from "@loom/plugin-content";
-import { registerSandboxEval, sandboxEval$ } from "@loom/plugin-sandbox";
+import { defineConfig } from "@loomwork/app";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
+import { registerSandboxEval, sandboxEval$ } from "@loomwork/plugin-sandbox";
 
 const scripts = new InMemoryContentStore(); // the content store scripts are kept in
 
@@ -56,8 +56,8 @@ export const reshape = sandboxEval$("reshape");
   not isolation; the isolation is QuickJS. Without workers, evaluation is synchronous and blocks the
   calling thread for as long as the script runs.
 - **Not a boundary for compiled or native code, and not a place to run trusted tools.** It is meant for
-  small JavaScript reshaping. `@loom/isolate` runs trusted tool code with brokered egress, and
-  `@loom/plugin-cloudrun` places trusted flows; neither is this.
+  small JavaScript reshaping. `@loomwork/isolate` runs trusted tool code with brokered egress, and
+  `@loomwork/plugin-cloudrun` places trusted flows; neither is this.
 - **A script's error text is untrusted.** The `scriptError` name and message are written by the script
   (often by a model), truncated and stripped of a stack. Treat them as data for a planner or a log,
   never as instructions to a model. Pin `expectedOutputShapeHash` if you need to know the result's shape.
@@ -70,6 +70,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 - [ADR 0064](../../docs/adr/0064-sandbox-eval-plugin.md): the engine, limits and failure channels.
 - [ADR 0089](../../docs/adr/0089-sandbox-worker-pool.md): the worker pool and the hard kill.
 - [ADR 0144](../../docs/adr/0144-sandbox-backend-spi.md): the backend interface and other backends.
-- API reference: sections "`@loom/sandbox` — the sandbox backend SPI" and "`@loom/plugin-sandbox` —
+- API reference: sections "`@loomwork/sandbox` — the sandbox backend SPI" and "`@loomwork/plugin-sandbox` —
   untrusted code as an effect" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

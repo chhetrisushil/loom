@@ -70,13 +70,13 @@ describe.skipIf(!ENABLED)("create-loom-app day one (real install)", () => {
         app
       );
       expect(existsSync(join(app, `app/flows/${name}/flow.test.ts`))).toBe(true);
-      const hint = /"(@loom\/saga)": "([^"]+)"/.exec(printed);
+      const hint = /"(@loomwork\/saga)": "([^"]+)"/.exec(printed);
       if (template === "saga") {
-        expect(hint, "loom new must say @loom/saga is missing").not.toBeNull();
+        expect(hint, "loom new must say @loomwork/saga is missing").not.toBeNull();
         const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
           dependencies: Record<string, string>;
         };
-        manifest.dependencies["@loom/saga"] = (hint as RegExpExecArray)[2] as string;
+        manifest.dependencies["@loomwork/saga"] = (hint as RegExpExecArray)[2] as string;
         writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
         sh("pnpm", ["install", "--prefer-offline"], app);
         // The scaffold is `security.strict`: the saga's tool steps need grants, as the note says.

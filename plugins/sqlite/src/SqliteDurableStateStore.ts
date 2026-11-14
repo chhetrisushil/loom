@@ -1,5 +1,5 @@
-import type { DurableStateRecord, DurableStateStore } from "@loom/plugin-durable-state";
-import { RevisionConflictError } from "@loom/plugin-durable-state";
+import type { DurableStateRecord, DurableStateStore } from "@loomwork/plugin-durable-state";
+import { RevisionConflictError } from "@loomwork/plugin-durable-state";
 import Database from "better-sqlite3";
 
 interface DurableStateRow {

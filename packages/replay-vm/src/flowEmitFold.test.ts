@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { ReplayVM } from "./ReplayVM";
 import { EVENT_SCHEMA_VERSION, flowEmitCount } from "./eventHandlers";

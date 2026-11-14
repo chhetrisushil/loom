@@ -1,4 +1,4 @@
-import type { CapabilityChange, ChangeSpec, Op, StepChange } from "@loom/appgen";
+import type { CapabilityChange, ChangeSpec, Op, StepChange } from "@loomwork/appgen";
 
 // Semantic validation of the model's output. Grammar-constrained decoding already
 // guarantees well-formed, on-schema JSON; this layer turns that JSON into a typed

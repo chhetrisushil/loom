@@ -1,4 +1,4 @@
-import type { TaintedValue } from "@loom/classify";
+import type { TaintedValue } from "@loomwork/classify";
 import type { Effect, EffectContext, EffectDelta, EffectReasoningHook } from "../types";
 
 export interface LlmEffectOptions {

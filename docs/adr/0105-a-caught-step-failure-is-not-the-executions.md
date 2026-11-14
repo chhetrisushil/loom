@@ -10,7 +10,7 @@
   [ADR 0060](0060-typed-failure-channels.md) (a typed failure exists to be caught) and
   [ADR 0104](0104-recovery-never-answers-a-gate.md) (a `null` resume into an unparked
   execution is status-only).
-- Placement: **kernel** (`@loom/replay-vm`, the fold; `@loom/workflow-runtime`, the snapshot
+- Placement: **kernel** (`@loomwork/replay-vm`, the fold; `@loomwork/workflow-runtime`, the snapshot
   reads, the terminal-failure write, the recovery bound and the timer reconcile pass that repairs
   what the old fold made the timer service discard). No 1P or 3P surface could hold it:
   the wrong value is produced by the fold, and every consumer reads the fold.
@@ -60,7 +60,7 @@ What read the fold got the wrong answer:
   with error `"unknown error"` (no `_error` exists yet), and `A2AClientEffect` stops polling on
   `failed`.
 - **`loom trace`, `handle.getState()`, the wire ABI's `execution.getState` and
-  `@loom/live-query`** showed a live execution as failed, so a subscriber waiting for a terminal
+  `@loomwork/live-query`** showed a live execution as failed, so a subscriber waiting for a terminal
   state stopped early.
 
 The log already distinguishes the outcomes. When a failure escapes the runner,
@@ -103,13 +103,13 @@ it should see after a caught (or late sibling) step failure.
 | `orphanCensus`, `retireAbandonedBranches` | fold status (+ suspended) | skipped as terminal | counted / retirable |
 | `cancel` (detached) | fold status terminal? | `false`, not cancellable | cancelled |
 | `LogLifecycle` retention, `eraseSubject` | fold status terminal? | eligible for pruning / "settled" | `not-terminal` / live |
-| `@loom/deploy-sim` `flow-hash` census | status ∈ {suspended, running} | a live caught-failure execution skipped the drain-or-pin check | checked |
+| `@loomwork/deploy-sim` `flow-hash` census | status ∈ {suspended, running} | a live caught-failure execution skipped the drain-or-pin check | checked |
 | A2A `LoomAgentExecutor` / `toTaskResult` (polled) | fold status | `failed`, `"unknown error"` | `working` |
 | wire ABI `execution.getState` (`carrier.stateView`) | fold status | `failed` | `running` / `suspended` |
-| `loom trace`, `handle.getState()`, `@loom/live-query` subscribers | fold status | `failed`, subscriber stopped early | `running`, waits for the real terminal |
+| `loom trace`, `handle.getState()`, `@loomwork/live-query` subscribers | fold status | `failed`, subscriber stopped early | `running`, waits for the real terminal |
 | `loom eval` goldens (`evaluateGoldens`, `expect.status`) | fold status of a recorded log | a golden that pinned `failed` for a log ending after a caught failure | now `running`: such a golden fails loudly and must be re-recorded — it pinned the bug |
 | `InProcessA2ABus` | fold status after dispatch settles | unaffected: it maps the state `waitForCompletion`/`waitForSuspend` settled with, which a caught failure never produced as `failed` | unchanged |
-| `@loom/analytics` (`analyze`, `introspect`, `profile`), `@loom/learning` trajectories, `@loom/telemetry`, `@loom/orchestration` child outcomes, DST invariants, audit-chain, CLI glyphs | the EVENTS (`EXECUTION_FAILED`) | already correct | unchanged |
+| `@loomwork/analytics` (`analyze`, `introspect`, `profile`), `@loomwork/learning` trajectories, `@loomwork/telemetry`, `@loomwork/orchestration` child outcomes, DST invariants, audit-chain, CLI glyphs | the EVENTS (`EXECUTION_FAILED`) | already correct | unchanged |
 
 The last row is the tell: every consumer that derived status from the events themselves already
 treated only `EXECUTION_FAILED` as the execution's failure. The fold was the outlier.
@@ -195,7 +195,7 @@ followed by a status-setting event:
   already polled did NOT keep its timer: that service saw "failed" and retired the row as
   obsolete, so after the upgrade the execution reads `suspended` with a past `wakeAt` and no
   row, and nothing wakes it. `reconcileTimers(runtime, { source, timers })` (new,
-  `@loom/workflow-runtime`) re-arms every suspended execution's `wakeAt` row. It needs no lookup
+  `@loomwork/workflow-runtime`) re-arms every suspended execution's `wakeAt` row. It needs no lookup
   in the TimerStore, because `schedule` is idempotent per (executionId, wakeAt): a healthy row is
   a no-op and a missing one is restored, and `TimerService`'s own still-waiting guard makes a
   duplicate fire a no-op. A following `null` resume is status-only (D3).
@@ -219,7 +219,7 @@ followed by a status-setting event:
 **Snapshots.** A snapshot is a stored fold, so one saved by an older fold inside that window
 still holds `status: "failed"` — a cadence snapshot (`snapshotEvery`), a fork seed, or a
 suspend snapshot a sibling's commit raced (Context). It is repaired on read, in O(1) on the
-common path: `normalizeSnapshotState` (`@loom/replay-vm`) reads `failed` with no
+common path: `normalizeSnapshotState` (`@loomwork/replay-vm`) reads `failed` with no
 `variables._error` and a failed step frame as the old fold's artifact — the kernel's only
 `EXECUTION_FAILED` writer always records `error` — and restores `suspended` when the snapshot
 is parked (`suspendedOn` survives only while parked), `running` otherwise. Every stored-fold

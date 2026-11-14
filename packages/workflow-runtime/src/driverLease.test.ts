@@ -1,12 +1,12 @@
-import { step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   InMemoryAsyncEventStore,
   InMemoryLeaseStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { TimerService } from "./TimerService";
@@ -814,9 +814,9 @@ describe("S7c review P2-4 - disabled really is byte-identical, and the contract 
 
   it("KERNEL_ABI / EVENT_SCHEMA / SPI versions are pinned (S7c adds no syscall, event or SPI change)", async () => {
     const { KERNEL_ABI_VERSION, KERNEL_SYSCALLS } = await import("./abi");
-    const { EVENT_SCHEMA_VERSION } = await import("@loom/replay-vm");
+    const { EVENT_SCHEMA_VERSION } = await import("@loomwork/replay-vm");
     const { EVENT_STORE_SPI_VERSION, LEASE_STORE_SPI_VERSION } = await import(
-      "@loom/event-runtime"
+      "@loomwork/event-runtime"
     );
     expect(KERNEL_ABI_VERSION).toBe("1.3.0");
     expect(KERNEL_SYSCALLS.map((s) => s.name)).toEqual([

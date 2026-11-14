@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 import {
   SNAPSHOT_FRAME_SENTINEL,
   type Snapshot,
@@ -10,7 +10,7 @@ import {
   isSnapshotFrameSentinel,
   parseSnapshotCodec,
   zstdAvailable,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { ensureSnapshotZstd, migrate } from "./schema";
 
@@ -100,7 +100,7 @@ export class PostgresSnapshotStore implements SnapshotStore {
       this.hasFrameColumn = await this.probeFrameColumn();
       if (this.hasFrameColumn && !zstdAvailable()) {
         warn(
-          `loom: @loom/plugin-postgres found snapshots.state_z (the zstd snapshot codec, ADR 0141) but this Node (${process.versions.node}) cannot decode zstd (needs >= 22.15). Snapshots written as frames will FAIL to load here, loudly. Run Node >= 22.15 on every node that reads this database.`
+          `loom: @loomwork/plugin-postgres found snapshots.state_z (the zstd snapshot codec, ADR 0141) but this Node (${process.versions.node}) cannot decode zstd (needs >= 22.15). Snapshots written as frames will FAIL to load here, loudly. Run Node >= 22.15 on every node that reads this database.`
         );
       }
     });

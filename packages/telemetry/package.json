@@ -1,5 +1,5 @@
 {
-  "name": "@loom/telemetry",
+  "name": "@loomwork/telemetry",
   "version": "0.1.0",
   "description": "Zero-overhead telemetry adapter and hook for Loom workflows",
   "main": "./dist/index.js",
@@ -20,8 +20,8 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

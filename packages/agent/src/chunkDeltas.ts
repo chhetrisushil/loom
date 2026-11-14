@@ -12,7 +12,7 @@
  * property of the provider's tokenizer into a choice the author makes.
  *
  * A purely transient sink (`progressHub`, or the app's own `onDelta` handler) does not
- * need this — there, per-token is free and smoother. `@loom/live-query` is not such a
+ * need this — there, per-token is free and smoother. `@loomwork/live-query` is not such a
  * sink: it has no delta-push API — its `subscribe` re-folds DURABLE events (`snapshot` +
  * `EventStore.subscribe`), not a channel a streaming effect can push deltas into
  * (2026-09-27 audit).

@@ -1,5 +1,5 @@
-import { loadProjectionHandlers, projectionEventTypes } from "@loom/core";
-import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
+import { loadProjectionHandlers, projectionEventTypes } from "@loomwork/core";
+import type { EventEnvelope, ProjectionHandlers } from "@loomwork/core";
 import { FoldStateCache } from "./foldStateCache";
 import { effectiveFoldVersion, mergeSensitive } from "./sensitiveConfig";
 import { foldView } from "./sensitiveInput";

@@ -72,7 +72,7 @@ export function defineWidgetCatalog(catalog: WidgetCatalog): WidgetCatalog {
 export const BUILTIN_CATALOG_ID = "loom.builtin.v1";
 
 /**
- * The eight widgets `@loom/blueprint-runtime` ships, as a catalogue.
+ * The eight widgets `@loomwork/blueprint-runtime` ships, as a catalogue.
  *
  * `props` mirrors each builder's props interface minus `title` (hoisted onto
  * `Widget.title`) and minus `binding` (reserved). Every built-in requires a
@@ -136,7 +136,7 @@ export type BlueprintFindingCode =
   | "malformed-node"
   /** `binding.status.path` is empty or not a dotted path. */
   | "status-path-invalid"
-  /** `binding.sensitivity` is not a `@loom/classify` `DataClass`. */
+  /** `binding.sensitivity` is not a `@loomwork/classify` `DataClass`. */
   | "sensitivity-unknown"
   /** `widget.source` (or a `degradedFrom` entry) is missing `type` or `version`. */
   | "source-invalid"
@@ -586,7 +586,7 @@ export function validateBlueprint(
         severity: "error",
         nodeId: id,
         kind,
-        message: `binding.sensitivity ${JSON.stringify(sensitivity)} is not a @loom/classify DataClass`,
+        message: `binding.sensitivity ${JSON.stringify(sensitivity)} is not a @loomwork/classify DataClass`,
       });
     }
 

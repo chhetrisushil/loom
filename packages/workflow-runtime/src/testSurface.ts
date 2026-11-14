@@ -1,8 +1,8 @@
-// Test-only stand-in for `@loom/agent-surface` (ADR 0114): the kernel package no longer depends on it,
+// Test-only stand-in for `@loomwork/agent-surface` (ADR 0114): the kernel package no longer depends on it,
 // so its own tests inject a minimal `surface` factory and fold the resulting SURFACE_PATCH events
 // with a flat-path fold. The real emitter/fold, and byte-identity against it, are tested in
-// `@loom/agent-surface` (`context.test.ts`).
-import type { EventEnvelope } from "@loom/core";
+// `@loomwork/agent-surface` (`context.test.ts`).
+import type { EventEnvelope } from "@loomwork/core";
 
 type Emit = (eventType: string, payload: unknown) => void;
 type Patch = { op: string; path: string; value?: unknown; by?: number };
@@ -17,7 +17,7 @@ export interface TestSurface {
 }
 
 /**
- * `ctx.ui` is merged into `ExecutionContext` only where `@loom/agent-surface` is in the program (ADR 0114),
+ * `ctx.ui` is merged into `ExecutionContext` only where `@loomwork/agent-surface` is in the program (ADR 0114),
  * and this package cannot depend on it. The runtime injects the accessor from `deps.surface`, so the tests
  * read it through this narrowing instead of a declaration merge.
  */

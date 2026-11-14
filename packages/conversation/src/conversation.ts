@@ -5,10 +5,10 @@ import {
   agentLoop$,
   classifyModelCallFailure,
   continueEvery,
-} from "@loom/agent";
-import { tainted, unwrapTainted } from "@loom/classify";
-import { TypedFailure, flow$, fnv1a64 } from "@loom/core";
-import type { ExecutionContext, FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+} from "@loomwork/agent";
+import { tainted, unwrapTainted } from "@loomwork/classify";
+import { TypedFailure, flow$, fnv1a64 } from "@loomwork/core";
+import type { ExecutionContext, FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import {
   ENVELOPE_DOMAIN,

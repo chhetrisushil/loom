@@ -18,7 +18,7 @@ function emptyState(): PluginState {
 describe("compiler — skill instruction extraction", () => {
   it("extracts instructions$ into a lazy chunk, rewrites to a dynamic import, and lists it in the manifest", () => {
     const src = [
-      'import { skill$, instructions$ } from "@loom/core";',
+      'import { skill$, instructions$ } from "@loomwork/core";',
       "export const CpuSkill = skill$({",
       '  id: "diagnose-cpu",',
       '  name: "CPU",',
@@ -51,11 +51,11 @@ describe("compiler — skill instruction extraction", () => {
 
   it("records a skill with inline (unmarked) instructions but no chunk", () => {
     const src = [
-      'import { skill$ } from "@loom/core";',
+      'import { skill$ } from "@loomwork/core";',
       'const raw = "inline body";',
       'export const S = skill$({ id: "s1", name: "S", description: "d", instructions: { _loomInstructionsRef: true, text: raw } });',
       // Force a chunk elsewhere so transformFile reports "modified".
-      'import { step$, handler$ } from "@loom/core";',
+      'import { step$, handler$ } from "@loomwork/core";',
       'export const St = step$({ id: "st", inputSchema: null, outputSchema: null, handler: handler$(async () => 1) });',
     ].join("\n");
     const state = emptyState();
@@ -69,7 +69,7 @@ describe("compiler — skill instruction extraction", () => {
 describe("compiler — projection handlers extraction", () => {
   it("extracts a projection$ handlers map into a lazy chunk, records event types, rewrites to a ref", () => {
     const src = [
-      'import { projection$ } from "@loom/core";',
+      'import { projection$ } from "@loomwork/core";',
       "export const Counter = projection$({",
       '  id: "step-counter",',
       '  name: "Counter",',
@@ -111,7 +111,7 @@ describe("compiler — projection handlers extraction", () => {
 
   it("leaves handlers eager (no chunk) when a key is not statically named", () => {
     const src = [
-      'import { projection$ } from "@loom/core";',
+      'import { projection$ } from "@loomwork/core";',
       "const evt = 'DYNAMIC';",
       "export const P = projection$({",
       '  id: "dyn",',
@@ -120,7 +120,7 @@ describe("compiler — projection handlers extraction", () => {
       "  handlers: { [evt]: (s, _e) => ({ n: s.n + 1 }) },", // computed key — not extractable
       "});",
       // Force a chunk elsewhere so transformFile reports "modified".
-      'import { step$, handler$ } from "@loom/core";',
+      'import { step$, handler$ } from "@loomwork/core";',
       'export const St = step$({ id: "st", handler: handler$(async () => 1) });',
     ].join("\n");
     const state = emptyState();
@@ -134,7 +134,7 @@ describe("compiler — projection handlers extraction", () => {
 
 describe("compiler — flow detection", () => {
   const steps = [
-    'import { flow$, step$, handler$ } from "@loom/core";',
+    'import { flow$, step$, handler$ } from "@loomwork/core";',
     'const a = step$({ id: "a", name: "A", handler: handler$(async () => ({})) });',
     'const b = step$({ id: "b", name: "B", handler: handler$(async () => ({})) });',
   ];
@@ -173,7 +173,7 @@ describe("compiler — runner reach in the manifest (L36)", () => {
     // only hands ctx to a library (`planner.compose(x, ctx)`) lost its runnerReach and verify
     // reported it as "no runner-body analysis" instead of the undeclared hand-off.
     const src = [
-      'import { flow$ } from "@loom/core";',
+      'import { flow$ } from "@loomwork/core";',
       'import { planner } from "./planner";',
       "const runner = async (ctx, input) => planner.compose(input, ctx);",
       'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
@@ -196,7 +196,7 @@ describe("compiler — runner reach in the manifest (L36)", () => {
     // Regression: an empty reach was dropped, so a flow whose runner was read and reaches nothing
     // (`async (_ctx, input) => reduce(input)`) was reported as "no runner-body analysis".
     const src = [
-      'import { flow$ } from "@loom/core";',
+      'import { flow$ } from "@loomwork/core";',
       'import { reduce } from "./reduce";',
       "const runner: FlowRunner<In, Out> = async (_ctx, input) => reduce(input);",
       'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner: runner as FlowRunner<unknown, unknown> } as RegisteredFlow;',
@@ -207,7 +207,7 @@ describe("compiler — runner reach in the manifest (L36)", () => {
   it("claims nothing when the module holds no runner (registered from another module)", () => {
     // An empty reach with no runner here is NOT an analysed empty: the runner was never read.
     const src = [
-      'import { flow$ } from "@loom/core";',
+      'import { flow$ } from "@loomwork/core";',
       'export const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
     ].join("\n");
     expect(reachOf(src)).toBeUndefined();
@@ -216,7 +216,7 @@ describe("compiler — runner reach in the manifest (L36)", () => {
   it("claims nothing for an empty reach when several flows share the module", () => {
     // The reach is module-wide: the one runner found may be the sibling's, while wf's lives elsewhere.
     const src = [
-      'import { flow$ } from "@loom/core";',
+      'import { flow$ } from "@loomwork/core";',
       "const runner = async (_ctx, input) => input;",
       'export const a = { definition: flow$({ id: "other", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
       'export const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
@@ -226,8 +226,8 @@ describe("compiler — runner reach in the manifest (L36)", () => {
 
   it("genUI shapes: a typed const runner beside RegisteredFlow { definition: flow$, runner } is analysed-empty", () => {
     const src = [
-      'import { flow$ } from "@loom/core";',
-      'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+      'import { flow$ } from "@loomwork/core";',
+      'import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";',
       'import { z } from "zod";',
       "const runner: FlowRunner<In, Out> = async (_ctx, input) => reduceAuthoringOp(input);",
       "export const F: RegisteredFlow = {",
@@ -244,7 +244,7 @@ describe("compiler — runner reach in the manifest (L36)", () => {
 
   it("a registerFlow(def, pure runner) naming this module's flow$ is analysed-empty", () => {
     const src = [
-      'import { flow$ } from "@loom/core";',
+      'import { flow$ } from "@loomwork/core";',
       'const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
       "registerFlow(def, async (_c, x) => x);",
     ].join("\n");
@@ -253,7 +253,7 @@ describe("compiler — runner reach in the manifest (L36)", () => {
 
   describe("an unrelated pure runner elsewhere leaves the flow UNANALYSED", () => {
     const def = [
-      'import { flow$ } from "@loom/core";',
+      'import { flow$ } from "@loomwork/core";',
       'export const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
     ];
     const shapes: Record<string, string> = {
@@ -271,7 +271,7 @@ describe("compiler — runner reach in the manifest (L36)", () => {
 
   it("an imported runner is reported unresolved, never an analysed empty", () => {
     const src = [
-      'import { flow$ } from "@loom/core";',
+      'import { flow$ } from "@loomwork/core";',
       'import { runner } from "./runner";',
       'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
     ].join("\n");
@@ -293,7 +293,7 @@ describe("compiler - imported constants and factories in the manifest (L37)", ()
         'export const LLM_X = "llm.x";\nexport function llmStep$(id: string, toolId: string) { return step$({ id, toolId }); }\n'
       );
       const src = [
-        'import { flow$ } from "@loom/core";',
+        'import { flow$ } from "@loomwork/core";',
         'import { LLM_X, llmStep$ } from "./llm/effects";',
         "const runner = async (ctx, n) => ctx.run(llmStep$(`x@a${n}`, LLM_X), {});",
         'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
@@ -312,7 +312,7 @@ describe("compiler - imported constants and factories in the manifest (L37)", ()
 describe("compiler — builder detection robustness (inline / nested)", () => {
   it("detects inline step$(...) inside a flow's steps array (with handler extraction)", () => {
     const src = [
-      'import { flow$, step$, handler$ } from "@loom/core";',
+      'import { flow$, step$, handler$ } from "@loomwork/core";',
       'export const f = flow$({ id: "wf", steps: [',
       '  step$({ id: "a", name: "A", handler: handler$(async () => ({})) }),',
       '  step$({ id: "b", name: "B", handler: handler$(async () => ({})) }),',
@@ -329,7 +329,7 @@ describe("compiler — builder detection robustness (inline / nested)", () => {
 
   it("detects skill$(...) when nested (not a direct variable initializer)", () => {
     const src = [
-      'import { skill$, instructions$ } from "@loom/core";',
+      'import { skill$, instructions$ } from "@loomwork/core";',
       'export const skills = [skill$({ id: "s1", name: "S", description: "d", instructions: instructions$("body") })];',
     ].join("\n");
     const state = emptyState();

@@ -1,4 +1,4 @@
-import { agent$ } from "@loom/core";
+import { agent$ } from "@loomwork/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const agent = agent$({ id: "scripted", name: "Scripted", tools: [] });

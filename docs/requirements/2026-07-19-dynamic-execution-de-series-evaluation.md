@@ -22,7 +22,7 @@
 
 ## 1. Verdicts
 
-### DE-1 `all$` — REJECT as kernel primitive → userspace `fanout$` (shipped, `@loom/orchestration`)
+### DE-1 `all$` — REJECT as kernel primitive → userspace `fanout$` (shipped, `@loomwork/orchestration`)
 
 The submission's two failure modes don't hold here: (a) serial-only — false,
 `ctx.parallel` is an existing syscall; (b) nondeterministic replay — false (C6).
@@ -50,7 +50,7 @@ The workload is answered without the class:
 
 **The P0 hydration path is not a loom run.** A transient interpreter service
 walks the content-addressed `PrivateExecutionManifest` in plain code (optionally
-fronted by `@loom/plugin-read-model`, ADR 0058, for materialized results). The
+fronted by `@loomwork/plugin-read-model`, ADR 0058, for materialized results). The
 determinism boundary is crossed only when something durable happens: drift
 detected → start a **durable repair run whose input carries the forensic
 payload** (manifest ref, failed node, observed hash) and whose own log records
@@ -122,7 +122,7 @@ the identity rule; dynamic steps bind a static `toolId` to a registered effect).
 
 ### DE-6 self-reference — ACCEPT as guard + test (no new machinery)
 
-`@loom/orchestration`'s `awaitChild` already supports recursion (`parent::key`
+`@loomwork/orchestration`'s `awaitChild` already supports recursion (`parent::key`
 child ids peel correctly). Shipped residue: `maxDepth` guard completing on a
 typed `depthExceeded` channel (DE-4′), plus recursion tests. In-band same-run
 re-entry is just calling the interpreter again with repaired input — id
@@ -142,12 +142,12 @@ batch → dedupe → one round-trip → substitute), claim-check batch reader,
 with delete-evicts-first so erasure is never resurrected), conformance + bench
 against the p95 ≤ 150ms / 50-ref budget.
 
-### DE-8 `mcpInvoke$` — ACCEPT, re-placed in `@loom/plugin-mcp` (ADR 0063)
+### DE-8 `mcpInvoke$` — ACCEPT, re-placed in `@loomwork/plugin-mcp` (ADR 0063)
 
 Not "stdlib": the ADR 0043 litmus (exists because of a specific external system
 → plugin) puts MCP dispatch in the MCP plugin. The submission's mechanism is
 sound and was net-new (the plugin captured `jsonInputSchema` but never hashed
-it). Shipped: canonical JSON-schema hash in `@loom/core` (`canonicalJson` +
+it). Shipped: canonical JSON-schema hash in `@loomwork/core` (`canonicalJson` +
 `fnv1a64` — importable by a registry change-detector without the plugin), ONE
 registered `mcp.invoke` effect dispatched via dynamically-minted step ids (the
 DE-5′ idiom — never an effect per tool), `schemaDrift`/`toolNotFound` declared
@@ -160,17 +160,17 @@ EVENT_SCHEMA bump (the fold skips unknown types).
 ### DE-9 sensitive fields — ACCEPT; mostly already built
 
 The submission asked for a convention with deferred kernel promotion; the repo
-already exceeds it: `@loom/classify` (`secret()`/`sensitive()`/`internal()`
+already exceeds it: `@loomwork/classify` (`secret()`/`sensitive()`/`internal()`
 authored at the Zod schema), `redactionMiddleware` (secret → SecretRef before
 persist), crypto-at-rest, telemetry scrubbing, subject erasure. Work: apply the
 vocabulary to tool contract fields (done in `mcpInvoke$`) and document the
 pattern as normative for principal-carrying tools. No promotion decision needed.
 
-### `sandboxEval$` — ACCEPT as new 1P plugin `@loom/plugin-sandbox` (ADR 0064)
+### `sandboxEval$` — ACCEPT as new 1P plugin `@loomwork/plugin-sandbox` (ADR 0064)
 
 Genuinely net-new (no JS-VM sandbox exists). The write-once-audit-once argument
 is sound. Engine: quickjs-emscripten (capability-empty by construction — vs
-`@loom/isolate`'s subtractive scrubbing of an ambient-authority child process);
+`@loomwork/isolate`'s subtractive scrubbing of an ambient-authority child process);
 contract shape follows `IsolatedToolSpec`. Content-addressed script refs via the
 ContentStore; memory/interrupt/wall-clock limits; typed `scriptMissing` /
 `limitExceeded` / `shapeMismatch` channels (DE-4′) so a planner can catch and
@@ -184,7 +184,7 @@ P5/ADR 0043 exactly and is the submission's best judgment call.
 
 | Item | Verdict | Lands as | ADR |
 |---|---|---|---|
-| DE-1 | reject kernel / accept helper | `fanout$` in `@loom/orchestration` | 0061 (identity rule) |
+| DE-1 | reject kernel / accept helper | `fanout$` in `@loomwork/orchestration` | 0061 (identity rule) |
 | DE-2 | reject | transient hydration service + read-model; group-commit deferred | 0065 |
 | DE-3 | reject (exists) | app map → `fork(parentId, atSequence)` + BranchRegistry | — |
 | DE-4 | **accept (kernel)** | `errors:` contracts + TypedFailure substitution | 0060 |
@@ -192,9 +192,9 @@ P5/ADR 0043 exactly and is the submission's best judgment call.
 | DE-6 | accept (guard+test) | `awaitChild` maxDepth → typed `depthExceeded` | 0061 |
 | DE-7 | reject | — (residue in 0065) | 0065 |
 | TS-10 | accept (SPI) | `ContentStore.getMany` + coalescing + cache decorator | 0062 |
-| DE-8 | accept (plugin) | `mcpInvoke$` in `@loom/plugin-mcp` + core schema hash | 0063 |
-| DE-9 | accept (built) | `@loom/classify` applied to tool contracts | 0063 (usage) |
-| sandboxEval$ | accept (plugin) | `@loom/plugin-sandbox` (quickjs) | 0064 |
+| DE-8 | accept (plugin) | `mcpInvoke$` in `@loomwork/plugin-mcp` + core schema hash | 0063 |
+| DE-9 | accept (built) | `@loomwork/classify` applied to tool contracts | 0063 (usage) |
+| sandboxEval$ | accept (plugin) | `@loomwork/plugin-sandbox` (quickjs) | 0064 |
 
 **Net kernel growth: zero syscalls, zero event types, one additive event-payload
 extension.** KERNEL_ABI stays 1.1.0; EVENT_SCHEMA 1.16.0 → 1.17.0; EVENT_STORE

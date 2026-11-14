@@ -1,10 +1,10 @@
-# @loom/dst — Deterministic Simulation Testing
+# @loomwork/dst — Deterministic Simulation Testing
 
 Drive the Loom kernel under **seeded, adversarial fault schedules**, assert its invariants hold, and
 reproduce/minimize any failure bit-for-bit. Loom is event-sourced with deterministic replay (P2) and
 logs all non-determinism (P9) — the ideal substrate for simulation testing.
 
-> Test/dev-only. **No runtime package imports `@loom/dst`**, so its production overhead is zero by
+> Test/dev-only. **No runtime package imports `@loomwork/dst`**, so its production overhead is zero by
 > construction. See [ADR 0036](../../docs/adr/0036-deterministic-simulation-testing.md).
 
 ## What it gives you
@@ -13,7 +13,7 @@ logs all non-determinism (P9) — the ideal substrate for simulation testing.
   random in a run flows from the seed, so a failure replays from the seed alone.
 - **`virtualClock()`** — discrete-event virtual time (time is already injectable: `TimerStore.due`
   takes `now`).
-- **`faultInjectingStore` / `FaultModel`** — generalizes `@loom/testing`'s single-point
+- **`faultInjectingStore` / `FaultModel`** — generalizes `@loomwork/testing`'s single-point
   `crashingEventStore` into per-append/-delivery draws over the `EventStore` SPI: `crash`,
   `appendReject`, `msgLoss`, `msgDup`. Two modes: **explore** (sample + record `FaultDraw[]`) and
   **replay** (apply a recorded schedule, no rng).
@@ -27,7 +27,7 @@ logs all non-determinism (P9) — the ideal substrate for simulation testing.
 ## Example
 
 ```ts
-import { checkProperty } from "@loom/dst";
+import { checkProperty } from "@loomwork/dst";
 
 const report = await checkProperty(
   {

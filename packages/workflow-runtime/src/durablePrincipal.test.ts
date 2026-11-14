@@ -1,5 +1,5 @@
-import { step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
 import {
   type CapabilityAuthorizer,
   type CapabilityRequest,
@@ -7,9 +7,9 @@ import {
   type PrincipalChain,
   ToolEffect,
   signDelegation,
-} from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime, type WorkflowRuntimeDeps } from "./WorkflowRuntime";

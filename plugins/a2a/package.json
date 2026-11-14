@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-a2a",
+  "name": "@loomwork/plugin-a2a",
   "version": "0.1.0",
   "description": "Agent-to-Agent (A2A) protocol client and server for Loom workflows",
   "main": "./dist/index.js",
@@ -25,16 +25,16 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^",
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@loom/event-runtime": "workspace:*",
-    "@loom/llm": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/llm": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

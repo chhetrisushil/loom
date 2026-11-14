@@ -4,7 +4,7 @@
 - Date: 2026-10-05
 - Closes: R11 (agentic-readiness audit, kernel appendix §2i)
 - Builds on: [ADR 0030](0030-decision-materialization.md), [ADR 0078](0078-exploration-in-the-routing-seam.md)–[0080](0080-learning-substrate.md)
-  (decisions carry `policy.propensity`; `@loom/learning` evaluates off-policy),
+  (decisions carry `policy.propensity`; `@loomwork/learning` evaluates off-policy),
   C.1 execution authz, K9.4 fencing.
 - Placement: **a small runtime method, not a syscall and not a store.** No ABI change; no new event
   kind. The one schema-visible part is two additive optional payload fields on the existing
@@ -93,7 +93,7 @@ It is not an `ExecutionContext` member (no ABI), it is not a state change, and i
 ### D2 — What stays 1P
 
 The reward *pipeline*: collecting feedback, mapping it to `(executionId, decisionId)`, batching.
-`@loom/analytics` ships `attachOutcomes(runtime, rewards[])` as a thin loop with retry. Validation of
+`@loomwork/analytics` ships `attachOutcomes(runtime, rewards[])` as a thin loop with retry. Validation of
 `propensity` range (the audit's second R11 point) is a separate tightening of `ctx.decide`, listed in
 the design document's open questions, not bundled here.
 
@@ -113,7 +113,7 @@ outcome does not move the retention end** (an execution terminal for longer than
 reclaimed after an outcome is attached); unauthorized principal refused, no event appended (negative: log untouched); unknown
 decisionId refused; duplicate idempotent; conflicting score refused; strict + no principal refused;
 compaction folds it (a late one stays above the terminal event until the next compaction);
-`@loom/learning` `trajectories` picks the late reward up with no join.
+`@loomwork/learning` `trajectories` picks the late reward up with no join.
 
 ## Rejected
 
@@ -151,10 +151,10 @@ compaction folds it (a late one stays above the terminal event until the next co
 - **Retention.** `LogLifecycle` now measures the end from the newest terminal event, scanning the tail
   backwards. (The residual named here, the `updatedAt` fallback after compaction removed the terminal
   event, is closed by the amendment below.)
-- **D2.** `attachOutcomes(runtime, rewards, { retries?, options? })` in `@loom/analytics`: a structural
+- **D2.** `attachOutcomes(runtime, rewards, { retries?, options? })` in `@loomwork/analytics`: a structural
   `OutcomeAttacher` (no dependency on the runtime), retrying only errors that say `retryable`, reporting
   `{ appended, duplicates, failed }`.
-- **Learning.** No change to `@loom/learning`: `trajectories` reads the log, so a late outcome is a `direct`
+- **Learning.** No change to `@loomwork/learning`: `trajectories` reads the log, so a late outcome is a `direct`
   reward exactly like an in-run one, the logged propensity is untouched, and the terminal outcome stays the
   execution's own result (a test pins the trajectories, the SNIPS estimate and the logged value equal to the
   on-time run).
@@ -166,7 +166,7 @@ compaction folds it (a late one stays above the terminal event until the next co
   that with the next slot, refusing a log compacted below its checkpoint by a pre-0116 kernel. See round 3, P3 1.)
 - **Score bound.** `|score| <= 1e9` and finite, in `recordOutcome` AND in a flow's own
   `OUTCOME_RECORDED` emit (`guardUserspaceEmit`): a finite `1.7e308` otherwise sums to `Infinity` in
-  `trajectories`, making the lift `NaN`, and `NaN < minLift` is false. `@loom/learning`'s
+  `trajectories`, making the lift `NaN`, and `NaN < minLift` is false. `@loomwork/learning`'s
   `evaluatePolicy` now throws when its reward accumulators are non-finite, and `promotionGate`
   fails on a non-finite `lift` / `estimatedValue` / `loggedValue` / `effectiveSampleSize`.
 - **Per-execution cap.** At most 1024 late outcomes per execution (`OutcomeRefusedError`); the
@@ -272,7 +272,7 @@ from 4,356,284 bytes / 2004 events to 4,355,959 bytes / 2002 events after compac
 event / 193 bytes (the checkpoint, in the snapshot store, holds the folded `_decisions`). Everything
 `trajectories` needs is already in the fold: `_decisions` has `choice`, `alternatives`, `context` and `policy`
 with its `propensity` per `decisionId`; `_outcomes` has `key`, `success`, `score`, `decisionId`, `recordedBy`,
-`late`. So `@loom/learning` gains `evidenceEvents(state, log)`, which rebuilds the `DECISION_RECORDED` /
+`late`. So `@loomwork/learning` gains `evidenceEvents(state, log)`, which rebuilds the `DECISION_RECORDED` /
 `OUTCOME_RECORDED` events of one execution from its folded state (passing the log's terminal events through, and
 synthesising one for a terminal state whose terminal event a pre-0116 compaction removed), and a learner calls
 `trajectories(evidenceEvents(await runtime.loadState(id), await store.read(id)))`. That result is identical
@@ -282,7 +282,7 @@ absorbed gets its ordinal as `sequence` and `state.startedAt` as `timestamp`, th
 the folded `_decisions` map. Only the discounted terminal credit (`discount < 1`) reads that order; the direct
 credit, the default `discount = 1`, per-arm statistics and the policy evaluation are order-free. *(Resolved by ADR 0128, 2026-10-11 — see the note under Round 4 item 2.)* Compaction keeps nothing extra: late outcomes sit above the terminal event
 (Q3) and stay on the log until the next compaction folds them. `trajectories(await store.read(id))` alone is
-exact only for a log that was never compacted, and the other log-reading lenses of `@loom/analytics`
+exact only for a log that was never compacted, and the other log-reading lenses of `@loomwork/analytics`
 (`decisionRecords`, `decisionStore`, the advisory correlation index) see only the events still on the log: a
 consumer that must cover compacted executions reads the state. A late outcome after compaction still joins to
 its decision (it validates against the folded `_decisions`).
@@ -349,7 +349,7 @@ its decision (it validates against the folded `_decisions`).
    `loom repair blank-stream`. It is dry by default, idempotent (a head at or above the folded sequence is
    `intact`), and refuses non-terminal and `continued` executions. A test compacts with the old shape, repairs,
    and records a late outcome.
-6. **`@loom/analytics`'s log readers** (`decisionRecords`, `outcomeRecords`, `decisionStore`, `outcomeAnalytics`,
+6. **`@loomwork/analytics`'s log readers** (`decisionRecords`, `outcomeRecords`, `decisionStore`, `outcomeAnalytics`,
    `advisoryPipeline`, `analyze`, `profile`) read the events they are given; their JSDoc now says a compacted
    execution's evidence is in the checkpoint and points at `evidenceEvents` to build the input.
 7. **ABA under a frozen clock is documented, not hardened.** `creationMarker` is `timestamp:id`; an execution

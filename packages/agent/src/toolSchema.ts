@@ -1,4 +1,4 @@
-import { isTainted } from "@loom/classify";
+import { isTainted } from "@loomwork/classify";
 import type { ZodTypeAny } from "zod";
 import { sanitizeJsonSchema } from "./thirdPartySchema";
 
@@ -6,9 +6,9 @@ import { sanitizeJsonSchema } from "./thirdPartySchema";
  * A minimal Zod 3 → JSON Schema converter, enough to tell a model the argument
  * STRUCTURE of a tool (property names, types, required, enums, bounds).
  *
- * Why in `@loom/agent` and not `@loom/llm`: `@loom/agent` already depends on `zod`
+ * Why in `@loomwork/agent` and not `@loomwork/llm`: `@loomwork/agent` already depends on `zod`
  * and is the only place that turns a `ToolDefinition` into a model-facing spec;
- * `@loom/llm` is the provider SPI and carries no Zod dependency. Why hand-written
+ * `@loomwork/llm` is the provider SPI and carries no Zod dependency. Why hand-written
  * rather than `zod-to-json-schema`: that package is not in the workspace
  * lockfile, and a new third-party runtime dependency on the agent path is a
  * bigger decision than ~100 lines that only DESCRIBE (the schema is advisory to

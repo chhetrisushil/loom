@@ -1,4 +1,4 @@
-import type { DispatchMetadata } from "@loom/dispatcher";
+import type { DispatchMetadata } from "@loomwork/dispatcher";
 import type { CloudRunConfig, SizingPolicy } from "./types";
 
 /**

@@ -5,7 +5,7 @@ import { ToolEffect } from "./effects/ToolEffect";
 import type { EffectContext, EffectMiddleware } from "./types";
 
 // A minimal retrying middleware, inline so the acceptance test stays inside
-// @loom/effect-runtime (no dependency on @loom/middleware). Retries the chain up
+// @loomwork/effect-runtime (no dependency on @loomwork/middleware). Retries the chain up
 // to `times` on any throw — enough to prove "configured middleware still runs
 // transiently" without pulling in the real retry package.
 const retrying = (times: number): EffectMiddleware => {

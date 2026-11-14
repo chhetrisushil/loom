@@ -1,10 +1,10 @@
-import { unwrapTainted } from "@loom/classify";
+import { unwrapTainted } from "@loomwork/classify";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
   type KeyStore,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import {
   OP,

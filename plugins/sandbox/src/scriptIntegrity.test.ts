@@ -1,4 +1,4 @@
-import { InMemoryContentStore } from "@loom/plugin-content";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
 import { describe, expect, it } from "vitest";
 import { SandboxEvalEffect } from "./SandboxEvalEffect";
 

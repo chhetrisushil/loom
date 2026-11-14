@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type EventStore,
   KeyUnavailableError,
@@ -8,8 +8,8 @@ import {
   isQuiescent,
   isReservedStream,
   recordsErasureIntent,
-} from "@loom/event-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 import { hasEnvelope } from "./crypto";
 import type { KeyStore } from "./keystore";
 import { openWholeState } from "./snapshotSeal";

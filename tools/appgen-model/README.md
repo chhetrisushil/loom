@@ -1,11 +1,11 @@
-# @loom/appgen-model
+# @loomwork/appgen-model
 
 Local-model planner for `loom appgen`. It replaces the deterministic grammar parser
 (Stage 2 of the appgen pipeline) with a small **on-device Gemma model** — so intent →
 `ChangeSpec` planning gets real language understanding with **no token cost and a minimal,
 transient memory footprint**. It emits only a `ChangeSpec`; codegen never sees raw NL.
 
-This package is **optional**. `@loom/appgen` and `loom appgen` work fully without it
+This package is **optional**. `@loomwork/appgen` and `loom appgen` work fully without it
 (deterministic parser). Install this only to enable `loom appgen --model <gguf>`.
 
 ## How it works
@@ -13,7 +13,7 @@ This package is **optional**. `@loom/appgen` and `loom appgen` work fully withou
 - **Grammar-constrained JSON.** The model is constrained to the `ChangeSpec` JSON schema
   (`changeSpecJsonSchema`) via node-llama-cpp, so a compact model reliably emits valid,
   on-schema output.
-- **Reasoning-ladder-on-itself.** Planning runs through `@loom/reasoning`'s cheap-first
+- **Reasoning-ladder-on-itself.** Planning runs through `@loomwork/reasoning`'s cheap-first
   elevation ladder. The confidence signal is a *validator* — "does the output parse into a
   usable `ChangeSpec`?" — so a weak tier that emits junk elevates to a stronger one, and
   each elevation is logged (P9 / `DECISION_RECORDED`) and recorded in the spec lockfile.
@@ -38,7 +38,7 @@ Treat the *tier* as the contract and pin the exact `.gguf` at install time.
 
 ```bash
 # 1. install this package + the optional native runtime
-pnpm add @loom/appgen-model node-llama-cpp
+pnpm add @loomwork/appgen-model node-llama-cpp
 
 # 2. fetch a 4-bit QAT Gemma .gguf into ./models (E4B recommended)
 
@@ -50,8 +50,8 @@ loom appgen "add an approval gate to the planner flow" \
 ## Programmatic use
 
 ```ts
-import { scanApp } from "@loom/appgen";
-import { gemmaRoute, planChangesModel } from "@loom/appgen-model";
+import { scanApp } from "@loomwork/appgen";
+import { gemmaRoute, planChangesModel } from "@loomwork/appgen-model";
 
 const appModel = scanApp(".");
 const changeSpec = await planChangesModel("add an approval gate to the planner flow", appModel, {

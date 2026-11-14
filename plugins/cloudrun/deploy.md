@@ -1,6 +1,6 @@
 # Deploying a Loom worker to Cloud Run
 
-The worker is a stateless `POST /execute` endpoint (see `@loom/plugin-worker-server`).
+The worker is a stateless `POST /execute` endpoint (see `@loomwork/plugin-worker-server`).
 It holds no execution state between requests — everything is rebuilt from the
 shared event + snapshot stores — so Cloud Run's request/response model and
 scale-to-zero are a natural fit.
@@ -18,8 +18,8 @@ scale-to-zero are a natural fit.
 ## Wiring (caller side)
 
 ```ts
-import { LocalDispatcher } from "@loom/dispatcher";
-import { CloudRunWorkerRuntime, StaticCloudRunPlatform } from "@loom/plugin-cloudrun";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import { CloudRunWorkerRuntime, StaticCloudRunPlatform } from "@loomwork/plugin-cloudrun";
 
 const platform = new StaticCloudRunPlatform(process.env.WORKER_URL!, {
   // optional capability adapters

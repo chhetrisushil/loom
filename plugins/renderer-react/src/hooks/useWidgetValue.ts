@@ -1,6 +1,6 @@
-import type { Widget } from "@loom/blueprint-runtime";
-import { resolvePath, resolveWidgetValue } from "@loom/blueprint-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { Widget } from "@loomwork/blueprint-runtime";
+import { resolvePath, resolveWidgetValue } from "@loomwork/blueprint-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 
 // ── useWidgetValue ────────────────────────────────────────────────────────────

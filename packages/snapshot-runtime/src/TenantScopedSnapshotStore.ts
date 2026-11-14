@@ -1,4 +1,4 @@
-import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
+import { type DecoratorPlan, installOptional } from "@loomwork/event-runtime";
 import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "./types";
 
 const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collision-free tenant separator

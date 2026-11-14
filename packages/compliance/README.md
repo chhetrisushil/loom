@@ -1,4 +1,4 @@
-# @loom/compliance — data-subject export and erasure
+# @loomwork/compliance — data-subject export and erasure
 
 Tooling for GDPR and CCPA style requests, built on the fact that the event log already holds everything
 about a person. A **subject index** maps a subject id to the executions that concern them, `exportSubject`
@@ -11,7 +11,7 @@ which exposes `app.subjectIndex`, `app.exportSubject` and `app.eraseSubject`. Th
 in [docs/compliance.md](../../docs/compliance.md).
 
 ```ts
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 import { helloFlow } from "./config"; // a flow whose input is { name }
 
 const app = defineConfig({
@@ -50,7 +50,7 @@ await app.close();
   `legacyCheckpoints`, `unarchived`).
 - **Erasure.** `EraseCoordinator`, `ERASURE_STREAM` (the reserved control stream its facts live on),
   `EraseSubjectResult` (`outcome` of `erased`, `parked` or `unknown`) and the `Shredder` type.
-  `shredSubject` itself is in `@loom/plugin-crypto`.
+  `shredSubject` itself is in `@loomwork/plugin-crypto`.
 - **Errors.** `ArchivedCopiesRemainError`, `ContentCopiesRemainError`, `SenderRedactionUnsupportedError`.
 
 ## Behaviour that surprises people
@@ -82,7 +82,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/compliance` — subject export & erasure (T3)" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/compliance` — subject export & erasure (T3)" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [data-subject rights](../../docs/compliance.md) (full erasure behaviour, archives, inbox streams, claim-checked outputs), [data protection patterns](../../docs/data-protection-patterns.md), [encryption at rest](../../docs/loom-2.0/11-encryption-at-rest.md).
 - ADRs: [0022 log lifecycle, retention, redaction and encryption](../../docs/adr/0022-k10-log-lifecycle-retention-redaction-encryption.md), [0138 compaction archives](../../docs/adr/0138-compaction-archives-what-it-removes.md), [0140 agent claim check](../../docs/adr/0140-agent-claim-check-opt-in.md).
 - Source: `packages/compliance/src`.

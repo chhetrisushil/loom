@@ -17,12 +17,12 @@
 
 | # | Submitted claim | Repo record |
 |---|---|---|
-| C1 | §0.4 reuses "the TS series (telemetry substrate split, result-by-reference logging, content-addressed evidence)" | **No TS series exists.** [ADR 0071](../adr/0071-read-only-replay-inspector.md) Q4 recorded this verbatim: *"The draft specified IX-7 against a 'TS-series telemetry substrate' that does not exist."* The [DE-series evaluation](2026-07-19-dynamic-execution-de-series-evaluation.md) flagged the same citation as its C2. This is the **third** document to cite it. The capabilities are real under other names: [ADR 0046](../adr/0046-content-store-seam-thin-authoritative-log.md) `ContentStore`, [ADR 0054](../adr/0054-claim-check-middleware.md) claim-check, [ADR 0062](../adr/0062-content-get-many-batched-resolution.md) `getMany`, `@loom/plugin-content`. EL-8 and PJ-5 should cite those. |
+| C1 | §0.4 reuses "the TS series (telemetry substrate split, result-by-reference logging, content-addressed evidence)" | **No TS series exists.** [ADR 0071](../adr/0071-read-only-replay-inspector.md) Q4 recorded this verbatim: *"The draft specified IX-7 against a 'TS-series telemetry substrate' that does not exist."* The [DE-series evaluation](2026-07-19-dynamic-execution-de-series-evaluation.md) flagged the same citation as its C2. This is the **third** document to cite it. The capabilities are real under other names: [ADR 0046](../adr/0046-content-store-seam-thin-authoritative-log.md) `ContentStore`, [ADR 0054](../adr/0054-claim-check-middleware.md) claim-check, [ADR 0062](../adr/0062-content-get-many-batched-resolution.md) `getMany`, `@loomwork/plugin-content`. EL-8 and PJ-5 should cite those. |
 | C2 | §11.2 "Checkpoint replay barriers … Keep deferred" | **Ruled "not needed"**, not deferred. [ADR 0051](../adr/0051-perpetual-agents-placement-schedule-remodel.md): *"`checkpoint$` — not needed; snapshots (`snapshotEvery`, `loadLatestBefore`) + K10.4 compaction already bound replay depth."* Identical to correction C1 in the DE-series evaluation (2026-07-19). |
 | C3 | §11.3 "External-wait transfer — *revisit, favourable*" | **Rejected permanently.** ADR 0051: *"Identity-preserving transfer of live suspensions across executions — rejected permanently; recorded with rationale in ADR 0052."* Identical to correction C4 in the DE-series evaluation. Two of that evaluation's corrections have now been re-submitted unchanged. |
 | C4 | §11.1 "Declarative rotation policies — previously deferred" | Not a deferred item. The deferred item is **`rotate$` run chaining** ([ADR 0052](../adr/0052-run-chaining-deferred-evidence-gate.md), *"deferral recorded; nothing scheduled"*). Declarative **retention** already ships: `applyRetention({ terminalTtlMs })`, `loom retention run --ttl`, [ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md). |
 | C5 | SU-5 and LQ-6 specify interaction with `rotate$` | `rotate$` **does not exist**. These are notes about a hypothetical, not requirements, and cannot be accepted or rejected as written. |
-| C6 | PO-1 "expressed as a `guard$`" | **No `guard$` in the codebase.** `policy$` (`@loom/core`) exists but is a `PolicyDefinition` of named rules — a different construct. |
+| C6 | PO-1 "expressed as a `guard$`" | **No `guard$` in the codebase.** `policy$` (`@loomwork/core`) exists but is a `PolicyDefinition` of named rules — a different construct. |
 | C7 | §0.3 layer ladder includes `stdlib` | **No stdlib tier exists.** Loom's tiers are kernel packages / advisory packages / 1P plugins (`plugins/`) / 3P plugins (sibling repo) / tools. See §4 — the omission causes six misclassifications. |
 
 ---
@@ -57,7 +57,7 @@ The series was written against a platform that changed under it on the same day:
 
 | Requirement | Now satisfied by |
 |---|---|
-| PO-2 posteriors as projections | `trajectories()` — `@loom/learning`, [ADR 0080](../adr/0080-learning-substrate.md) |
+| PO-2 posteriors as projections | `trajectories()` — `@loomwork/learning`, [ADR 0080](../adr/0080-learning-substrate.md) |
 | PO-3 record the decision through the determinism boundary | `context` + `policy` on `DECISION_RECORDED` — [ADR 0079](../adr/0079-decision-context-and-policy.md), EVENT_SCHEMA 1.18.0 |
 | PO-4 importance-weighted off-policy scoring | `evaluatePolicy()` — SNIPS with weight clipping and effective sample size; `loom learn eval --db … --policy …` |
 
@@ -75,7 +75,7 @@ data loss is silent and permanent.
 **Where the bandit lives is unanswered.** LP-3 specifies Thompson sampling; the submission never
 says at which layer it is implemented. Per ADR 0080 the answer is **3P, behind the one-method
 `Policy` SPI** — now a registered plugin seam (`loom plugin new policy <name>`), with
-`loom-plugin-linucb` as the reference. Note that `@loom/reasoning` deliberately dropped Thompson
+`@loomwork/plugin-linucb` as the reference. Note that `@loomwork/reasoning` deliberately dropped Thompson
 ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md)) because `Outcome.score` is
 unbounded; a bounded-reward Thompson implementation is legitimate but belongs 3P.
 
@@ -83,7 +83,7 @@ unbounded; a bounded-reward Thompson implementation is legitimate but belongs 3P
 
 The deferral is correct and the reasoning is sound. One alternative is missing from §9 and
 §11.2 entirely: loom already has **branch-from-prefix** (fork / simulate / promote — the
-`incident-war-room` and `schema-migration-planner` pattern) plus `@loom/dst`. Forking an
+`incident-war-room` and `schema-migration-planner` pattern) plus `@loomwork/dst`. Forking an
 execution at a decision point and re-running with a different recorded choice *is* substitutive
 replay, in userspace, on shipped primitives. Recorded as
 [ADR 0082](../adr/0082-substitutive-replay-deferred.md): the evidence gate is now "demonstrate
@@ -118,7 +118,7 @@ declares. The two must be reconciled explicitly: **static class = declared upper
 table = runtime floor.** Without this, EF-2 passes statically while K2 denies in production, and
 Companion EX-6's "fail closed" fires at a different layer than the submission expects.
 
-**Enforcement hazard, from experience.** `@loom/verify` rules read `FlowSpec` fields that no
+**Enforcement hazard, from experience.** `@loomwork/verify` rules read `FlowSpec` fields that no
 producer populates, so a rule can silently never fire — this is live today for the `suspends`
 rule. EF-1's declaration needs a **producer in the compiler manifest**, and EF-2's acceptance
 must be the negative case (a `read-only` flow that transitively reaches an external write
@@ -127,14 +127,14 @@ dies. Existing machinery to build on: the `determinism` and `classification-reac
 (`packages/verify/src/rules.ts`), `tools/compiler/src/nondeterminism.ts`.
 
 EF-6's "DE-9 clearance machinery" is not a real identifier; the mechanism is
-[ADR 0076](../adr/0076-wildcard-classification-paths.md) + `@loom/classify` +
+[ADR 0076](../adr/0076-wildcard-classification-paths.md) + `@loomwork/classify` +
 `classification-reachability`.
 
 ### PJ — Projections → **layer `app`. Accepted; PJ-7 relocated.**
 
 PJ-1…PJ-6 are correct as written. PJ-7's "harness in stdlib" has no tier to land in (C7) and
-substantially exists: `@loom/projection-runtime`, `@loom/plugin-read-model`
-([ADR 0058](../adr/0058-read-model-plugin.md)) and the `@loom/analytics` read lenses.
+substantially exists: `@loomwork/projection-runtime`, `@loomwork/plugin-read-model`
+([ADR 0058](../adr/0058-read-model-plugin.md)) and the `@loomwork/analytics` read lenses.
 The genuinely new part is **descriptor pinning + determinism trapping**, which is small and
 belongs in a 1P package. PJ-4's trap should reuse the `determinism` verify rule and the
 compiler's non-determinism pass rather than rebuild them.
@@ -170,7 +170,7 @@ and topology story:
 | IN-3 retention per tier | spi | **config** | `applyRetention`, ADR 0022 — already declarative |
 | IN-6 batched async writes | spi | **exists** | `CoalescingEventStore` ([ADR 0074](../adr/0074-storage-scale-out-decorators.md)); `appendMany` measured at 8.2× |
 | EL-5 discriminator index | spi | **store plugin** | The `eventType` column |
-| HO-1/HO-2 satellite | spi | **existing plugin** | `@loom/dispatcher` + `@loom/plugin-worker-remote` / `worker-server` |
+| HO-1/HO-2 satellite | spi | **existing plugin** | `@loomwork/dispatcher` + `@loomwork/plugin-worker-remote` / `worker-server` |
 | HO-5 ordered idempotent transport | spi | **exists** | K9 idempotency + K9.4 fencing ([ADR 0021](../adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)) |
 
 Two consequences follow.
@@ -261,7 +261,7 @@ behaviour and also a total loss of the capability LP-6 exists for.
 >
 > - *Mechanism:* none new, as the original PO-3 correctly anticipated — `ctx.decide`'s
 >   `policy: { id, version, propensity }` (ADR 0079), populated automatically by
->   `decideWithPolicy` (`@loom/learning`, ADR 0080).
+>   `decideWithPolicy` (`@loomwork/learning`, ADR 0080).
 > - *Accept:* over a sample of recorded decisions, the propensities the policy reports across
 >   an action set sum to `1 ± tolerance`; and `evaluatePolicy` over the log reports
 >   `estimator: "snips"`, not `"agreement-only"`.
@@ -337,7 +337,7 @@ submission's conventions (ID, strength, layer, `Accept:`) so they can be tracked
 The line they defend: Companion PV-5 forbids *an employer-deployed mode, an aggregate manager
 view, or comparative ranking across users*. It does not forbid aggregate computation. The
 distinguishing test is whether any output **ranks, compares, or attributes to an identifiable
-person**. `@loom/learning` holds up its end — a report exposes a unit *count*, a mean of per-unit
+person**. `@loomwork/learning` holds up its end — a report exposes a unit *count*, a mean of per-unit
 estimates, an effective sample size and the largest single share, and **never a unit
 identifier**, enforced by an invariant test verified to fail against a deliberately injected
 per-unit field. Everything below is the application's end.
@@ -386,7 +386,7 @@ supply an epoch in its own artifact today without any framework change.
 1. **Fix PO-3 and LP-4** — corrected text in §5.1 above. Everything in LP-6 depends on it and
    the loss is irreversible.
 2. **Adopt CN-1…CN-4 before pooling reaches real users** (§5.3). Pooling is now implemented in
-   `@loom/learning`, which makes the consent gap the binding constraint rather than a
+   `@loomwork/learning`, which makes the consent gap the binding constraint rather than a
    hypothetical one — and CN-2 in particular has to be designed in, since enforcing consent at
    report time instead of at assembly is not retrofittable.
 3. **Quantify IN-1** before designing it — a target observation write rate, compared against the

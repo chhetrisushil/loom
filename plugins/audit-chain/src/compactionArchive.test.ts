@@ -1,19 +1,19 @@
-import { step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   TenantScopedArchiveStore,
   TenantScopedEventStore,
-} from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   ArchiveTenantMismatchError,
   type FlowRunner,
   LogLifecycle,
   type RegisteredFlow,
   WorkflowRuntime,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { hashChainedEventStore } from "./hashChain";

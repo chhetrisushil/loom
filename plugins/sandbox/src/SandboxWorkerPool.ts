@@ -144,7 +144,7 @@ interface Slot {
 /**
  * The worker entry is compiled output. From `dist` it sits alongside this file;
  * when this module runs from `src` (vitest), fall back to `../dist`. The same
- * resolution `@loom/isolate` uses for its child-process runner.
+ * resolution `@loomwork/isolate` uses for its child-process runner.
  */
 function workerEntry(): string {
   const sibling = path.join(__dirname, "sandboxWorker.js");
@@ -152,7 +152,7 @@ function workerEntry(): string {
   const built = path.join(__dirname, "..", "dist", "sandboxWorker.js");
   if (existsSync(built)) return built;
   throw new Error(
-    "sandbox: worker entry not found — @loom/plugin-sandbox must be built (`pnpm build`) before `workers` can be used"
+    "sandbox: worker entry not found — @loomwork/plugin-sandbox must be built (`pnpm build`) before `workers` can be used"
   );
 }
 

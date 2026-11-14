@@ -1,11 +1,11 @@
-import { runEventStoreDecoratorConformance } from "@loom/conformance";
-import type { EventEnvelope } from "@loom/core";
+import { runEventStoreDecoratorConformance } from "@loomwork/conformance";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   CoalescingEventStore,
   type EventStore,
   InMemoryAsyncEventStore,
   refusalsOf,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { canonicalize, hashChainedEventStore } from "./hashChain";
 

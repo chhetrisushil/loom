@@ -1,4 +1,4 @@
-import { RendererRegistry, builtinCatalog, catalogCoverage } from "@loom/blueprint-runtime";
+import { RendererRegistry, builtinCatalog, catalogCoverage } from "@loomwork/blueprint-runtime";
 import { render, screen } from "@testing-library/react";
 import type React from "react";
 import { describe, expect, it } from "vitest";

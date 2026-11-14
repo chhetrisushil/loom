@@ -1,4 +1,4 @@
-# @loom/plugin-mcp
+# @loomwork/plugin-mcp
 
 A Model Context Protocol client and server for loom. The client reaches a remote MCP server over HTTP and
 turns its tools into loom effects or steps; the server exposes your own tools (and, optionally, MCP Apps
@@ -7,8 +7,8 @@ when you want to publish loom-backed tools. Loom carries MCP Apps UI declaration
 not an MCP Apps host and does not render them (ADR 0072).
 
 ```ts
-import { EffectRuntime } from "@loom/effect-runtime";
-import { McpClient, createMcpServer, mcpInvoke$, registerMcpInvoke } from "@loom/plugin-mcp";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { McpClient, createMcpServer, mcpInvoke$, registerMcpInvoke } from "@loomwork/plugin-mcp";
 
 // Client: one `mcp.invoke` effect fronts every tool; the tool name is run-time data.
 const client = new McpClient({ transport: "http", url: "https://tools.example.com/mcp" });
@@ -54,7 +54,7 @@ export async function main() {
   a step's output is a durable contract. Only `"full"` keeps `_meta` (where a UI declaration lives)
   and non-text content blocks.
 - **Third-party text is not marked untrusted by default.** `taintResults: true` on `registerMcpInvoke`,
-  `McpClient.registerInto` or `mcpTool$` wraps results with an origin of `mcp:<server>/<tool>`, so `@loom/llm`
+  `McpClient.registerInto` or `mcpTool$` wraps results with an origin of `mcp:<server>/<tool>`, so `@loomwork/llm`
   refuses them in instruction positions and fences them in a user message. Off by default because the output
   becomes `{ __loomTainted, value }`. The two static bindings use the client's `serverHost` as `<server>`.
 - **Server descriptions are withheld from the model** unless `listTools` is given `trustDescriptions`.
@@ -77,7 +77,7 @@ export async function main() {
 
 ## See also
 
-- API reference: section "`@loom/plugin-mcp` — Model Context Protocol (client + server)" in
+- API reference: section "`@loomwork/plugin-mcp` — Model Context Protocol (client + server)" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [plugins](../../docs/plugins.md),
   [isolation and untrusted content](../../docs/user-guide/isolation-and-untrusted-content.md).

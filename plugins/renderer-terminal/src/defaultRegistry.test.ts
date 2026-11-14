@@ -10,7 +10,7 @@ import {
   Timeline,
   builtinCatalog,
   catalogCoverage,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 import { describe, expect, it } from "vitest";
 import { type TerminalWidgetRenderer, defaultTerminalRegistry } from "./defaultRegistry";
 

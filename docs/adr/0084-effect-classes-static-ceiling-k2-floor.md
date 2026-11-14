@@ -1,13 +1,13 @@
 # ADR 0084 — Effect classes: a static ceiling beside K2's runtime floor
 
-- Status: **Accepted** (2026-08-12) — implemented: `effect-class` rule in `@loom/verify`,
-  `effectClass` on `step$`/`flow$`, `checks.verify.effectClasses` in `@loom/app`.
+- Status: **Accepted** (2026-08-12) — implemented: `effect-class` rule in `@loomwork/verify`,
+  `effectClass` on `step$`/`flow$`, `checks.verify.effectClasses` in `@loomwork/app`.
 - Date: 2026-08-12
 - Promotes: **EF-1…EF-3, EF-5, EF-7** of the
   [Companion platform requirements](../requirements/2026-08-12-companion-ambient-execution-platform.md) §7,
   at the layer the [evaluation](../requirements/2026-08-12-companion-platform-evaluation.md) §1
   assigned them (compiler + runtime, **not** kernel).
-- Builds on: [ADR 0028](0028-runtime-verification.md) (`@loom/verify`), K2 capability grants,
+- Builds on: [ADR 0028](0028-runtime-verification.md) (`@loomwork/verify`), K2 capability grants,
   [ADR 0076](0076-wildcard-classification-paths.md) (`classification-reachability`, the
   neighbouring declared-property check).
 - Part of: P10. **KERNEL_ABI unchanged (1.1.0); EVENT_SCHEMA unchanged (1.18.0).** No new
@@ -32,7 +32,7 @@ They are not, and the reason is the whole of this ADR.
 
 | | Question | When | Mechanism |
 |---|---|---|---|
-| **Effect class** | *Does this flow reach anything worse than it promised?* | composition | `@loom/verify` `effect-class` |
+| **Effect class** | *Does this flow reach anything worse than it promised?* | composition | `@loomwork/verify` `effect-class` |
 | **K2 grants** | *May this principal invoke this tool at all?* | runtime | `CapabilityAuthorizer` |
 
 **Static class = declared upper bound; grants = runtime floor.** Neither subsumes the other:

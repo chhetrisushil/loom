@@ -12,8 +12,8 @@
   [0139](0139-reserved-streams-archive-before-removal.md) (archive, erasure over plaintext),
   [ADR 0140](0140-agent-claim-check-opt-in.md) (the opt-in and its erasure plan),
   [ADR 0083](0083-second-consumer-rule.md).
-- Placement: **1P, `@loom/plugin-crypto` (the store) + `@loom/plugin-content` (the SPI) + `@loom/middleware`,
-  `@loom/compliance`, `@loom/app` (threading and wiring).** Kernel, KERNEL_ABI, EVENT_SCHEMA unchanged.
+- Placement: **1P, `@loomwork/plugin-crypto` (the store) + `@loomwork/plugin-content` (the SPI) + `@loomwork/middleware`,
+  `@loomwork/compliance`, `@loomwork/app` (threading and wiring).** Kernel, KERNEL_ABI, EVENT_SCHEMA unchanged.
   ContentStore SPI `1.4.0 -> 1.5.0` (additive, optional).
 
 ## Context
@@ -163,5 +163,5 @@ acknowledgment; a caller that wants compressed blobs compresses before `put`.
 ## Consequences
 
 ContentStore SPI `1.5.0` (additive; `CONTENT_STORE_SPI_VERSION`, compatibility matrix). The conformance kit
-gains an owner-argument case and an `access` option that runs the whole suite per subject. `@loom/plugin-crypto`
-gains a dependency on `@loom/plugin-content` (types only).
+gains an owner-argument case and an `access` option that runs the whole suite per subject. `@loomwork/plugin-crypto`
+gains a dependency on `@loomwork/plugin-content` (types only).

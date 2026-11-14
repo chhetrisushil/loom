@@ -10,7 +10,7 @@
 
 ## Context
 
-Three `@loom/verify` rules — `capability-compat`, `effect-class`, `suspension-safety` — answer a
+Three `@loomwork/verify` rules — `capability-compat`, `effect-class`, `suspension-safety` — answer a
 question of the form *"does everything this flow reaches satisfy X"*. All three defined "reaches"
 as the toolIds of the flow's **declared** `FlowDefinition.steps`.
 
@@ -144,7 +144,7 @@ rules passed vacuously, silently. No new ADR (extends D1/D2; a new ADR trips fou
 - **The library declares; the verifier reads the real object.** A declaration is
   `{ run?: string[]; transient?: string[] }` under `Symbol.for("loom.verify.reach")` on the
   library object or function. It is structural, so a 3P library attaches it with no loom
-  import (`declareReach` in `@loom/verify` is a convenience). `run` tools are reached through
+  import (`declareReach` in `@loomwork/verify` is a convenience). `run` tools are reached through
   `ctx.run`/`ctx.execute`; `transient` through `scope.invokeTransient` in a decider.
 - **The join is name-based and explicit.** Static analysis sees the identifier, not the value.
   The compiler records `RunnerReach.escapes: { callee, root?, via }`; the app maps the callee
@@ -216,16 +216,16 @@ rules passed vacuously, silently. No new ADR (extends D1/D2; a new ADR trips fou
   of the mapped object/key; call-chain roots (`planner("x").compose`) map via the factory.
   Aliasing the library (`const p = planner`) maps under the alias name only. A library's own
   `ctx.suspend` is not expressible. Claim vs reality is tested library-side:
-  `recordReach()` / `assertReachMatches()` in `@loom/verify` run the library against a recording
+  `recordReach()` / `assertReachMatches()` in `@loomwork/verify` run the library against a recording
   ctx and fail when it ran a tool it did not declare (library authors, e.g. the loom-ui planner
   conformance suite, should call it).
 - **ADR 0083 second consumers** (the declaration seam is not for one workload): the loom-ui
   planner, the genUI planner flows (`composeDashboard`, `reviseDashboard`), loom-examples
-  `planner-decide-scope`, and in-repo `@loom/knowledge` `kb.retrieve` (`{ decide: ctx.decide }`).
+  `planner-decide-scope`, and in-repo `@loomwork/knowledge` `kb.retrieve` (`{ decide: ctx.decide }`).
 - **Known follow-up, L34: 1P libraries declare their reach.** The real hand-offs in the corpus
   that ship from this repo declare nothing yet and so warn: `fanout$` and `awaitChild`
-  (`@loom/orchestration`), `decideWithPolicy` and `recordOutcome` (`@loom/learning`),
-  `runAgentLoop` (agent), `kb.retrieve` (`@loom/knowledge`). Open question: `fanout$`'s reach is
+  (`@loomwork/orchestration`), `decideWithPolicy` and `recordOutcome` (`@loomwork/learning`),
+  `runAgentLoop` (agent), `kb.retrieve` (`@loomwork/knowledge`). Open question: `fanout$`'s reach is
   its CALLER's step, so a fixed list is wrong; it may need a different shape (for example
   "reaches what its argument reaches"). Deliberately not in this change.
 - KERNEL_ABI and EVENT_SCHEMA unchanged; no syscall.
@@ -262,8 +262,8 @@ EVENT_SCHEMA and the syscall table are unchanged.
   failure, so a doubt is never a guess):
   1. The table applies only to a BARE identifier call whose name is declared nowhere in the module
      (parameter, local, overload, class, enum, destructuring, catch, for-of: all count) and is an import
-     of `mcpInvoke$` from `@loom/plugin-mcp` / `@loom/sdk`, or of `sandboxEval$` from
-     `@loom/plugin-sandbox` / `@loom/sdk/sandbox`. An alias (`import { mcpInvoke$ as m }`) maps to the
+     of `mcpInvoke$` from `@loomwork/plugin-mcp` / `@loomwork/sdk`, or of `sandboxEval$` from
+     `@loomwork/plugin-sandbox` / `@loomwork/sdk/sandbox`. An alias (`import { mcpInvoke$ as m }`) maps to the
      table entry. A property call (`x.mcpInvoke$()`), a relative or other-package import of that name, and
      any shadowed name are unresolved.
   2. The relative-import resolver is consulted for a constant or factory only when the name is declared
@@ -294,7 +294,7 @@ EVENT_SCHEMA and the syscall table are unchanged.
      `ctx.parallel([[s, input]])`) is itself directly an argument of a ctx call: `const arr = [s]`,
      `[s].forEach(…)`, `const [e] = [s]`, `for (const e of [s])` and `mut(...[s])` are escapes. One
      non-ctx containment is a DECLARATION, not an alias: the `steps` array of loom's own `flow$` (an
-     unshadowed import from `@loom/core` / `@loom/sdk`; only the `steps` key of its first argument),
+     unshadowed import from `@loomwork/core` / `@loomwork/sdk`; only the `steps` key of its first argument),
      which keeps the list and is only read by the runtime. A later write through the flow definition
      (`F.steps[0].toolId = …`) is outside the analysis, the same trust class as the hand-off below. In an
      object literal a `toolId` / `id` key that appears twice (JS takes the last) or is followed by a
@@ -306,15 +306,15 @@ EVENT_SCHEMA and the syscall table are unchanged.
      The library-side check is `assertReachMatches` with `passedSteps`, not this analysis.
   8. A step with NO `toolId` dispatches its own id (the runtime resolves `step.toolId ?? step.id`), so
      `step$({ id: SCAN_ID, … })` reaches the effect `SCAN_ID`, with `SCAN_ID` resolved by the constant /
-     relative-import rules above. Only for `step$` itself (an unshadowed import from `@loom/core` or
-     `@loom/sdk`, any alias) and an object with no `toolId` key, no spread and no computed key; a wrapper
+     relative-import rules above. Only for `step$` itself (an unshadowed import from `@loomwork/core` or
+     `@loomwork/sdk`, any alias) and an object with no `toolId` key, no spread and no computed key; a wrapper
      (`mk$`), a local `step$`, or an unresolved id stays unresolved.
   A factory with several returns, a spread argument, a non-constant effect argument or a
   duplicated/reassigned constant stays unresolved.
   Consequence worth knowing: a flow that used `mcpInvoke$` now reaches `mcp.invoke` for capability-compat,
   so an app whose grants omit it gets an ERROR where it used to get an unresolved warn. That is the
   check working.
-- **L34: 1P libraries declare their reach** (`declareReach`, which adds `@loom/verify`, a leaf package
+- **L34: 1P libraries declare their reach** (`declareReach`, which adds `@loomwork/verify`, a leaf package
   with no dependencies, to `orchestration`, `learning`, `analytics` and `knowledge`):
   `awaitChild`, `awaitChildren`, `awaitAll` (and the three `boundOrchestration` wrappers),
   `decideWithPolicy`, `decideWithRollout`, `recordOutcome`, and `KnowledgeBase` (prototype and
@@ -324,7 +324,7 @@ EVENT_SCHEMA and the syscall table are unchanged.
   not expressible in a declaration (a library's own suspend is invisible to suspension-safety). Each is
   tested library-side with `recordReach()` / `assertReachMatches(…, { exact: true })`. The ADR's
   `runAgentLoop` is not a symbol in this repo (it was an app wrapper in genUI); the real one is
-  `agentLoop$`, see below. `recordOutcome` lives in `@loom/analytics`, not `@loom/learning`.
+  `agentLoop$`, see below. `recordOutcome` lives in `@loomwork/analytics`, not `@loomwork/learning`.
 - **`fanout$`: the shape is `stepArgs`.** `fanout$` runs ITS CALLER's step through `ctx.parallel`, so a
   fixed tool list is wrong for every caller. `ReachDeclaration` gains one optional field,
   `stepArgs?: readonly number[]`: zero-based argument positions holding step definitions the code runs

@@ -1,5 +1,5 @@
-import { SuspendError } from "@loom/core";
-import type { SuspendWait } from "@loom/core";
+import { SuspendError } from "@loomwork/core";
+import type { SuspendWait } from "@loomwork/core";
 
 // A park the KERNEL built for a human step (ADR 0104) is the only one allowed to name a
 // `stepId`; the commit site strips the field from every other `SuspendError`, including one a

@@ -1,7 +1,12 @@
-import { agent$, tool$ } from "@loom/core";
-import { CapabilityDeniedError, EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import { agent$, tool$ } from "@loomwork/core";
+import {
+  CapabilityDeniedError,
+  EffectRuntime,
+  GrantTable,
+  ToolEffect,
+} from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import type { LlmProvider, LlmResponse } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";
@@ -136,8 +141,8 @@ describe("a capability denial is terminal for the turn (R4)", () => {
 
 describe("AgentRunner shares the hardened classification (R10 Q3)", () => {
   it("a kill switch / quota / park raised by a tool is terminal, not fed back to the model", async () => {
-    const { KillSwitchEngagedError, QuotaExceededError } = await import("@loom/middleware");
-    const { SuspendError } = await import("@loom/core");
+    const { KillSwitchEngagedError, QuotaExceededError } = await import("@loomwork/middleware");
+    const { SuspendError } = await import("@loomwork/core");
     const makers = [
       () =>
         new KillSwitchEngagedError({ scope: "global", key: undefined, reason: "stop" } as never),

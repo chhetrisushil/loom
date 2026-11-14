@@ -53,15 +53,15 @@ that will be re-litigated the first time someone checks.
 |---|---|---|
 | §A.3 profile as a projection over the log, not a store beside it | The right instinct, wrong mechanism — see §2.3. The mechanism that fits is `plugins/read-model` ([ADR 0058](../adr/0058-read-model-plugin.md)), whose contract is already the paper's: *"a read model is a CACHE of the log with a watermark, never an authority — drop it and rebuild by re-scanning."* | **app**, on 1P |
 | §A.1 non-determinism captured at a boundary and journaled | `ctx.decide` — a kernel syscall since ABI 1.0.0; the decider runs once, the choice is committed as `DECISION_RECORDED`, and replay serves the recorded value without re-invoking | **none** |
-| §3.1 evidence as immutable append-only references | Events are already addressed by `(executionId, sequence)`; `@loom/compliance`'s `SubjectIndex` answers "which executions touched this subject" | **app** |
+| §3.1 evidence as immutable append-only references | Events are already addressed by `(executionId, sequence)`; `@loomwork/compliance`'s `SubjectIndex` answers "which executions touched this subject" | **app** |
 | §3.1 closed, versioned flag catalogue | The app-supplies-the-vocabulary pattern, twice precedented: effect classes ([ADR 0084](../adr/0084-effect-classes-static-ceiling-k2-floor.md)) and blueprint conformance ([ADR 0088](../adr/0088-blueprint-conformance.md)) | **app** |
 | §5.3 floor conformance as a checkable report | `validateBlueprint`'s shape is exactly right and was designed for this: findings, never a throw, plus a `widgets` denominator so a *rate* is computable and a caller can degrade and file a gap ([ADR 0088](../adr/0088-blueprint-conformance.md) D3) | **app**, reusing 1P |
 | §3.3 hysteresis over evaluation windows | `sleep` / `sleepUntil` (ABI 1.1.0); the wake is a logged `TIMER_FIRED` fact | **app** |
-| §7.2 canonical-mode entry signals | `@loom/live-query` ([ADR 0068](../adr/0068-projection-selector-subscription.md) for the change-only subscription) + `plugins/sentinel` | **app** |
-| §6.2 exploration; §9.3 counter-metrics | `@loom/learning` — exploration in the routing seam ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md)), `(context, action, propensity)` on the decision record ([ADR 0079](../adr/0079-decision-context-and-policy.md)), SNIPS off-policy evaluation and a promotion gate ([ADR 0080](../adr/0080-learning-substrate.md)). See §2.5 | **app**, on 1P |
+| §7.2 canonical-mode entry signals | `@loomwork/live-query` ([ADR 0068](../adr/0068-projection-selector-subscription.md) for the change-only subscription) + `plugins/sentinel` | **app** |
+| §6.2 exploration; §9.3 counter-metrics | `@loomwork/learning` — exploration in the routing seam ([ADR 0078](../adr/0078-exploration-in-the-routing-seam.md)), `(context, action, propensity)` on the decision record ([ADR 0079](../adr/0079-decision-context-and-policy.md)), SNIPS off-policy evaluation and a promotion gate ([ADR 0080](../adr/0080-learning-substrate.md)). See §2.5 | **app**, on 1P |
 | §8.2 per-tenant profiles | `TenantScopedEventStore` | **none** |
-| §8.1/§8.3 ingestion boundary, sensitive fields | `@loom/classify` + the `classification-reachability` verify rule | **app** |
-| §8.4 deletion | `@loom/compliance` — `eraseSubject` (crypto-shred, liveness-gated: never shred a fold still in flight), `exportSubject` with `onShredded: "tolerate"`. See §2.4 | **app**, with W3 |
+| §8.1/§8.3 ingestion boundary, sensitive fields | `@loomwork/classify` + the `classification-reachability` verify rule | **app** |
+| §8.4 deletion | `@loomwork/compliance` — `eraseSubject` (crypto-shred, liveness-gated: never shred a fold still in flight), `exportSubject` with `onShredded: "tolerate"`. See §2.4 | **app**, with W3 |
 | §3.2 scoped preferences | `plugins/durable-state` ([ADR 0053](../adr/0053-durable-state-plugin.md)) — keyed CAS with a versioned contract and migrations. Better fit than `MemoryStore`, whose contract is an ordered list per key ([ADR 0090](../adr/0090-knowledge-is-retrieval-over-memory.md)) | **app** |
 
 Phase 1 of the paper's delivery plan — the phase it expects to deliver most of the benefit —
@@ -96,7 +96,7 @@ sufficient here. A pinned offset reproduces the **events**; it does not reproduc
 the fold *is* the flag catalogue plus the cohort rules, both of which the paper versions and expects
 to change under review.
 
-Loom has already resolved this exact question in the opposite direction. `@loom/replay-inspector`
+Loom has already resolved this exact question in the opposite direction. `@loomwork/replay-inspector`
 reconstructs a projection slice at event N, and when the projection's code is a superseded build
 artifact it reports `status: "unavailable"` rather than running the current fold over an old log —
 on the stated grounds that doing so "reproduces IX-5's forbidden silent fallback"
@@ -120,7 +120,7 @@ journaled at the boundary is its *result*, not a pointer into the history it was
 
 Two structural facts:
 
-- **Projection state is never persisted.** `@loom/replay-inspector` states it plainly: there is no
+- **Projection state is never persisted.** `@loomwork/replay-inspector` states it plainly: there is no
   snapshot anchor for projections — `Snapshot.state` is `ExecutionState`, projection state lives
   per-`(projectionId, executionId)` in the runtime and never crosses the SPI, so *every* projection
   fold starts from `initialState`. A profile spans an operator's lifetime, so a run-start re-fold is
@@ -139,7 +139,7 @@ discipline**: no run appends profile events at all; the read model observes.
 §8.4 promises that deletion returns the operator to the empty profile. In loom that promise has a
 gap that is invisible from either side:
 
-- `@loom/compliance` contains no reference to read models or projections. Erasure crypto-shreds the
+- `@loomwork/compliance` contains no reference to read models or projections. Erasure crypto-shreds the
   **log**.
 - `ReadModelStore`'s only removal verb is `clear(modelId)` — the whole model. There is no
   row-granular purge, by design ("a cache, never an authority").
@@ -194,9 +194,9 @@ collision that will produce a real misreading in a review. Rename the UI sense �
 | 2 | Journaled profile summary at run start (§2.2) | **app** on `ctx.decide` |
 | 2 | `project(Blueprint, Profile)` + its invariants | **app**, promotable only under the second-consumer rule — see W1 |
 | 2 | Ordering / disclosure overlay in the renderers | **rejected as a loom change** — see §5 |
-| 2 | Exploration + propensity | **app** on `@loom/learning` |
+| 2 | Exploration + propensity | **app** on `@loomwork/learning` |
 | 3 | Cohort as a pinned generation input | **app**. The cache-degradation gate has no referent (C1); if a derivation cache is built, its key is `(intent, scope, cohort, cohortModelVersion, catalogueVersion)` |
-| 4 | Learned cohort assignment | **3P** — a `Policy` implementation in `../loom-plugins`, exactly as `loom-plugin-linucb` is. Not a loom change |
+| 4 | Learned cohort assignment | **3P** — a `Policy` implementation in `../loom-plugins`, exactly as `@loomwork/plugin-linucb` is. Not a loom change |
 
 ---
 
@@ -241,7 +241,7 @@ the measurement taken afterwards put the rebuild at 68× the cost of a purge for
   Reordering siblings does not touch props, so node ids survive it (C5), and disclosure state is
   expressible as a container in the app's own catalogue — which is where a runtime-composed
   vocabulary lives anyway ([ADR 0088](../adr/0088-blueprint-conformance.md) D2: loom checks the
-  vocabulary it is given and does not define one). An overlay type in `@loom/blueprint-runtime`
+  vocabulary it is given and does not define one). An overlay type in `@loomwork/blueprint-runtime`
   plus overlay support in both 1P renderers would be new 1P surface for a single consumer.
 - **No new gap class.** See §6, Q7.
 - **No evaluation of learned per-user profiles.** The paper rejects them and this evaluation agrees
@@ -251,7 +251,7 @@ the measurement taken afterwards put the rebuild at 68× the cost of a purge for
 
 ## 6. Answers to three of the paper's open questions
 
-**Q4 — exploration budget.** Treat it as `@loom/learning` already does. Log `policy.propensity` at
+**Q4 — exploration budget.** Treat it as `@loomwork/learning` already does. Log `policy.propensity` at
 the draw ([ADR 0079](../adr/0079-decision-context-and-policy.md)); evaluate with SNIPS and read the
 reported effective sample size ([ADR 0080](../adr/0080-learning-substrate.md)). The budget is then
 not a free parameter tuned against discovery rate alone — it is bounded below by the ESS the

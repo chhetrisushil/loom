@@ -1,4 +1,4 @@
-import type { CassetteData } from "@loom/eval";
+import type { CassetteData } from "@loomwork/eval";
 import { type CassetteStore, authorFromScript, cassetteStore } from "../cassetteFiles";
 import { runTask } from "./subject";
 import type { Script, Task } from "./tasks";

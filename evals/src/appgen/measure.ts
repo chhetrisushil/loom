@@ -5,7 +5,7 @@ import {
   type EvalSuiteReport,
   type Grader,
   runEvalSuite,
-} from "@loom/eval";
+} from "@loomwork/eval";
 import { type CassetteStore, authorFromScript, cassetteStore } from "../cassetteFiles";
 import { type Scores, type Thresholds, toRows } from "../gate";
 import { mean } from "../metrics";

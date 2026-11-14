@@ -1,9 +1,9 @@
-import { flowContentHash, legacyFlowContentHash, step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { SuspendError } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { flowContentHash, legacyFlowContentHash, step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { SuspendError } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { DivergenceMode } from "./DivergenceGuard";
@@ -1699,7 +1699,7 @@ describe("R3 — a frame from a pre-upgrade snapshot, re-started in the tail", (
 
 describe("R3 — fold: scope is read only from a kernel-stamped STEP_STARTED", () => {
   it("an unstamped STEP_STARTED carrying `scope` leaves frame.scope undefined", async () => {
-    const { ReplayVM } = await import("@loom/replay-vm");
+    const { ReplayVM } = await import("@loomwork/replay-vm");
     const mk = (
       seq: number,
       type: string,

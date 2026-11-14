@@ -1,16 +1,16 @@
-import { runEventStoreDecoratorConformance } from "@loom/conformance";
-import { step$ } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { runEventStoreDecoratorConformance } from "@loomwork/conformance";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   EFFECT_INDOUBT_RESOLVED,
   ResumePayloadValidationError,
   WorkflowRuntime,
-} from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { crashingEventStore } from "./crash";

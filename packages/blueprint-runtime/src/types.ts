@@ -11,7 +11,7 @@ export type WidgetKind =
   | "AlertCard"
   | "StreamingText";
 
-import type { DataClass } from "@loom/classify";
+import type { DataClass } from "@loomwork/classify";
 
 /**
  * `empty` (IR 2.3.0, ADR 0100): delivery succeeded and the upstream answered with NO subject to
@@ -32,7 +32,7 @@ export interface DataBinding {
   path: string;
   /** Where, in the SAME projection state, this binding's status lives. Absent ⇒ no status channel. */
   status?: { path: string };
-  /** `@loom/classify` DataClass. Read by compilers and delivery; never by renderers. */
+  /** `@loomwork/classify` DataClass. Read by compilers and delivery; never by renderers. */
   sensitivity?: DataClass;
 }
 

@@ -1,4 +1,4 @@
-# @loom/plugin-renderer-react — render a Blueprint with React
+# @loomwork/plugin-renderer-react — render a Blueprint with React
 
 React components and hooks that draw a Loom `Blueprint` (the widget layout that `blueprint$` builds)
 from a `ProjectionRuntime`. `BlueprintRenderer` subscribes to the projections the blueprint binds to and
@@ -7,9 +7,9 @@ server-rendered data so the first paint has no empty flash. Use it for a React f
 agent's surface. Needs `react` and `react-dom` 18 as peer dependencies.
 
 ```tsx
-import { MetricCard, blueprint$, stack } from "@loom/blueprint-runtime";
-import { BlueprintRenderer } from "@loom/plugin-renderer-react";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import { MetricCard, blueprint$, stack } from "@loomwork/blueprint-runtime";
+import { BlueprintRenderer } from "@loomwork/plugin-renderer-react";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 
 const bp = blueprint$({
   id: "ops",
@@ -65,8 +65,8 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 (see [AGENTS.md](../../AGENTS.md)).
 
 - [ADR 0097](../../docs/adr/0097-blueprint-ir-2.md): the status matrix and the value-check slot.
-- Siblings: [`@loom/plugin-renderer-terminal`](../renderer-terminal/README.md) and
-  `@loom/plugin-renderer-dom` (no framework).
-- API reference: section "`@loom/plugin-renderer-react`" in
+- Siblings: [`@loomwork/plugin-renderer-terminal`](../renderer-terminal/README.md) and
+  `@loomwork/plugin-renderer-dom` (no framework).
+- API reference: section "`@loomwork/plugin-renderer-react`" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

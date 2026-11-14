@@ -1,5 +1,5 @@
-import { internal, secret, sensitive } from "@loom/classify";
-import { step$ } from "@loom/core";
+import { internal, secret, sensitive } from "@loomwork/classify";
+import { step$ } from "@loomwork/core";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { EGRESS_REDACTED, scrubPathsByStep, scrubbingAdapter } from "./scrubbing";

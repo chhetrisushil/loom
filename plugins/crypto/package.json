@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-crypto",
+  "name": "@loomwork/plugin-crypto",
   "version": "0.1.0",
   "description": "K10 crypto-shredding — field-level payload encryption wrappers over any EventStore/SnapshotStore, with per-subject keys and GDPR-erasure by key destruction (PAYLOAD_SHREDDED)",
   "main": "./dist/index.js",
@@ -26,16 +26,16 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/plugin-content": "workspace:^",
-    "@loom/snapshot-runtime": "workspace:^"
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/plugin-content": "workspace:^",
+    "@loomwork/snapshot-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/compliance": "workspace:*",
-    "@loom/conformance": "workspace:*",
-    "@loom/replay-vm": "workspace:*",
+    "@loomwork/compliance": "workspace:*",
+    "@loomwork/conformance": "workspace:*",
+    "@loomwork/replay-vm": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

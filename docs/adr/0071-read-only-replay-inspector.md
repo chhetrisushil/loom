@@ -1,4 +1,4 @@
-# ADR 0071 — Read-only replay inspector (`@loom/replay-inspector`), IX series
+# ADR 0071 — Read-only replay inspector (`@loomwork/replay-inspector`), IX series
 
 - Status: **Accepted — shipped** (IX-1, IX-2, IX-3, IX-5, IX-7)
 - Date: 2026-08-07
@@ -7,7 +7,7 @@
   ([ADR 0043](0043-plugin-packaging-and-1p-3p-separation.md)), the mechanism-stays-in-`packages/*`
   precedent ([ADR 0068](0068-projection-selector-subscription.md) D2), run chaining deferred
   ([ADR 0052](0052-run-chaining-deferred-evidence-gate.md)), K11 flow-hash pinning, K10-R1
-  data classification (`@loom/classify`).
+  data classification (`@loomwork/classify`).
 - Part of: the kernel/1P/3P triage discipline (P10 — bias outward). **KERNEL_ABI unchanged
   (1.1.0); EVENT_SCHEMA unchanged (1.17.0); no new event kind, no new syscall, no new
   primitive, no compiler change.**
@@ -51,9 +51,9 @@ backend, so it is a mechanism. If a rendering surface is later built on it, that
 the plugin (`renderer-react` precedent).
 
 This corrects the draft requirement's own header, which said "1P plugin" and cited
-`plugins/read-model` + `@loom/plugin-kit` as an existing privileged-read *host*. **No such
+`plugins/read-model` + `@loomwork/plugin-kit` as an existing privileged-read *host*. **No such
 host exists.** `plugins/read-model` is `ReadModelService` (register definitions,
-`handleEvent`, cursor-paged `query`) — a projection service. `@loom/plugin-kit` is
+`handleEvent`, cursor-paged `query`) — a projection service. `@loomwork/plugin-kit` is
 `defineStoragePreset`/`CustomStorage` — a storage-preset helper. The inspector consumes the
 store SPIs directly; tenant scoping is the caller's job via `TenantScopedEventStore`, and
 the inspector never widens the scope it is given.
@@ -88,7 +88,7 @@ primitive already exists". It is not the primitive to build on. `applyEvent` is
 `appendAudit`'s in-place branch and re-copies every audit list at every step — **O(n²)** in
 audit-list length, against an acceptance criterion of 10⁴ events in interactive time.
 
-The shape adopted needs no change to `@loom/replay-vm`:
+The shape adopted needs no change to `@loomwork/replay-vm`:
 
 ```
 anchor = snapshots.loadLatestBefore(id, firstPosition)   // already exists, built for fork()
@@ -185,7 +185,7 @@ pins that.
 
 - **Access boundary is the caller's.** The inspector reads whatever store it is handed and
   never widens scope. Scope with `TenantScopedEventStore` / `TenantScopedSnapshotStore`.
-- **Redaction is defence in depth**, wired to K10-R1 `@loom/classify` `maskPaths`, and is
+- **Redaction is defence in depth**, wired to K10-R1 `@loomwork/classify` `maskPaths`, and is
   applied **before** the diff so a masked value cannot leak through a change record's
   `before`/`after`. The pin is read from the unredacted fold — it is a content hash, not
   user data.
@@ -199,9 +199,9 @@ pins that.
 
 ## Consequences
 
-- New package `@loom/replay-inspector`; 67 tests green; repo build and lint clean.
+- New package `@loomwork/replay-inspector`; 67 tests green; repo build and lint clean.
 - Kernel untouched. No event kind, no syscall, no primitive, no compiler change,
-  no `@loom/spec` capability entry.
+  no `@loomwork/spec` capability entry.
 - `ReplayVM` is unchanged — D3's batching removes the need for an incremental API on it.
 - Two findings recorded for their own sake, independent of this package: `workflowVersion`
   is not durable (D4), and projection state has no snapshot representation (D7 Q1).

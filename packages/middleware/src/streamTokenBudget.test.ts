@@ -1,4 +1,4 @@
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { QuotaExceededError } from "./metering";
 import { estimateTokensByChars, streamTokenBudget } from "./streamTokenBudget";
@@ -29,11 +29,11 @@ function makeCtx(spentTokens?: number): EffectContext {
  * Drive a guard the way `collectStream` does — one call per delta, with the text
  * so far — and report how many deltas got through before it threw.
  *
- * Deliberately not importing `collectStream`: `@loom/middleware` has no
- * `@loom/llm` dependency (metering reads `LlmResponse` structurally, on purpose),
+ * Deliberately not importing `collectStream`: `@loomwork/middleware` has no
+ * `@loomwork/llm` dependency (metering reads `LlmResponse` structurally, on purpose),
  * and adding one for a test would invert a boundary the package chose. The other
  * half of the contract — that `collectStream` calls the guard per delta and a
- * throw severs the stream — is tested in `@loom/llm`, where `collectStream` is.
+ * throw severs the stream — is tested in `@loomwork/llm`, where `collectStream` is.
  */
 function drive(
   guard: (progress: { text: string; deltas: number }) => void,

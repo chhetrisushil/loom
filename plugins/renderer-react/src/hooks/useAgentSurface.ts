@@ -1,5 +1,5 @@
-import type { AgentSurfaceRuntime, SurfaceState } from "@loom/agent-surface";
-import { DEFAULT_SURFACE } from "@loom/agent-surface";
+import type { AgentSurfaceRuntime, SurfaceState } from "@loomwork/agent-surface";
+import { DEFAULT_SURFACE } from "@loomwork/agent-surface";
 import { useEffect, useState } from "react";
 
 // Subscribes a React component to an agent surface held by a standalone

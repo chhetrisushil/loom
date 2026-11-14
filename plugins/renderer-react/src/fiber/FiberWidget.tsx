@@ -1,5 +1,5 @@
-import type { BindingStatus, RendererRegistry, Widget } from "@loom/blueprint-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { BindingStatus, RendererRegistry, Widget } from "@loomwork/blueprint-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import React, { useDeferredValue } from "react";
 import type { WidgetAction, WidgetRenderer } from "../RendererRegistry";
 import { WidgetFrame, type WidgetValueCheck } from "../WidgetFrame";

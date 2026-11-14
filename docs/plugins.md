@@ -22,7 +22,7 @@ A Loom plugin:
    reducer into the replay fold (durable custom facts are ordinary app events folded by
    user-space projections);
 4. is **byte-identical to hand-wiring** after boot (zero runtime overhead);
-5. ships **conformance tests** for each SPI it implements (`@loom/conformance`);
+5. ships **conformance tests** for each SPI it implements (`@loomwork/conformance`);
 6. is **sugar, never a gate** — everything it does, you can also hand-wire into `defineConfig`.
 
 ## Should it exist at all?
@@ -32,7 +32,7 @@ litmus says whether a thing is a plugin or belongs in the kernel. Neither asks w
 be **first-party surface**, which is a separate question with its own rule:
 
 > **The second-consumer rule** ([ADR 0083](adr/0083-second-consumer-rule.md)) — before a
-> workload-derived requirement becomes a 1P package, a new `@loom/verify` rule, a new seam, or an
+> workload-derived requirement becomes a 1P package, a new `@loomwork/verify` rule, a new seam, or an
 > exported *vocabulary*, name a second **unrelated** consumer of the same mechanism. If you
 > cannot, it is application code: land it in the consuming app (or `loom-examples`) and say what
 > would change the verdict.
@@ -49,36 +49,36 @@ treats them the same.
 | | First-party (1P) | Third-party (3P) |
 |---|---|---|
 | Home | this repo, `plugins/` | the `loom-plugins` community repo — **or any repo you like** |
-| Name | `@loom/plugin-<name>` | `loom-plugin-<name>` / `@scope/loom-plugin-<name>` (npm keyword `loom-plugin`) |
-| Depends on | the workspace SPI packages | the published `@loom/*` **SPI** packages |
+| Name | `@loomwork/plugin-<name>` | `loom-plugin-<name>` / `@scope/loom-plugin-<name>` (npm keyword `loom-plugin`) |
+| Depends on | the workspace SPI packages | the published `@loomwork/*` **SPI** packages |
 | Conformance | gated in Loom CI | run the published vectors in your own CI |
 | Trust | vetted by core | **your** supply-chain responsibility (see Security) |
 
 A 3P plugin can be **promoted** to 1P when it meets the 1P bar (maintained by/with core,
 conformance-gated, security-reviewed).
 
-### The public barrel (`@loom/sdk`) re-exports 1P plugins
+### The public barrel (`@loomwork/sdk`) re-exports 1P plugins
 
-Because 1P plugins are the curated set, `@loom/sdk` re-exports them — curation, not a runtime
+Because 1P plugins are the curated set, `@loomwork/sdk` re-exports them — curation, not a runtime
 privilege (a 3P plugin wires through the identical seams, it just isn't ours to vouch for). To
-keep a bare `import "@loom/sdk"` lean and browser-safe, **native/heavy** plugins are re-exported
+keep a bare `import "@loomwork/sdk"` lean and browser-safe, **native/heavy** plugins are re-exported
 via a **subpath**, not the main barrel:
 
-- Light 1P plugins (protocols, renderers) → `import { … } from "@loom/sdk"` — today
-  `@loom/plugin-a2a`, `@loom/plugin-mcp`, `@loom/plugin-renderer-terminal`.
-- Native/heavy 1P plugins → their own subpath: `import { SqliteEventStore } from "@loom/sdk/sqlite"`,
-  `import { postgresStorage } from "@loom/sdk/postgres"`,
-  `import { sandboxEval$ } from "@loom/sdk/sandbox"`. The sandbox subpath also carries the backend
+- Light 1P plugins (protocols, renderers) → `import { … } from "@loomwork/sdk"` — today
+  `@loomwork/plugin-a2a`, `@loomwork/plugin-mcp`, `@loomwork/plugin-renderer-terminal`.
+- Native/heavy 1P plugins → their own subpath: `import { SqliteEventStore } from "@loomwork/sdk/sqlite"`,
+  `import { postgresStorage } from "@loomwork/sdk/postgres"`,
+  `import { sandboxEval$ } from "@loomwork/sdk/sandbox"`. The sandbox subpath also carries the backend
   SPI (`SandboxBackend`, `SandboxEffect`, `registerSandboxBackend`, ADR 0144); a third-party backend
-  package depends on `@loom/sandbox` directly instead, since the subpath loads QuickJS too.
+  package depends on `@loomwork/sandbox` directly instead, since the subpath loads QuickJS too.
 
 Plugins outside the barrel (renderers with a framework peer dependency, the compute adapters, the
 UI-protocol plugins) are imported by their own package name — being outside the barrel is a
 packaging call about weight and peer deps, not a tier.
 
 The barrel also re-exports a few non-plugin packages that are part of the public surface —
-notably `@loom/registry` (`AgentRegistry`/`globalAgentRegistry`, the agent-card registry the A2A
-peer client reads), which has no plugin of its own but is imported through `@loom/sdk`.
+notably `@loomwork/registry` (`AgentRegistry`/`globalAgentRegistry`, the agent-card registry the A2A
+peer client reads), which has no plugin of its own but is imported through `@loomwork/sdk`.
 
 3P plugins are never in the barrel; you import them by their own name. Both remain explicit
 imports, so the 1P/3P distinction stays purely organisational.
@@ -90,9 +90,9 @@ and compute.
 
 **Storage & data**
 
-- `@loom/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer`/`DurableState`/
+- `@loomwork/plugin-sqlite` — embedded SQLite `Event`/`Snapshot`/`Branch`/`Timer`/`DurableState`/
   `ReadModel`/`Content` stores + the `sqliteStorage()` preset.
-- `@loom/plugin-postgres` — network Postgres stores (LISTEN/NOTIFY) + `postgresStorage()`.
+- `@loomwork/plugin-postgres` — network Postgres stores (LISTEN/NOTIFY) + `postgresStorage()`.
   **Bring your own pool:** the stores accept any object satisfying `PoolLike` — `query`,
   `connect`, `end`, and optionally `options` — so a pool from a *different copy of `pg`*
   (the normal state for a `link:`/`file:` consumer, where each side resolves its own), or an
@@ -102,47 +102,47 @@ and compute.
   surface (`totalCount` and friends) that `PoolLike` deliberately omits. Without `options`,
   the dedicated `LISTEN` session cannot be opened and cross-node delivery degrades; the log
   stays authoritative and same-process subscribers are unaffected.
-- `@loom/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI (the optional
+- `@loomwork/plugin-crypto` — field-level crypto-shredding store wrappers (K10) + `KeyStore` SPI (the optional
   `KeyStore.wasDestroyed` is the destruction proof erasure asks for). Also `EncryptingContentStore`, which seals
   each claim-checked blob under its owning subject's key at a subject-scoped address
   ([ADR 0143](adr/0143-encrypting-content-store.md)), and `EncryptingArchiveStore`, which seals the
   compaction/inbox archive under the same `KeyStore`. `EncryptingEventStore` seals each message's sender under an
   opaque handle by default (`senderSubjectOf: false` opts out, ADR 0139).
-- `@loom/plugin-content` — content-store seam: `ContentResolvingEventStore` externalizes marked
+- `@loomwork/plugin-content` — content-store seam: `ContentResolvingEventStore` externalizes marked
   payload fields to a content-addressed side store + `ContentStore` SPI ([ADR 0046](adr/0046-content-store-seam-thin-authoritative-log.md)).
   SPI 1.5.0 adds an optional `ContentAccess` (`{ executionId, workflowId }`) argument to `put`/`putStream`/`get`/`getMany`, so a
   store can seal per owner ([ADR 0143](adr/0143-encrypting-content-store.md)); a plain store ignores it.
-- `@loom/plugin-durable-state` — typed, versioned, contract-migratable keyed carry state as
+- `@loomwork/plugin-durable-state` — typed, versioned, contract-migratable keyed carry state as
   RECORDED effects (replay folds the recorded value, never the store) + CAS revisions and the
   `sentinelState()` schedule-driven convenience ([ADR 0053](adr/0053-durable-state-plugin.md)).
   SQLite/Postgres backends ship in their storage plugins.
-- `@loom/plugin-read-model` — durable, checkpointed cross-execution read models: app-declared
+- `@loomwork/plugin-read-model` — durable, checkpointed cross-execution read models: app-declared
   extractors index domain events into a persisted, queryable store (kind + field-equality,
   keyset-paged); convergent ingestion from the live `onEvent` tail + watermark-incremental
   catch-up; a cache of the log, never an authority ([ADR 0058](adr/0058-read-model-plugin.md)). Also durable per-execution folded-state models, see "Folded-state models" below ([ADR 0132](adr/0132-folded-state-read-model.md)).
-- `@loom/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper. Wrap it
+- `@loomwork/plugin-audit-chain` — tamper-evident hash-chained `EventStore` wrapper. Wrap it
   *outside* `ContentResolvingEventStore` if you use both — inverted, the chain hashes only the
   content ref and a rewritten blob verifies clean (see the plugin README).
 
 **Composition patterns**
 
-- `@loom/plugin-sentinel` — `sentinelPreset()`: the perpetual-agent pattern (schedule + carry
+- `@loomwork/plugin-sentinel` — `sentinelPreset()`: the perpetual-agent pattern (schedule + carry
   state + claim-check + K10.6 pin policy) as one composition-time declaration, plus the
   `loom new sentinel` scaffold.
-- `@loom/plugin-sandbox` — hardened QuickJS-in-WASM eval of content-addressed, LLM-authored
+- `@loomwork/plugin-sandbox` — hardened QuickJS-in-WASM eval of content-addressed, LLM-authored
   reshaping scripts: in-engine memory/CPU/wall-clock limits, no ambient I/O by construction,
   output shape-hash validation; `scriptMissing`/`limitExceeded`/`shapeMismatch`/`scriptError`
   are typed channels so a planner re-plans and replay never re-burns CPU. `scriptError
   { name?, message }` is the script's own throw (incl. a SyntaxError or a non-Error value),
   bounded and stack-free; worker-pool, integrity and cancellation failures stay untyped
   ([ADR 0064](adr/0064-sandbox-eval-plugin.md)). It is the **reference backend** of the
-  `SandboxBackend` SPI in `@loom/sandbox` (`QuickJsSandboxBackend`, in-process or worker pool;
+  `SandboxBackend` SPI in `@loomwork/sandbox` (`QuickJsSandboxBackend`, in-process or worker pool;
   QuickJS stays the default engine): to run model-written code in a different isolation boundary,
   see [Write your own sandbox](#write-your-own-sandbox) ([ADR 0144](adr/0144-sandbox-backend-spi.md)).
 
 **Protocols**
 
-- `@loom/plugin-mcp` — MCP **client + server**. Client: dynamic dispatch — `mcpInvoke$` mints
+- `@loomwork/plugin-mcp` — MCP **client + server**. Client: dynamic dispatch — `mcpInvoke$` mints
   steps whose tool name/args/schema-pin are runtime data through ONE registered `mcp.invoke`
   effect; pinned `jsonSchemaHash` verified per call → typed `schemaDrift`/`toolNotFound`
   channels; principals ride `ctx.principal`/`secretRef`, never the log; `MCP_DISPATCHED` +
@@ -168,7 +168,7 @@ and compute.
   `pin` — `embedded` (inlined, hashed for free), `resolved` (`resolveUi` fetched it),
   `not-requested`, or `unresolvable` — so "no pin" is never ambiguous between *not asked for*
   and *asked for and unavailable*.
-- `@loom/plugin-mcp-app` — MCP Apps (SEP-1865) **egress**: projects a Loom agent surface onto
+- `@loomwork/plugin-mcp-app` — MCP Apps (SEP-1865) **egress**: projects a Loom agent surface onto
   the extension as ONE static, content-pinned surface-host template whose payload is the
   existing A2UI catalog model — so MCP Apps is a second *transport binding* for a surface
   protocol Loom already ships, not a second UI protocol, and the rendered UI is a pure function
@@ -178,7 +178,7 @@ and compute.
   suspension. Egress redaction is required-by-configuration, never defaulted. The **host** role
   (iframe, CSP, postMessage) is deliberately out of scope
   ([ADR 0072](adr/0072-mcp-apps-ui-extension-placement.md)).
-- `@loom/plugin-a2a` — Agent-to-Agent protocol, **client + server**. `A2APeerClient` discovers a
+- `@loomwork/plugin-a2a` — Agent-to-Agent protocol, **client + server**. `A2APeerClient` discovers a
   remote agent's card and registers it as an ordinary Loom tool; `createA2AServer` publishes your
   flows as an A2A agent (`/.well-known/agent.json`, `/tasks/send`) with `LoomAgentExecutor`
   mapping execution status onto A2A task state. **Secure by default (R12):** it refuses to be
@@ -188,7 +188,7 @@ and compute.
 
 **Conversations**
 
-- `@loom/plugin-conversation-sse` — the authenticated end-user edge of `@loom/conversation` (ADR 0122): start a
+- `@loomwork/plugin-conversation-sse` — the authenticated end-user edge of `@loomwork/conversation` (ADR 0122): start a
   conversation, send turns, and stream the durable messages and live reply deltas over Server-Sent Events, resuming from
   `Last-Event-ID` (the SSE id is the history cursor, so it works across rotations). Fails closed: authentication is
   required to create the server, a conversation the caller may not touch is indistinguishable from one that does not
@@ -197,21 +197,21 @@ and compute.
 
 **Surfaces**
 
-- `@loom/plugin-a2ui` — projects a Loom agent surface onto the Google **A2UI** wire protocol v1.0
+- `@loomwork/plugin-a2ui` — projects a Loom agent surface onto the Google **A2UI** wire protocol v1.0
   (`createSurface`/`updateDataModel`/`deleteSurface`), so any A2UI-compliant client renders a
   Loom-driven UI. Egress + inbound actions + `callFunction` bidirectional RPC — the client's
   *result* re-enters as a recorded fact under a deterministic `callId`, which is what keeps a
   client-invoked function inside Loom's replay grain
   ([ADRs 0069](adr/0069-a2ui-egress-adapter.md)–[0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)).
   Continuous two-way binding sync is out of scope.
-- `@loom/plugin-renderer-react` — React blueprint renderer (`defaultRegistry`); React is a peer
-  dependency, so it stays out of the `@loom/sdk` barrel. Placed grid cells get explicit
+- `@loomwork/plugin-renderer-react` — React blueprint renderer (`defaultRegistry`); React is a peer
+  dependency, so it stays out of the `@loomwork/sdk` barrel. Placed grid cells get explicit
   `grid-column`/`grid-row`, titled layouts a `<section>` with an `h2` (ADR 0098). A layout's
   `role` is ignored — it draws the plain container (ADR 0099). An `empty` binding status draws a
   `role="status"` "no data" marker in place of the widget (ADR 0100). A layout's `id` is its
   container's React key, so a container inserted or reordered around it keeps its widgets'
   DOM; the markup is unchanged (ADR 0101).
-- `@loom/plugin-renderer-terminal` — string/terminal blueprint renderer
+- `@loomwork/plugin-renderer-terminal` — string/terminal blueprint renderer
   (`renderBlueprintToString`), the second surface that proves blueprint delivery is
   renderer-agnostic rather than React-shaped. Kind-aware when given a registry —
   `defaultTerminalRegistry` covers the eight built-in kinds and an unregistered kind is marked
@@ -222,25 +222,25 @@ and compute.
   (ADR 0098); a layout's `role` or `id` changes nothing in the output (ADR 0099, ADR 0101).
   A widget whose `source.redacted` is `true` (IR 2.5.0, ADR 0097 amendment) is the single line `⊘ redacted` on
   this surface and the React and DOM ones: no title, kind or value, whatever the widget carries.
-- `@loom/plugin-renderer-dom` — framework-free DOM renderer (`renderBlueprintToDom`, live `mountBlueprint`), the
+- `@loomwork/plugin-renderer-dom` — framework-free DOM renderer (`renderBlueprintToDom`, live `mountBlueprint`), the
   web surface for an app that wants neither React nor loom-ui. Covers the same eight kinds as the other two (asserted
   by a three-way parity test); builds every element through an allowlisting `h()` (no `innerHTML`, `href` through
   `safeUrl`), ships no CSS and no runtime dependency beyond blueprint-runtime and projection-runtime, and is not in
-  the `@loom/sdk` barrel (ADR 0127).
+  the `@loomwork/sdk` barrel (ADR 0127).
 
 **Compute**
 
-- `@loom/plugin-worker-remote` — `RemoteWorkerRuntime`: dispatches an `ExecutionPackage` to a
+- `@loomwork/plugin-worker-remote` — `RemoteWorkerRuntime`: dispatches an `ExecutionPackage` to a
   stateless worker's `POST /execute` and collects the `ExecutionResult`.
-- `@loom/plugin-worker-server` — `createWorkerServer`: the other half, and the container
+- `@loomwork/plugin-worker-server` — `createWorkerServer`: the other half, and the container
   entrypoint for remote/Cloud Run execution — runs one `ExecutionPackage` on an injected
   `WorkerRuntime`.
-- `@loom/plugin-cloudrun` — Cloud Run adapter: `CloudRunWorkerRuntime` maps `DispatchMetadata`
+- `@loomwork/plugin-cloudrun` — Cloud Run adapter: `CloudRunWorkerRuntime` maps `DispatchMetadata`
   onto a sizing config and resolves a service endpoint, with cloud specifics behind the
   `CloudRunPlatform` SPI (`StaticCloudRunPlatform` runs the same path offline)
   ([ADRs 0001–0005](adr/)).
 
-### Folded-state models (`@loom/plugin-read-model`, [ADR 0132](adr/0132-folded-state-read-model.md))
+### Folded-state models (`@loomwork/plugin-read-model`, [ADR 0132](adr/0132-folded-state-read-model.md))
 
 A folded model keeps one durable state per execution, folded with an ordinary `projection$` reducer. Like every read model it is a cache of the log: rebuild equals incremental, and nothing reads it on replay. Wiring (the DocMind shape):
 
@@ -295,7 +295,7 @@ preset stub, an SPI implementation stub, and a conformance-wired test:
 ```
 loom plugin seams                              # list the seams you can target
 loom plugin new store my-backend               # third-party: ./loom-plugin-my-backend
-loom plugin new store my-backend --first-party # first-party: ./plugins/my-backend (@loom/plugin-*)
+loom plugin new store my-backend --first-party # first-party: ./plugins/my-backend (@loomwork/plugin-*)
 ```
 
 Seams: `store`, `dispatcher`, `telemetry`, `middleware`, `timer`, `lease`, `content`,
@@ -313,7 +313,7 @@ authoring one is identical: same naming, same peer-dependency rule, same conform
 requirement (`runPolicyConformance`).
 
 **`sandbox` is the second flow-code seam.** A `SandboxBackend` ([ADR 0144](adr/0144-sandbox-backend-spi.md))
-is wired with `registerSandboxBackend(effects, scripts, backend, spec?)` from `@loom/sandbox`, next
+is wired with `registerSandboxBackend(effects, scripts, backend, spec?)` from `@loomwork/sandbox`, next
 to the content store that holds the scripts, not through `defineConfig`.
 
 ### Write your own sandbox
@@ -327,7 +327,7 @@ loom plugin new sandbox my-box
 
 - A backend is only the **engine**: `evaluate({ script, inputJson, limits, signal })` returns a
   closed `SandboxOutcome` (`ok` / `limit` / `threw` / `inputTooLarge` / `infrastructure`). It never
-  throws a typed failure. `SandboxEffect` (in `@loom/sandbox`) owns the input and output ceilings, the
+  throws a typed failure. `SandboxEffect` (in `@loomwork/sandbox`) owns the input and output ceilings, the
   content-address check, the `scriptError` / `limitExceeded` / `shapeMismatch` channels, bounded
   storable error text, cancellation precedence and the JSON replay form of the result.
 - Declare `capabilities` honestly. `network` other than `"none"` and `freshPerRun: false` are
@@ -345,15 +345,15 @@ loom plugin new sandbox my-box
 - A backend that never settles loses: the effect races it against the caller's abort and a
   `wallClockMs + backendGraceMs` deadline (`backendGraceMs` defaults to 60 s, on top of the 1 s default `wallClockMs`) and hands it a combined signal; whatever it
   throws is untyped and bounded, never a channel.
-- Prove it: `runSandboxBackendConformance(() => backend, { fixtures? })` from `@loom/conformance`
-  runs ADR 0064's security list through the effect. QuickJS (`@loom/plugin-sandbox`) passes it in both
+- Prove it: `runSandboxBackendConformance(() => backend, { fixtures? })` from `@loomwork/conformance`
+  runs ADR 0064's security list through the effect. QuickJS (`@loomwork/plugin-sandbox`) passes it in both
   in-process and worker mode. A non-JavaScript backend supplies its own `fixtures`.
 - A remote backend (Cloud Run, Firecracker, E2B): no service account or credentials, egress denied at
   the network layer, one request per instance, the request timeout as the hard kill, memory and CPU
   caps, no shared writable state. The scaffolded README carries this checklist.
-- `@loom/isolate` is a different thing: it runs TRUSTED tool code (yours, not model-written) with brokered
+- `@loomwork/isolate` is a different thing: it runs TRUSTED tool code (yours, not model-written) with brokered
   egress, as hardening rather than OS confinement; model-written scripts belong behind this seam (ADR 0144).
-- A third-party example exists: `loom-plugin-cloudrun-sandbox` in the `loom-plugins` repo (a Python
+- A third-party example exists: `@loomwork/plugin-cloudrun-sandbox` in the `loom-plugins` repo (a Python
   script on Cloud Run). It has not been verified on a real deployment and its memory cap is untested;
   treat it as a worked example of the checklist above, not a vouched backend.
 
@@ -364,9 +364,9 @@ loom plugin check --dir ./loom-plugin-my-backend
 ```
 
 `check` verifies the naming convention, that the package does **not** depend on the replay fold
-engine (`@loom/replay-vm` — the "no reducer into the fold" rule), that a 3P plugin peer-depends on
-the `@loom/*` SPI (one kernel copy) and carries the `loom-plugin` keyword, and that a test wires
-`@loom/conformance`. Non-zero exit on any error.
+engine (`@loomwork/replay-vm` — the "no reducer into the fold" rule), that a 3P plugin peer-depends on
+the `@loomwork/*` SPI (one kernel copy) and carries the `loom-plugin` keyword, and that a test wires
+`@loomwork/conformance`. Non-zero exit on any error.
 
 And **run a storage plugin end-to-end** — wire its preset into a real app, run a durable flow,
 and confirm it persisted and replays (what `check` and conformance can't tell you):
@@ -380,9 +380,9 @@ loom plugin try --module ./loom-plugin-my-backend/dist/index.js \
 
 ```ts
 // 1. implement the SPI (or reuse an existing store). Each SPI lives in its OWN package.
-import type { EventStore } from "@loom/event-runtime";
-import type { CustomStorage } from "@loom/plugin-kit";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import type { CustomStorage } from "@loomwork/plugin-kit";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 
 // 2. export a preset returning the shape defineConfig accepts. Name the CONTRACT TYPE
 //    rather than re-declaring its shape: a copied shape silently stops matching when the
@@ -394,7 +394,7 @@ export function myStorage(opts: { url: string }): CustomStorage {
 
 ```ts
 // 3. the app wires it exactly like a first-party backend — no privileged `kind:`
-import { defineConfig } from "@loom/app";
+import { defineConfig } from "@loomwork/app";
 import { myStorage } from "loom-plugin-mystore";
 
 export const app = defineConfig({ storage: myStorage({ url: process.env.DB_URL! }) });
@@ -402,12 +402,12 @@ export const app = defineConfig({ storage: myStorage({ url: process.env.DB_URL! 
 
 ```ts
 // 4. prove conformance in your own CI
-import { runEventStoreConformance } from "@loom/conformance";
+import { runEventStoreConformance } from "@loomwork/conformance";
 runEventStoreConformance(() => new MyEventStore(":memory:"));
 ```
 
 A storage plugin should also supply `CustomStorage.archiveStore` (an `ArchiveStore`, prove it with
-`runArchiveStoreConformance` from `@loom/conformance`). Without an archive, compaction REFUSES (it moves
+`runArchiveStoreConformance` from `@loomwork/conformance`). Without an archive, compaction REFUSES (it moves
 the events it removes there) and the inbox cannot trim ([ADR 0138](adr/0138-compaction-archives-what-it-removes.md),
 [ADR 0139 D5](adr/0139-reserved-streams-archive-before-removal.md)); `durability.retention.compactionArchive`
 supplies one from the app side.
@@ -434,8 +434,8 @@ loom plugin check --dir . --publish
 Pre-publish checklist:
 
 - [ ] `name` is `loom-plugin-<name>` (or `@scope/loom-plugin-<name>`); keyword `loom-plugin` present
-- [ ] `@loom/*` SPI packages are **peerDependencies**, not bundled
-- [ ] a test wires `@loom/conformance` and passes (`run<Spi>Conformance`)
+- [ ] `@loomwork/*` SPI packages are **peerDependencies**, not bundled
+- [ ] a test wires `@loomwork/conformance` and passes (`run<Spi>Conformance`)
 - [ ] `version` bumped, plus `description`, `license`, `repository`, and `exports`/`main`+`types`
 - [ ] `loom plugin try` succeeds (for a store plugin) and `loom plugin check --publish` is clean
 
@@ -446,11 +446,11 @@ cannot be sandboxed** — K7 data-plane isolation governs *tool effects at runti
 that builds your runtime. Importing a plugin grants it boot-time authority, exactly like any
 dependency you `import`.
 
-- **1P** plugins are vetted by core — that is the trust basis for the `@loom/` scope.
+- **1P** plugins are vetted by core — that is the trust basis for the `@loomwork/` scope.
 - **3P** plugins are the **app author's supply-chain call.** Vet them as you would any dependency.
 
 ## Keeping the kernel minimal
 
-A CI guard (`@loom/spec` `findLayeringViolations`) fails the build if any kernel or SPI package
+A CI guard (`@loomwork/spec` `findLayeringViolations`) fails the build if any kernel or SPI package
 gains a dependency on a `plugins/*` adapter. The kernel carries mechanism; adapters live outside
 it. See [ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md).

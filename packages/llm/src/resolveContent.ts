@@ -1,4 +1,4 @@
-import type { PrincipalChain } from "@loom/effect-runtime";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import type {
   LlmContentPart,
   LlmContentRef,

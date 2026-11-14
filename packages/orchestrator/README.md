@@ -1,16 +1,16 @@
-# @loom/orchestrator — a small approval policy and a plan-dispatch loop
+# @loomwork/orchestrator — a small approval policy and a plan-dispatch loop
 
 Two plain functions that an app's own "conductor" calls: `decideApproval` (auto-approve a low-risk
 action when the goal text allows it, otherwise wait for a human) and `dispatchPlan` (route, plan, then
 dispatch each step in order, stopping early on request). It is composition, not a base class: your code
 keeps every side effect and passes it in as a callback.
 
-This is **not** `@loom/orchestration`, which awaits child executions durably. Nothing here is recorded
+This is **not** `@loomwork/orchestration`, which awaits child executions durably. Nothing here is recorded
 in the event log; it is ordinary async control flow, so a crash mid-loop does not resume it. For durable
 approval gates use a flow that suspends and resumes.
 
 ```ts
-import { decideApproval, dispatchPlan } from "@loom/orchestrator";
+import { decideApproval, dispatchPlan } from "@loomwork/orchestrator";
 
 type Step = { capabilityId: string };
 
@@ -58,8 +58,8 @@ const steps = await dispatchPlan<Step>({
 Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout use a `link:` override
 (see [AGENTS.md](../../AGENTS.md)).
 
-- API reference: section "`@loom/orchestrator` — composable orchestration" in
+- API reference: section "`@loomwork/orchestrator` — composable orchestration" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Durable fan-out and gates: [ADR 0040](../../docs/adr/0040-live-query-and-orchestration.md)
-  (`@loom/orchestration`).
+  (`@loomwork/orchestration`).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

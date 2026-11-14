@@ -1,11 +1,11 @@
-import type { ExecutionState, ExecutionStatus, SuspendCondition } from "@loom/core";
+import type { ExecutionState, ExecutionStatus, SuspendCondition } from "@loomwork/core";
 import {
   type EventStore,
   type LeaseStore,
   isReservedStream,
   iterateExecutionIds,
-} from "@loom/event-runtime";
-import { EFFECT_INDOUBT_RESOLVED, inDoubtDecisionId } from "@loom/workflow-runtime";
+} from "@loomwork/event-runtime";
+import { EFFECT_INDOUBT_RESOLVED, inDoubtDecisionId } from "@loomwork/workflow-runtime";
 import { UsageError } from "./args";
 import { foldAt } from "./core";
 import { humanizeDuration } from "./duration";

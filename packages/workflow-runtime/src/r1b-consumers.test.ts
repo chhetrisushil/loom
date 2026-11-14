@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryArchiveStore } from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryArchiveStore } from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
 import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { build, flow, settle, until } from "./__tests__/r2Harness";

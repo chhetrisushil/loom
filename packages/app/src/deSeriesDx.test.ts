@@ -1,6 +1,6 @@
-import { step$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+import { step$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";

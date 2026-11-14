@@ -15,7 +15,7 @@ determinism / keep-the-log invariants.
 **Flow registration by shape (not manifest dynamic-import).** The evaluation flagged
 that dynamic-importing flows from a manifest path is exactly the env-dependent
 wiring that breaks deterministic replay. So the replay-safe primitive is
-`registerFlowsFrom(runtime, ...modules)` in `@loom/app`: the app **statically**
+`registerFlowsFrom(runtime, ...modules)` in `@loomwork/app`: the app **statically**
 imports its flow modules (`import * as flows from "./flows"`) and hands the
 namespaces over; every `RegisteredFlow`-shaped export is registered. Discovery is
 by shape, so it also captures flows built via helpers (whose ids the compiler
@@ -25,7 +25,7 @@ top-level `flowModules` list (metadata only), and `defineConfig` accepts a
 the compiler saw but nobody registered, and surfaces the compiler's own warnings —
 at boot, instead of as a "No flow registered" error at dispatch.
 
-**A2A reduces to one adapter.** `LoomAgentExecutor` (`@loom/a2a`) encapsulates the
+**A2A reduces to one adapter.** `LoomAgentExecutor` (`@loomwork/a2a`) encapsulates the
 A2A task lifecycle, which maps one-to-one onto Loom execution states:
 submit→`start`, input-required→a suspend, provideInput→`resume`, completed/failed→
 terminal `ExecutionState`. It is **stateless** — `get` rebuilds task status from
@@ -46,15 +46,15 @@ protocol-conformance surface), so the in-house transport stays the default.
   deterministic (static imports).
 - The whole A2A layer is one adapter + a transport; the wire contract and all
   existing a2a tests are unchanged (`suspended→working` preserved).
-- New packages: `tools/create-loom-app`. `@loom/a2a` gains `LoomAgentExecutor`;
-  `@loom/compiler` manifest gains `module`/`flowModules` (additive).
+- New packages: `tools/create-loom-app`. `@loomwork/a2a` gains `LoomAgentExecutor`;
+  `@loomwork/compiler` manifest gains `module`/`flowModules` (additive).
 
 ## Verification
 
-- `@loom/app`: `registerFlowsFrom` registers shaped exports / ignores non-flows /
+- `@loomwork/app`: `registerFlowsFrom` registers shaped exports / ignores non-flows /
   is idempotent / captures helper-built flows; `manifestWarnings` flags gaps;
   `defineConfig` integrates both.
-- `@loom/a2a`: existing 12 tests pass unchanged; new `LoomAgentExecutor` tests
+- `@loomwork/a2a`: existing 12 tests pass unchanged; new `LoomAgentExecutor` tests
   cover status mapping, the full submit→input-required→provideInput→completed
   lifecycle, and unknown-task → null.
 - `create-loom-app`: `scaffoldFiles` emits a defineConfig-wired skeleton with no

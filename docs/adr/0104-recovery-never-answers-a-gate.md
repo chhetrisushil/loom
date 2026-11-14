@@ -7,7 +7,7 @@
   [ADR 0057](0057-multi-gate-suspend-passthrough.md) (gate *i* passes with the *i*-th
   recorded resume payload) and [ADR 0077](0077-typed-resume-payloads.md) (a gate's declared
   resume shape).
-- Placement: **kernel** (`@loom/workflow-runtime`, the resume path). No 1P or 3P surface could
+- Placement: **kernel** (`@loomwork/workflow-runtime`, the resume path). No 1P or 3P surface could
   hold it: the defect is in what the kernel itself records on a re-drive.
 - **KERNEL_ABI unchanged (1.1.0). EVENT_SCHEMA 1.19.0 → 1.20.0** (D3; 1.19.0 is ADR 0102): no
   new event kind. The `EXECUTION_RESUMED` fold learns that a `null` resume answering no suspend
@@ -125,15 +125,15 @@ Both emit paths now refuse every kernel event type (the K5 set, `knownEventTypes
 from an explicit allow-list of facts first-party code records from inside an effect. Each
 allowed type is ALSO validated, because an allowed type still folds into state:
 
-- `RESOURCE_METERED` (`@loom/middleware`) folds into `_resources`, which budgets, quotas and
+- `RESOURCE_METERED` (`@loomwork/middleware`) folds into `_resources`, which budgets, quotas and
   `negotiateBudget` read. Every meter field present must be a finite number in `[0, ceiling]`.
   The ceilings are sanity bounds no single effect reaches (tokens 1e12, costUsd 1e9, ms and
   wallMs 1e10, memBytes and netBytes 1e15). A negative, non-finite or non-numeric increment is
   refused: a meter only ever adds.
-- `QUOTA_EXCEEDED` (`@loom/middleware`) marks `_resources.exceeded`. That only restricts, and
+- `QUOTA_EXCEEDED` (`@loomwork/middleware`) marks `_resources.exceeded`. That only restricts, and
   `reason` must be a string of at most 1024 characters.
-- `SAFETY_BLOCKED`, `EGRESS_DENIED` (`@loom/isolate`), `EFFECT_DENIED` (`@loom/effect-runtime`)
-  and `OUTCOME_RECORDED` (`@loom/analytics`, and one loom-examples app) are audit lists.
+- `SAFETY_BLOCKED`, `EGRESS_DENIED` (`@loomwork/isolate`), `EFFECT_DENIED` (`@loomwork/effect-runtime`)
+  and `OUTCOME_RECORDED` (`@loomwork/analytics`, and one loom-examples app) are audit lists.
 - `DECISION_RECORDED` (`AgentRunner`) folds into `_decisions`, which `ctx.decide` SERVES. The
   rule has three parts:
   - A `__loom_` id is refused.

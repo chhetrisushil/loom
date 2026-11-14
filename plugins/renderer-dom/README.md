@@ -1,9 +1,9 @@
-# @loom/plugin-renderer-dom
+# @loomwork/plugin-renderer-dom
 
-A framework-free DOM renderer for loom Blueprints: the web sibling of `@loom/plugin-renderer-react` and `@loom/plugin-renderer-terminal`. No React, no Lit, no loom-ui, no runtime dependency beyond `@loom/blueprint-runtime` and `@loom/projection-runtime`. Design and decisions: [ADR 0127](../../docs/adr/0127-plugin-renderer-dom.md).
+A framework-free DOM renderer for loom Blueprints: the web sibling of `@loomwork/plugin-renderer-react` and `@loomwork/plugin-renderer-terminal`. No React, no Lit, no loom-ui, no runtime dependency beyond `@loomwork/blueprint-runtime` and `@loomwork/projection-runtime`. Design and decisions: [ADR 0127](../../docs/adr/0127-plugin-renderer-dom.md).
 
 ```ts
-import { mountBlueprint } from "@loom/plugin-renderer-dom";
+import { mountBlueprint } from "@loomwork/plugin-renderer-dom";
 
 const handle = mountBlueprint(document.getElementById("app")!, blueprint, {
   projectionRuntime,

@@ -1,9 +1,9 @@
-import type { TaintedValue } from "@loom/classify";
-import { tainted } from "@loom/classify";
-import { tool$ } from "@loom/core";
-import type { AgentDefinition, ToolDefinition } from "@loom/core";
-import { agent$ } from "@loom/core";
-import type { Effect, EffectContext, EffectRuntime } from "@loom/effect-runtime";
+import type { TaintedValue } from "@loomwork/classify";
+import { tainted } from "@loomwork/classify";
+import { tool$ } from "@loomwork/core";
+import type { AgentDefinition, ToolDefinition } from "@loomwork/core";
+import { agent$ } from "@loomwork/core";
+import type { Effect, EffectContext, EffectRuntime } from "@loomwork/effect-runtime";
 import { z } from "zod";
 import { createA2AClientEffect } from "./A2AClientEffect";
 import type { A2AClientOptions } from "./A2AClientEffect";
@@ -32,7 +32,7 @@ export interface A2APeerConfig<TTaint extends boolean = false> {
   toolId?: string;
   /**
    * Mark the peer's `content` as untrusted (ADR 0085), stamped `a2a:<toolId>`.
-   * The prompt boundary in `@loom/llm` then REFUSES it in any instruction
+   * The prompt boundary in `@loomwork/llm` then REFUSES it in any instruction
    * position — system prompt, assistant turn, tool description — and fences it
    * in a `user` message.
    *
@@ -99,8 +99,8 @@ export interface MappedA2APeer<TTaint extends boolean = false> {
 }
 
 /**
- * Structural view of `@loom/registry`'s `AgentRegistry.register`. Declared here
- * so `@loom/plugin-a2a` stays dependency-light and does not import the registry package
+ * Structural view of `@loomwork/registry`'s `AgentRegistry.register`. Declared here
+ * so `@loomwork/plugin-a2a` stays dependency-light and does not import the registry package
  * (which itself avoids depending on a2a for the same reason).
  */
 export interface PeerAgentRegistrar {

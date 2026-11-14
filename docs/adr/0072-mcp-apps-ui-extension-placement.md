@@ -54,12 +54,12 @@ Every element maps onto machinery that already shipped:
 
 | Element | Existing mechanism |
 |---|---|
-| static `ui://` template | `@loom/plugin-content` — `contentAddress`, `ContentStore`, `pinByEventKinds` (ADR 0046/0059) |
+| static `ui://` template | `@loomwork/plugin-content` — `contentAddress`, `ContentStore`, `pinByEventKinds` (ADR 0046/0059) |
 | template pin + drift detection | the ADR 0063 discipline — hash, pin at plan time, verify at serve time, fail typed via an ADR 0060 channel (`templateDrift`) |
 | tool input / result | existing `STEP_STARTED` / `STEP_COMPLETED` payloads |
 | view→agent calls | the two grains of ADR 0070 — suspend/resume gate, or delegated effect with deterministic `callId` |
 | dispatch/usage indexing | domain events the fold skips (the ADR 0063 D4 precedent) |
-| surface patch cursor | `readRangeOf` / `EventStore.readRange` (`packages/event-runtime`), read-model shape of `@loom/live-query` |
+| surface patch cursor | `readRangeOf` / `EventStore.readRange` (`packages/event-runtime`), read-model shape of `@loomwork/live-query` |
 
 **KERNEL_ABI stays 1.1.0; EVENT_SCHEMA unchanged.** No `MCP_APP_*` event family — governed
 event types are for kernel semantics, not wire bindings.
@@ -149,12 +149,12 @@ from 0 or from a snapshot. This is the late-joining-client handshake
   silent leak; it is **required by configuration**.
 - **A view-initiated `tools/call` is an authorization event, not a continuation.** The
   caller is the user's UI, not the flow. It runs under a **distinct principal with its own
-  grants** and never inherits the execution's authority — `@loom/capability`
+  grants** and never inherits the execution's authority — `@loomwork/capability`
   (`CapabilityInvokeAuthorizer`), execution-authz (ADR 0039), and the K2 GrantTable /
   `EFFECT_DENIED` path already model exactly this.
 - **`ui/update-model-context` is a prompt-injection surface** — untrusted view content
   overwriting the agent's context for future turns, with overwrite semantics. If loom ever
-  ingests it, the content is **tainted by classification** (`@loom/classify`) and never
+  ingests it, the content is **tainted by classification** (`@loomwork/classify`) and never
   merged into a system prompt. Cheap now, impossible to retrofit onto an immutable log —
   the argument ADR 0063 D3 made about principals.
 - **`visibility` is enforced server-side.** The spec obliges hosts to reject app-originated
@@ -165,7 +165,7 @@ from 0 or from a snapshot. This is the late-joining-client handshake
 
 ### D7 — The server is the prerequisite, and it is the gate
 
-**loom has no MCP server.** `@loom/plugin-mcp` is client-only: `tools/list`
+**loom has no MCP server.** `@loomwork/plugin-mcp` is client-only: `tools/list`
 (`McpClient.ts:89`) and `tools/call` (`McpClient.ts:107`) outbound, with no inbound
 counterpart anywhere in the repo. loom speaks A2A as a server (`plugins/a2a/src/A2AServer.ts`)
 and nothing else.
@@ -192,10 +192,10 @@ An MCP Apps host is an iframe sandbox plus a postMessage JSON-RPC bridge for a p
 loom is not a participant — a view's `tools/call` returns to the third-party server, not through
 loom. Packaged as `loom-plugin-*`, the "loom" would be branding rather than architecture, and it
 would be the second entry in that repo needing an asterisk about `defineConfig` (the first,
-`loom-plugin-linucb`, at least uses the `policy` seam).
+`@loomwork/plugin-linucb`, at least uses the `policy` seam).
 
 **The framing that DOES fit a seam** is narrower and better: a widget renderer registered into
-`RendererRegistry` (`@loom/blueprint-runtime`), making a third-party UI a widget inside a loom
+`RendererRegistry` (`@loomwork/blueprint-runtime`), making a third-party UI a widget inside a loom
 blueprint. In that shape the plugin's job is exactly the part only loom can do:
 
 - verify the **pin** before mounting — `MCP_UI_OBSERVED` now carries `(resourceUri, contentHash)`
@@ -232,7 +232,7 @@ one that exists because 3P looked like the tidy place to put it.
 - **The kernel is untouched** on every path — zero syscalls, zero event types, zero fold
   changes. The MCP Apps surface is a wire binding plus a read-model plus a content-store
   artifact, which is the whole point of the P10 verdict.
-- **`@loom/plugin-a2ui`'s catalog becomes load-bearing twice.** The component/catalog
+- **`@loomwork/plugin-a2ui`'s catalog becomes load-bearing twice.** The component/catalog
   vocabulary shipped for A2UI is reused verbatim as the MCP Apps payload, so the two
   bindings share one declarative surface model rather than diverging. A future third
   binding inherits it.
@@ -279,7 +279,7 @@ explicit boundary, app-only tools stay unreachable rather than silently open. An
 audience-invisible tool is reported as *unknown* rather than forbidden, since a "you may not
 call that" reply confirms the tool exists.
 
-Delivered: `McpServer` + `servedEffect` in `@loom/plugin-mcp`; `@loom/plugin-mcp-app` with the
+Delivered: `McpServer` + `servedEffect` in `@loomwork/plugin-mcp`; `@loomwork/plugin-mcp-app` with the
 static template, its pin, the payload builder, and the cursor tool. Spec capabilities
 `mcp-server`, `mcp-apps-ui-egress`, `effect-mode-boundary` (L2). Workspace green — 70 build
 tasks, 123 test tasks.
@@ -382,7 +382,7 @@ only mean anything in a browser. A headless bridge would ship the safe half unde
 implying coverage of the dangerous half.
 
 **One correction to D6.** S3 disposes of `ui/update-model-context` as content "tainted by
-classification (`@loom/classify`)". That mechanism does not exist in that direction:
+classification (`@loomwork/classify`)". That mechanism does not exist in that direction:
 `classify`'s `DataClass` is `secret`/`sensitive`/`internal`, a **confidentiality** axis governing
 what may *leave*, plus `externalized()` for where a value is stored. There is no integrity/taint
 axis governing what may *enter* a prompt. The disposition is currently unimplementable as

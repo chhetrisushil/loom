@@ -17,7 +17,7 @@ K10/K11/T1. Rewritten against the current kernel:
 | Layer | What lands there |
 | --- | --- |
 | **Application patterns** (§2) | Sentinel = `schedule$` over bounded runs; findings as domain events; staleness-typed reads; substrate isolation; chain-level OTel |
-| **First-party plugins** (§3) | `@loom/plugin-durable-state` (typed, versioned, migratable carry state as recorded effects); claim-check middleware over `@loom/plugin-content` |
+| **First-party plugins** (§3) | `@loomwork/plugin-durable-state` (typed, versioned, migratable carry state as recorded effects); claim-check middleware over `@loomwork/plugin-content` |
 | **Kernel — small, governed** (§4) | K10.6 pin seam for retention; K11.5 contract-versioned state migration on resume; opt-in `inputSchema` enforcement at start |
 | **Deferred, evidence-gated** (§5) | T4 run chaining (`rotate$`) — drafted, not scheduled; promoted only if the schedule-based sentinel hits a documented wall |
 | **Rejected** | Identity-preserving transfer of live suspensions across runs (original RC-4a); a kernel `finding$` primitive (original TS-4) |
@@ -92,7 +92,7 @@ outside Loom. The one mechanism gap this exposes is the pin seam — §4, K10.6.
 
 ## 3. First-party plugin requirements
 
-### 3.1 `@loom/plugin-durable-state` — typed carry state across runs
+### 3.1 `@loomwork/plugin-durable-state` — typed carry state across runs
 
 The one genuine new capability in Part 1 of the original draft. `memory$` does not cover
 it: memory is an agent/app-layer side channel — flows cannot reach it, writes are not
@@ -224,7 +224,7 @@ promotion:
 2. **A genuinely unrotatable long-lived run** that must both hold live suspensions
    across months *and* cross deploys that `resumeAs` + K11.5 cannot bridge. (Long-lived
    human gates alone do not qualify: model the gate as a child execution via
-   `@loom/orchestration` `awaitChild` — the child survives its parent's completion
+   `@loomwork/orchestration` `awaitChild` — the child survives its parent's completion
    naturally.)
 
 If promoted, the draft shape — recorded here so the adversarial criteria don't get

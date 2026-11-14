@@ -1,7 +1,7 @@
 # ADR 0059 — Streaming content ingestion: `putStream` + stream-typed claim-check results
 
 - Status: **Accepted — shipped** (`ContentStore.putStream` optional SPI method,
-  `streamResult`/`resolveClaimCheckBytes` in `@loom/middleware`)
+  `streamResult`/`resolveClaimCheckBytes` in `@loomwork/middleware`)
 - Date: 2026-07-15
 - Builds on: [the db-copilot infrastructure requirements](../requirements/2026-07-15-db-copilot-infrastructure.md)
   (§3 ST, issue #186), ADR 0046 (`ContentStore`), ADR 0054 (claim-check).

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ReasoningStore } from "@loom/llm";
+import type { ReasoningStore } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { boot, lastUserText, messages } from "./__fixtures__/harness";
 

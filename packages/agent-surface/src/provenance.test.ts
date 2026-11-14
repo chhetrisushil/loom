@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { createSurfaceEmitter } from "./emitter";
 import { provenanceOf, surfaceProvenanceProjection } from "./provenance";

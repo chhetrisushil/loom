@@ -1,8 +1,8 @@
-import { SURFACE_PATCH } from "@loom/agent-surface";
-import type { SurfacePatch } from "@loom/agent-surface";
-import type { EventEnvelope } from "@loom/core";
-import { EffectModeViolationError, EffectRuntime } from "@loom/effect-runtime";
-import type { Effect, EffectContext } from "@loom/effect-runtime";
+import { SURFACE_PATCH } from "@loomwork/agent-surface";
+import type { SurfacePatch } from "@loomwork/agent-surface";
+import type { EventEnvelope } from "@loomwork/core";
+import { EffectModeViolationError, EffectRuntime } from "@loomwork/effect-runtime";
+import type { Effect, EffectContext } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { A2UISurfaceBridge, type A2UISurfaceBridgeOptions } from "./A2UISurfaceBridge";
 import type { A2UICallFunctionInput } from "./callFunction";

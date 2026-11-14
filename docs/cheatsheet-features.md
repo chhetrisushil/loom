@@ -28,13 +28,13 @@ Everything else is built from these; feature-detect against the advertised list,
 | `ctx.continueAsNew` | end this execution and start its successor `<chainId>~<n>` with a carry; never returns; bounds the fold, the snapshot and the per-turn cost of a long-lived loop (ADR 0109); needs `kernel.features.continueAsNew` |
 | `ctx.emit` | append a durable domain event — once per execution; a re-run serves it from the log |
 | `ctx.stream` | emit an incremental delta event (once per execution, like `emit`) |
-| `ctx.ui` | **deprecated** (ADR 0114): drive durable, replayable UI surfaces — injected accessor; new code uses `surface(ctx)` from `@loom/agent-surface` |
+| `ctx.ui` | **deprecated** (ADR 0114): drive durable, replayable UI surfaces — injected accessor; new code uses `surface(ctx)` from `@loomwork/agent-surface` |
 | `ctx.negotiateBudget` | negotiate a resource budget against a ceiling, recorded once (ADR 0032) |
 
 > **Nothing else is durable.** A bare `await fetch()` in a runner re-runs on replay and is
 > never recorded. If an outcome matters, it goes through a syscall.
 
-## Declaring work — `@loom/core`
+## Declaring work — `@loomwork/core`
 
 | | |
 |---|---|
@@ -49,8 +49,8 @@ Everything else is built from these; feature-detect against the advertised list,
 | `policy$` | app-global rule, composed under the authorizer |
 | `handler$` | extractable handler body (compiler) |
 | `instructions$` | prompt material as a declared value |
-| `agentLoop$` (canonical) / `agentStep$` (deprecated) | ReAct loop, one frame per turn / single opaque agent step — `@loom/agent` |
-| `conversation$` | a durable chat over one chained execution — `@loom/conversation` |
+| `agentLoop$` (canonical) / `agentStep$` (deprecated) | ReAct loop, one frame per turn / single opaque agent step — `@loomwork/agent` |
+| `conversation$` | a durable chat over one chained execution — `@loomwork/conversation` |
 
 ## Composition — `defineConfig`
 
@@ -110,15 +110,15 @@ onboarding, billing runs, ETL steps, order sagas, anything that must outlive its
 | wait hours or days | `ctx.sleep` / `ctx.sleepUntil` — survives restarts; needs a `TimerStore` |
 | wait for a human or webhook | `ctx.suspend({ on, timeout? })` + `flow$({ resumeSchemas })` to validate the payload |
 | run on a calendar | `schedule$({ id, cron, timeZone?, flowId })` in `timers.schedules`; one idempotent start per occurrence |
-| undo on failure | `@loom/saga` — `withSaga(ctx, saga => saga.run(step, input, compensator))`; compensators run in reverse; a failing compensator does not abort the rollback and `withSaga` then throws `SagaCompensationError` (original as `cause`); a cancellation or other runtime signal propagates unchanged |
-| parent and child workflows | `@loom/orchestration` — `awaitChild` · `awaitChildren` · `awaitAll` (wire `superviseChildren`) |
+| undo on failure | `@loomwork/saga` — `withSaga(ctx, saga => saga.run(step, input, compensator))`; compensators run in reverse; a failing compensator does not abort the rollback and `withSaga` then throws `SagaCompensationError` (original as `cause`); a cancellation or other runtime signal propagates unchanged |
+| parent and child workflows | `@loomwork/orchestration` — `awaitChild` · `awaitChildren` · `awaitAll` (wire `superviseChildren`) |
 | map one step over many items | `fanout$(ctx, step, items)` — bounded concurrency, one step id per item |
 | long-lived loop | `continueAsNew` to bound history; the inbox as an event-driven mailbox |
 
 ```ts
-import { withSaga } from "@loom/saga";
-import { awaitChildren } from "@loom/orchestration";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import { withSaga } from "@loomwork/saga";
+import { awaitChildren } from "@loomwork/orchestration";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 
 // inside a flow runner; reserve/charge are step$ definitions, release/refund their compensators
 async function run(ctx: ExecutionContext, order: { id: string }) {
@@ -134,7 +134,7 @@ async function run(ctx: ExecutionContext, order: { id: string }) {
 Start from a template: `loom new flow <name> --template approval|timer|saga` scaffolds each of the
 rows above (typed gate, durable timer, compensation; `echo` is the minimal one) with a test that passes on a fresh scaffold.
 Test time without waiting: `createTestApp({ clock: true })` and `advanceTime(app, ms)` from
-`@loom/testing` move the runtime's clock and fire what became due through the real `TimerService`.
+`@loomwork/testing` move the runtime's clock and fire what became due through the real `TimerService`.
 
 Honest limits:
 
@@ -145,7 +145,7 @@ Honest limits:
   millions; bound a very long history with `snapshotEvery` and `ctx.continueAsNew`.
 - **At-least-once**: an interrupted step may run twice, so side effects need idempotency keys.
 - **It is not a query database.** The log answers "what happened to execution X"; cross-execution
-  questions go to `@loom/plugin-read-model`. Timers fire at poll granularity, not to the millisecond.
+  questions go to `@loomwork/plugin-read-model`. Timers fire at poll granularity, not to the millisecond.
 
 ## Branching — git-style, no merge
 
@@ -178,23 +178,23 @@ All optional, all separate.
 |---|---|
 | `sensitive()` · `internal()` | scrubbed from telemetry egress |
 | `secret()` | redacted from step output in the log |
-| `@loom/plugin-content` | claim-check: large or PII fields out of the log |
-| `@loom/plugin-crypto` | per-subject keys; `destroy` is crypto-shredding. Keys must declare `durable` — losing one erases the subject. Seals inbox payloads and, with `sealState`, whole checkpoints |
-| `@loom/compliance` | subject index, `app.exportSubject` / `app.eraseSubject` (parks while the subject has live executions) |
-| `@loom/plugin-audit-chain` | hash-chained log, optional Ed25519 signatures |
+| `@loomwork/plugin-content` | claim-check: large or PII fields out of the log |
+| `@loomwork/plugin-crypto` | per-subject keys; `destroy` is crypto-shredding. Keys must declare `durable` — losing one erases the subject. Seals inbox payloads and, with `sealState`, whole checkpoints |
+| `@loomwork/compliance` | subject index, `app.exportSubject` / `app.eraseSubject` (parks while the subject has live executions) |
+| `@loomwork/plugin-audit-chain` | hash-chained log, optional Ed25519 signatures |
 
 ## Agentic layer
 
 | | |
 |---|---|
-| `@loom/agent` | `agentLoop$` — ReAct loop over declared tools. `needsApproval` (`true` **parks**; bound to what the approver saw), `parallelTools`, `writeBack` (memory), `toolSearch` / `skillActivation` for big menus, `returnsMedia` tools. A tainted `input.context` is refused (`UntrustedContextError`) |
-| `@loom/conversation` | `conversation$` / `createConversations`: multi-turn chat on one chained execution; barge-in; token budget; `shared` mode runs each turn as its asker. SSE: `@loom/plugin-conversation-sse` |
-| `@loom/llm` | provider-agnostic completion + streaming; content parts (images, files) claim-checked by address via a `ContentResolver` (ADR 0120) |
-| `@loom/memory` | scoped, TTL/size-bounded agent memory |
-| `@loom/knowledge` | document corpora over memory, with provenance |
-| `@loom/reasoning` | model routing, confidence elevation, critique |
-| `@loom/learning` | trajectories, off-policy eval (SNIPS, doubly-robust, bootstrap CIs), promotion gate, policy registry (shadow/canary/rollback), JSONL export |
-| `@loom/intent` · `planner` · `capability` | NL → capability → ordered plan. A configured model's answer is **final**: `NONE` is not overridden by a keyword guess; `routeExplained()` returns `{ route, reason }` (`model-none`, `model-unparseable`, …) |
+| `@loomwork/agent` | `agentLoop$` — ReAct loop over declared tools. `needsApproval` (`true` **parks**; bound to what the approver saw), `parallelTools`, `writeBack` (memory), `toolSearch` / `skillActivation` for big menus, `returnsMedia` tools. A tainted `input.context` is refused (`UntrustedContextError`) |
+| `@loomwork/conversation` | `conversation$` / `createConversations`: multi-turn chat on one chained execution; barge-in; token budget; `shared` mode runs each turn as its asker. SSE: `@loomwork/plugin-conversation-sse` |
+| `@loomwork/llm` | provider-agnostic completion + streaming; content parts (images, files) claim-checked by address via a `ContentResolver` (ADR 0120) |
+| `@loomwork/memory` | scoped, TTL/size-bounded agent memory |
+| `@loomwork/knowledge` | document corpora over memory, with provenance |
+| `@loomwork/reasoning` | model routing, confidence elevation, critique |
+| `@loomwork/learning` | trajectories, off-policy eval (SNIPS, doubly-robust, bootstrap CIs), promotion gate, policy registry (shadow/canary/rollback), JSONL export |
+| `@loomwork/intent` · `planner` · `capability` | NL → capability → ordered plan. A configured model's answer is **final**: `NONE` is not overridden by a keyword guess; `routeExplained()` returns `{ route, reason }` (`model-none`, `model-unparseable`, …) |
 
 > **Off-policy eval needs exploration, not history.** Usable evidence ≈ explore-rate ×
 > window; a long log with no exploration evaluates nothing.
@@ -203,32 +203,32 @@ All optional, all separate.
 
 | | |
 |---|---|
-| `@loom/agent-surface` | `surface(ctx)` — durable, replayable UI patches (replaces `ctx.ui`) |
-| `@loom/blueprint-runtime` + `plugin-renderer-{dom,react,terminal}` | one Blueprint IR, several renderers |
+| `@loomwork/agent-surface` | `surface(ctx)` — durable, replayable UI patches (replaces `ctx.ui`) |
+| `@loomwork/blueprint-runtime` + `plugin-renderer-{dom,react,terminal}` | one Blueprint IR, several renderers |
 | `plugin-a2a` · `plugin-mcp` · `plugin-a2ui` · `plugin-mcp-app` | agent-to-agent, MCP client, A2UI and MCP-App egress |
-| `plugin-sandbox` (+ the `@loom/sandbox` backend SPI) · `@loom/isolate` | run LLM-authored code / tool effects in a separate authority domain |
+| `plugin-sandbox` (+ the `@loomwork/sandbox` backend SPI) · `@loomwork/isolate` | run LLM-authored code / tool effects in a separate authority domain |
 | `plugin-sentinel` · `plugin-durable-state` | perpetual-agent preset; typed state carried across bounded runs |
 
 ## Scale and placement
 
 | | |
 |---|---|
-| `@loom/dispatcher` | where an execution runs; placement policy, circuit breaker |
-| `@loom/worker-runtime` | the worker contract — local, remote HTTP, Cloud Run |
-| `@loom/graph-executor` | fan a node set into per-node executions |
-| `@loom/fair-scheduler` | per-tenant fairness; bounded concurrency |
-| `@loom/orchestration` | spawn children, `awaitChild(ren)`, `awaitAll` |
-| `@loom/saga` | `createSaga` / `withSaga` — compensate in reverse |
+| `@loomwork/dispatcher` | where an execution runs; placement policy, circuit breaker |
+| `@loomwork/worker-runtime` | the worker contract — local, remote HTTP, Cloud Run |
+| `@loomwork/graph-executor` | fan a node set into per-node executions |
+| `@loomwork/fair-scheduler` | per-tenant fairness; bounded concurrency |
+| `@loomwork/orchestration` | spawn children, `awaitChild(ren)`, `awaitAll` |
+| `@loomwork/saga` | `createSaga` / `withSaga` — compensate in reverse |
 
 ## Reading what happened — no writes
 
 | | |
 |---|---|
-| `@loom/projection-runtime` | per-execution folds, live subscriptions, slice selectors |
-| `@loom/live-query` | `liveQuery` over in-flight state |
-| `@loom/plugin-read-model` | durable cross-execution queries, keyset paging |
-| `@loom/analytics` | `analyze`, cost, failure, reasoning, model ranking |
-| `@loom/replay-inspector` | state at any sequence, off-log |
+| `@loomwork/projection-runtime` | per-execution folds, live subscriptions, slice selectors |
+| `@loomwork/live-query` | `liveQuery` over in-flight state |
+| `@loomwork/plugin-read-model` | durable cross-execution queries, keyset paging |
+| `@loomwork/analytics` | `analyze`, cost, failure, reasoning, model ranking |
+| `@loomwork/replay-inspector` | state at any sequence, off-log |
 
 ## Invariants worth memorising
 

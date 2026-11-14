@@ -1,4 +1,4 @@
-import { runFoldedStateConformance, runReadModelStoreConformance } from "@loom/conformance";
+import { runFoldedStateConformance, runReadModelStoreConformance } from "@loomwork/conformance";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 
 // Dogfood the published conformance kit against the reference backend — the same

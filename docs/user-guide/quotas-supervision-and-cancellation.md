@@ -7,7 +7,7 @@
 `meteringMiddleware` meters each effect (tokens/$/latency) onto the log and enforces a budget by admission control.
 
 ```ts
-import { meteringMiddleware, llmUsageTokens } from "@loom/middleware";
+import { meteringMiddleware, llmUsageTokens } from "@loomwork/middleware";
 
 const metering = meteringMiddleware({
   pricing: ({ result, ms }) => ({ tokens: llmUsageTokens(result), costUsd: llmUsageTokens(result) * 3e-6, ms }),
@@ -22,7 +22,7 @@ const effectRuntime = new EffectRuntime([metering]);
 Wrap any dispatcher with `SupervisingDispatcher` for restart/backoff + a **circuit breaker** that fails fast when a target is consistently down.
 
 ```ts
-import { SupervisingDispatcher } from "@loom/dispatcher";
+import { SupervisingDispatcher } from "@loomwork/dispatcher";
 
 const dispatcher = new SupervisingDispatcher(childDispatcher, {
   policy: { maxRestarts: 2, backoffMs: 200, circuit: { threshold: 5, cooldownMs: 30_000 } },

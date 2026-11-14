@@ -1,5 +1,5 @@
 import { readdirSync } from "node:fs";
-import { CassetteMissError, CassetteProvider, reportDigest } from "@loom/eval";
+import { CassetteMissError, CassetteProvider, reportDigest } from "@loomwork/eval";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { exceedingMetrics, failingMetrics, toRows } from "../gate";
 import { buildScoreboard, serializeScoreboard } from "../scoreboard";

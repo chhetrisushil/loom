@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { SOURCE_SKILL_ACTIVATION } from "./skillActivation";
 
 // Which skills did `agentLoop$` run with? The loop records both choices as DECISIONS (there is no

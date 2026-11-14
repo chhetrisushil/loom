@@ -1,5 +1,5 @@
-import { tainted, unwrapTainted } from "@loom/classify";
-import { UntrustedContentError, guardRequest } from "@loom/llm";
+import { tainted, unwrapTainted } from "@loomwork/classify";
+import { UntrustedContentError, guardRequest } from "@loomwork/llm";
 import { describe, expect, it } from "vitest";
 import { groundedRequest, passageMessages } from "./prompt";
 import type { Passage } from "./types";

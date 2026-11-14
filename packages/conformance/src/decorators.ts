@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type ArchiveStore,
   type AtRestEventReader,
@@ -10,13 +10,13 @@ import {
   type SealMarker,
   type SealingCapability,
   refusalsOf,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   InMemoryAsyncSnapshotStore,
   OPTIONAL_SNAPSHOT_STORE_METHODS,
   type OptionalSnapshotStoreMethod,
   type SnapshotStore,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import {
   runArchiveStoreConformance,

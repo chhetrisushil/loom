@@ -1,23 +1,23 @@
-import { createAgentModelEffect } from "@loom/agent";
-import { agent$, tool$ } from "@loom/core";
-import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
-import type { PrincipalChain } from "@loom/effect-runtime";
+import { createAgentModelEffect } from "@loomwork/agent";
+import { agent$, tool$ } from "@loomwork/core";
+import { EffectRuntime, GrantTable, ToolEffect } from "@loomwork/effect-runtime";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import type {
   LlmProvider,
   LlmRequest,
   LlmResponse,
   LlmStreamChunk,
   ReasoningStore,
-} from "@loom/llm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
-import type { ExecutionAuthorizer } from "@loom/workflow-runtime";
+} from "@loomwork/llm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime, executionAccessPolicy } from "@loomwork/workflow-runtime";
+import type { ExecutionAuthorizer } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 import { signedEnvelope } from "../conversation";
 import {

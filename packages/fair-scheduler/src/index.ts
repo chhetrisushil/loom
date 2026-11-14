@@ -1,6 +1,6 @@
-// @loom/fair-scheduler — per-tenant fair scheduling.
+// @loomwork/fair-scheduler — per-tenant fair scheduling.
 //
-// A drop-in `Scheduler` (the @loom/scheduler interface) that dispatches queued work
+// A drop-in `Scheduler` (the @loomwork/scheduler interface) that dispatches queued work
 // with weighted round-robin across tenants behind a concurrency cap, so no single
 // tenant can starve the others. Single-tenant / Infinity workloads behave exactly as
 // the base scheduler (zero-overhead fast path preserved).

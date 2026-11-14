@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { inboxChainOf, senderErasedMarker } from "@loom/event-runtime";
+import { inboxChainOf, senderErasedMarker } from "@loomwork/event-runtime";
 import { decryptValue, encryptValue } from "./crypto";
 import type { KeyStore } from "./keystore";
 

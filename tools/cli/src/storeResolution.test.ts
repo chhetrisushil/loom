@@ -32,7 +32,7 @@ describe("S5 — diagnostics resolve storage, they do not construct it", () => {
   it("no command names a concrete backend outside the allowlist", () => {
     const offenders = sourceFiles().filter((file) => {
       if (file in ALLOWED) return false;
-      return /@loom\/plugin-(sqlite|postgres)/.test(readFileSync(join(SRC, file), "utf8"));
+      return /@loomwork\/plugin-(sqlite|postgres)/.test(readFileSync(join(SRC, file), "utf8"));
     });
     expect(offenders).toEqual([]);
   });

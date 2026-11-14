@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import { flowEmitCount } from "./eventHandlers";
 import { foldEvents } from "./foldEvents";
 

@@ -1,4 +1,4 @@
-// @loom/plugin-sandbox — hardened eval of LLM-authored reshaping code (ADR 0064).
+// @loomwork/plugin-sandbox — hardened eval of LLM-authored reshaping code (ADR 0064).
 //
 // QuickJS-in-WASM: capability-empty by construction (no fs/net/process/timers —
 // no-I/O is a property, not a scrub list). Content-addressed scripts, in-engine

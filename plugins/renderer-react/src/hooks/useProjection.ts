@@ -1,4 +1,4 @@
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import { useEffect, useState } from "react";
 
 export function useProjection<TState>(

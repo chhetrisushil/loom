@@ -8,8 +8,8 @@ import { type FlowTemplate, templateFiles } from "./flowTemplates";
 export function flowFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { flow$, handler$, step$ } from "@loom/core";',
-    'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+    'import { flow$, handler$, step$ } from "@loomwork/core";',
+    'import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";',
     'import { z } from "zod";',
     "",
     `const ${P}Step = step$({`,
@@ -39,14 +39,14 @@ export function flowFile(name: string): string {
 }
 
 /**
- * `app/flows/<name>/flow.test.ts` — runs the `loom new flow` echo flow through `@loom/testing`'s
+ * `app/flows/<name>/flow.test.ts` — runs the `loom new flow` echo flow through `@loomwork/testing`'s
  * `createTestApp` (in-memory, permissive defaults: no principal or grants to wire). It passes on a
  * fresh scaffold; replace the input/assertion as you change the flow.
  */
 export function flowTestFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { createTestApp } from "@loom/testing";',
+    'import { createTestApp } from "@loomwork/testing";',
     'import { describe, expect, it } from "vitest";',
     `import { ${P}Flow } from "./flow";`,
     "",
@@ -66,7 +66,7 @@ export function flowTestFile(name: string): string {
   ].join("\n");
 }
 
-/** `app/flows/<name>/flow.ts` — a schedule-driven sentinel starter (@loom/plugin-sentinel). */
+/** `app/flows/<name>/flow.ts` — a schedule-driven sentinel starter (@loomwork/plugin-sentinel). */
 export function sentinelFile(name: string): string {
   const P = pascalIdent(name);
   return [
@@ -74,10 +74,10 @@ export function sentinelFile(name: string): string {
     "// Wire preset.schedule into defineConfig({ timers }), preset.middleware into",
     "// effectMiddleware, call preset.register(app.effectRuntime), and feed",
     "// preset.pinnedEventTypes to `loom sweep content --pin`.",
-    'import { flow$ } from "@loom/core";',
-    'import { isClaimCheck } from "@loom/middleware";',
-    'import { sentinelPreset } from "@loom/plugin-sentinel";',
-    'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+    'import { flow$ } from "@loomwork/core";',
+    'import { isClaimCheck } from "@loomwork/middleware";',
+    'import { sentinelPreset } from "@loomwork/plugin-sentinel";',
+    'import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";',
     'import { z } from "zod";',
     "",
     "const stateSchema = z.object({ wakes: z.number() }); // TODO: your carry-state contract",
@@ -123,7 +123,7 @@ export function sentinelFile(name: string): string {
 export function toolFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { tool$ } from "@loom/core";',
+    'import { tool$ } from "@loomwork/core";',
     'import { z } from "zod";',
     "",
     `export const ${P}Tool = tool$({`,
@@ -149,7 +149,7 @@ export function toolFile(name: string): string {
 export function agentFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { agent$ } from "@loom/core";',
+    'import { agent$ } from "@loomwork/core";',
     "",
     `export const ${P}Agent = agent$({`,
     `  id: ${tsStringLiteral(name)},`,
@@ -165,7 +165,7 @@ export function agentFile(name: string): string {
 export function skillFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { instructions$, skill$ } from "@loom/core";',
+    'import { instructions$, skill$ } from "@loomwork/core";',
     "",
     `export const ${P}Skill = skill$({`,
     `  id: ${tsStringLiteral(name)},`,
@@ -182,7 +182,7 @@ export function skillFile(name: string): string {
 export function scheduleFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { schedule$ } from "@loom/core";',
+    'import { schedule$ } from "@loomwork/core";',
     "",
     `export const ${P}Schedule = schedule$({`,
     `  id: ${tsStringLiteral(name)},`,
@@ -197,7 +197,7 @@ export function scheduleFile(name: string): string {
 export function memoryFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { memory$ } from "@loom/core";',
+    'import { memory$ } from "@loomwork/core";',
     "",
     `export const ${P}Memory = memory$({`,
     `  id: ${tsStringLiteral(name)},`,
@@ -212,13 +212,13 @@ export function memoryFile(name: string): string {
 export function projectionFile(name: string): string {
   const P = pascalIdent(name);
   return [
-    'import { projection$ } from "@loom/core";',
+    'import { projection$ } from "@loomwork/core";',
     "",
     `export const ${P}Projection = projection$({`,
     `  id: ${tsStringLiteral(name)},`,
     `  name: "${P}",`,
     "  initialState: { count: 0 },",
-    "  // The fold map: one reducer per event type. The @loom/compiler plugin extracts this",
+    "  // The fold map: one reducer per event type. The @loomwork/compiler plugin extracts this",
     "  // into its own chunk, loaded on demand the first time a handled event fires.",
     "  handlers: {",
     "    STEP_COMPLETED: (state, _event) => ({ count: state.count + 1 }),",
@@ -320,7 +320,7 @@ export function appFiles(appName: string): Record<string, string> {
         {
           name: appName,
           private: true,
-          // CommonJS (no "type": "module") — @loom/* publish require-only exports, so
+          // CommonJS (no "type": "module") — @loomwork/* publish require-only exports, so
           // `tsx app/main.ts` must resolve them via CJS (matches the loom-starter example).
           scripts: {
             start: "tsx app/main.ts",
@@ -329,17 +329,17 @@ export function appFiles(appName: string): Record<string, string> {
           },
           dependencies: {
             // `surface(ctx)` / the typing of `ctx.ui` (ADR 0114): a flow that drives a UI surface imports it.
-            "@loom/agent-surface": "workspace:*",
-            "@loom/app": "workspace:*",
-            "@loom/core": "workspace:*",
-            "@loom/effect-runtime": "workspace:*",
-            "@loom/middleware": "workspace:*",
-            "@loom/workflow-runtime": "workspace:*",
+            "@loomwork/agent-surface": "workspace:*",
+            "@loomwork/app": "workspace:*",
+            "@loomwork/core": "workspace:*",
+            "@loomwork/effect-runtime": "workspace:*",
+            "@loomwork/middleware": "workspace:*",
+            "@loomwork/workflow-runtime": "workspace:*",
             zod: "^3.23.8",
           },
           devDependencies: {
-            "@loom/cli": "workspace:*",
-            "@loom/testing": "workspace:*", // `loom new flow` emits a createTestApp test
+            "@loomwork/cli": "workspace:*",
+            "@loomwork/testing": "workspace:*", // `loom new flow` emits a createTestApp test
             tsx: "^4.19.2",
             typescript: "^5.6.3",
             vitest: "^2.1.8",
@@ -359,7 +359,7 @@ export function appFiles(appName: string): Record<string, string> {
     "app/loom.gen.ts": generateRegistration(["./flows/greet/flow"]),
 
     "app/middleware.ts": [
-      'import { retryMiddleware } from "@loom/middleware";',
+      'import { retryMiddleware } from "@loomwork/middleware";',
       "",
       "// Cross-cutting effect middleware, applied in order (middleware[0] outermost).",
       "export const middleware = [retryMiddleware({ maxRetries: 2 })];",
@@ -368,13 +368,13 @@ export function appFiles(appName: string): Record<string, string> {
 
     "app/security.ts": [
       'import { createHash } from "node:crypto";',
-      'import { GrantTable, type PrincipalChain } from "@loom/effect-runtime";',
+      'import { GrantTable, type PrincipalChain } from "@loomwork/effect-runtime";',
       "import {",
       "  type ExecutionAuthorizer,",
       "  type PrincipalCodec,",
       "  executionAccessPolicy,",
       "  signedResumeAuthenticator,",
-      '} from "@loom/workflow-runtime";',
+      '} from "@loomwork/workflow-runtime";',
       "",
       "// The pieces `security.strict` REFUSES to start without. They are yours: they",
       "// encode who may do what, which a framework cannot guess. These are deliberately small",
@@ -441,7 +441,7 @@ export function appFiles(appName: string): Record<string, string> {
     ].join("\n"),
 
     "app/config.ts": [
-      'import { defineConfig } from "@loom/app";',
+      'import { defineConfig } from "@loomwork/app";',
       'import { agentModules, flowModules, projectionModules, skillModules, toolModules } from "./loom.gen";',
       'import { middleware } from "./middleware";',
       'import { authorizer, executionAuthorizer, principalCodec, resumeAuthenticator } from "./security";',
@@ -491,7 +491,7 @@ export function appFiles(appName: string): Record<string, string> {
       'import { app } from "./config";',
       'import { GreetFlow } from "./flows/greet/flow";',
       "",
-      "// A minimal eval. For log-as-fixture / scoring evals, see @loom/eval and",
+      "// A minimal eval. For log-as-fixture / scoring evals, see @loomwork/eval and",
       "// `loom eval`.",
       'describe("greet", () => {',
       '  it("runs the flow end to end", async () => {',
@@ -509,7 +509,7 @@ export function appFiles(appName: string): Record<string, string> {
       'import { defineConfig } from "vitest/config";',
       "",
       "export default defineConfig({",
-      "  // @loom/* publish require-only exports — resolve them the same way under Vite.",
+      "  // @loomwork/* publish require-only exports — resolve them the same way under Vite.",
       '  resolve: { conditions: ["require", "default"] },',
       '  test: { environment: "node" },',
       "});",

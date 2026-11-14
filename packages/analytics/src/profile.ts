@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { type ReplayCost, replayCost } from "./replay";
 
 // ── Runtime observability / profiler (ADR 0029) ──────────────────────────────

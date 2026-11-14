@@ -1,6 +1,6 @@
-import { step$ } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { step$ } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import {
   type ArchiveStore,
   type EventStore,
@@ -8,13 +8,13 @@ import {
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
   type TimerStore,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   EncryptingArchiveStore,
   EncryptingSnapshotStore,
   type KeyStore,
-} from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loomwork/snapshot-runtime";
 import { z } from "zod";
 import { WorkflowRuntime } from "../WorkflowRuntime";
 import type { WorkflowRuntimeDeps } from "../WorkflowRuntime";

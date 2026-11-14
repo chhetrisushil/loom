@@ -1,7 +1,7 @@
 # ADR 0048 — Declarative policy enforcement (`policy$` → the K2 capability ring)
 
-- Status: **Accepted (implemented 2026-07-13)** — `PolicyAuthorizer` in `@loom/effect-runtime`,
-  wired by `@loom/app` (PRs #154, #156).
+- Status: **Accepted (implemented 2026-07-13)** — `PolicyAuthorizer` in `@loomwork/effect-runtime`,
+  wired by `@loomwork/app` (PRs #154, #156).
 - Date: 2026-07-13
 - Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (K2 capability
   protection ring / `CapabilityAuthorizer`), P9 (durable facts), P10 (minimal kernel — the kernel

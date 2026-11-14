@@ -51,9 +51,9 @@
 |---|---|
 | **Kernel** | **Two bug fixes, no new mechanism** (corrected 2026-09-27). No syscall, no event kind; `KERNEL_ABI` stays 1.1.0 and `EVENT_STORE_SPI` stays 1.4.0. [ADR 0102](../adr/0102-flow-emits-append-once.md) makes flow-level emits append once per execution (`EVENT_SCHEMA` 1.18.0 → 1.19.0, one additive fold key). [ADR 0103](../adr/0103-durable-bootstrap-for-caller-chosen-ids.md) refuses a duplicate deterministic-id `start()` before any effect runs. Every other durability, ordering, replay, idempotency, cancellation and authorization requirement in the paper resolves to an existing mechanism or to app code over one. |
 | **Pre-existing loom defects** | Two, found by running code while evaluating (§2). **`ctx.emit` and `ctx.ui` re-append on every resume**, and **a duplicate `start()` with the same deterministic id runs its effects before the store refuses it, while `onEvent` fires for events that are never stored.** Neither needs an ABI change. Both would break the paper's idempotency and patch model if it were built the obvious way. Both are fixed in the kernel: [ADR 0102](../adr/0102-flow-emits-append-once.md) and [ADR 0103](../adr/0103-durable-bootstrap-for-caller-chosen-ids.md). |
-| **Loom 1P** | Four small additive items, none a new package: ~~`emitOnce`~~, ~~`startOnce`~~ (both superseded by the kernel fixes above), an evidence-contract check that generalises `@loom/knowledge`'s `checkCitations`, and recording the router's intent through `ctx.decide`. One correction: `DataBinding.sensitivity` gets a reader or is relabelled declaration-only. Two items are **gated, app first**: a value-level audience label, and cross-execution outcome attribution in `@loom/learning`. Second consumers are named per item in §7. |
+| **Loom 1P** | Four small additive items, none a new package: ~~`emitOnce`~~, ~~`startOnce`~~ (both superseded by the kernel fixes above), an evidence-contract check that generalises `@loomwork/knowledge`'s `checkCitations`, and recording the router's intent through `ctx.decide`. One correction: `DataBinding.sensitivity` gets a reader or is relabelled declaration-only. Two items are **gated, app first**: a value-level audience label, and cross-execution outcome attribution in `@loomwork/learning`. Second consumers are named per item in §7. |
 | **App** | Most of the paper: the commit record (derived, §3.2), the augmenter's trigger, the gate's rules, supersession, time budgets and the evaluation metrics. |
-| **3P** | A learned gate policy behind the existing `Policy` SPI (like `loom-plugin-linucb`); any cross-run result cache. |
+| **3P** | A learned gate policy behind the existing `Policy` SPI (like `@loomwork/plugin-linucb`); any cross-run result cache. |
 | **loom-ui** | The experience layer and the rendering runtime: evidence-bound providers, surface profiles, fail-closed classification, message-anchored conversations, typed outcome types with per-surface resolvers, and a lifter SPI. Four of the paper's ten rendering-side mechanisms are Missing and six are Partial (§3). |
 | **Blueprint IR** | `Layout.defer` (IR 2.5.0) and `WidgetSource.redacted` (the same minor, or its own), each with an ADR and a reader in both loom renderers. Optional: declared `actions` on `CatalogEntry` (an ADR 0088 addendum). No audience, evidence ids or conversation on the Blueprint. |
 
@@ -123,9 +123,9 @@ completed step is served from the log); `ctx.decide("commit:<msgId>", () => reco
 **Placement.** Making `ctx.emit` replay-aware changes a syscall's meaning, which is a MAJOR under
 the ABI's own rule, and ordinal matching of emits is fragile under data-dependent branching. **Do
 not change the kernel.** In 1P: document the behaviour in `usage.md`, `cheatsheet-features.md` and
-the `@loom/agent-surface` header; add a resume test that asserts the *log*, not the return value;
+the `@loomwork/agent-surface` header; add a resume test that asserts the *log*, not the return value;
 ship `emitOnce(ctx, key, type, payload)`, decide- or step-backed (§7). Whether `ctx.ui.append`
-duplicating is a *bug* in `@loom/agent-surface` rather than a documentation gap is open for the
+duplicating is a *bug* in `@loomwork/agent-surface` rather than a documentation gap is open for the
 maintainer; the read here is that it is a bug (the rendered surface is deterministically wrong)
 and fixable in 1P by routing `ctx.ui` through the same replay-safe path without touching `emit`.
 
@@ -192,7 +192,7 @@ M (300–1000), L (1000–2500), XL (> 2500 or a new package).
 | 8 | Intents upward as untrusted, typed, authorised input | **Has** — `ExecutionAuthorizer`, `resumeSchemas`, taint | **Partial** — no intent domain, no typed intent schemas | App over loom; loom-ui slice 11 | M (loom-ui) | [ADR 0039](../adr/0039-execution-lifecycle-authz.md), [ADR 0077](../adr/0077-typed-resume-payloads.md), [ADR 0085](../adr/0085-untrusted-content-integrity-axis.md), `loom-ui/packages/planner/src/interaction.ts` |
 | 9 | Tiered gate; learning from engagement | **Partial** — policy + propensity + SNIPS exist; outcome credit is same-execution only | `Gate` interface + rule-table reference (slice 12) | App (rules), 3P (learned), 1P gated (cross-execution credit) | S | [ADR 0079](../adr/0079-decision-context-and-policy.md), [ADR 0080](../adr/0080-learning-substrate.md), `packages/learning/src/trajectories.ts` |
 | 10 | Cost levers: content-addressed cache, templates, compact format | **Partial** — `ContentStore`, no effect-result cache | **Partial** — artifacts content-addressed; `ResolutionCache` and the Assertion as the compact format are Missing | App / 3P (loom); slice 11 (loom-ui) | S–M | `plugins/content/src`, `loom-ui/packages/core/src/log.ts` |
-| 11 | Evaluation metrics | **Partial** — every metric is cross-execution | `deferred-dropped` findings feed "share dropped" | App read lenses over `@loom/plugin-read-model` | — | [ADR 0058](../adr/0058-read-model-plugin.md) |
+| 11 | Evaluation metrics | **Partial** — every metric is cross-execution | `deferred-dropped` findings feed "share dropped" | App read lenses over `@loomwork/plugin-read-model` | — | [ADR 0058](../adr/0058-read-model-plugin.md) |
 | 12 | Experience IR: semantic, closed, versioned, classified | — | **Partial** — closed and versioned per widget; carries layout; declares no intents; no multi-node types | loom-ui slice 11 (a new layer, §4) | XL | `loom-ui/packages/core/src/catalog.ts`, `loom-ui/packages/core/src/node.ts` |
 | 13 | Binding by reference to **recorded** evidence | — | **Missing** — every provider executes a live MCP tool graph | loom-ui slice E | L | `loom-ui/packages/core/src/experience.ts`, `loom-ui/packages/hydration/src/provider.ts` |
 | 14 | Admission validation (shape, evidence existence, clearance) | — | **Partial** — per-node validation; `unknown-handle` is only a warning; no clearance | loom-ui slices E / 7 / 11 | M | `loom-ui/packages/core/src/catalog.ts` (`validateExperience`) |
@@ -216,14 +216,14 @@ commit event only where the answer is produced in-process inside a longer execut
 replay-safely (§2.1). Unknown domain event types are inert to the fold, so none of this needs an
 `EVENT_SCHEMA` bump.
 
-**Row 2 — the evidence contract is `checkCitations` over a different id space.** `@loom/knowledge`'s
+**Row 2 — the evidence contract is `checkCitations` over a different id space.** `@loomwork/knowledge`'s
 `checkCitations` / `assertGrounded` computes *claimed ids ⊄ retrieved ids* and names the violation
 the way the paper does. The paper's contract is the same set-containment check over claimed step
 ids versus the step ids recorded in the turn. That is the same mechanism, not merely the same
 motive, so it meets ADR 0083. Record a violation as a counted **finding**, not a throw (ADR 0088
 D3; the paper's own "consistency violations" metric needs the count); if it must stop the turn, use
 a typed failure channel ([ADR 0060](../adr/0060-typed-failure-channels.md)). It cannot be a
-`@loom/verify` rule: markers exist only at runtime. The paper also never says what "existence"
+`@loomwork/verify` rule: markers exist only at runtime. The paper also never says what "existence"
 means after retention: evidence cited by an admitted experience must outlive its run, which is the
 K10.6 pin seam ([ADR 0055](../adr/0055-k10-6-pin-seam-content-gc.md), `retention.pinned`,
 `pinByEventKinds`), while crypto-shredding and content GC are *allowed* to make it unresolvable
@@ -233,7 +233,7 @@ K10.6 pin seam ([ADR 0055](../adr/0055-k10-6-pin-seam-content-gc.md), `retention
 supervisor starts a child only on the parent's `EXECUTION_SUSPENDED { on: CHILD_DONE }` and
 reclaims unstarted specs when the parent terminates. Its state is in-memory with no catch-up path,
 so an unjoined child lost in a crash would be lost silently. The observer model needs nothing from
-the parent: a `@loom/plugin-read-model`-shaped trigger (live tail + catch-up scan + monotonic
+the parent: a `@loomwork/plugin-read-model`-shaped trigger (live tail + catch-up scan + monotonic
 per-execution watermarks, ADR 0058 D2), then `startOnce` with a deterministic id, a recorded
 `cause: { executionId, sequence, eventId, chainHash? }` (the chain hash from
 `plugins/audit-chain/src/hashChain.ts` makes the link tamper-evident), and a durability gate
@@ -353,9 +353,9 @@ vocabulary and hides the evidence bindings inside props. Rejected under the grow
 
 | Layer | What it says | Who writes it | Where |
 |---|---|---|---|
-| **Assertion** | what should exist: a typed, closed, versioned outcome with slots and evidence refs | the augmenter (lifter) | loom-ui, new package (working name `@loom-ui/outcome`) |
+| **Assertion** | what should exist: a typed, closed, versioned outcome with slots and evidence refs | the augmenter (lifter) | loom-ui, new package (working name `@loomwork/ui-outcome`) |
 | **Experience** | editable presentation: nodes, layout, providers | per-type, per-profile resolvers; users | loom-ui core (today) |
-| **Blueprint** | rendering IR | `compile` | loom `@loom/blueprint-runtime` (today) |
+| **Blueprint** | rendering IR | `compile` | loom `@loomwork/blueprint-runtime` (today) |
 
 The shape (working names):
 
@@ -406,7 +406,7 @@ id; IR 2.4.0 suffices).
 
 [ADR 0085](../adr/0085-untrusted-content-integrity-axis.md) D1 says "Confidentiality is a property
 of a FIELD: `ssn` is sensitive in every execution, forever." That holds for loom's **handling**
-classes — `@loom/classify`'s `secret` / `sensitive` / `internal` mean *never persist*, *encrypt at
+classes — `@loomwork/classify`'s `secret` / `sensitive` / `internal` mean *never persist*, *encrypt at
 rest and shred*, *never egress externally*, applied by three dot-path sinks
 ([ADR 0076](../adr/0076-wildcard-classification-paths.md)). It fails for **audience**: the same
 `rows` field of the same SQL tool is public for one query and restricted for another (which table,
@@ -420,7 +420,7 @@ D4); **recorded, not recomputed** (recompute under newer rules is the ADR 0092 D
 tool may declare a label function beside its result schema, the ADR 0051 D3 declared-`digest`
 precedent); **on the reference, not a wrapper on the value**, because the IR binds by reference —
 `{ executionId, stepId, ref, label }`, with an element's label the strictest of the refs it binds
-(`strictest()` already exists in `@loom/classify`); **enforced twice**, at admission and at delivery
+(`strictest()` already exists in `@loomwork/classify`); **enforced twice**, at admission and at delivery
 (§9 item 5). Logs written before the producer started labelling are unlabelled and must be treated
 as uncleared, not public (ADR 0085 D5's retrofit bound). Placement: app now; 1P is gated (§7).
 
@@ -448,7 +448,7 @@ is the argument ADR 0087 made when it fixed `AgentRunner`. **Correction:** route
 
 ### 6.4 Smaller corrections
 
-- **`usage.md`, `cheatsheet-features.md`, the `@loom/agent-surface` header** — "durable, folded on
+- **`usage.md`, `cheatsheet-features.md`, the `@loomwork/agent-surface` header** — "durable, folded on
   replay" / "durable per patch" omit the resume re-append (§2.1). The ERR evaluation's line that
   `SURFACE_PATCH` is "replayed by construction" is true of the fold and hides that the log
   accumulates duplicates.
@@ -467,13 +467,13 @@ is the argument ADR 0087 made when it fixed `AgentRunner`. **Correction:** route
 | # | Item | Package | Second consumer / argument | Status | Size |
 |---|---|---|---|---|---|
 | L1 | Document emit/ui resume re-append; resume test asserting the log; rule bug-vs-docs for `ctx.ui.append` | docs + `workflow-runtime` / `agent-surface` tests | every suspending `ctx.emit` / `ctx.ui` caller | **ruled a bug; fixed in the kernel — [ADR 0102](../adr/0102-flow-emits-append-once.md)** | S |
-| L2 | `emitOnce(ctx, key, type, payload)` (decide- or step-backed) | `workflow-runtime` or `agent-surface` | `@loom/agent-surface` `append` / `increment` callers; `BLUEPRINT_COMPOSED` emitters in the composed-surfaces recipe; ADR 0051 D4 findings emitters | **rejected — the kernel fix supersedes it (ADR 0102 D6)** | S |
+| L2 | `emitOnce(ctx, key, type, payload)` (decide- or step-backed) | `workflow-runtime` or `agent-surface` | `@loomwork/agent-surface` `append` / `increment` callers; `BLUEPRINT_COMPOSED` emitters in the composed-surfaces recipe; ADR 0051 D4 findings emitters | **rejected — the kernel fix supersedes it (ADR 0102 D6)** | S |
 | L3 | `startOnce(runtime, flow, input, { executionId })`, extracted from `TimerService.startOccurrence` | `workflow-runtime` | schedules (in-tree today); the orchestration supervisor's in-memory `started` set; domain argument: any trigger fed from an at-least-once source | **superseded — [ADR 0103](../adr/0103-durable-bootstrap-for-caller-chosen-ids.md) (kernel)** | S |
-| L4 | Evidence-contract check: generalise `checkCitations` over `readonly string[]`, recorded as a finding | `@loom/agent` (owns the turn's id space) | `@loom/knowledge` (shipped) — same mechanism | do | S |
+| L4 | Evidence-contract check: generalise `checkCitations` over `readonly string[]`, recorded as a finding | `@loomwork/agent` (owns the turn's id space) | `@loomwork/knowledge` (shipped) — same mechanism | do | S |
 | L5 | `DataBinding.sensitivity`: relabel declaration-only (a loom delivery reader only on a consumer outside loom-ui) | `blueprint-runtime` | vacuous-check fix; needs no second consumer as a relabel | do (relabel) | S |
-| L6 | Record the router's intent via `ctx.decide` with policy and propensity | `@loom/intent` | `@loom/learning` (an unrecorded route cannot be evaluated); ADR 0087 precedent | do | S |
-| L7 | Value-level audience label on evidence descriptors | `@loom/classify` | candidates: `@loom/knowledge` retrieval over corpora with per-document ACLs; loom's own surface egress, which can only mask by path. Domain argument is strong; still require the second implementation to show the same shape | **gated — app first** | M |
-| L8 | External-outcome join in `trajectories` | `@loom/learning` | delayed, out-of-run reward in any intervention policy | **gated — app re-keying first** | S |
+| L6 | Record the router's intent via `ctx.decide` with policy and propensity | `@loomwork/intent` | `@loomwork/learning` (an unrecorded route cannot be evaluated); ADR 0087 precedent | do | S |
+| L7 | Value-level audience label on evidence descriptors | `@loomwork/classify` | candidates: `@loomwork/knowledge` retrieval over corpora with per-document ACLs; loom's own surface egress, which can only mask by path. Domain argument is strong; still require the second implementation to show the same shape | **gated — app first** | M |
+| L8 | External-outcome join in `trajectories` | `@loomwork/learning` | delayed, out-of-run reward in any intervention policy | **gated — app re-keying first** | S |
 | — | `spawnDetached` in orchestration | — | none; the observer model serves the paper better | **not recommended** | (M) |
 
 Kernel (corrected 2026-09-27): two bug fixes, no ABI change. [ADR 0102](../adr/0102-flow-emits-append-once.md) covers emits and [ADR 0103](../adr/0103-durable-bootstrap-for-caller-chosen-ids.md) covers a duplicate start.
@@ -490,8 +490,8 @@ one product. Where the IR grows, the loom PR lands first. The roadmap today (IR-
 | **7 (widened)** | `SurfaceProfile { modality, audience: viewer \| broadcast + clearance, updates: live \| edit \| append \| none, layout: rich \| linear \| text, density?, limits? }` as a compile input, never on the Blueprint; **fail-closed** classification (absent class on an evidence-backed binding refused for broadcast, `classification-missing`); **audience-scoped serving** (inventory and serve from the audience-compiled Blueprint, not the Experience); `global` cache refused for classified bindings; `source.redacted` (IR + ADR) | `experience-broadcast` + negative: a withheld handle requested directly answers `unknown-handle` and never reaches the store | the identity model is enforced on the data path, not only the markup | M–L |
 | **8 (widened)** | Chat adapter (block emitter, size-limit degradation) **plus** message anchoring: a conversation is a `column` of message containers keyed by message id (IR 2.4.0 layout ids); prose is the first child; `anchorAugmentation(conv, messageId, resolved) → Operation[]` with `subject-superseded`; **deferred priority** via IR 2.5.0 `Layout.defer`; late-arrival policy per `updates`; a drop is a `deferred-dropped` finding, never silent | `experience-slack` + `experience-conversation`: prose first, augmentation late; web patches in place, chat emits an edit, terminal appends, a `none` surface drops with a finding; regenerated prose supersedes | patches attach to messages; priority is honoured on every surface | L |
 | **9 (+density)** | Vocabulary pack as planned + `density` / compact hints + a `Link` / `Action` deep-link kind | `experience-vocabulary`, including a compact profile | resolvers have building blocks | as planned + S |
-| **11 (new) outcome package** | `@loom-ui/outcome`: type registry, `Assertion`, `admit` (`type-shape`, `evidence-missing`, `claim-unmapped`, `clearance-exceeded`, `intent-undeclared`, `no-evidence`), resolvers per (type, profile) with deterministic slot ids, `checkReduction` (evidence ⊆ admitted, no live-graph provider, no class lowered), `interpretIntent` (third domain; `intent-undeclared`, `intent-payload-invalid`, `intent-reference-unknown`; free text tainted), `ResolutionCache` key; reference pack `Answer` / `Investigation` / `Comparison` / `None`; optional loom `CatalogEntry.actions` | `experience-outcomes`: one Investigation → web dashboard / chat headline + link / compact card; `explore(E3)` round-trips as a typed intent; `explore(E99)` and an injected text payload are refused | agents assert experiences, not components; resolvers only reduce | XL |
-| **12 (new) Lifter SPI** | `Lifter` + `Gate` SPIs in `@loom-ui/planner` on `ctx.decide` (the gate its own decision with policy and propensity); lift templates; lifter conformance kit (`None` reachable, no invented evidence, every cited claim in the claim map, a second lift on the same subject calls no model); structured `type-gap` reason on `None` | `ambient-augmenter` (headless, scripted model): commit fixtures → gate → lift → admit → resolve for three profiles → anchor; most fixtures yield `None`; a duplicate commit is one decision; regenerated prose is discarded | augmentation is a recorded projection that defaults to silence | L |
+| **11 (new) outcome package** | `@loomwork/ui-outcome`: type registry, `Assertion`, `admit` (`type-shape`, `evidence-missing`, `claim-unmapped`, `clearance-exceeded`, `intent-undeclared`, `no-evidence`), resolvers per (type, profile) with deterministic slot ids, `checkReduction` (evidence ⊆ admitted, no live-graph provider, no class lowered), `interpretIntent` (third domain; `intent-undeclared`, `intent-payload-invalid`, `intent-reference-unknown`; free text tainted), `ResolutionCache` key; reference pack `Answer` / `Investigation` / `Comparison` / `None`; optional loom `CatalogEntry.actions` | `experience-outcomes`: one Investigation → web dashboard / chat headline + link / compact card; `explore(E3)` round-trips as a typed intent; `explore(E99)` and an injected text payload are refused | agents assert experiences, not components; resolvers only reduce | XL |
+| **12 (new) Lifter SPI** | `Lifter` + `Gate` SPIs in `@loomwork/ui-planner` on `ctx.decide` (the gate its own decision with policy and propensity); lift templates; lifter conformance kit (`None` reachable, no invented evidence, every cited claim in the claim map, a second lift on the same subject calls no model); structured `type-gap` reason on `None` | `ambient-augmenter` (headless, scripted model): commit fixtures → gate → lift → admit → resolve for three profiles → anchor; most fixtures yield `None`; a duplicate commit is one decision; regenerated prose is discarded | augmentation is a recorded projection that defaults to silence | L |
 | 10 | diff-based refine (unchanged) | `planner-refine` | — | as planned |
 | B5 (slice 6 phase 3, planned) | `mergeExperiences` gains a second consumer: the user's presentational overlay re-applied after re-resolution | an AEP case in B5's example | user authorship survives augmentation | as planned |
 

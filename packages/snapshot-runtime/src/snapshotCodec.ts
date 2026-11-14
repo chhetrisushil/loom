@@ -1,5 +1,5 @@
 import zlib from "node:zlib";
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 
 /**
  * ADR 0141 - the snapshot STATE codec.

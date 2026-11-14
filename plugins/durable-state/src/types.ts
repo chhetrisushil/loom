@@ -1,5 +1,5 @@
-import type { ExecutableTask, TaskDefinition } from "@loom/core";
-import type { Effect } from "@loom/effect-runtime";
+import type { ExecutableTask, TaskDefinition } from "@loomwork/core";
+import type { Effect } from "@loomwork/effect-runtime";
 import type { ZodSchema } from "zod";
 
 /** The stored envelope: what a backend persists per key. Revisions start at 1. */
@@ -15,7 +15,7 @@ export interface DurableStateRecord {
  * `save` with `expectedRevision: 0` creates; any mismatch rejects with
  * {@link RevisionConflictError} (`name: "RevisionConflictError"` for 3P
  * backends that cannot share the class). Conformance:
- * `runDurableStateStoreConformance` in `@loom/conformance`.
+ * `runDurableStateStoreConformance` in `@loomwork/conformance`.
  */
 export interface DurableStateStore {
   load(key: string): Promise<DurableStateRecord | null>;

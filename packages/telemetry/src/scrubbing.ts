@@ -1,5 +1,5 @@
-import { REDACTED, maskPaths, pathsOfClass } from "@loom/classify";
-import type { StepDefinition } from "@loom/core";
+import { REDACTED, maskPaths, pathsOfClass } from "@loomwork/classify";
+import type { StepDefinition } from "@loomwork/core";
 import type { StepTelemetryInfo, TelemetryAdapter } from "./types";
 
 // ── K10-R6 — egress scrubbing (the "6th surface") ─────────────────────────────
@@ -13,7 +13,7 @@ import type { StepTelemetryInfo, TelemetryAdapter } from "./types";
 // masked. `secret` fields are already handled by K10-R2 (they never reach the log/telemetry
 // in the first place), so they need no separate scrubbing here.
 
-/** The mask an egress-scrubbed field is replaced by. Re-exported from `@loom/classify`. */
+/** The mask an egress-scrubbed field is replaced by. Re-exported from `@loomwork/classify`. */
 export const EGRESS_REDACTED = REDACTED;
 
 /** Per-step dot-paths to scrub from the telemetry `input` / `output` payloads. */

@@ -1,7 +1,7 @@
-#+title: @loom/compiler — Usage Guide
+#+title: @loomwork/compiler — Usage Guide
 #+author: Sushil Chhetri
 
-~@loom/compiler~ is a Vite plugin and standalone CLI that applies three build-time optimizations to Loom applications. This guide covers installation, configuration, and each feature in detail.
+~@loomwork/compiler~ is a Vite plugin and standalone CLI that applies three build-time optimizations to Loom applications. This guide covers installation, configuration, and each feature in detail.
 
 * What the Compiler Does
 
@@ -19,7 +19,7 @@ The compiler is a dev dependency — no compiler code is included in the applica
 * Installation
 
 #+begin_src bash
-pnpm add -D @loom/compiler
+pnpm add -D @loomwork/compiler
 #+end_src
 
 ~vite~ must be installed as a peer dependency (≥ 5.0.0).
@@ -32,7 +32,7 @@ Add ~loomPlugin()~ as the first plugin in your ~vite.config.ts~, before ~@vitejs
 // vite.config.ts
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { loomPlugin } from "@loom/compiler";
+import { loomPlugin } from "@loomwork/compiler";
 
 export default defineConfig({
   plugins: [
@@ -44,10 +44,10 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: [
-      "@loom/core",
-      "@loom/effect-runtime",
-      "@loom/workflow-runtime",
-      // ... other @loom/* packages
+      "@loomwork/core",
+      "@loomwork/effect-runtime",
+      "@loomwork/workflow-runtime",
+      // ... other @loomwork/* packages
     ],
   },
 });
@@ -60,7 +60,7 @@ The plugin runs on every ~.ts~ and ~.tsx~ file in your project (excluding ~node_
 ~handler$()~ is the core authoring primitive. Write the implementation directly inside ~step$()~:
 
 #+begin_src typescript
-import { step$, handler$ } from "@loom/core";
+import { step$, handler$ } from "@loomwork/core";
 import { z } from "zod";
 
 export const FetchMetricsStep = step$({
@@ -129,7 +129,7 @@ workflowRuntime.registerFlow(MyFlow.definition, MyFlow.runner);
 The same extraction applies to a skill's ~instructions$()~ body — the progressive-disclosure analog of a step handler. An agent bundle ships lean; each skill's (often large) instruction text is a lazy chunk loaded only when that skill is selected:
 
 #+begin_src typescript
-import { skill$, instructions$ } from "@loom/core";
+import { skill$, instructions$ } from "@loomwork/core";
 
 export const DiagnoseCpu = skill$({
   id: "diagnose-cpu",
@@ -181,7 +181,7 @@ At the end of every build, the plugin emits a ~loom-manifest.json~ file into you
 }
 #+end_src
 
-Each flow carries a ~module~ — its source path relative to the project ~root~ — and the top-level ~flowModules~ is the deduplicated, sorted list of those paths. Both are *metadata*: ~@loom/app~'s ~registerFlowsFrom~ still registers flows by static import (never a dynamic-import target), so wiring stays deterministic and replay-safe (P5).
+Each flow carries a ~module~ — its source path relative to the project ~root~ — and the top-level ~flowModules~ is the deduplicated, sorted list of those paths. Both are *metadata*: ~@loomwork/app~'s ~registerFlowsFrom~ still registers flows by static import (never a dynamic-import target), so wiring stays deterministic and replay-safe (P5).
 
 The ~skills~ map mirrors a flow's ~chunkMap~ for ~skill$~ instruction bodies: each entry points at the lazy chunk holding that skill's ~instructions$~ text (empty ~chunk~ when the skill uses inline instructions with no ~instructions$~ marker).
 
@@ -219,7 +219,7 @@ iteration 1's memoized output. They surface as ~determinism~-rule warnings.
 
 ** The three source analyses the transform emits
 
-You do not feed these to ~@loom/verify~ by hand. The transform already has the parsed
+You do not feed these to ~@loomwork/verify~ by hand. The transform already has the parsed
 source (and memoizes per module), so it runs all three and writes them into each flow's
 manifest entry; ~loom verify~ auto-injects them from a discovered ~loom-manifest.json~,
 and ~defineConfig~ accepts them directly.
@@ -259,7 +259,7 @@ transient seam refuses at runtime.
 (~planner.compose(input, ctx)~, ~kb.retrieve(q, { decide: ctx.decide })~) is recorded in
 ~escapes~ as ~{ callee, root, via }~. The callee's code is out of sight, so the library
 declares its reach (~Symbol.for("loom.verify.reach")~ -> ~{ run?, transient? }~, or
-~declareReach~ from ~@loom/verify~) and the app maps the callee to the real object with
+~declareReach~ from ~@loomwork/verify~) and the app maps the callee to the real object with
 ~checks.verify.reach: { planner }~. Declared tools are counted like any reached effect
 (~viaDeclared~); an escape with no declaration is *reported as unresolved*. Passing ~ctx~ to a
 same-module function is followed (the parameter, whatever its name, becomes a ctx name);
@@ -284,7 +284,7 @@ directly keeps the plain "analyze the region you give me" contract.
 
 * Feature 3 — Resumability
 
-The runtime package (~@loom/workflow-runtime~) exports serialization utilities (~serializeExecution~, ~serializeProjections~) for the server → client state hand-off. This enables a React app to mount with fully-hydrated projection state and resume a suspended workflow without any EventStore round-trip.
+The runtime package (~@loomwork/workflow-runtime~) exports serialization utilities (~serializeExecution~, ~serializeProjections~) for the server → client state hand-off. This enables a React app to mount with fully-hydrated projection state and resume a suspended workflow without any EventStore round-trip.
 
 ** Server side (e.g., Express route, Next.js getServerSideProps)
 
@@ -292,7 +292,7 @@ The runtime package (~@loom/workflow-runtime~) exports serialization utilities (
 import {
   serializeExecution,
   serializeProjections,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 
 app.get("/api/execution/:id", async (req, res) => {
   const { id } = req.params;
@@ -314,7 +314,7 @@ app.get("/api/execution/:id", async (req, res) => {
 
 #+begin_src typescript
 // main.tsx
-import { LoomProvider } from "@loom/plugin-renderer-react";
+import { LoomProvider } from "@loomwork/plugin-renderer-react";
 
 const { executionState, projectionState } = await fetch(`/api/execution/${executionId}`)
   .then(r => r.json());
@@ -338,8 +338,8 @@ createRoot(root).render(
 If the execution is suspended, restore it with ~restoreFromState~:
 
 #+begin_src typescript
-import { deserializeExecution } from "@loom/workflow-runtime";
-import { useLoom } from "@loom/plugin-renderer-react";
+import { deserializeExecution } from "@loomwork/workflow-runtime";
+import { useLoom } from "@loomwork/plugin-renderer-react";
 
 function ApprovalPanel({ serializedState }: { serializedState: string }) {
   const { workflowRuntime, preloadedExecutionState } = useLoom();
@@ -392,8 +392,8 @@ The CLI:
 Import and use the compiler transforms directly in your own build scripts:
 
 #+begin_src typescript
-import { transformFile, buildManifest, printWarnings, loomPlugin } from "@loom/compiler";
-import type { PluginState } from "@loom/compiler";
+import { transformFile, buildManifest, printWarnings, loomPlugin } from "@loomwork/compiler";
+import type { PluginState } from "@loomwork/compiler";
 
 // A fresh, mutable state the transform accumulates into (all seven maps required).
 const state: PluginState = {
@@ -421,7 +421,7 @@ printWarnings(manifest);      // logs every flow's advisory warnings to the cons
 console.log(JSON.stringify(manifest, null, 2));
 #+end_src
 
-The main exports of ~@loom/compiler~: functions ~loomPlugin~, ~transformFile~, ~buildManifest~, ~printWarnings~, ~shortHash~, ~fnv1a32~; and types ~LoomManifest~, ~ManifestFlow~, ~ExtractedChunk~, ~FlowEntry~, ~StepEntry~, ~PluginState~.
+The main exports of ~@loomwork/compiler~: functions ~loomPlugin~, ~transformFile~, ~buildManifest~, ~printWarnings~, ~shortHash~, ~fnv1a32~; and types ~LoomManifest~, ~ManifestFlow~, ~ExtractedChunk~, ~FlowEntry~, ~StepEntry~, ~PluginState~.
 
 * How the AST Transform Works
 

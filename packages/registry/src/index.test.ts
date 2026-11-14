@@ -1,4 +1,4 @@
-import { agent$ } from "@loom/core";
+import { agent$ } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { AgentRegistry } from "./index";
 

@@ -25,7 +25,7 @@ and `loom debug` share one deterministic time-travel engine. `serveInspector`
 and a single-file, dependency-free HTML timeline + slider. `loom inspect --db
 <path>` (alias `loom dev`) serves it over SQLite.
 
-**Deliberately deferred:** a rich `@loom/renderer-react` inspector and the full
+**Deliberately deferred:** a rich `@loomwork/renderer-react` inspector and the full
 `loom dev` watch loop (gen-on-change + run the app + live SSE). The reusable
 engine (`buildTrace`/`foldAt`) and the API are tested now; a heavier UI shipped
 untested would violate the project's discipline and is a follow-on once usage
@@ -36,12 +36,12 @@ patterns are known.
 - Deploy-sim is now a one-command CI gate; the durable log's differentiators
   (evals, deploy-sim, logs, debug, inspector) are all reachable from `loom`.
 - The inspector's data layer is fully tested; the thin HTML view is a static asset.
-- `@loom/cli` gains a `@loom/deploy-sim` dependency; the `loom` CLI now has eight
+- `@loomwork/cli` gains a `@loomwork/deploy-sim` dependency; the `loom` CLI now has eight
   commands.
 
 ## Verification
 
-- `@loom/cli` (+ to 19 total): `buildTrace` (timeline + per-sequence status;
+- `@loomwork/cli` (+ to 19 total): `buildTrace` (timeline + per-sequence status;
   running→…→suspended); `loadLogs`; `runDeployCheck` (identical deploy ok, removed
   flow breaking); `serveInspector` live over SQLite — `/` serves the page,
   `/api/trace` returns the model, `/api/state/:seq` returns the folded state,

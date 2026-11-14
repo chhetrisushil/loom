@@ -8,7 +8,7 @@
 The decision seam (P9, [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md))
 records **what was chosen** — every route, elevation, and optimizer choice is a durable
 `DECISION_RECORDED` fact, so replay stays pure while "outcomes improve run-to-run." M10/M11
-(`@loom/analytics`) already *mine* the log: `rankModels` derives a ranking from how often
+(`@loomwork/analytics`) already *mine* the log: `rankModels` derives a ranking from how often
 each model was chosen, and `runtimeIntelligence` produces advisory recommendations.
 
 But the loop was open. There was **no path from how a choice turned out back to the next
@@ -23,18 +23,18 @@ remembers about *results* — not just *choices*.
 Add the symmetric half of the decision seam — an **outcome seam** — plus the feedback edge
 that turns recorded outcomes into a ranking the existing router consumes.
 
-- **`OUTCOME_RECORDED`** (`@loom/replay-vm`): a durable fact `{ key, success?, score?,
+- **`OUTCOME_RECORDED`** (`@loomwork/replay-vm`): a durable fact `{ key, success?, score?,
   decisionId? }` recording *how a prior choice turned out* (keyed by the thing scored — a
   model id, capability id, tool id). Governed under K5 with a pinned fold handler that
   appends to a reserved `variables._outcomes` audit list (mirroring `DECISION_RECORDED`).
   `EVENT_SCHEMA_VERSION` bumped `1.1.0 → 1.2.0` (additive = MINOR).
-- **`recordOutcome(sink, outcome)`** (`@loom/analytics`): emits the fact through the caller's
+- **`recordOutcome(sink, outcome)`** (`@loomwork/analytics`): emits the fact through the caller's
   `emit` syscall (analytics still never mutates the fold — it only hands over a payload).
-- **`rankFromOutcomes(events)`** (`@loom/analytics`): mines per-key mean success/score into a
+- **`rankFromOutcomes(events)`** (`@loomwork/analytics`): mines per-key mean success/score into a
   `Record<string, number>` — the outcome-driven counterpart to `rankModels`. Added to
   `runtimeIntelligence`'s recommendations as `outcomeRankings`.
 - **Closing the loop**: feed it to the **existing** `rankedRouter(rankFromOutcomes(log))`
-  (`@loom/reasoning`). Future work routes toward what actually worked; the route is still
+  (`@loomwork/reasoning`). Future work routes toward what actually worked; the route is still
   recorded via `ctx.decide` (P9), so the improved choice is auditable and deterministic on
   replay.
 
@@ -46,7 +46,7 @@ first-class `ctx.record` accessor is a future MINOR-ABI option if the ergonomics
 
 ### Why composition, not a bundled router
 
-`rankFromOutcomes` (a read lens, `@loom/analytics`) and `rankedRouter` (`@loom/reasoning`)
+`rankFromOutcomes` (a read lens, `@loomwork/analytics`) and `rankedRouter` (`@loomwork/reasoning`)
 compose with a one-liner and stay in their own packages — no new cross-package runtime
 dependency, keeping each small (P10).
 

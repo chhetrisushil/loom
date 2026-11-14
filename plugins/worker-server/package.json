@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-worker-server",
+  "name": "@loomwork/plugin-worker-server",
   "version": "0.1.0",
   "description": "Stateless Loom worker HTTP endpoint — POST /execute runs one ExecutionPackage on an injected WorkerRuntime and returns the ExecutionResult. The container entrypoint for remote/Cloud Run execution",
   "main": "./dist/index.js",
@@ -20,22 +20,22 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/worker-runtime": "workspace:^"
+    "@loomwork/core": "workspace:^",
+    "@loomwork/worker-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/dispatcher": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/worker-runtime-local": "workspace:*",
-    "@loom/plugin-worker-remote": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/dispatcher": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/worker-runtime-local": "workspace:*",
+    "@loomwork/plugin-worker-remote": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8",
-    "@loom/plugin-sqlite": "workspace:*"
+    "@loomwork/plugin-sqlite": "workspace:*"
   },
   "license": "Apache-2.0",
   "repository": {

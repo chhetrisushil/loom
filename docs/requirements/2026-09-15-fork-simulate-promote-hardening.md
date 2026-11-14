@@ -112,7 +112,7 @@ behaviour with no `TimerStore` wired.
 Fixes M2. Do **not** add a `BRANCH_PROMOTED` event type. Promotion is a decision: record it with
 `ctx.decide` on the promoting execution, carrying the candidate set and the reason. That puts it in
 the log, replays deterministically, and — if the choice is ever policy-driven — carries propensity
-for free (`@loom/learning`). Prove it in an example before considering any 1P surface.
+for free (`@loomwork/learning`). Prove it in an example before considering any 1P surface.
 
 ### E3 — promote closes the cohort *(app helper)*
 
@@ -120,7 +120,7 @@ Fixes M3. A `promoteAndClose(winner)` helper: resolve the cohort via `children()
 loser, close its external task, return what was retracted. Per ADR 0083 this starts as app code; it
 earns a 1P home only when a second unrelated consumer appears. Note the interaction with effects: in
 the shipped demos branches are safe because they resume with `simulate: true`; a branch that ran real
-effects before parking makes "losing" non-free, which is compensation territory (`@loom/saga`), not
+effects before parking makes "losing" non-free, which is compensation territory (`@loomwork/saga`), not
 pointer-move promote.
 
 ### E4 — per-branch placement *(1P)* — **DEFERRED** ([#392](https://github.com/chhetrisushil/loom/issues/392))

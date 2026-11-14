@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import { DuplicateSequenceError, StaleFenceError } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { DuplicateSequenceError, StaleFenceError } from "@loomwork/event-runtime";
 import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";

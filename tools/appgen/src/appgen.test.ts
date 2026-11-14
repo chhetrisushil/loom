@@ -47,9 +47,9 @@ describe("generateFlows (AppSpec → folder-convention flow files)", () => {
     expect(flow).not.toContain("capability$("); // dropped the capability-catalog model
     expect(flow).toContain('await ctx.suspend({ on: "Approved" })'); // approval gate
     expect(flow).toContain("surface(ctx).set"); // UI surface (ADR 0114 spelling)
-    expect(flow).toContain('from "@loom/agent-surface"'); // typed by agent-surface, so imported
+    expect(flow).toContain('from "@loomwork/agent-surface"'); // typed by agent-surface, so imported
     expect(flow).not.toContain("ctx.ui.");
-    expect(flow).toContain("@loom/reasoning"); // reasoning hint (commented import)
+    expect(flow).toContain("@loomwork/reasoning"); // reasoning hint (commented import)
     expect(flow).toContain("ctx.decide"); // route logged via the decision seam
     expect(flow).toContain("gemma"); // ladder documented
   });
@@ -62,8 +62,8 @@ describe("generateFlows (AppSpec → folder-convention flow files)", () => {
     expect(flow).toContain("export const GreeterFlow");
     expect(flow).not.toContain("ctx.suspend");
     expect(flow).not.toContain("surface(ctx)");
-    expect(flow).not.toContain("@loom/agent-surface");
-    expect(flow).not.toContain("@loom/reasoning");
+    expect(flow).not.toContain("@loomwork/agent-surface");
+    expect(flow).not.toContain("@loomwork/reasoning");
   });
 });
 

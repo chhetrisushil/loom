@@ -1,6 +1,6 @@
-import { sensitive } from "@loom/classify";
-import { step$ } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { sensitive } from "@loomwork/classify";
+import { step$ } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { EncryptingEventStore } from "./EncryptingEventStore";

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type ArchiveSegment,
   type ArchiveSegmentHeader,
@@ -12,9 +12,9 @@ import {
   inboxTopicStreamId,
   quarantineStreamId,
   senderDigestOf,
-} from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
-import { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
+import { SnapshotIdentityMismatchError } from "@loomwork/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { SubjectIndex } from "./SubjectIndex";
 import {

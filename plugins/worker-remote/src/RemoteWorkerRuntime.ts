@@ -5,7 +5,7 @@ import {
   type WorkerLease,
   type WorkerRequest,
   type WorkerRuntime,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";
 
 // Minimal structural fetch types so this package needs no DOM lib. Node 20's
 // global fetch and any custom impl satisfy these.

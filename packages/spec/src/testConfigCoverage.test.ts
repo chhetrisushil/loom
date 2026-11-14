@@ -13,7 +13,7 @@ import { readWorkspaceGraph } from "./layering";
 //   • no `conditions: ["require", "default"]`, so importing a VALUE from a
 //     workspace sibling whose exports map lacks a `default` condition fails to
 //     resolve. That is not hypothetical — it is how `plugins/sqlite` broke the
-//     first time it imported one from `@loom/memory`.
+//     first time it imported one from `@loomwork/memory`.
 //   • no source aliases, so `LOOM_TEST_SRC=1` was silently inert there: the run
 //     reported the same green while resolving the other tree.
 //

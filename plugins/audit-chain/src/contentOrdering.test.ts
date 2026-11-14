@@ -1,11 +1,11 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   type ContentRef,
   ContentResolvingEventStore,
   type ContentStore,
   contentAddress,
-} from "@loom/plugin-content";
+} from "@loomwork/plugin-content";
 import { describe, expect, it } from "vitest";
 import { hashChainedEventStore } from "./hashChain";
 

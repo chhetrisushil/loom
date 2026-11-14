@@ -1,11 +1,11 @@
-import { runEventStoreDecoratorConformance } from "@loom/conformance";
-import type { EventEnvelope } from "@loom/core";
+import { runEventStoreDecoratorConformance } from "@loomwork/conformance";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   CoalescingEventStore,
   type EventStore,
   InMemoryAsyncEventStore,
-} from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
+} from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
 import { describe, expect, it } from "vitest";
 import { ContentResolvingEventStore } from "./ContentResolvingEventStore";
 import { InMemoryContentStore } from "./ContentStore";

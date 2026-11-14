@@ -1,4 +1,4 @@
-import { projection$ } from "@loom/core";
+import { projection$ } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { FoldedModelEngine } from "./FoldedModelEngine";
 import { CountingStore, X, evt, ingestProjection, node, step, stepsOf } from "./foldedFixtures";

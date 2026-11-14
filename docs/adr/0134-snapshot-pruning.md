@@ -10,7 +10,7 @@
   exactness rule), [ADR 0055](0055-k10-6-pin-seam-content-gc.md) D6 (the content sweep's snapshot
   coverage), [ADR 0074](0074-storage-scale-out-decorators.md) (every decorator must decide every
   optional SPI method), [ADR 0083](0083-second-consumer-rule.md).
-- Placement: **kernel (`@loom/workflow-runtime` `LogLifecycle`)** for the safety rule, plus one
+- Placement: **kernel (`@loomwork/workflow-runtime` `LogLifecycle`)** for the safety rule, plus one
   additive SPI method. **KERNEL_ABI unchanged (1.3.0)**: no syscall changes. **EVENT_SCHEMA
   unchanged**: no event kind, payload or fold changes. **SnapshotStore SPI 1.1.0 → 1.2.0** (additive
   MINOR): optional `pruneSnapshots`. Default OFF: nothing prunes unless an operator or an app's own
@@ -273,7 +273,7 @@ bounded statement; only the sequences are listed.
   checkpoints, fork points, `[0]`, exempt) holds for it. The return type stays `number`; without `dryRun` the
   behaviour is byte-identical.
 - **No fallback: a store without `listSequences` refuses the preview.** `pruneSnapshots(id, { dryRun: true })`
-  over a 1.2.0 store throws `SnapshotListingUnsupportedError` (exported from `@loom/workflow-runtime`, next
+  over a 1.2.0 store throws `SnapshotListingUnsupportedError` (exported from `@loomwork/workflow-runtime`, next
   to `BlankStreamUnrepairedError`) and deletes nothing. A walk with `loadLatestBefore` was considered and
   rejected (review, 2026-11-02): it decodes every in-range snapshot through the decorators, so a preview
   could THROW (`PlaintextSnapshotRefusedError`, `SealedStreamUnreadableError`) where the apply succeeds,

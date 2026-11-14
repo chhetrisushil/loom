@@ -1,6 +1,6 @@
-import type { LeaseStore } from "@loom/event-runtime";
-import type { CustomStorage } from "@loom/plugin-kit";
-import type { SnapshotCodecName } from "@loom/snapshot-runtime";
+import type { LeaseStore } from "@loomwork/event-runtime";
+import type { CustomStorage } from "@loomwork/plugin-kit";
+import type { SnapshotCodecName } from "@loomwork/snapshot-runtime";
 import type { Pool, PoolConfig } from "pg";
 import { PostgresArchiveStore } from "./PostgresArchiveStore";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
@@ -45,7 +45,7 @@ export interface PostgresStorageOptions {
 
 /**
  * A `defineConfig({ storage })` preset for network-backed Postgres. Returns a
- * `custom` storage descriptor with the Postgres stores constructed — so `@loom/app`
+ * `custom` storage descriptor with the Postgres stores constructed — so `@loomwork/app`
  * never depends on `pg` (ADR 0043: storage backends are symmetric presets, so a
  * third-party backend is wired exactly like this first-party one).
  *

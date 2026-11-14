@@ -13,10 +13,16 @@ import {
   catalogCoverage,
   grid,
   stack,
-} from "@loom/blueprint-runtime";
-import { BlueprintRenderer, defaultRegistry as reactRegistry } from "@loom/plugin-renderer-react";
-import { defaultTerminalRegistry, renderBlueprintToString } from "@loom/plugin-renderer-terminal";
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
+} from "@loomwork/blueprint-runtime";
+import {
+  BlueprintRenderer,
+  defaultRegistry as reactRegistry,
+} from "@loomwork/plugin-renderer-react";
+import {
+  defaultTerminalRegistry,
+  renderBlueprintToString,
+} from "@loomwork/plugin-renderer-terminal";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
 import { cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it } from "vitest";

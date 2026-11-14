@@ -1,6 +1,6 @@
-import type { Blueprint, GridCell, Layout, Widget } from "@loom/blueprint-runtime";
-import { asCell, resolveWidgetValue } from "@loom/blueprint-runtime";
-import type { ProjectionRuntime } from "@loom/projection-runtime";
+import type { Blueprint, GridCell, Layout, Widget } from "@loomwork/blueprint-runtime";
+import { asCell, resolveWidgetValue } from "@loomwork/blueprint-runtime";
+import type { ProjectionRuntime } from "@loomwork/projection-runtime";
 import { useProjection } from "./useProjection";
 
 export interface ResolvedWidget {
@@ -8,7 +8,7 @@ export interface ResolvedWidget {
   value: unknown;
 }
 
-// Re-exported from @loom/blueprint-runtime for backwards compat.
+// Re-exported from @loomwork/blueprint-runtime for backwards compat.
 export { resolveWidgetValue as resolveWidget };
 
 function collectWidgets(node: Blueprint["layout"] | Widget): Widget[] {

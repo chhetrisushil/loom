@@ -1,8 +1,8 @@
-# ADR 0028 — Runtime Verification (`@loom/verify`)
+# ADR 0028 — Runtime Verification (`@loomwork/verify`)
 
-- Status: Accepted (2026-07-10) — accepted item #1 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `@loom/verify` engine + `defineConfig({ verify })` boot gate + `app.verify()` + `loom verify --config` CLI.
+- Status: Accepted (2026-07-10) — accepted item #1 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `@loomwork/verify` engine + `defineConfig({ verify })` boot gate + `app.verify()` + `loom verify --config` CLI.
 - Date: 2026-07-10
-- Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (kernel ABI, P9/P10), [ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md) (K9), [ADR 0023](0023-k11-flow-code-versioning-in-flight-executions.md) (K11 flow hash), the compiler's flow-graph analysis (`@loom/compiler`)
+- Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (kernel ABI, P9/P10), [ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md) (K9), [ADR 0023](0023-k11-flow-code-versioning-in-flight-executions.md) (K11 flow hash), the compiler's flow-graph analysis (`@loomwork/compiler`)
 
 ## Context
 
@@ -19,14 +19,14 @@ are executable specifications of the invariants every *other* accepted item must
 
 ## Decision
 
-Add an opt-in package **`@loom/verify`** exposing a pure, read-only, **off-log** function
+Add an opt-in package **`@loomwork/verify`** exposing a pure, read-only, **off-log** function
 `verify(config): VerificationReport` that runs *before* execution and never emits a durable
 event. Two non-negotiables carry over: **G1** (preserve P2/P9) and **G2** (byte-identical when
 unwired — default is `off`).
 
 **V1 — Rules.** Each check is a small, independent rule returning `{ rule, severity, findings[] }`:
 
-- **determinism** — reuse `@loom/compiler` flow-graph analysis to flag non-deterministic calls
+- **determinism** — reuse `@loomwork/compiler` flow-graph analysis to flag non-deterministic calls
   (`Date.now`, `Math.random`, bare `fetch`/`crypto.randomUUID`, wall-clock reads) reachable in
   flow/step bodies **outside** a `ctx.decide`/`ctx.execute` boundary.
 - **replay-safety** — a flow content hash (K11 `flowHash`) is present and the app's
@@ -47,7 +47,7 @@ unwired — default is `off`).
   externalized. Silent, and the consequence is classified data leaving in the clear, so it is
   an `error`. The fix is to mark the container itself, or restructure it as an object or
   array. Added after the package audit surfaced the gap (issue #260); detection lives in
-  `@loom/classify` beside the walker it audits. Arrays were originally unaddressable too and
+  `@loomwork/classify` beside the walker it audits. Arrays were originally unaddressable too and
   were the rule's first target; [ADR 0076](0076-wildcard-classification-paths.md) made them
   reachable, narrowing this rule to what remains.
 
@@ -62,7 +62,7 @@ stateless-worker model resume *is* migration, so there is nothing extra to check
   report via `onWarn` at boot; `"error"` throws `VerificationError` before the first execution
   starts. Object form (`{ mode, meteredDimensions, rules }`) declares metered dimensions / narrows
   rules. `app.verify()` re-runs on demand. The config→`VerifyInput` adapter is `resolveVerifyInput`
-  in `@loom/app`; a `GrantTable.view()` projection exposes grants without reflection.
+  in `@loomwork/app`; a `GrantTable.view()` projection exposes grants without reflection.
 
 **V3 — Purity.** `verify()` reads only static config + compiler manifest. It runs no effect,
 starts no execution, opens no store connection it must mutate, and emits no event. A rule that
@@ -83,12 +83,12 @@ cannot decide statically returns an `info` finding ("could not verify X"), never
 
 Landed and green:
 
-- `@loom/verify`: one spec per rule (pass + fail fixture) + the mode gate; an unwired-vs-wired
+- `@loomwork/verify`: one spec per rule (pass + fail fixture) + the mode gate; an unwired-vs-wired
   bench shows `mode=off` ~1820× faster (input never built). 24 tests.
-- `@loom/app`: `resolveVerifyInput` projects flows/hash/effects/grants/targets; `verify:"error"`
+- `@loomwork/app`: `resolveVerifyInput` projects flows/hash/effects/grants/targets; `verify:"error"`
   throws at boot on an ungranted step effect (capability-compat); `"warn"` reports via `onWarn`;
   `"off"`/unset is a no-op yet `app.verify()` still works on demand. 7 tests.
-- `@loom/cli`: `loom verify --config` prints the report and exits non-zero on error findings;
+- `@loomwork/cli`: `loom verify --config` prints the report and exits non-zero on error findings;
   errors when the module is not a `LoomApp`. 3 tests.
 - `GrantTable.view()` projects grants (incl. `"*"`) without reflection.
 
@@ -113,7 +113,7 @@ The forward-requirements acceptance record (Requirement 1) noted three sub-check
   `KERNEL_SYSCALLS`; `eventSchema.test.ts` pins `knownEventTypes()`), **not** a per-execution
   `verify` rule. A stored log's schema compatibility is already covered by the replay-safety rule
   (K5 `EVENT_SCHEMA_VERSION`); a separate per-execution ABI-compat rule would add nothing.
-- **Determinism rule feed** — `@loom/compiler` now provides `analyzeNonDeterminism(source, flowId)`
+- **Determinism rule feed** — `@loomwork/compiler` now provides `analyzeNonDeterminism(source, flowId)`
   (AST-based: flags `Date.now`/`Math.random`/`crypto.randomUUID`/`performance.now`/bare `fetch`/
   `new Date()`, with `insideDecide` when inside a `ctx.decide`/`ctx.execute` boundary). Its output
   feeds the determinism rule via `resolveVerifyInput({ nonDeterministicByFlow })`. **Important
@@ -158,4 +158,4 @@ follow-up noted above is **done**: the compiler transform emits `loopIdentity`,
 `nonDeterministic` and `runnerReach`, and `loom verify` auto-injects all three.
 
 The rule set stands at **eight** — the seven listed under V1 above plus `effect-class`.
-`RULE_ORDER` in `@loom/verify` is the executable list; this one is a description of it.
+`RULE_ORDER` in `@loomwork/verify` is the executable list; this one is a description of it.

@@ -1,10 +1,10 @@
-import { tainted } from "@loom/classify";
-import { BUILTIN_METER_DIMENSIONS, SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
-import type { ExecutableTask, StepDefinition, SuspendWait } from "@loom/core";
-import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effect-runtime";
-import { FLOW_DIVERGED_GATE } from "@loom/replay-vm";
-import type { ReplayVM } from "@loom/replay-vm";
-import { linkSignals, parallelLimit } from "@loom/scheduler";
+import { tainted } from "@loomwork/classify";
+import { BUILTIN_METER_DIMENSIONS, SuspendError, TypedFailure, fnv1a64 } from "@loomwork/core";
+import type { ExecutableTask, StepDefinition, SuspendWait } from "@loomwork/core";
+import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loomwork/effect-runtime";
+import { FLOW_DIVERGED_GATE } from "@loomwork/replay-vm";
+import type { ReplayVM } from "@loomwork/replay-vm";
+import { linkSignals, parallelLimit } from "@loomwork/scheduler";
 import type { DecisionInner } from "./DivergenceGuard";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import { createContextStore } from "./contextStore";
@@ -468,7 +468,7 @@ export class WorkflowContextImpl implements WorkflowContext {
 
   /**
    * `ctx.ui` (ADR 0114). The kernel does not know what a surface is: the accessor comes from the
-   * injected `WorkflowRuntimeDeps.surface` factory (`defineConfig`, `@loom/testing` and the scaffold
+   * injected `WorkflowRuntimeDeps.surface` factory (`defineConfig`, `@loomwork/testing` and the scaffold
    * pass agent-surface's `createSurfaceEmitter`). Its patches are plain `emit`s, so they are durable and
    * replay deterministically alongside every other event. Built lazily, once; with no factory the
    * access throws a message naming the dep (a bare runtime, "break now").
@@ -477,9 +477,9 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (this.surfaceFactory === undefined) {
       throw new Error(
         "ctx.ui is not available: this WorkflowRuntime was built without the `surface` dep " +
-          "(ADR 0114). Pass `surface: createSurfaceEmitter` from @loom/agent-surface in " +
+          "(ADR 0114). Pass `surface: createSurfaceEmitter` from @loomwork/agent-surface in " +
           "WorkflowRuntimeDeps, build the runtime through defineConfig, or use `surface(ctx)` " +
-          "from @loom/agent-surface."
+          "from @loomwork/agent-surface."
       );
     }
     this.surfaceAccessor ??= this.surfaceFactory((eventType, payload) =>

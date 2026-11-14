@@ -2,14 +2,14 @@
 
 - Status: **Accepted — implemented** (2026-10-06; proposed 2026-10-05, design approved after 4 review rounds). See "Implementation (as built)" for what differs from the text above (SQLite does not fence, the Postgres acquire is one round-trip and a park ensures its fence row, the supervisor keeps its unfenced first try, `app.supervise` / `app.redrive` are the wiring) and the acceptance benchmark.
 - Date: 2026-10-05
-- Closes: R8k (the R8 review's residual TOCTOU, named in the `@loom/orchestration` README, "Restart safety (R8)")
+- Closes: R8k (the R8 review's residual TOCTOU, named in the `@loomwork/orchestration` README, "Restart safety (R8)")
 - Builds on: K9.4 ([ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md), `acquireFence`),
   [ADR 0117](0117-approvals-bound-to-what-the-approver-saw.md) (`locatePark`, `viewDigest` on a park),
   [ADR 0055](0055-k10-6-pin-seam-content-gc.md) (the retention pin predicate),
   [ADR 0074](0074-storage-scale-out-decorators.md) (a decorator must decide every optional SPI method),
   [ADR 0111](0111-durable-principal.md) (`EXECUTION_STARTED.parent`).
 - Placement: **EventStore SPI (optional method) + a `RunOptions` field in workflow-runtime + one optional `TimerRecord` field (D4);**
-  the retention half is **1P** (`@loom/orchestration`) over the existing pin seam. **EVENT_STORE_SPI
+  the retention half is **1P** (`@loomwork/orchestration`) over the existing pin seam. **EVENT_STORE_SPI
   2.0.0 → 2.1.0** (additive MINOR). KERNEL_ABI and EVENT_SCHEMA are not touched by this ADR.
 - Revision: round 3 — the conditional is now on the fence token AND on the park being unanswered, atomically
   (`{ fence, parkSeq }`): a retry on the returned token alone reopened window 2 (a live resumer's append does
@@ -62,7 +62,7 @@ event** exists with `sequence > expect.parkSeq`, bump and return the new token; 
 body is already running, but "a resume for this park is already in the log" can be, and a resume's append
 does not move the token.
 
-**Answering events (an allow-list, fixed in `@loom/event-runtime` and shared by every backend and the
+**Answering events (an allow-list, fixed in `@loomwork/event-runtime` and shared by every backend and the
 conformance kit).** Counts: `EXECUTION_RESUMED` (any payload, including the `null` status-only re-open of
 ADR 0104: it still moves the state from parked to running, which is what a second resumer must not
 override), `EXECUTION_SUSPENDED` (a later park supersedes this one), and the terminal kinds
@@ -72,7 +72,7 @@ Ignored, because they are audit appends that follow a park without answering it:
 while parked (ADR 0105), `MESSAGE_CONSUMED` (ADR 0110: it is written by the running owner, before a park or
 after the `EXECUTION_RESUMED` that answers one, so it never answers by itself), `EXECUTION_MIGRATED`,
 annotations and every other KERNEL kind. The classification is a **required** `Record<EventKind, "answering" | "ignorable">`
-in `@loom/event-runtime` (no default: an unclassified kernel kind is a compile error, so adding one forces the
+in `@loomwork/event-runtime` (no default: an unclassified kernel kind is a compile error, so adding one forces the
 decision), applied by `isAnsweringKind(event)`, which reads the kind AND the envelope's `metadata.kernel`:
 
 1. a kind in `KERNEL_EVENT_KINDS` is classified by its map entry;
@@ -163,7 +163,7 @@ leaves either both or neither). The re-driver therefore re-derives from the log 
 
 ### D3 — Retention does not delete a child its parent is parked on
 
-`LogLifecycle` is unchanged. `@loom/orchestration` exports `pinParkedChildren(supervisor)`, a
+`LogLifecycle` is unchanged. `@loomwork/orchestration` exports `pinParkedChildren(supervisor)`, a
 `PinPredicate` (ADR 0055 D1) for `retention.pinned` that answers `true` for a child id while its parent
 is non-terminal and parked on `CHILD_DONE` for it. The child → parent edge comes from the child's own
 `EXECUTION_STARTED.parent` (ADR 0111 D1; for logs written before it, from the supervisor's rebuilt state,
@@ -177,7 +177,7 @@ folds per candidate, so it is consulted only for executions that are otherwise r
 
 `ResumeContendedError` is **not** a `ResumeRefusedError` (no `reason`): a caller that treats every
 `ResumeRefusedError` as final must not mistake "retry me" for "refused". It carries `retryable: true`,
-`executionId` and `attempts`, is exported from `@loom/workflow-runtime`, and is raised only by D2's
+`executionId` and `attempts`, is exported from `@loomwork/workflow-runtime`, and is raised only by D2's
 exhaustion. Retrying it by hand is allowed; nothing may depend on that.
 
 It also needs a **live** re-driver, because `recover()` is app-called and a live path that merely reports
@@ -243,7 +243,7 @@ archivable again once the parent is answered or terminal.
 
 ## Rejected
 
-- **Fixing it in `@loom/orchestration` with more retries**: the two windows are properties of an
+- **Fixing it in `@loomwork/orchestration` with more retries**: the two windows are properties of an
   unconditional acquire, which only the store can make conditional.
 - **Comparing the log head** (the first draft): unfenced audit appends follow a park, so the head moves
   without the park being answered.
@@ -311,7 +311,7 @@ KERNEL_ABI and EVENT_SCHEMA are untouched. Where the code differs from the decis
   refuses an unfenced manual resume for good (`TimerService` is opt-in for the same reason). A store
   without the method keeps the previous two-acquisition loop verbatim.
 - **D3:** `pinParkedChildren(supervisor | () => supervisor)` and `ChildSupervisor.parkedOnChild`
-  (`@loom/orchestration`). The edge is the child's own `EXECUTION_STARTED.parent` (R3k: only the lineage
+  (`@loomwork/orchestration`). The edge is the child's own `EXECUTION_STARTED.parent` (R3k: only the lineage
   grant writes it), falling back to the supervisor's rebuilt state; the parent must be non-terminal,
   parked on `CHILD_DONE`, with the child's own key or a group that names it. A crypto-shredded log
   (`PayloadShreddedError`, matched through the `StorageWriteError` wrapper; as of the 2026-10-17 ADR 0039 amendment (c) by the realm-safe brand `isPayloadShredded`, on the error or its root cause, no longer by name) is NOT pinned (it is
@@ -451,7 +451,7 @@ without a database (CI has none); they were run locally against PostgreSQL 17.
 
 ### Acceptance: `tools/bench-throughput` fenced vs unfenced, before and after
 
-`pnpm --filter @loom/bench-throughput bench:fence` (`src/fenceIf.ts`). 64 concurrent executions, 3 000
+`pnpm --filter @loomwork/bench-throughput bench:fence` (`src/fenceIf.ts`). 64 concurrent executions, 3 000
 per run, median of 5 runs, loopback PostgreSQL 17 on a laptop; two independent invocations per side.
 "Before" is `origin/main`'s `PostgresEventStore.ts` (the only hot-path file this ADR changes); "after" is
 this PR. `p-cond` is a park/resume under `fenceIfParkedAt`; "before" it is the documented fallback to

@@ -1,8 +1,8 @@
-import { analyzeRunnerReach } from "@loom/compiler";
-import { type FlowDefinition, type StepDefinition, step$ } from "@loom/core";
-import { GrantTable, ToolEffect } from "@loom/effect-runtime";
-import { declareReach, verify } from "@loom/verify";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
+import { analyzeRunnerReach } from "@loomwork/compiler";
+import { type FlowDefinition, type StepDefinition, step$ } from "@loomwork/core";
+import { GrantTable, ToolEffect } from "@loomwork/effect-runtime";
+import { declareReach, verify } from "@loomwork/verify";
+import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";
@@ -972,7 +972,7 @@ describe("step arguments, ctx.parallel and constant-id factories reach the rules
 
   it("mcpInvoke$ with a templated step id is checked as the mcp.invoke effect (L37)", () => {
     const src = `
-      import { mcpInvoke$ } from "@loom/plugin-mcp";
+      import { mcpInvoke$ } from "@loomwork/plugin-mcp";
       const runner = async (ctx, step) => { await ctx.run(mcpInvoke$(\`tool:\${step.id}\`), {}); };
     `;
     const report = check(src, fullGrants);

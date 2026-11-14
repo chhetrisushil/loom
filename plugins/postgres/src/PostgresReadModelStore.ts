@@ -8,7 +8,7 @@ import type {
   ReadModelRow,
   ReadModelScalar,
   ReadModelStore,
-} from "@loom/plugin-read-model";
+} from "@loomwork/plugin-read-model";
 import {
   assertFoldedSelector,
   assertManyKeys,
@@ -16,7 +16,7 @@ import {
   clampQueryLimit,
   foldedSelectorColumn,
   parseQueryCursor,
-} from "@loom/plugin-read-model";
+} from "@loomwork/plugin-read-model";
 import {
   type FoldedNames,
   type FoldedTableOptions,

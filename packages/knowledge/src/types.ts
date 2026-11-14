@@ -1,4 +1,4 @@
-import type { TaintedValue } from "@loom/classify";
+import type { TaintedValue } from "@loomwork/classify";
 
 /**
  * A source document, as the application already has it: an id it can name the document

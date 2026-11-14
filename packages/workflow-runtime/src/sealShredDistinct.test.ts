@@ -1,21 +1,21 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
   KeyUnavailableError,
-} from "@loom/event-runtime";
-import { isPayloadShredded } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import { isPayloadShredded } from "@loomwork/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import {
   InMemoryAsyncSnapshotStore,
   type Snapshot,
   type SnapshotStore,
-} from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { build, echo, flow } from "./__tests__/r2Harness";

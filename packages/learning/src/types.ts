@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // ── The learning substrate (ADR 0080) ────────────────────────────────────────
 //
@@ -10,7 +10,7 @@ import type { EventEnvelope } from "@loom/core";
 //
 // The learning algorithm is deliberately outside: implement `Policy` in a
 // third-party package (see ../loom-plugins). Everything here is read-only over
-// the log, exactly like @loom/analytics.
+// the log, exactly like @loomwork/analytics.
 
 /** The observation a policy keys its choice on — the `s` in `(s, a, r)`. */
 export type PolicyContext = Record<string, unknown>;

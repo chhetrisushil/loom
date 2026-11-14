@@ -1,5 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
-import { declareReach } from "@loom/verify";
+import { declareReach } from "@loomwork/verify";
 import type { DecideCapable, DecideRecordOpts } from "./decideWithPolicy";
 import type { RolloutState } from "./registry";
 import type { Policy, PolicyChoice, PolicyContext, RolloutStamp } from "./types";

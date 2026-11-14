@@ -22,7 +22,7 @@
       "adr": "baseline"
     },
     "WorkflowRuntime.ts": {
-      "codeLines": 6809,
+      "codeLines": 6808,
       "adr": "0130"
     },
     "__tests__/quarantineHarness.ts": {
@@ -166,8 +166,8 @@
       "adr": "baseline"
     },
     "sealGuard.ts": {
-      "codeLines": 414,
-      "adr": "baseline"
+      "codeLines": 415,
+      "adr": "0148"
     },
     "signedResumeAuthenticator.ts": {
       "codeLines": 192,
@@ -186,8 +186,8 @@
       "adr": "baseline"
     },
     "types.ts": {
-      "codeLines": 769,
-      "adr": "baseline"
+      "codeLines": 770,
+      "adr": "0148"
     },
     "userspaceEmit.ts": {
       "codeLines": 216,

@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-mcp-app",
+  "name": "@loomwork/plugin-mcp-app",
   "version": "0.1.0",
   "description": "MCP Apps (SEP-1865, `io.modelcontextprotocol/ui`) egress — projects a Loom agent surface onto the extension as ONE static, content-pinned surface-host template whose payload is the existing A2UI catalog model, plus an app-visibility surface cursor tool that closes the extension's missing server-push channel. Egress only: the host role (iframe, CSP, postMessage) is deliberately out of scope.",
   "main": "./dist/index.js",
@@ -19,13 +19,13 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/agent-surface": "workspace:^",
-    "@loom/classify": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/plugin-a2ui": "workspace:^",
-    "@loom/plugin-mcp": "workspace:^"
+    "@loomwork/agent-surface": "workspace:^",
+    "@loomwork/classify": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/plugin-a2ui": "workspace:^",
+    "@loomwork/plugin-mcp": "workspace:^"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",

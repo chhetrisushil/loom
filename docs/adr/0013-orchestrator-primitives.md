@@ -14,7 +14,7 @@ forces a shape.
 
 ## Decision
 
-New `@loom/orchestrator` (dependency-free), with the **policy** extracted and the
+New `@loomwork/orchestrator` (dependency-free), with the **policy** extracted and the
 app-specific side effects left as callbacks:
 
 - **`decideApproval` / `autoApprovalAllowed`** — the human-in-the-loop *policy*:
@@ -48,7 +48,7 @@ app-specific side effects left as callbacks:
 
 ## Verification
 
-- `@loom/orchestrator` (6): `autoApprovalAllowed` phrasing; `decideApproval`
+- `@loomwork/orchestrator` (6): `autoApprovalAllowed` phrasing; `decideApproval`
   auto-approves low-risk-permitted / defers medium / defers when goal forbids;
   `dispatchPlan` ordered route→plan→dispatch→absorb + early terminate.
 - db-command-center migrated `gate()` → `decideApproval`; 4 suites pass unchanged.

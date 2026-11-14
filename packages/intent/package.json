@@ -1,5 +1,5 @@
 {
-  "name": "@loom/intent",
+  "name": "@loomwork/intent",
   "version": "0.1.0",
   "description": "Intent runtime for Loom — routes natural-language intent to capabilities",
   "main": "./dist/index.js",
@@ -20,17 +20,17 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/capability": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/llm": "workspace:^",
-    "@loom/reasoning": "workspace:^",
-    "@loom/scheduler": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/capability": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/llm": "workspace:^",
+    "@loomwork/reasoning": "workspace:^",
+    "@loomwork/scheduler": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

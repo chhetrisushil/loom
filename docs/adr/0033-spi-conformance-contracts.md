@@ -1,6 +1,6 @@
 # ADR 0033 — SPI consolidation + conformance contracts
 
-- Status: Accepted (2026-07-10) — accepted item #6 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: C1 the [SPI map](../loom-2.0/12-extension-seams.md); C2 `runEventStoreConformance` / `runSnapshotStoreConformance` / `runBranchRegistryConformance` in `@loom/testing`, self-tested against in-memory + SQLite backends. Added a reference `InMemoryBranchRegistry`.
+- Status: Accepted (2026-07-10) — accepted item #6 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: C1 the [SPI map](../loom-2.0/12-extension-seams.md); C2 `runEventStoreConformance` / `runSnapshotStoreConformance` / `runBranchRegistryConformance` in `@loomwork/testing`, self-tested against in-memory + SQLite backends. Added a reference `InMemoryBranchRegistry`.
 - Date: 2026-07-10
 - Builds on: [ADR 0016](0016-loom-2.0-execution-runtime-and-decision-seam.md) (K1 kernel ABI + conformance test, K5 event-schema governance), the existing store / dispatcher / worker / effect / scheduler SPIs
 
@@ -24,7 +24,7 @@ plus a conformance test. Two gaps remain:
   policy, tracing), its interface, its invariants, and its reference impl — the "kernel extension
   model" the requirements asked for, as documentation over the SPIs that already exist.
 - **C2 — conformance kits.** Extend the K1/K5 conformance-test pattern to each SPI: a shared
-  `@loom/testing` suite (`runEventStoreConformance(factory)`, `runDispatcherConformance(factory)`,
+  `@loomwork/testing` suite (`runEventStoreConformance(factory)`, `runDispatcherConformance(factory)`,
   …) that any implementation imports and runs against itself. Makes third-party runtimes *provable*,
   not just possible.
 
@@ -52,7 +52,7 @@ No new kernel mechanism — this is consolidation + test scaffolding over the ex
 Conformance kits now cover **9 SPIs**: `runEventStoreConformance`, `runSnapshotStoreConformance`,
 `runBranchRegistryConformance`, `runExecutionDispatcherConformance`, `runTimerStoreConformance`,
 `runProjectionRuntimeConformance`, plus **`runWorkerRuntimeConformance`** (worker factory + package
-factory; self-tested against `LocalWorkerRuntime` in `@loom/worker-runtime-local`),
+factory; self-tested against `LocalWorkerRuntime` in `@loomwork/worker-runtime-local`),
 **`runLlmProviderConformance`** (`complete` shape + `stream`), and **`runCapabilityAuthorizerConformance`**
 (decision shape + determinism). The `loom plugin new <seam>` scaffolder (ADR 0043) emits the
 matching conformance-wired test for every seam it knows — run `loom plugin seams` for the
@@ -68,13 +68,13 @@ writing its seam fails the build, so this ADR no longer has a list to keep curre
 
 ## ESM distribution (2026-07-13)
 
-The kits moved out of `@loom/testing/conformance` into their own package **`@loom/conformance`**,
+The kits moved out of `@loomwork/testing/conformance` into their own package **`@loomwork/conformance`**,
 shipped as **ESM** (`"type": "module"`) with `vitest` as a **peer dependency**. The reason: the kits
 `import { describe, it } from "vitest"` at module scope; as a CJS build that becomes
 `require("vitest")`, which vitest forbids — so no other package could consume the kit in its own
 vitest suite. As ESM the import is native, so **any plugin (1P or 3P) runs the kit in its own
-tests** — e.g. `@loom/plugin-sqlite/src/conformance.test.ts` now runs all four store kits against
-the real SQLite backend. This also dissolved the `@loom/testing ↔ @loom/plugin-sqlite` build cycle
-(the kits' self-test against the in-memory references lives in `@loom/conformance`; durable-backend
+tests** — e.g. `@loomwork/plugin-sqlite/src/conformance.test.ts` now runs all four store kits against
+the real SQLite backend. This also dissolved the `@loomwork/testing ↔ @loomwork/plugin-sqlite` build cycle
+(the kits' self-test against the in-memory references lives in `@loomwork/conformance`; durable-backend
 conformance lives in each backend's own package). Consumers add `default` export conditions on the
 SPI packages so the ESM kit can resolve them (harmless for CJS `require` consumers).

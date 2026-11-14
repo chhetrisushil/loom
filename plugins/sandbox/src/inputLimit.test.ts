@@ -1,8 +1,8 @@
-import { TypedFailure } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
-import { retryMiddleware } from "@loom/middleware";
-import { InMemoryContentStore } from "@loom/plugin-content";
+import { TypedFailure } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import { retryMiddleware } from "@loomwork/middleware";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
 import { describe, expect, it, vi } from "vitest";
 import { SandboxEvalEffect } from "./SandboxEvalEffect";
 import { SANDBOX_TOOL_ID, registerSandboxEval } from "./sandboxEval$";

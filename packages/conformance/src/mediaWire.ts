@@ -1,5 +1,5 @@
-import type { LlmProvider, LlmRequest } from "@loom/llm";
-import { mediaTypeAccepted } from "@loom/llm";
+import type { LlmProvider, LlmRequest } from "@loomwork/llm";
+import { mediaTypeAccepted } from "@loomwork/llm";
 import { expect, vi } from "vitest";
 
 /**

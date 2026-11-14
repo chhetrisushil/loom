@@ -1,8 +1,8 @@
 import * as http from "node:http";
-import { isTainted, taintOf, unwrapTainted } from "@loom/classify";
-import type { EffectContext } from "@loom/effect-runtime";
-import { UntrustedContentError, createLlmEffect } from "@loom/llm";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import { isTainted, taintOf, unwrapTainted } from "@loomwork/classify";
+import type { EffectContext } from "@loomwork/effect-runtime";
+import { UntrustedContentError, createLlmEffect } from "@loomwork/llm";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
 import { afterEach, describe, expect, it } from "vitest";
 import { A2APeerClient } from "./A2APeerClient";
 import type { A2APeerOutput, TaintedA2APeerOutput } from "./A2APeerClient";

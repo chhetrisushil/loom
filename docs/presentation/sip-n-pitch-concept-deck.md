@@ -527,7 +527,7 @@ Concede table stakes FIRST — an engineer in this room already has that list, a
 claiming any of it loses you the other three.
 #3 is the one to slow down on and the one I'd defend in Q&A. Everyone logs the
 outcome. Logging the policy AND the probability it was chosen with is what makes
-off-policy evaluation possible. It's in @loom/learning and it's checkable.
+off-policy evaluation possible. It's in @loomwork/learning and it's checkable.
 If someone asks "why does that matter?" — because otherwise you can only learn
 from what you did, never from what you didn't.
 -->

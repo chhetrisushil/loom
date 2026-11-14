@@ -1,5 +1,5 @@
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { UnsupportedModalityError } from "@loom/llm";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
+import { UnsupportedModalityError } from "@loomwork/llm";
 import { describe, expect, it, vi } from "vitest";
 import { ReasoningRuntime } from "./ReasoningRuntime";
 import type { ReasoningCache } from "./types";

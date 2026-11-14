@@ -26,7 +26,7 @@ There is no equivalent antibody pointing outward, and the workspace is now **42 
 plugins and 11 tools**.
 
 Nothing in the repo asks whether a package *should exist*. `findLayeringViolations` checks
-dependency **direction** (no kernel/SPI → `plugins/*`), not existence. The `@loom/spec` registry
+dependency **direction** (no kernel/SPI → `plugins/*`), not existence. The `@loomwork/spec` registry
 grades **maturity**, not necessity. The `loom plugin check` contract validates a plugin's
 **shape**, not its justification. So the pressure that once produced kernel bloat now produces
 first-party surface, and trips no guard on the way.
@@ -48,7 +48,7 @@ consumer of the same mechanism. If you cannot, it is application code.**
 ### What it gates
 
 - a new package under `packages/*` or `plugins/*`;
-- a new rule in `@loom/verify` or a new compile-time check;
+- a new rule in `@loomwork/verify` or a new compile-time check;
 - a new seam in the plugin registry;
 - a new exported abstraction that encodes a *vocabulary* (a taxonomy, a class list, a state set)
   rather than a mechanism.

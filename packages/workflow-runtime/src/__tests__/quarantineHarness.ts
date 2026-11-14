@@ -1,14 +1,14 @@
-import { unwrapTainted } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
+import { unwrapTainted } from "@loomwork/classify";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type EventStore,
   INBOX_TOPIC_SEQ_BASE,
   headOf,
   inboxTopicStreamId,
   quarantineStreamId,
-} from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore, type KeyStore } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore, type KeyStore } from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loomwork/snapshot-runtime";
 import type { WorkflowRuntimeDeps } from "../WorkflowRuntime";
 import { dedupeKeyOf, inboxStreamId, registerInboxTopic } from "../inbox";
 import type { Backend } from "./r2Backends";

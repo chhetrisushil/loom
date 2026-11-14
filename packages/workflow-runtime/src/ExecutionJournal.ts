@@ -1,8 +1,8 @@
-import { StorageWriteError } from "@loom/core";
-import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
-import { KERNEL_STAMPED_EVENT_TYPES } from "@loom/replay-vm";
-import type { ReplayVM } from "@loom/replay-vm";
+import { StorageWriteError } from "@loomwork/core";
+import type { EventEnvelope } from "@loomwork/core";
+import type { EventStore } from "@loomwork/event-runtime";
+import { KERNEL_STAMPED_EVENT_TYPES } from "@loomwork/replay-vm";
+import type { ReplayVM } from "@loomwork/replay-vm";
 
 /**
  * Per-execution write pipeline + sequence allocator. The single source of truth

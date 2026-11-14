@@ -18,10 +18,10 @@
 // replay. The declaration is what lets a serving surface route it correctly
 // instead of relying on a hardcoded allowlist.
 
-import { readRangeOf } from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
-import type { ComponentInstance } from "@loom/plugin-a2ui";
-import type { McpServedTool } from "@loom/plugin-mcp";
+import { readRangeOf } from "@loomwork/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
+import type { ComponentInstance } from "@loomwork/plugin-a2ui";
+import type { McpServedTool } from "@loomwork/plugin-mcp";
 import { surfacePayload } from "./surfaceBridge";
 import type { SurfacePayload } from "./surfaceBridge";
 

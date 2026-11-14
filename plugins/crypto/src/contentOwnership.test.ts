@@ -1,7 +1,7 @@
-import { EraseCoordinator, SubjectIndex, exportSubject } from "@loom/compliance";
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryContentStore } from "@loom/plugin-content";
+import { EraseCoordinator, SubjectIndex, exportSubject } from "@loomwork/compliance";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryContentStore } from "@loomwork/plugin-content";
 import { describe, expect, it } from "vitest";
 import { EncryptingContentStore } from "./EncryptingContentStore";
 import { InMemoryKeyStore } from "./keystore";

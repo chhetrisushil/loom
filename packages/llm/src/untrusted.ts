@@ -1,4 +1,4 @@
-import { isTainted, taintOf } from "@loom/classify";
+import { isTainted, taintOf } from "@loomwork/classify";
 import {
   type LlmContentPart,
   type LlmContentPartInput,
@@ -12,7 +12,7 @@ import type { LlmMessage, LlmRequest, LlmRequestInput } from "./types";
 
 // ── The integrity check at the prompt boundary ───────────────────────────────
 //
-// `@loom/classify`'s taint says content came from a party that is not the
+// `@loomwork/classify`'s taint says content came from a party that is not the
 // operator. This is the seam where that fact has to mean something, because the
 // prompt is the only place the distinction is load-bearing: a model cannot tell
 // an instruction the operator wrote from the same words a third-party MCP tool

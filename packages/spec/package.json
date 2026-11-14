@@ -1,5 +1,5 @@
 {
-  "name": "@loom/spec",
+  "name": "@loomwork/spec",
   "version": "0.1.0",
   "description": "The Loom kernel manifest — the single machine-readable source of truth aggregating every kernel/SPI version constant, the capability maturity registry, and a deployment compatibility validator. Read-only; imports the real exported constants so it can never drift.",
   "main": "./dist/index.js",
@@ -20,20 +20,20 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/compiler": "workspace:^",
-    "@loom/dispatcher": "workspace:^",
-    "@loom/event-runtime": "workspace:^",
-    "@loom/memory": "workspace:^",
-    "@loom/plugin-content": "workspace:^",
-    "@loom/replay-vm": "workspace:^",
-    "@loom/sandbox": "workspace:^",
-    "@loom/snapshot-runtime": "workspace:^",
-    "@loom/wire-abi": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/compiler": "workspace:^",
+    "@loomwork/dispatcher": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/memory": "workspace:^",
+    "@loomwork/plugin-content": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^",
+    "@loomwork/sandbox": "workspace:^",
+    "@loomwork/snapshot-runtime": "workspace:^",
+    "@loomwork/wire-abi": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loom/blueprint-runtime": "workspace:*",
-    "@loom/projection-runtime": "workspace:*",
+    "@loomwork/blueprint-runtime": "workspace:*",
+    "@loomwork/projection-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

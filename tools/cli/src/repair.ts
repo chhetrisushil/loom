@@ -2,7 +2,7 @@ import {
   type BlankStreamCensus,
   LogLifecycle,
   type RehomeAssignment,
-} from "@loom/workflow-runtime";
+} from "@loomwork/workflow-runtime";
 import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
 

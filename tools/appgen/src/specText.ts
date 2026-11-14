@@ -2,7 +2,7 @@ import { EXISTING_ID, NEW_ID, NEW_ID_HINT, hasUnsafeChars } from "./emit";
 import { stepConstName } from "./stepTemplate";
 
 // One definition of "what a plan field may contain", shared by the model validator
-// (`validateChangeSpec` in @loom/appgen-model) and by `readLockfile`, so a `--from-spec`
+// (`validateChangeSpec` in @loomwork/appgen-model) and by `readLockfile`, so a `--from-spec`
 // replay is held to exactly the rules a freshly planned spec is. (A replayed spec never
 // goes through the validator; the lockfile is hand-editable, shareable data.)
 

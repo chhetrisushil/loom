@@ -107,7 +107,7 @@ describe("context/doc durability coverage (fitness)", () => {
     expect(members).toContain("negotiateBudget");
     expect(
       members,
-      "ui is merged in by @loom/agent-surface, not declared (ADR 0114)"
+      "ui is merged in by @loomwork/agent-surface, not declared (ADR 0114)"
     ).not.toContain("ui");
     expect(members.length).toBeGreaterThanOrEqual(10);
   });

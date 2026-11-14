@@ -1,7 +1,7 @@
-import { handler$, step$ } from "@loom/core";
-import type { AgentDefinition, StepDefinition } from "@loom/core";
-import type { EffectRuntime } from "@loom/effect-runtime";
-import type { LlmProvider } from "@loom/llm";
+import { handler$, step$ } from "@loomwork/core";
+import type { AgentDefinition, StepDefinition } from "@loomwork/core";
+import type { EffectRuntime } from "@loomwork/effect-runtime";
+import type { LlmProvider } from "@loomwork/llm";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";
 import type { AgentInput, AgentOutput } from "./types";
@@ -40,7 +40,7 @@ export function agentStep$(config: AgentStepConfig): StepDefinition<AgentInput, 
     // R3 — the agent's declared tool menu IS this step's reachable effect set. One
     // step, and a model picks from `tools` at run time, so without this the flow
     // contributes NO effects and every static check over it passes vacuously.
-    // `@loom/verify` reads this; the runtime still authorizes each call at the K2
+    // `@loomwork/verify` reads this; the runtime still authorizes each call at the K2
     // floor, which is the half that was never in question.
     reachableTools: config.agent.tools.map((t) => ({ id: t.id, kind: t.kind })),
     inputSchema: z.object({

@@ -19,16 +19,16 @@ Three source-verified audits showed a repo split is **not feasible today and wou
 
 1. **No release model.** Every package is `version: "0.0.1"`, root `private`, and every dependency is
    `workspace:*`. There is **no changesets config, no npm-publish CI, no registry setup**. A separate
-   repo *cannot consume `@loom/*`* until a full versioning + publish pipeline is built first — a large,
+   repo *cannot consume `@loomwork/*`* until a full versioning + publish pipeline is built first — a large,
    standalone project. (Notably, ADR 0043's own community `loom-plugins` 3P repo is blocked on this
    exact missing piece and remains unbuilt.)
 2. **The CLI is the worst split candidate.** It's a clean leaf (nothing depends on it) but a
-   **top-of-stack consumer with ~16 `@loom/*` deps**. Extracting it would force a cross-repo publish
+   **top-of-stack consumer with ~16 `@loomwork/*` deps**. Extracting it would force a cross-repo publish
    cycle on *every* kernel API change, for a ~2% LOC reduction — and it **doesn't shrink the kernel**
    (its 16 deps stay in the kernel repo). The minimal-kernel principle (P10) doesn't apply: the CLI is
    a *tool*, not an adapter.
-3. **The compiler is cleaner** (zero `@loom/*` runtime deps; its manifest is a versioned public
-   contract, ADR 0044) but even it would need publishing (in-repo examples + `@loom/spec` consume it),
+3. **The compiler is cleaner** (zero `@loomwork/*` runtime deps; its manifest is a versioned public
+   contract, ADR 0044) but even it would need publishing (in-repo examples + `@loomwork/spec` consume it),
    so it trips the same publish prerequisite, with no independent-release-cadence pressure to justify it.
 
 The felt pain was real — *too many things in one folder* — but its cause was **legibility**, not a
@@ -47,7 +47,7 @@ only consumers are other tooling, tests, or authoring flows.
 **Moved (9):** `cli`, `compiler`, `appgen`, `appgen-model`, `deploy-sim`, `scaffold`, `eval`,
 `testing`, `dst` (joining `create-loom-app`, already there).
 
-**Kept in `packages/` (not leaves):** `verify` (a runtime dep of `@loom/app` for boot-time
+**Kept in `packages/` (not leaves):** `verify` (a runtime dep of `@loomwork/app` for boot-time
 `defineConfig({ verify })`), `spec` (kernel governance — layering guard, compat matrix, kernel
 manifest), `conformance` (SPI-conformance kits paired with the SPI they validate).
 
@@ -56,14 +56,14 @@ manifest), `conformance` (SPI-conformance kits paired with the SPI they validate
 - **Legibility.** `packages/` now reads as runtime + governance only; `tools/` collects the dev-facing
   surface. Mirrors the tiered mental model of ADR 0043 with a third honest category.
 - **Zero functional change.** pnpm resolves workspace deps by **package name**, not path, so every
-  `workspace:*` dependency, `@loom/*` import, `bin`, and `exports` is untouched — the migration was
+  `workspace:*` dependency, `@loomwork/*` import, `bin`, and `exports` is untouched — the migration was
   **entirely relative-path fixes** (tsconfig `references` recomputed by basename; the lone
-  `spec → compiler` edge and root references updated; `@loom/spec`'s maturity-manifest *evidence file
+  `spec → compiler` edge and root references updated; `@loomwork/spec`'s maturity-manifest *evidence file
   paths* re-pointed so the "evidence exists" governance test still passes; a docs path sweep).
 - **Turbo caching + one-PR changes preserved.** A cross-cutting kernel-API change still lands in a
   single PR with incremental builds — the main thing a repo split would have cost.
 - **Reversible.** A `git mv` back restores the prior layout.
-- **Governance intact.** The layering guard (`@loom/spec`, ADR 0043) keys on package **names**, so the
+- **Governance intact.** The layering guard (`@loomwork/spec`, ADR 0043) keys on package **names**, so the
   kernel/SPI protection is unaffected by the folder move.
 
 ## Alternatives considered

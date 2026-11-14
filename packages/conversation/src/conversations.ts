@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
-import { type EventStore, readRangeOf } from "@loom/event-runtime";
-import type { SendResult, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { EffectRuntime, PrincipalChain } from "@loomwork/effect-runtime";
+import { type EventStore, readRangeOf } from "@loomwork/event-runtime";
+import type { SendResult, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import {
   ENVELOPE_DOMAIN,
   type Identity,

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ExecutionIdTooLongError, MAX_EXECUTION_ID_BYTES, PostgresEventStore } from "./index";

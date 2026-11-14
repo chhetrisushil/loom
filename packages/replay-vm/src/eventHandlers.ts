@@ -1,5 +1,5 @@
-import type { EventEnvelope } from "@loom/core";
-import type { ExecutionFrame, ExecutionState, SuspendWait } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
+import type { ExecutionFrame, ExecutionState, SuspendWait } from "@loomwork/core";
 
 type Handler = (state: ExecutionState, event: EventEnvelope) => ExecutionState;
 
@@ -1287,7 +1287,7 @@ const handlers: Record<string, Handler> = {
   // Loom 2.0 (learning seam) — an OUTCOME_RECORDED fact: how a prior choice (a
   // route/capability/tool, by `key`) actually turned out. The symmetric counterpart
   // to DECISION_RECORDED ("what was chosen"): this records "how it went", so
-  // @loom/analytics can mine it into a ranking fed back to the router — closing the
+  // @loomwork/analytics can mine it into a ranking fed back to the router — closing the
   // loop while keeping every future route a logged decision (P9). Folded into a
   // reserved `_outcomes` audit list; pure audit, does not change status.
   OUTCOME_RECORDED: (state, event) => {
@@ -1643,7 +1643,7 @@ export function getHandler(eventType: string): Handler | undefined {
 // ── Event-schema ABI governance (Loom 2.0 K5) ────────────────────────────────
 //
 // The event log is the kernel's on-disk ABI: state is `fold(events)`, and stored
-// logs must replay across deploys (this is what `@loom/deploy-sim` guards at the
+// logs must replay across deploys (this is what `@loomwork/deploy-sim` guards at the
 // flow level). This names and versions the *set of event types the fold understands*.
 // Governance: adding an event type is additive (bump MINOR, update the pinned list);
 // removing or repurposing one changes how historical logs fold and is a MAJOR break

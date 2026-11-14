@@ -28,7 +28,7 @@ actually all runs, watch'."
 
 A single headless script (`src/main.ts`) that exercises **eight** Loom layers in order and prints a labelled banner for each — fully offline, fully deterministic.
 
-> `pnpm --filter @loom/agent-network start` → the entire pipeline scrolls past in your terminal.
+> `pnpm --filter @loomwork/agent-network start` → the entire pipeline scrolls past in your terminal.
 
 No UI, no API key, no external services: a **ScriptedLlmProvider**, an **in-process MCP server**, and **in-memory stores** make every run reproducible.
 
@@ -185,7 +185,7 @@ Everything the eight layers touch is here — nothing hidden.
 ## Run it
 
 ```bash
-pnpm --filter @loom/agent-network start
+pnpm --filter @loomwork/agent-network start
 ```
 
 Prints a labelled banner per layer and exits — reproducible every run.

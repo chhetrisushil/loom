@@ -132,7 +132,7 @@ same *mechanism*. That still stands, and reading the revision alongside the repo
 - **Below it, loom already ships the mechanism twice.** `observed` reduces to *"this assertion's
   evidence reference resolves to evidence the system holds"* — which is `undeclared-projection` in
   `validateBlueprint` (a binding to a projection the blueprint never declares), and it is
-  `checkCitations` / `assertGrounded` in `@loom/knowledge`, whose own comment draws exactly this
+  `checkCitations` / `assertGrounded` in `@loomwork/knowledge`, whose own comment draws exactly this
   line: a fabricated citation is decidable with certainty, whether the claim *follows* from the
   passage needs a judge.
 - **Above it, nothing is checkable at composition.** `estimated` and `predicted` require a
@@ -146,7 +146,7 @@ about provenance that no seam can validate). A design that presents them as one 
 silently degrade into a label — the vacuous-check pattern, at the exact place the paper's trust
 model is load-bearing.
 
-Consequence for loom: if this ever becomes 1P it is **not** a third `@loom/classify` axis. It is a
+Consequence for loom: if this ever becomes 1P it is **not** a third `@loomwork/classify` axis. It is a
 label plus evidence-reference resolution, and two implementations of that already exist in the
 repo. The gate is unchanged: a second consumer whose *implementation* has that shape, not whose
 motive does.
@@ -166,9 +166,9 @@ motive does.
 | §5.2 semantic mutation ops (add node, rebind, reorder) | **Not needed, and deliberately absent.** `SURFACE_PATCH` addresses values and has no structural op; recomposition is a second `BLUEPRINT_COMPOSED`, not a mutation of the first. The merge primitive the paper actually needs is *identity*, which shipped. A blueprint **diff** has no second consumer today — A2UI's `updateComponents` may legitimately replace a subtree, so the egress path does not need one |
 | §7.3 export / diff / code review of a view | **app** — a blueprint is JSON with stable node ids; diff is a tree comparison, export is a serialization |
 | §8.3 agent-to-agent handoff as artifact exchange | **shipped** — P7 was already the best-supported claim in the paper (`agentSurfaceProjection` + the A2UI bridge project one logged artifact two ways) |
-| §9.3 gap classes (intent/data/tool/relationship/component/workflow/policy) | **app** — `@loom/analytics` read-only lenses over the composition log. The class taxonomy is the product's |
+| §9.3 gap classes (intent/data/tool/relationship/component/workflow/policy) | **app** — `@loomwork/analytics` read-only lenses over the composition log. The class taxonomy is the product's |
 | §11 reversibility classes 0–4 | **shipped** — [ADR 0084](../adr/0084-effect-classes-static-ceiling-k2-floor.md), app-supplied ascending vocabulary, composed as the max over every reachable effect ([ADR 0086](../adr/0086-runner-body-reach-analysis.md)) |
-| §12.2 automatic baseline: draft tool contracts from existing API schemas | **tooling** — `@loom/appgen` / `loom scaffold`, at build time. Deliberately no runtime NL (P11) |
+| §12.2 automatic baseline: draft tool contracts from existing API schemas | **tooling** — `@loomwork/appgen` / `loom scaffold`, at build time. Deliberately no runtime NL (P11) |
 | §12.3 ownership split | organisational; nothing to place |
 | §13.1 first-attempt validation rate, gap velocity | **computable today** — `BlueprintValidation.widgets` is the denominator ADR 0088 D3 added for exactly this metric; the rest is analytics |
 | §13.2 H1–H8 | The right shape for a proposal this size. H6 ("the catalogue is tractable") is the one loom can instrument directly: degradation rate is a rate over `validateBlueprint` findings, not a survey |

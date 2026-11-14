@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-renderer-react",
+  "name": "@loomwork/plugin-renderer-react",
   "version": "0.1.0",
   "description": "React renderer for Loom blueprints — validation renderer",
   "main": "./dist/index.js",
@@ -20,11 +20,11 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/agent-surface": "workspace:^",
-    "@loom/blueprint-runtime": "workspace:^",
-    "@loom/core": "workspace:^",
-    "@loom/projection-runtime": "workspace:^",
-    "@loom/workflow-runtime": "workspace:^"
+    "@loomwork/agent-surface": "workspace:^",
+    "@loomwork/blueprint-runtime": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/projection-runtime": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
   },
   "peerDependencies": {
     "react": "^18.0.0",

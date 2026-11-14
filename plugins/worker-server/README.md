@@ -1,15 +1,15 @@
-# @loom/plugin-worker-server — the HTTP endpoint a remote worker runs
+# @loomwork/plugin-worker-server — the HTTP endpoint a remote worker runs
 
 A small `node:http` server that runs one `ExecutionPackage` per `POST /execute` on a `WorkerRuntime` you
 inject and returns the `ExecutionResult`. It keeps no execution state: every request allocates a lease,
 runs to completion or suspension, and releases. It is the container entrypoint for remote and Cloud Run
-execution, paired with `@loom/plugin-worker-remote` on the calling side. Skip it if executions run in
+execution, paired with `@loomwork/plugin-worker-remote` on the calling side. Skip it if executions run in
 the same process as your app.
 
 ```ts
-import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import { startWorkerServer } from "@loom/plugin-worker-server";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
+import { LocalWorkerRuntime } from "@loomwork/worker-runtime-local";
+import { startWorkerServer } from "@loomwork/plugin-worker-server";
+import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
 
 declare const runtime: WorkflowRuntime; // flows and effects registered, stores shared with the caller
 
@@ -53,6 +53,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 - [ADR 0002](../../docs/adr/0002-http-worker-and-remote-worker-runtime.md): the HTTP worker.
 - [Cloud Run deploy guide](../cloudrun/deploy.md).
-- API reference: section "`@loom/plugin-worker-server` — the stateless HTTP worker" in
+- API reference: section "`@loomwork/plugin-worker-server` — the stateless HTTP worker" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/scaling.md](../../docs/scaling.md), [docs/user-guide.md](../../docs/user-guide.md).

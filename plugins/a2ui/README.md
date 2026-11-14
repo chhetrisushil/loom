@@ -1,4 +1,4 @@
-# @loom/plugin-a2ui — render a Loom agent surface in any A2UI client
+# @loomwork/plugin-a2ui — render a Loom agent surface in any A2UI client
 
 Projects a Loom agent surface onto the Google A2UI (Agent-to-UI) wire protocol v1.0, so a client that
 speaks A2UI can draw a Loom-driven UI. `A2UISurfaceBridge` turns an execution's surface patches into
@@ -7,8 +7,8 @@ for you to turn into a resume, and can ask the client to run a named function (`
 produces and consumes message objects; you provide the transport (SSE, WebSocket, and so on).
 
 ```ts
-import { A2UISurfaceBridge, badge, bind, column, text } from "@loom/plugin-a2ui";
-import type { EventEnvelope } from "@loom/core";
+import { A2UISurfaceBridge, badge, bind, column, text } from "@loomwork/plugin-a2ui";
+import type { EventEnvelope } from "@loomwork/core";
 
 declare const executionId: string;
 declare function send(messages: unknown[]): void;
@@ -71,6 +71,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
   [ADR 0070](../../docs/adr/0070-a2ui-callfunction-bidirectional-rpc.md): egress and `callFunction`.
 - [ADR 0088](../../docs/adr/0088-blueprint-conformance.md): the structural checks.
 - A runnable `callFunction` demo lives in the `loom-examples` repo (`a2ui-callfunction`, `a2ui-egress`).
-- API reference: section "`@loom/plugin-a2ui` — A2UI (Agent-to-UI) adapter" in
+- API reference: section "`@loomwork/plugin-a2ui` — A2UI (Agent-to-UI) adapter" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

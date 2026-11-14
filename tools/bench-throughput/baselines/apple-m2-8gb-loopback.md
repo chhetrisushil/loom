@@ -1,4 +1,4 @@
-<!-- Captured 2026-08-09T08:53Z. Verbatim output of `pnpm --filter @loom/bench-throughput hardware`. -->
+<!-- Captured 2026-08-09T08:53Z. Verbatim output of `pnpm --filter @loomwork/bench-throughput hardware`. -->
 
 # Loom hardware report
 

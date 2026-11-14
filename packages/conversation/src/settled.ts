@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import type { Identity } from "./access";
 import { conversationIdOf } from "./ids";
 import { recordOf } from "./reader";

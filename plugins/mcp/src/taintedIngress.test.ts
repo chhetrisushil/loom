@@ -1,13 +1,13 @@
 import * as http from "node:http";
-import { isTainted, taintOf, unwrapTainted } from "@loom/classify";
-import type { FlowDefinition } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { UntrustedContentError, createLlmEffect } from "@loom/llm";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { isTainted, taintOf, unwrapTainted } from "@loomwork/classify";
+import type { FlowDefinition } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { UntrustedContentError, createLlmEffect } from "@loomwork/llm";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { McpClient } from "./McpClient";
@@ -16,8 +16,8 @@ import { mcpTool$ } from "./mcpTool$";
 
 // ── Third-party content reaching a prompt, end to end ────────────────────────
 //
-// The unit tests either side of this seam pass in isolation: `@loom/classify`
-// round-trips a taint, `@loom/llm` refuses one in instruction position. Neither
+// The unit tests either side of this seam pass in isolation: `@loomwork/classify`
+// round-trips a taint, `@loomwork/llm` refuses one in instruction position. Neither
 // proves the property that matters — that content a third-party MCP server
 // wrote cannot become an instruction in THIS system — because that property
 // only exists if taint survives the whole path: tool result → effect return →

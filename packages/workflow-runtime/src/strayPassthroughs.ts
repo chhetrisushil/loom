@@ -1,5 +1,5 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { FLOW_DIVERGED_GATE } from "@loom/replay-vm";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { FLOW_DIVERGED_GATE } from "@loomwork/replay-vm";
 import { EFFECT_INDOUBT_RESOLVED } from "./types";
 
 // ADR 0104 D2 — finding the gate passthroughs a pre-0104 kernel recorded that answered NO

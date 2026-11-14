@@ -1,6 +1,6 @@
-import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { ReplayVM } from "@loom/replay-vm";
+import type { EventEnvelope } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { ReplayVM } from "@loomwork/replay-vm";
 import { describe, expect, it } from "vitest";
 import { terminalEndOf } from "./executionEnd";
 import { sweepUnpinnedContent } from "./gc";

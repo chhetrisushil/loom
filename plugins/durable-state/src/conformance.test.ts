@@ -1,4 +1,4 @@
-import { runDurableStateStoreConformance } from "@loom/conformance";
+import { runDurableStateStoreConformance } from "@loomwork/conformance";
 import { InMemoryDurableStateStore } from "./InMemoryDurableStateStore";
 
 // Dogfood the published conformance kit against the reference backend — the same

@@ -1,4 +1,8 @@
-import { EmbeddingMemoryStore, HashingEmbeddingProvider, InMemoryMemoryStore } from "@loom/memory";
+import {
+  EmbeddingMemoryStore,
+  HashingEmbeddingProvider,
+  InMemoryMemoryStore,
+} from "@loomwork/memory";
 import { describe, expect, it } from "vitest";
 import { openKnowledgeBase } from "./KnowledgeBase";
 import type { DecideFn } from "./KnowledgeBase";

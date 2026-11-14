@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
-import { appFiles } from "@loom/scaffold";
-import type { RegisteredFlow } from "@loom/workflow-runtime";
+import { appFiles } from "@loomwork/scaffold";
+import type { RegisteredFlow } from "@loomwork/workflow-runtime";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { defineConfig } from "./defineConfig";
@@ -14,7 +14,7 @@ import { defineConfig } from "./defineConfig";
 
 const nodeRequire = createRequire(__filename);
 
-/** Transpile one generated file and evaluate it, resolving `@loom/*`/`zod` for real. */
+/** Transpile one generated file and evaluate it, resolving `@loomwork/*`/`zod` for real. */
 function load(source: string, local: Record<string, unknown> = {}): Record<string, unknown> {
   const js = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -41,9 +41,9 @@ describe("scaffolded app", () => {
 
   it("composes under strict, runs the greet flow, and denies an ungranted effect", async () => {
     const security = load(files["app/security.ts"] as string) as {
-      authorizer: import("@loom/effect-runtime").CapabilityAuthorizer;
-      executionAuthorizer: import("@loom/workflow-runtime").ExecutionAuthorizer;
-      resumeAuthenticator: import("@loom/workflow-runtime").ResumeAuthenticator;
+      authorizer: import("@loomwork/effect-runtime").CapabilityAuthorizer;
+      executionAuthorizer: import("@loomwork/workflow-runtime").ExecutionAuthorizer;
+      resumeAuthenticator: import("@loomwork/workflow-runtime").ResumeAuthenticator;
     };
     const greet = load(files["app/flows/greet/flow.ts"] as string).GreetFlow as RegisteredFlow;
 
@@ -102,9 +102,9 @@ describe("scaffolded app", () => {
   });
 
   it("the generated approver keys FAIL CLOSED: unset, empty, short, or odd-named approvers verify nothing", async () => {
-    const { signResume } = await import("@loom/workflow-runtime");
+    const { signResume } = await import("@loomwork/workflow-runtime");
     const security = load(files["app/security.ts"] as string) as {
-      resumeAuthenticator: import("@loom/workflow-runtime").ResumeAuthenticator;
+      resumeAuthenticator: import("@loomwork/workflow-runtime").ResumeAuthenticator;
     };
     const bind = { executionId: "e", parkedAtSequence: 3 };
     const ctx = { ...bind, principal: undefined };

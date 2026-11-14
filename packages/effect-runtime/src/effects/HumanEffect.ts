@@ -1,4 +1,4 @@
-import { SuspendError } from "@loom/core";
+import { SuspendError } from "@loomwork/core";
 import type { Effect, EffectContext } from "../types";
 
 export interface HumanEffectConfig {

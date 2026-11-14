@@ -1,4 +1,4 @@
-import type { WorkerRuntime } from "@loom/worker-runtime";
+import type { WorkerRuntime } from "@loomwork/worker-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import type { WorkerServer } from "./createWorkerServer";
 import { startWorkerServer } from "./startWorkerServer";

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { LoomApp } from "@loom/app";
+import type { LoomApp } from "@loomwork/app";
 import { UsageError } from "./args";
 import { cmdCheck } from "./check";
 import { cmdLintClaimCheck } from "./lintClaimCheck";
@@ -10,7 +10,7 @@ import { cmdVerify } from "./verify";
 // ── `loom doctor` — one front door for the pre-flight checks ─────────────────
 //
 // The checks were already there: `loom check` (flow-graph, needs a manifest),
-// `loom verify` (the @loom/verify rules, needs a config module), `loom lint
+// `loom verify` (the @loomwork/verify rules, needs a config module), `loom lint
 // claim-check` (needs a source dir). Three commands, three different inputs,
 // and — measured across 22 shipped examples with 53 `defineConfig` call sites —
 // zero apps running any of them. Fragmentation is the most plausible reason: a
@@ -98,7 +98,7 @@ export async function cmdDoctor(opts: {
     }
   }
 
-  // 2. The @loom/verify rules. Needs a BUILT config module — the one input that
+  // 2. The @loomwork/verify rules. Needs a BUILT config module — the one input that
   //    cannot be discovered from source alone.
   const config =
     opts.config !== undefined
@@ -317,7 +317,7 @@ const KEYS_CHECK = "encryption keys (will the log still be readable?)";
  * Until now the only protection was prose — a README saying "back it with a KMS in
  * production". This is that sentence, enforced.
  *
- * Read structurally (`.keys.durable`) so the CLI does not depend on @loom/plugin-crypto:
+ * Read structurally (`.keys.durable`) so the CLI does not depend on @loomwork/plugin-crypto:
  * a third party's own encrypting wrapper gets the same check for free by exposing the same
  * property.
  */
@@ -576,7 +576,7 @@ function heartbeatCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
     return {
       name: HEARTBEAT_CHECK,
       status: "skipped",
-      detail: "this app does not report a heartbeat decision (built with an older @loom/app)",
+      detail: "this app does not report a heartbeat decision (built with an older @loomwork/app)",
     };
   if (!hb.enabled && hb.source === "off")
     return {

@@ -13,7 +13,7 @@ export interface ContextStore<T> {
 export class AsyncContextUnavailableError extends Error {
   constructor() {
     super(
-      "@loom/workflow-runtime: entering a step/decide scope needs AsyncLocalStorage (node:async_hooks), " +
+      "@loomwork/workflow-runtime: entering a step/decide scope needs AsyncLocalStorage (node:async_hooks), " +
         "which this environment does not provide. Run the durable runtime on the server."
     );
     this.name = "AsyncContextUnavailableError";

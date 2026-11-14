@@ -1,8 +1,8 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { InMemoryAsyncEventStore, KeyUnavailableError } from "@loom/event-runtime";
-import { foldEvents } from "@loom/replay-vm";
-import type { Snapshot } from "@loom/snapshot-runtime";
-import { InMemoryAsyncSnapshotStore, TenantScopedSnapshotStore } from "@loom/snapshot-runtime";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { InMemoryAsyncEventStore, KeyUnavailableError } from "@loomwork/event-runtime";
+import { foldEvents } from "@loomwork/replay-vm";
+import type { Snapshot } from "@loomwork/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore, TenantScopedSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";

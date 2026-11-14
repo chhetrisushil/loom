@@ -1,16 +1,16 @@
-import { LocalDispatcher } from "@loom/dispatcher";
-import type { ExecutionDispatcher } from "@loom/dispatcher";
-import type { PrincipalChain } from "@loom/effect-runtime";
-import type { A2ATask, A2ATaskResult, A2ATaskStatus, AgentCard } from "@loom/plugin-a2a";
-import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
-import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import { LocalDispatcher } from "@loomwork/dispatcher";
+import type { ExecutionDispatcher } from "@loomwork/dispatcher";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import type { A2ATask, A2ATaskResult, A2ATaskStatus, AgentCard } from "@loomwork/plugin-a2a";
+import { LocalWorkerRuntime } from "@loomwork/worker-runtime-local";
+import type { RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { progressHub } from "./progressHub";
 
 // ── InProcessA2ABus — a bring-your-own A2A transport ──────────────────────────
 //
 // The A2A protocol is transport-agnostic: an agent publishes an AgentCard and
 // accepts tasks; a caller sends a task and polls its status until terminal
-// (submitted → working → completed/failed). @loom/plugin-a2a ships an HTTP transport
+// (submitted → working → completed/failed). @loomwork/plugin-a2a ships an HTTP transport
 // (createA2AServer/createA2AClientEffect) for cross-process agents. This app runs
 // entirely in the browser, so we bring our own in-process transport with the
 // exact same protocol shapes.
@@ -36,7 +36,7 @@ export interface ApprovalDecision {
   approved: boolean;
   approvedBy: string;
   /**
-   * R13 — the approver's signed proof (`signResume` from `@loom/workflow-runtime`), for an app
+   * R13 — the approver's signed proof (`signResume` from `@loomwork/workflow-runtime`), for an app
    * whose runtime wires a `resumeAuthenticator`. Sign the payload the bus will send — build it
    * with {@link approvalPayload} — then return `{ ...decision, proof }`:
    *
@@ -313,7 +313,7 @@ export class InProcessA2ABus {
     const entry = this.parked.get(taskId);
     if (entry === undefined) {
       throw new Error(
-        `task "${taskId}" is not parked at a gate this bus remembers (it was answered, never parked here, or evicted past maxTasks). The execution itself may still be parked: answer it directly with runtime.resume(executionId, answerApproval(state, decision)) from @loom/workflow-runtime.`
+        `task "${taskId}" is not parked at a gate this bus remembers (it was answered, never parked here, or evicted past maxTasks). The execution itself may still be parked: answer it directly with runtime.resume(executionId, answerApproval(state, decision)) from @loomwork/workflow-runtime.`
       );
     }
     const principal = options.principal ?? this.defaultPrincipal;

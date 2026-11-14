@@ -1,4 +1,4 @@
-import { ExecutionDeniedError, executionAccessPolicy } from "@loom/workflow-runtime";
+import { ExecutionDeniedError, executionAccessPolicy } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { alice, bob, boot, mallory, messages, signRaw } from "./__fixtures__/harness";
 import { ConversationNotFoundError } from "./index";

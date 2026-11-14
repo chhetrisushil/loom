@@ -1,4 +1,4 @@
-import { DEFAULT_BACKEND_GRACE_MS, SandboxEffect } from "@loom/sandbox";
+import { DEFAULT_BACKEND_GRACE_MS, SandboxEffect } from "@loomwork/sandbox";
 import { QuickJsSandboxBackend } from "./QuickJsSandboxBackend";
 import {
   DEFAULT_COLD_START_MS,
@@ -16,7 +16,7 @@ import type { SandboxLimits, SandboxWorkers, ScriptReader } from "./types";
 // complete on DECLARED channels (ADR 0060), and so does the script's own exception (`scriptError`);
 // infrastructure failures (worker pool, integrity, cancellation) stay UNTYPED.
 //
-// Since ADR 0144 the guarantees live in `SandboxEffect` (@loom/sandbox) and the engine in
+// Since ADR 0144 the guarantees live in `SandboxEffect` (@loomwork/sandbox) and the engine in
 // `QuickJsSandboxBackend`; this class keeps the original constructor so no consumer changes a line.
 export class SandboxEvalEffect extends SandboxEffect {
   /** Present only in worker mode. Kept on the effect (as before ADR 0144) for hosts and tests that inspect it. */

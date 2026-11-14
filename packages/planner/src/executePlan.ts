@@ -1,9 +1,9 @@
-import { isTerminalToolError, validateToolInput } from "@loom/agent";
-import type { CapabilityCatalog } from "@loom/capability";
-import { isTainted, tainted } from "@loom/classify";
-import type { TaintedValue } from "@loom/classify";
-import type { LlmContentPartInput } from "@loom/llm";
-import type { BranchContext, ExecutionContext } from "@loom/workflow-runtime";
+import { isTerminalToolError, validateToolInput } from "@loomwork/agent";
+import type { CapabilityCatalog } from "@loomwork/capability";
+import { isTainted, tainted } from "@loomwork/classify";
+import type { TaintedValue } from "@loomwork/classify";
+import type { LlmContentPartInput } from "@loomwork/llm";
+import type { BranchContext, ExecutionContext } from "@loomwork/workflow-runtime";
 import { claimId } from "./claim";
 import {
   PlanFailedError,

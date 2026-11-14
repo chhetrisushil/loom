@@ -215,14 +215,14 @@ rings:
 | **Fault supervision** | `SupervisingDispatcher` (restart/backoff + circuit breaker) | **K4** |
 | **On-disk ABI governance** | `EVENT_SCHEMA_VERSION` + pinned `knownEventTypes()` | **K5** |
 | **Behavioral / output safety** | `safetyMiddleware` validates effect input/output; a block is a durable `SAFETY_BLOCKED` fact | **K6** |
-| **Data-plane isolation** | `@loom/isolate` runs untrusted tool code behind a child-process boundary with brokered egress (`EGRESS_DENIED`) | **K7** |
+| **Data-plane isolation** | `@loomwork/isolate` runs untrusted tool code behind a child-process boundary with brokered egress (`EGRESS_DENIED`) | **K7** |
 | **Preemption / bounded work** | cancellation, enforced deadlines & bounded effects (a non-cooperative kill path) | **K8** |
 | **Exactly-enough delivery** | idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing tokens | **K9** |
 | **Data lifecycle / erasure** | retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption | **K10** |
 | **Code/version isolation** | `flowContentHash` pins or migrates in-flight executions (`EXECUTION_MIGRATED`), never silently | **K11** |
 | **Identity & tenancy** | principal chain, verified approvals (`APPROVAL_GRANTED`), delegated authority, tenant-scoped stores | **K12** |
 | **Timer service** | durable `ctx.sleep`/`sleepUntil` + scheduled executions (`TIMER_FIRED`, `schedule$` cron) | **T1** |
-| **Language neutrality** | `@loom/wire-abi` — a versioned JSON-RPC projection of the K1 syscall surface | **T2** |
+| **Language neutrality** | `@loomwork/wire-abi` — a versioned JSON-RPC projection of the K1 syscall surface | **T2** |
 | **Latency (advisory)** | off-log pre-warming of cold resources (K7 child, LLM connection, scheduled flows) — never a fold input (P10) | M6 / [pre-warm](../adr/0027-advisory-pre-warming.md) |
 | Observability | the log as the substrate; analytics/runtime intelligence | M9–M11 |
 | Learning (closed loop) | `OUTCOME_RECORDED` → `rankFromOutcomes` → `rankedRouter`; outcomes feed back into routing (all logged, P9) | M12 |

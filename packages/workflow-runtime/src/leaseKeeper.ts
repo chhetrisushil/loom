@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { LeaseStore } from "@loom/event-runtime";
+import type { LeaseStore } from "@loomwork/event-runtime";
 
 // ── One lease keeper per node (ADR 0130 D11, S7b) ─────────────────────────────
 //
@@ -49,7 +49,7 @@ export class LeaseLostError extends Error {
 /**
  * A driver stood down: another live owner holds an unexpired lease on the execution, so this
  * attempt drives nothing and took no fence (ADR 0130 D11: lease BEFORE fence). It is a refusal,
- * not a failure of the execution: nothing was appended. `isSupersededRefusal` (`@loom/worker-runtime`)
+ * not a failure of the execution: nothing was appended. `isSupersededRefusal` (`@loomwork/worker-runtime`)
  * settles it like a lost start race, so a dispatcher does not retry it.
  */
 export class LeaseHeldError extends Error {

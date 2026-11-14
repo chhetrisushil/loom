@@ -3,7 +3,7 @@ import {
   type TimerStore,
   isReservedStream,
   iterateExecutionIds,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { INBOX_WAKE_AT } from "./inbox";
 import type { CensusStateReader } from "./orphanCensus";
 

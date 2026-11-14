@@ -5,7 +5,7 @@ import {
   type ArchiveStore,
   assertReplaceable,
   classifyAppend,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 

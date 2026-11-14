@@ -3,8 +3,8 @@ import {
   type Snapshot,
   SnapshotIdentityMismatchError,
   assertSnapshotIdentity,
-} from "@loom/snapshot-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/snapshot-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { SealGuardedSnapshotStore, SealedStreamUnreadableError } from "./sealGuard";
 

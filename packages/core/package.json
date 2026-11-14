@@ -1,5 +1,5 @@
 {
-  "name": "@loom/core",
+  "name": "@loomwork/core",
   "version": "0.1.0",
   "description": "Core types and SDK builder functions for the Loom framework",
   "main": "./dist/index.js",

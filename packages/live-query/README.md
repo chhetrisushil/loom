@@ -1,11 +1,11 @@
-# @loom/live-query — live reads of in-flight executions
+# @loomwork/live-query — live reads of in-flight executions
 
 `loadState` folds an execution's state on demand; a **live query** is that plus a subscription:
 re-fold and push the new state each time an event lands. No syscall, no new event type — a read-model
 over `loadState` + `EventStore.subscribe` (P10). See [ADR 0040](../../docs/adr/0040-live-query-and-orchestration.md).
 
 ```ts
-import { liveQuery } from "@loom/live-query";
+import { liveQuery } from "@loomwork/live-query";
 
 const lq = liveQuery({ eventStore, reader: runtime });
 

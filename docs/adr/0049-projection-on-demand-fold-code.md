@@ -1,6 +1,6 @@
 # ADR 0049 — Projections fold on demand: event-type-gated lazy handler chunks
 
-- Status: **Accepted (implemented 2026-07-13)** — compiler + `@loom/projection-runtime` + `@loom/app`
+- Status: **Accepted (implemented 2026-07-13)** — compiler + `@loomwork/projection-runtime` + `@loomwork/app`
   (PR #155).
 - Date: 2026-07-13
 - Builds on: [ADR 0044](0044-no-compiler-plugin-api-manifest-as-output-contract.md) (the compiler's
@@ -44,7 +44,7 @@ The design fork was **when** a projection's `import()` chunk loads, given the ru
    buffers that + subsequent matching events, drains the buffer in arrival order, then folds
    synchronously thereafter. A projection whose event types never fire never loads its code.
 
-3. **`@loom/app`** — `defineConfig` adapts `ProjectionDefinition → Projection` (a ref becomes an
+3. **`@loomwork/app`** — `defineConfig` adapts `ProjectionDefinition → Projection` (a ref becomes an
    event-type-gated `lazy` projection; an inline map stays eager) and adds `projections` +
    `projectionModules` config keys; `loom gen` discovers `app/projections/*.ts`.
 

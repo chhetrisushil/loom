@@ -6,7 +6,7 @@
   the DE-2 durability-class rejection ([DE-series evaluation](../requirements/2026-07-19-dynamic-execution-de-series-evaluation.md)),
   execution-lifecycle authz ([ADR 0039](0039-execution-lifecycle-authz.md)),
   typed failure channels ([ADR 0060](0060-typed-failure-channels.md)),
-  K10-R1 data classification (`@loom/classify`).
+  K10-R1 data classification (`@loomwork/classify`).
 - Part of: the kernel/1P/3P triage discipline (P10 — bias outward). **KERNEL_ABI unchanged
   (1.1.0); EVENT_SCHEMA unchanged** — no syscall, no event type, no fold change. This is a
   boundary check at the execute seam, the ADR 0039 shape.
@@ -32,7 +32,7 @@ share a tool namespace.
 The **mechanism** is built. `invokeTransient` (ADR 0066) is the ambient path, and its D2 is
 emphatic that "zero durable footprint is structural, not conventional... by construction, not by
 a flag": the `EffectRuntime` holds no event store, journal, or fence, so a transient invocation
-produces no envelopes at all. `@loom/live-query` and `@loom/plugin-read-model` (ADR 0058) cover
+produces no envelopes at all. `@loomwork/live-query` and `@loomwork/plugin-read-model` (ADR 0058) cover
 the read-model half.
 
 The **declaration** does not exist. Which side of the boundary a tool belongs on is decided
@@ -49,7 +49,7 @@ declarations on `tool$` whose enforced copy lives on the registered effect.
 
 ### D1 — `mode: "journaled" | "ambient"` on `tool$`, enforced on the effect
 
-`EffectMode` in `@loom/core`; `tool$({ mode })` carries the declaration; `new ToolEffect(fn,
+`EffectMode` in `@loomwork/core`; `tool$({ mode })` carries the declaration; `new ToolEffect(fn,
 { mode })` carries the enforced copy. Undeclared is a true no-op — existing effects behave
 byte-identically on both seams (G2), so nothing defaults into a boundary.
 
@@ -84,7 +84,7 @@ merely *looks* transient. Tested explicitly.
 ## Consequences
 
 - **Routing is read off the declaration.** `servedEffect(effectRuntime, toolId, …)` in
-  `@loom/plugin-mcp` dispatches `ambient` tools through `invokeTransient` and everything else
+  `@loomwork/plugin-mcp` dispatches `ambient` tools through `invokeTransient` and everything else
   through the caller's journaled path — no hardcoded allowlist per surface. A new invocation
   surface cannot accidentally journal an enrichment read.
 - **ADR 0066's structural guarantee becomes a declared one.** Before this, nothing stopped a
@@ -149,5 +149,5 @@ about it being worth adding on its own merits, with two corrections worth record
    deliberately not on the tool. `tool$`'s declaration bundle is `idempotent`/`egress`/`errors`,
    which is what `mode` joins.
 2. **It is not a kernel requirement.** Under D2 it is a check at the execute seam —
-   `@loom/core` for the declaration, `@loom/effect-runtime` for the enforcement — so
+   `@loomwork/core` for the declaration, `@loomwork/effect-runtime` for the enforcement — so
    KERNEL_ABI stays 1.1.0. It would only have been a kernel change under the design D2 rejects.

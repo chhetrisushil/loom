@@ -1,11 +1,11 @@
 import * as http from "node:http";
-import { step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
-import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { step$ } from "@loomwork/core";
+import type { FlowDefinition } from "@loomwork/core";
+import { EffectRuntime, GrantTable, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { handleRpc } from "./carrier";
@@ -207,7 +207,7 @@ describe("T2.4 — a non-TS client starts, suspends, resumes, and replays over J
 // R3 round 1 (P2-3) — the transport's authenticated principal reaches EVERY execution method.
 describe("carrier principal under fail-closed execution authz", () => {
   it("start, resume, getState and cancel all carry the principal resolved by the transport", async () => {
-    const { executionAccessPolicy } = await import("@loom/workflow-runtime");
+    const { executionAccessPolicy } = await import("@loomwork/workflow-runtime");
     const effects = new EffectRuntime();
     effects.register("act-tool", new ToolEffect(async (input: unknown) => input));
     const runtime = new WorkflowRuntime({

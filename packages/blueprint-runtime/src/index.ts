@@ -36,10 +36,10 @@ export {
   preservesNodes,
 } from "./identity";
 export { blueprintPins, checkBlueprintPins } from "./pins";
-// Re-exported from @loom/core so a consumer of the blueprint spelling types its report
+// Re-exported from @loomwork/core so a consumer of the blueprint spelling types its report
 // from the package it already imports — `IdentityReport` does not send anyone elsewhere
 // either. The comparison itself stays in core, where its other consumer can reach it.
-export type { PinFinding, PinFindingCode, PinReport, VersionPins } from "@loom/core";
+export type { PinFinding, PinFindingCode, PinReport, VersionPins } from "@loomwork/core";
 export { RendererRegistry } from "./RendererRegistry";
 export { traverseBlueprint, resolveWidgetValue, resolvePath } from "./traverseBlueprint";
 export { describeWidgetFrame, describeWidgetStatus } from "./widgetStatus";
@@ -71,7 +71,7 @@ export type {
   WidgetAction,
   WidgetRendererProps,
 } from "./types";
-export type { DataClass } from "@loom/classify";
+export type { DataClass } from "@loomwork/classify";
 export type { ContainerContext, BlueprintTraversalOptions } from "./traverseBlueprint";
 export type {
   CatalogEntry,

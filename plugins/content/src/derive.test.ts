@@ -1,6 +1,6 @@
-import { externalized } from "@loom/classify";
-import { step$ } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { externalized } from "@loomwork/classify";
+import { step$ } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { ContentResolvingEventStore } from "./ContentResolvingEventStore";

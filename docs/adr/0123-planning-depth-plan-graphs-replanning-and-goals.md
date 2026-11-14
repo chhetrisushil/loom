@@ -10,11 +10,11 @@
   (the owner of a goal is the authenticated principal), [ADR 0109](0109-bounded-history-and-continue-as-new.md) (a long-horizon goal
   outlives an execution chain), [ADR 0085](0085-untrusted-content-integrity-axis.md) (model- and tool-authored text is untrusted data),
   [ADR 0083](0083-second-consumer-rule.md) (relaxed for Part R; consumers named below).
-- Consumers: the **loom-ui planner** (`@loom-ui/planner`: a composed surface is a plan whose steps depend on each other's data), the
+- Consumers: the **loom-ui planner** (`@loomwork/ui-planner`: a composed surface is a plan whose steps depend on each other's data), the
   **`agent-swarm`** example (a swarm wired from intent is a DAG; today it hand-rolls fan-out) and **`agent-network`** (the
   LLM → agent → planner chain, today a flat list). The example specified for this ADR is `plan-and-replan` in `loom-examples`
   (see the PR; this repo does not edit that one).
-- Placement: **1P, kernel untouched.** All code is in `@loom/planner`. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are
+- Placement: **1P, kernel untouched.** All code is in `@loomwork/planner`. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are
   unchanged; no syscall, no event kind, no payload field. It is built from `ctx.decide`, `ctx.parallel`, `ctx.execute` and the
   effect ring as they exist.
 
@@ -142,7 +142,7 @@ live child terminal with a failure ⇒ failed; abandoned children ignored) and w
 **Why a keyed CAS store and not an execution's state or continue-as-new.** A goal spans runs; ADR 0109's carry is per chain and is
 the wrong owner for something several executions (a planner run, a retry next week, a human's edit) share. `DurableGoalStore` keeps one
 document per owner under `loom.goals/<encoded owner>` over `GoalKvStore`, a structural subset of `DurableStateStore`
-(`@loom/plugin-durable-state`: SQLite and Postgres backends exist), so this package takes no dependency on the plugin tier. Every
+(`@loomwork/plugin-durable-state`: SQLite and Postgres backends exist), so this package takes no dependency on the plugin tier. Every
 mutation is load → pure change → `save(expectedRevision)`, retried on a lost race (8 attempts). A stored document that names another
 owner is refused. `InMemoryGoalStore` is the reference. A long-horizon flow combines the two: `ctx.continueAsNew` carries the goal
 **id**, the store holds the goal.
@@ -163,8 +163,8 @@ A flow that moves from `plan()` to `planGoal()` is a body change like any other 
 
 ### D7 — What this does not do
 
-- **`executeGraph` (`@loom/graph-executor`) gains no edges.** It fans a set of independent *executions* across compute placement,
-  one writer each, and joins; a DAG of executions is `@loom/orchestration`'s job (`awaitChildren`). `executePlan` is the in-execution
+- **`executeGraph` (`@loomwork/graph-executor`) gains no edges.** It fans a set of independent *executions* across compute placement,
+  one writer each, and joins; a DAG of executions is `@loomwork/orchestration`'s job (`awaitChildren`). `executePlan` is the in-execution
   DAG: its steps are durable frames of one execution. A step whose `invoke` spawns a child execution composes the two.
 - **No dynamic start-as-ready scheduling** (D3), and no mid-wave cancellation of siblings on failure.
 - **No automatic goal decomposition.** A model may be asked to propose subgoals, but creating them is an explicit `goals.create`.
@@ -173,8 +173,8 @@ A flow that moves from `plan()` to `planGoal()` is a body change like any other 
 
 ### D8 — Fix round 1 (Opus review of PR #520)
 
-- **Owner = the shared identity key.** `principalIdentityKey` / `identityKeyOf` (`@loom/effect-runtime`, next to `principalBlocked`) is
-  `[tenant, actor, onBehalfOf]`; goals and `@loom/conversation` both use it, so a delegate acting `onBehalfOf` u1 is not u2's
+- **Owner = the shared identity key.** `principalIdentityKey` / `identityKeyOf` (`@loomwork/effect-runtime`, next to `principalBlocked`) is
+  `[tenant, actor, onBehalfOf]`; goals and `@loomwork/conversation` both use it, so a delegate acting `onBehalfOf` u1 is not u2's
   owner. A shredded or unresolved principal has no owner.
 - **An id namespace is claimed once per execution context** (`planGoal` / `executePlan` `planId`, `goalsClient` prefix): a second
   claim throws `IdReusedError` instead of being served the first call's recorded result.
@@ -215,7 +215,7 @@ A flow that moves from `plan()` to `planGoal()` is a body change like any other 
 ## Questions for the user
 
 1. **`executeGraph` edges.** Left flat (D7). If a dependency-ordered fan-out of *executions* is wanted, it is a separate change in
-   `@loom/orchestration`, not in the dispatcher-level graph.
+   `@loomwork/orchestration`, not in the dispatcher-level graph.
 2. **Wave barrier vs. dynamic scheduling.** Chosen for replay determinism; reconsider only if the overlap loss shows up in a real
    workload.
 3. **`rollup` is explicit.** Auto-rolling-up on every `setStatus` would be surprising when a parent is also pursued directly.

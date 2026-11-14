@@ -1,5 +1,5 @@
-import { type ArchiveStore, type EventStore, decoratedInnerOf } from "@loom/event-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+import { type ArchiveStore, type EventStore, decoratedInnerOf } from "@loomwork/event-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 
 // ── ADR 0130 D8 (kernel half) - a checkpoint of a sealing log must itself be sealed ──────────
 //

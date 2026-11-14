@@ -14,7 +14,7 @@
   [ADR 0085](0085-untrusted-content-integrity-axis.md) (delivered payloads are tainted).
 - Placement: **split.** Kernel: `ctx.receive` / `ctx.select`, the `MESSAGE_CONSUMED` fact, the
   multi-wait park condition, the reader seam, and an **authorized `runtime.send`** (the only writer of the
-  inbox stream). **1P** (new `@loom/inbox`): routing by logical name, pub/sub, fan-in, retry helpers, all
+  inbox stream). **1P** (new `@loomwork/inbox`): routing by logical name, pub/sub, fan-in, retry helpers, all
   built on `runtime.send`. Shares the Wave 2 bump (KERNEL_ABI 1.3.0, EVENT_SCHEMA 1.23.0).
 - Revision: round 2 — the due-now notify row is coalesced (D5.3), the stream trim before a continuation
   commits is conservative (D1), the chain head is resolved with a successor probe (ADR 0109 D4), a fork
@@ -56,7 +56,7 @@ survives a continuation). The owner never has its own log appended to by a sende
 race with it (the rejected design below); the owner **pulls** and journals consumption into its own log.
 
 **The only writer is `runtime.send(chainId, { topic, payload, messageId }, { principal, system? })`.** The
-first draft had `@loom/inbox` append to the stream directly, which is a 1P writer holding no authorization:
+first draft had `@loomwork/inbox` append to the stream directly, which is a 1P writer holding no authorization:
 exactly the argument ADR 0116 makes against a 1P append for outcomes. Now:
 
 - `send` is authorized as a new `ExecutionOp` **`"send"`** (additive union member; `executionAccessPolicy`
@@ -67,9 +67,9 @@ exactly the argument ADR 0116 makes against a 1P append for outcomes. Now:
 - The runtime records the **sender** on the message (`sender: { tenant?, actor?, onBehalfOf? }`, the same
   bounded identity subset as ADR 0111 D1) and copies it into `MESSAGE_CONSUMED` (D5). The **payload is
   delivered tainted** (ADR 0085): the flow receives `tainted(payload, "inbox:<topic>")`, so it is refused in
-  every prompt instruction position by `@loom/llm` unless a step explicitly unwraps it. A message is
+  every prompt instruction position by `@loomwork/llm` unless a step explicitly unwraps it. A message is
   untrusted content from another party by construction.
-- `@loom/inbox` (1P) keeps routing by logical name, pub/sub fan-out, dead-lettering, sender-side retry and
+- `@loomwork/inbox` (1P) keeps routing by logical name, pub/sub fan-out, dead-lettering, sender-side retry and
   the A2A / orchestration adapters; each of them calls `runtime.send`. This also resolves the
   contradiction between ADR 0109 D4 (`runtime.send`) and the first draft of this ADR (a 1P `send`).
 - The kernel defines the reader seam: `InboxSource.read(chainId, topic, afterSeq, limit)`, passed as
@@ -262,10 +262,10 @@ state and every snapshot). **`sender` is only as trustworthy as the principal th
 deduplicated. An `EventStore.appendIfAbsent(id)` SPI method, which would make duplicates impossible at the
 stream, is **deferred** (design document §7 question 4: adopt the bounded window; revisit with evidence).
 
-### D7 — What stays 1P (`@loom/inbox`)
+### D7 — What stays 1P (`@loomwork/inbox`)
 
 Routing by logical name (name → chain), pub/sub topics fanned out to several chains, dead-lettering,
-sender-side retry and idempotency-key helpers, and the A2A / `@loom/orchestration` adapters that today do
+sender-side retry and idempotency-key helpers, and the A2A / `@loomwork/orchestration` adapters that today do
 this over `resume`, all over `runtime.send`. `runtime.resume` keeps its meaning (answer a parked gate);
 the "message while busy" case becomes `send`.
 
@@ -318,7 +318,7 @@ refused; payload over the inline cap refused at `send`.
   unauthorized writer is an injection channel.
 - **Content-predicate selective receive** (Erlang-style `receive` with patterns): non-deterministic on
   re-evaluation and a scan per call.
-- **An inbox inside `@loom/orchestration`**: orchestration is parent/child; an inbox is the addressing
+- **An inbox inside `@loomwork/orchestration`**: orchestration is parent/child; an inbox is the addressing
   primitive for every pair of parties.
 
 ## Consequences
@@ -326,7 +326,7 @@ refused; payload over the inline cap refused at `send`.
 - An agent can be addressed while it is busy, wait on several sources, and never lose a message to the
   park transition, at the cost of a second reserved stream per chain and one kernel runtime method.
 - `runtime.send` is a kernel entry point (authz op `"send"`), so the inbox's security boundary is the
-  kernel's; `@loom/inbox` is convenience, not trust.
+  kernel's; `@loomwork/inbox` is convenience, not trust.
 - Order: this PR requires R8k (ADR 0118: `acquireFenceIf`), R6 (scope paths, barrier) and R3k (owner).
 
 ## Implementation notes (R2, accepted 2026-10-07)
@@ -335,7 +335,7 @@ What landed: `ctx.receive` / `ctx.select` (KERNEL_ABI 1.3.0 table entries; the s
 sufficient, nothing in them changed), `runtime.send` and `runtime.notifyInbox`, the multi-wait park, the
 wait-addressed resume (`ResumeEvent.waitId`), per-wait `viewDigest` and signature binding, the due-now
 wake row, the owner-side trim and the stream's deletion with its chain, behind `kernel.features.inbox`
-(`WorkflowRuntimeDeps.inboxEnabled`). Not in this PR: the 1P `@loom/inbox` package (routing by name,
+(`WorkflowRuntimeDeps.inboxEnabled`). Not in this PR: the 1P `@loomwork/inbox` package (routing by name,
 pub/sub, dead-lettering, retry helpers). The design plan split it into its own PR; it calls only
 `runtime.send`, so nothing here waits on it.
 
@@ -501,7 +501,7 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
 - **The park-per-message loop is quadratic until the flow rotates (R1b, ADR 0109, now Accepted).** A slow-sender loop re-parks between messages and
   every park snapshots (and every wake re-runs) a state holding one answer per consumed message: turn n is
   O(n), the whole conversation O(n^2). The inbox itself is flat (measured below); continue-as-new (R1b,
-  ADR 0109: a loop rotates every N turns, `@loom/agent`'s `continueEvery`) is what bounds the history.
+  ADR 0109: a loop rotates every N turns, `@loomwork/agent`'s `continueEvery`) is what bounds the history.
 - A refused send may keep being refused for up to 250 ms after the owner drains the backlog (the full
   verdict is cached per chain and head).
 - A message whose owner never waits on its topic pins the stream: `send` refuses (`InboxFullError`) at
@@ -514,7 +514,7 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
 - A cross-process wake needs a `TimerStore` on the sender's runtime; without one only the same-process fast
   path and `recoverAbandoned`'s sweep wake a parked owner (a warning says so).
 
-**Measurements** (`tools/bench-throughput`, `pnpm --filter @loom/bench-throughput bench:inbox`; Apple
+**Measurements** (`tools/bench-throughput`, `pnpm --filter @loomwork/bench-throughput bench:inbox`; Apple
 silicon, local Postgres 17 over TCP; medians):
 
 | | memory | Postgres |
@@ -557,7 +557,7 @@ and, with `LOOM_TEST_POSTGRES_URL`, on Postgres.
 - Closes the logged follow-ups of the 2026-10-07 "Residuals" and "Pinned-stream DoS" bullets.
 - **Wire and ABI: nothing changes.** `EVENT_SCHEMA` stays 1.23.0, `KERNEL_ABI` stays 1.3.0, the `EventStore` SPI is
   untouched, no fold handler changes, no syscall is added. `ExecutionOp` gains one additive member (`"discard"`),
-  exactly as `"send"` and `"annotate"` did, and the conformance kit gains its case. `@loom/event-runtime` exports
+  exactly as `"send"` and `"annotate"` did, and the conformance kit gains its case. `@loomwork/event-runtime` exports
   `INBOX_STREAM_PREFIX`, `inboxChainOf` and `chainIdOfFirst` (the stream's addressing, moved down so the crypto
   plugin and the compliance package can name it without depending on the runtime).
 - **Consumers (ADR 0083, named).** The second-consumer rule gates *speculative surface*; these close known safety
@@ -609,7 +609,7 @@ message of ONE topic with `inboxSeq <= throughSeq`, and so releases a pinned str
   `send`), before "not found" is revealed; a denial appends nothing (no `EXECUTION_DENIED`, as for `send`: an
   outsider never writes the owner's log). `executionAccessPolicy` maps it to **`"deny"`**: it destroys messages
   a sender was told were accepted, so the integrator opens it deliberately (`rules: { discard: "tenant" }` for
-  a tenant's operators, `"any"` for a platform operator). `@loom/conversation` polices it with the other ops
+  a tenant's operators, `"any"` for a platform operator). `@loomwork/conversation` polices it with the other ops
   (owner or deny). The operator's identity subset is recorded as the fact's `sender`.
 - **The owner must be parked.** The fact lands in the owner's OWN log, which only a parked owner accepts without
   racing its own appends (the race the separate stream exists to avoid). It is written by the existing
@@ -708,7 +708,7 @@ The 2026-10-07 residual: erasure reached `MESSAGE_CONSUMED` in the owner's log b
 **Why it was deferred first, and what was built.** It needs no `EVENT_SCHEMA` or `KERNEL_ABI` change and keeps existing data
 readable, so the gate was never the ABI: it rewrites the stream layout across ten sites in four packages (the sender's
 allocation, the default `InboxSource`, the notify scan, the trim, the backlog accounting, the reclaim sweep and the
-delete-with-chain, fork and re-open floor seeding, `@loom/conversation`'s `inboxBargeIn`, the erasure purge of D9) and adds a
+delete-with-chain, fork and re-open floor seeding, `@loomwork/conversation`'s `inboxBargeIn`, the erasure purge of D9) and adds a
 reserved-id rule and a fleet switch, which wanted its own review round. D8 closes the *operational* hole (an operator can
 release a pin); D10a (TTL, no layout change) was built first and D10b (per-topic streams) on request. Both are below.
 
@@ -813,7 +813,7 @@ legacy run fold to the same event kinds and output, tested).
 
 - **Layout.** A chain's inbox may hold, beside the legacy stream `__loom_inbox__:<chainId>`: one stream per topic,
   `__loom_inbox__:<chainId>#<h>` (`h` = first 16 hex digits of `sha256(topic)`), and a registry
-  `__loom_inbox__:<chainId>#reg`. The naming lives in `@loom/event-runtime` (`inboxTopicStreamId`,
+  `__loom_inbox__:<chainId>#reg`. The naming lives in `@loomwork/event-runtime` (`inboxTopicStreamId`,
   `inboxRegistryStreamId`, `inboxChainOf` — which now maps all three to the chain — and `inboxStreamsOfChain`), so the
   runtime, the compliance purge and the crypto decorator share one rule.
 - **One cursor space, disjoint ranges (what makes it lossless).** A topic stream's sequences start at
@@ -856,7 +856,7 @@ legacy run fold to the same event kinds and output, tested).
 - **D8 discard and D10a TTL.** `discardInbox` takes `throughSeq` in either range (the bound is the head of the stream the
   sequence names, so a topic-range sequence is judged against the topic's stream); the TTL pass also scans each
   registered topic's stream that has a TTL (the legacy stream first, so the per-topic prefix rule holds).
-- **`@loom/conversation`.** `inboxBargeIn` subscribes to the legacy stream AND the conversation topic's own stream, and
+- **`@loomwork/conversation`.** `inboxBargeIn` subscribes to the legacy stream AND the conversation topic's own stream, and
   `pendingMessages` compares the owner's cursor with the higher of the two heads (tested: a new turn still interrupts, and
   a message already waiting in the topic's stream is found by a late subscriber).
 - **Rolling upgrade: a node writes per-topic only once the FLEET opted in.** Two steps, both durable:

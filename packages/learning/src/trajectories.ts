@@ -1,6 +1,6 @@
-import { decisionRecords, outcomeRecords } from "@loom/analytics";
-import type { DecisionRecord, OutcomeRecord } from "@loom/analytics";
-import type { EventEnvelope } from "@loom/core";
+import { decisionRecords, outcomeRecords } from "@loomwork/analytics";
+import type { DecisionRecord, OutcomeRecord } from "@loomwork/analytics";
+import type { EventEnvelope } from "@loomwork/core";
 import type {
   PolicyContext,
   PolicyStamp,
@@ -11,14 +11,14 @@ import type {
 
 // ── Trajectory extraction + credit assignment ────────────────────────────────
 //
-// A read lens, like everything in @loom/analytics: it never writes and never
+// A read lens, like everything in @loomwork/analytics: it never writes and never
 // touches the fold. It turns the durable log into the `(state, action, reward)`
 // tuples a learner needs, and does the one piece of that work an application
 // cannot do for itself — deciding WHICH decisions a terminal outcome should be
 // blamed on.
 
 /**
- * `DECISION_RECORDED.source` values written by `@loom/agent` for replay bookkeeping (R10, ADR 0121):
+ * `DECISION_RECORDED.source` values written by `@loomwork/agent` for replay bookkeeping (R10, ADR 0121):
  * the decision seam is how a nondeterministic VALUE becomes a recorded fact, but these are not
  * choices among alternatives, so they carry no reward and are excluded from trajectories.
  */
@@ -30,7 +30,7 @@ export const RECORDED_FACT_SOURCES: ReadonlySet<string> = new Set([
   "agent-tool-search",
   // R22 (ADR 0125 D11): a `activate_skill` activation (skill id, or a refused-instructions verdict) is likewise a recorded fact.
   "agent-skill-activation",
-  // R17 (ADR 0122): `@loom/conversation` records its token-budget fit the same way.
+  // R17 (ADR 0122): `@loomwork/conversation` records its token-budget fit the same way.
   "conversation-budget",
   "conversation-record",
 ]);

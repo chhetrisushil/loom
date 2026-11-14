@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -123,7 +123,7 @@ describe("Kernel ABI (K1)", () => {
   it("ADR 0114 D3: the ExecutionContext interface and the syscall table agree", () => {
     // Own members of `interface ExecutionContext` (via the compiler API, so any `extends` list or
     // formatting works), minus the two identity fields; the `ui` accessor is merged in by
-    // @loom/agent-surface and so is not in the kernel's interface.
+    // @loomwork/agent-surface and so is not in the kernel's interface.
     const file = join(__dirname, "types.ts");
     const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.ES2022, true);
     const decl = sf.statements.find(

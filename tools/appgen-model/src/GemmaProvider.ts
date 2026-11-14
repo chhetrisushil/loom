@@ -1,5 +1,5 @@
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { textOf } from "@loom/llm";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
+import { textOf } from "@loomwork/llm";
 
 // A local, on-device LlmProvider backed by a small Gemma model via node-llama-cpp.
 //

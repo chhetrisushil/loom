@@ -234,7 +234,7 @@ const NOT_A_CAPABILITY = new Set([
   "0082",
   // 0083 — a review rule for 1P surface growth. No runtime subsystem to grade.
   "0083",
-  // 0084 — effect classes ride the existing @loom/verify seam (ADR 0028's capability
+  // 0084 — effect classes ride the existing @loomwork/verify seam (ADR 0028's capability
   // is what the registry grades); this ADR adds a rule, not a subsystem.
   "0084",
   // 0092 — a placement verdict on the adaptive-operator-profile workload: the app builds
@@ -324,23 +324,23 @@ const NOT_A_CAPABILITY = new Set([
   // compatibility matrix. No new subsystem to grade.
   "0118",
   // 0128 — one additive field (`seq`) on the folded `_decisions` entry so decision order survives a
-  // checkpoint (EVENT_SCHEMA 1.24.0), read by `@loom/learning`. Completes existing capabilities (ADR
+  // checkpoint (EVENT_SCHEMA 1.24.0), read by `@loomwork/learning`. Completes existing capabilities (ADR
   // 0106 compaction, ADR 0116 evidence from the fold). No new subsystem to grade.
   "0128",
   // 0112 — R6: `ctx.parallel` becomes a cancellation scope (fail-fast aborts siblings, the outcome
   // is journaled as `PARALLEL_COMPLETED`), a park drains in-flight steps before it commits, and a
-  // 1P cancel cascade in `@loom/orchestration`. It completes existing capabilities (K8
+  // 1P cancel cascade in `@loomwork/orchestration`. It completes existing capabilities (K8
   // cancellation, the parallel combinator, the R8 supervisor); the event shapes were frozen at W2-0.
   // No new subsystem to grade.
   "0112",
   // 0109 — R1b: `ctx.continueAsNew` (one ABI entry), `EXECUTION_CONTINUED` and the `continued` status, a
   // deterministic successor started first, behind `kernel.features.continueAsNew`; 1P chain lineage
-  // (`@loom/analytics`), supervisor follow-through and the `continueEvery` helper. It completes existing
+  // (`@loomwork/analytics`), supervisor follow-through and the `continueEvery` helper. It completes existing
   // capabilities (the durable log and recovery, R8 supervision, the K10 retention clock); the event
   // shapes were frozen at W2-0. No new subsystem to grade.
   "0109",
   // 0110 — R2: `ctx.receive` / `ctx.select` (two ABI entries), `MESSAGE_CONSUMED` and the multi-wait park,
-  // an authorized `runtime.send`, behind `kernel.features.inbox`; the 1P `@loom/inbox` package is a
+  // an authorized `runtime.send`, behind `kernel.features.inbox`; the 1P `@loomwork/inbox` package is a
   // separate item. It completes existing capabilities (the resume gate, K12 authz, the T1 timers, R8k
   // fencing); the event shapes were frozen at W2-0. No new subsystem to grade.
   "0110",
@@ -369,7 +369,7 @@ const NOT_A_CAPABILITY = new Set([
   // storage-column option with a fail-soft fallback. No event, SPI, ABI or subsystem change; nothing to grade.
   "0136",
   // 0137 - agent state growth (issue #721): a report-only warning and a built-in summarizer effect in
-  // `@loom/agent`, compaction still opt-in. No event, SPI, ABI or subsystem change; nothing to grade.
+  // `@loomwork/agent`, compaction still opt-in. No event, SPI, ABI or subsystem change; nothing to grade.
   "0137",
   // 0140 - the opt-in `execution.claimCheck` for agent tool outputs (issue #731): a grouped config option that
   // wires the existing claim-check middleware (ADR 0054) with a default digest. No event, SPI, ABI or subsystem
@@ -378,7 +378,7 @@ const NOT_A_CAPABILITY = new Set([
   // 0141 - the opt-in zstd snapshot codec (issue #733): a store-level storage format behind a format byte,
   // `durability.snapshots.codec`. SNAPSHOT_STORE_SPI, KERNEL_ABI and EVENT_SCHEMA unchanged; nothing to grade.
   "0141",
-  // 0142 - the opt-in `toolCallLog: "lean"` for `agentLoop$` (issue #732): an option on one `@loom/agent`
+  // 0142 - the opt-in `toolCallLog: "lean"` for `agentLoop$` (issue #732): an option on one `@loomwork/agent`
   // function that swaps the returned log's `toolOutput` for a status/digest/stepId. No event, SPI, ABI or
   // subsystem change; nothing to grade.
   "0142",
@@ -397,6 +397,8 @@ const NOT_A_CAPABILITY = new Set([
   // 0147 - onDurableEvent: one optional observer callback on the existing write path. No event, SPI or
   // ABI change and no new subsystem; nothing to grade.
   "0147",
+  // 0148 - npm publishing under @loomwork: release tooling and a package rename. No runtime subsystem.
+  "0148",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

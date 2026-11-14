@@ -44,7 +44,7 @@ A **topic-by-topic reference** with runnable examples. Unlike the sequential [Us
 ### `step$` — a unit of work
 
 ```ts
-import { step$, handler$ } from "@loom/core";
+import { step$, handler$ } from "@loomwork/core";
 import { z } from "zod";
 
 const step = step$({
@@ -66,8 +66,8 @@ A step either carries an inline `handler` **or** names a `toolId` that resolves 
 The `flow$` **definition** is declarative metadata (schemas, version, the step list). The **runner** is the imperative orchestration function. A `RegisteredFlow` bundles them:
 
 ```ts
-import { flow$ } from "@loom/core";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { flow$ } from "@loomwork/core";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 
 const runner: FlowRunner<In, Out> = async (ctx, input) => {
   const a = await ctx.run(stepA, { target: input.target });
@@ -160,7 +160,7 @@ for await (const chunk of provider.stream(request)) {
 ctx.stream("triage_output", "", true);       // done
 ```
 
-For genuinely per-token UI feedback, don't put it in the log: tail the execution with `liveQuery(deps).subscribe(executionId, cb)` (`@loom/live-query`), or narrate with `progressHub.report(ctx.executionId, line)` (`@loom/app`). Both are transient, so nothing becomes load-bearing for replay.
+For genuinely per-token UI feedback, don't put it in the log: tail the execution with `liveQuery(deps).subscribe(executionId, cb)` (`@loomwork/live-query`), or narrate with `progressHub.report(ctx.executionId, line)` (`@loomwork/app`). Both are transient, so nothing becomes load-bearing for replay.
 
 ---
 
@@ -171,7 +171,7 @@ For genuinely per-token UI feedback, don't put it in the log: tail the execution
 All I/O flows through the `EffectRuntime`, keyed by `toolId`. During replay, a completed effect is served from the log — **never re-executed** — which is what makes resumes and forks exactly-once.
 
 ```ts
-import { EffectRuntime, ToolEffect, LlmEffect } from "@loom/effect-runtime";
+import { EffectRuntime, ToolEffect, LlmEffect } from "@loomwork/effect-runtime";
 
 runtime.register("fetch-metrics", new ToolEffect(async (input: { target: string }, ctx) => {
   return await api.metrics(input.target);
@@ -190,8 +190,8 @@ Effect kinds: `"tool" | "llm" | "human" | "a2a"`. The `EffectContext` gives hand
 Middleware is a composable chain `(ctx, input, next) => Promise`, applied outermost-first — identical in spirit to HTTP middleware.
 
 ```ts
-import { retryMiddleware } from "@loom/middleware";
-import type { EffectMiddleware } from "@loom/effect-runtime";
+import { retryMiddleware } from "@loomwork/middleware";
+import type { EffectMiddleware } from "@loomwork/effect-runtime";
 
 const logging: EffectMiddleware = async (ctx, input, next) => {
   const t = performance.now();
@@ -220,7 +220,7 @@ per-tool `digest` (a declared pure projection) is the only part orchestration ma
 (`sweepUnpinnedContent`) so refs cited by your domain events outlive raw-data TTLs:
 
 ```ts
-import { claimCheckMiddleware } from "@loom/middleware";
+import { claimCheckMiddleware } from "@loomwork/middleware";
 
 claimCheckMiddleware({
   store: contentStore,                       // the ADR 0046 ContentStore
@@ -244,7 +244,7 @@ An effect that can fail in an *expected* way — schema drift, not-found, quota 
 channels on its contract and completes on them with `fail(channel, payload)`:
 
 ```ts
-import { fail, step$, TypedFailure } from "@loom/core";
+import { fail, step$, TypedFailure } from "@loomwork/core";
 import { z } from "zod";
 
 const hydrate = step$({
@@ -308,7 +308,7 @@ entry point, never from the context's contents, so a hand-built transient-*looki
 cannot spoof it.
 
 The payoff is that a surface can route from the declaration instead of an allowlist — which is
-exactly what `@loom/plugin-mcp`'s `servedEffect` does.
+exactly what `@loomwork/plugin-mcp`'s `servedEffect` does.
 
 **When to declare — and when not to.** Declare a mode when the effect's *own contract* depends on
 the seam, i.e. when being on the wrong side would corrupt recovery, replay, or durability.
@@ -414,7 +414,7 @@ new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime, snapshotEvery: 1
 
 Worth setting once executions get long: measured at a 102-event log it is 4.76 ms → 1.22 ms p50; at 4 events it is nothing (0.72 → 0.71 ms), so short flows should not bother. Larger *N* means fewer snapshot writes and a longer worst-case replay. See [scaling §3.2](scaling.md) for the measurements.
 
-### Child workflows (`@loom/orchestration`)
+### Child workflows (`@loomwork/orchestration`)
 
 Spawn another flow as a **separate child execution** — its own durable log, its own replay, its own
 failure — and durably await its result from the parent. Built entirely from `ctx.decide` +
@@ -427,7 +427,7 @@ resume.
 import {
   awaitChild, awaitChildren, awaitAll,
   superviseChildren, type ChildResult,
-} from "@loom/orchestration";
+} from "@loomwork/orchestration";
 
 // Wire the supervisor once (it sees every execution's events):
 const holder: { supervisor?: ReturnType<typeof superviseChildren> } = {};
@@ -548,7 +548,7 @@ with `simulate:false`. Losing branches stay immutable — a full audit trail. Fu
 
 ## 6. Projections & agent surfaces
 
-A **projection** is a read model folded from events, independent of durability. Flows emit UI patches via `surface(ctx)` (`import { surface } from "@loom/agent-surface"`; the old `ctx.ui` accessor is deprecated and only exists where the `surface` dep is injected, ADR 0114); they fold into named **surfaces**.
+A **projection** is a read model folded from events, independent of durability. Flows emit UI patches via `surface(ctx)` (`import { surface } from "@loomwork/agent-surface"`; the old `ctx.ui` accessor is deprecated and only exists where the `surface` dep is injected, ADR 0114); they fold into named **surfaces**.
 
 ```ts
 surface(ctx).set("phase", "investigating");                 // overwrite path
@@ -562,13 +562,13 @@ Read a surface (server, client, or test):
 const view = app.projectionRuntime.getState<MyView>("mission", executionId);
 ```
 
-Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or a custom projection with `projection$({ id, name, initialState, handlers })` for domain-specific read models. Render with any renderer — `@loom/plugin-renderer-react`, `@loom/plugin-renderer-terminal`, or your own. **The durable log never depends on the renderer.**
+Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or a custom projection with `projection$({ id, name, initialState, handlers })` for domain-specific read models. Render with any renderer — `@loomwork/plugin-renderer-react`, `@loomwork/plugin-renderer-terminal`, or your own. **The durable log never depends on the renderer.**
 
-> **Naming note.** `@loom/agent-surface` is Loom's *native* surface-patch protocol — it is **not** the external Google [A2UI](https://a2ui.org) wire protocol, despite the historical name. To interoperate with A2UI-compliant clients, use the `@loom/plugin-a2ui` adapter below.
+> **Naming note.** `@loomwork/agent-surface` is Loom's *native* surface-patch protocol — it is **not** the external Google [A2UI](https://a2ui.org) wire protocol, despite the historical name. To interoperate with A2UI-compliant clients, use the `@loomwork/plugin-a2ui` adapter below.
 
 ### Exposing a surface over A2UI (external clients)
 
-`@loom/plugin-a2ui` projects an agent surface onto the real
+`@loomwork/plugin-a2ui` projects an agent surface onto the real
 **A2UI (Agent-to-UI) wire protocol v1.0**, so any A2UI-compliant client (web/mobile/desktop) can
 render a Loom-driven UI without executing code. A 1P plugin, kernel untouched
 ([ADR 0069](adr/0069-a2ui-egress-adapter.md),
@@ -579,7 +579,7 @@ and supports the **`callFunction` bidirectional RPC** (see below). Only continuo
 sync* is out of scope.
 
 ```ts
-import { A2UISurfaceBridge, column, text, badge, bind } from "@loom/plugin-a2ui";
+import { A2UISurfaceBridge, column, text, badge, bind } from "@loomwork/plugin-a2ui";
 
 // The A2UI "view" — components bound by JSON Pointer into the surface data model.
 const view = [column("root", ["status", "score"]), badge("status", bind("/status")), text("score", bind("/stats/score"))];
@@ -630,7 +630,7 @@ For streamed progress independent of surfaces, use a pub/sub hub (`progressHub`)
 ### Tools & agents
 
 ```ts
-import { tool$, agent$ } from "@loom/core";
+import { tool$, agent$ } from "@loomwork/core";
 
 const queryTool = tool$({
   id: "query-db", name: "Query DB", description: "Run a read-only query",
@@ -643,7 +643,7 @@ const dbaAgent = agent$({
 });
 ```
 
-`@loom/agent` runs a ReAct-style reason→act loop over an agent's tools; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol.
+`@loomwork/agent` runs a ReAct-style reason→act loop over an agent's tools; `@loomwork/plugin-mcp` discovers external tools via the Model Context Protocol.
 
 ### Running the loop: `agentLoop$`
 
@@ -667,7 +667,7 @@ const dbaAgent = agent$({
 - routing choices can be emitted as facts but not *recorded as decisions*, so a replay re-decides.
 
 ```ts
-import { agentStep$ } from "@loom/agent";
+import { agentStep$ } from "@loomwork/agent";
 
 const ask = agentStep$({ id: "ask-dba", agent: dbaAgent, provider, effectRuntime });
 ```
@@ -675,7 +675,7 @@ const ask = agentStep$({ id: "ask-dba", agent: dbaAgent, provider, effectRuntime
 **`agentLoop$` — one durable frame per turn.** An ordinary function over `ExecutionContext`, called from a runner body. Each turn is its own task, so a crash costs one turn; the model call resolves through the `EffectRuntime`, so K2 authorization, metering, retry, `idempotencyKey` and K9 in-doubt all apply to it; and the loop can `suspend` mid-flight for approval.
 
 ```ts
-import { agentLoop$, createAgentModelEffect } from "@loom/agent";
+import { agentLoop$, createAgentModelEffect } from "@loomwork/agent";
 
 // The model is an effect, which is what puts it inside the protection ring.
 effects.register("model", createAgentModelEffect(provider));
@@ -787,8 +787,8 @@ the menu from turn 0) and adds the best matches to its menu for the following tu
 and it is off by default.
 
 ```ts
-import { agentLoop$ } from "@loom/agent";
-import { tool$ } from "@loom/core";
+import { agentLoop$ } from "@loomwork/agent";
+import { tool$ } from "@loomwork/core";
 
 const chargeInvoice = tool$({
   id: "charge_invoice", name: "charge_invoice", description: "Create a payment request",
@@ -923,8 +923,8 @@ agentLoop$(ctx, {
 The model effect can consume the provider's stream instead of waiting for the whole completion. The outcome is identical either way — conformance pins that a streamed result equals what `complete` returns — so what streaming buys is live output and a partial to keep when a generation is interrupted:
 
 ```ts
-import { chunkDeltas } from "@loom/agent";
-import { streamTokenBudget } from "@loom/middleware";
+import { chunkDeltas } from "@loomwork/agent";
+import { streamTokenBudget } from "@loomwork/middleware";
 
 const sink = chunkDeltas((text) => progressHub.report(ctx.executionId, text), { minChars: 40 });
 
@@ -936,7 +936,7 @@ effects.register("model", createAgentModelEffect(provider, {
 
 Three things worth knowing:
 
-- **The delta sink is transient.** Route it to `@loom/live-query` or `progressHub` and per-token is free. Route it to `ctx.stream` and every delta becomes a **durable event** — use `chunkDeltas` to emit at sentence granularity instead of per token.
+- **The delta sink is transient.** Route it to `@loomwork/live-query` or `progressHub` and per-token is free. Route it to `ctx.stream` and every delta becomes a **durable event** — use `chunkDeltas` to emit at sentence granularity instead of per token.
 - **An interrupted turn keeps its work.** A stop mid-generation fails on the `agentInterrupted` channel carrying `{ content, iterations, toolCallLog }` — the partial text *and* the tool calls already paid for, rather than discarding both.
 - **A runaway generation can be severed while it generates** (K8.4). Pass
   `guard: streamTokenBudget({ maxTokens })` to `createLlmEffect` and a breach emits `QUOTA_EXCEEDED`
@@ -968,20 +968,20 @@ defineConfig({
 });
 ```
 
-What happens: the readable text goes to the sidecar `store` (erasable, content-addressed); the step value carries only a *part* (kind, provider, signature, reference, digest), never text; one `LLM_REASONING_CAPTURED` event names references and digests (the fold ignores it; `@loom/audit-chain` hashes it). `readReasoning(log, store, { executionId, stepId? })` joins them back for an auditor and reports `ok` / `redacted` (a block the vendor withheld: opaque, no text) / `erased` / `digest-mismatch` per part, with the text **tainted**. An effect's own `reasoning: { store, capture, live }` option wins over the app default. With a capable provider and no store, `observability.onWarn` gets one warning per effect at boot.
+What happens: the readable text goes to the sidecar `store` (erasable, content-addressed); the step value carries only a *part* (kind, provider, signature, reference, digest), never text; one `LLM_REASONING_CAPTURED` event names references and digests (the fold ignores it; `@loomwork/audit-chain` hashes it). `readReasoning(log, store, { executionId, stepId? })` joins them back for an auditor and reports `ok` / `redacted` (a block the vendor withheld: opaque, no text) / `erased` / `digest-mismatch` per part, with the text **tainted**. An effect's own `reasoning: { store, capture, live }` option wins over the app default. With a capable provider and no store, `observability.onWarn` gets one warning per effect at boot.
 
 Continuation: `agentLoop$` puts the recorded parts (and each tool call's `signature`) on the assistant turn and resolves the text from the sidecar when it builds the next request, so a resumed tool loop sends the blocks back unchanged. Any edit of the history invalidates the vendor's signature, so **compaction** drops every reasoning part and, when the transcript carries any, takes the *simple* shape the vendor recommends (the summary covers the whole transcript including the in-flight tool round, and the next request is one user message of summary plus that round's results: no earlier turn, no `tool_use`, no thinking block; without reasoning it is the usual keep-tail), a **model switch** on a `reasoning` runtime drops the parts another route produced, **a growing tool menu** (a `search_tools` hit or a skill activation) drops every part produced before it (a signature covers the tool set), and a part whose text can no longer be reproduced (erased, tampered, never stored, or not this execution's) is dropped with every reasoning part after it; a sidecar read that *fails* (an outage) fails the step instead. The vendor's block order is sent back exactly. Blobs are sealed to the execution that captured them. Pass `reasoning: { store }` to `createAgentModelEffect` / `registerReasoningRoutes`. The direct (no `reasoningToolId`) routed path journals no reasoning and continues none, so with a provider that declares `capabilities.reasoning` it discards the model's reasoning every turn: `agentLoop$` warns once naming the route (through `observability.onWarn`, or the loop's own `onWarn`); set `reasoningToolId` to carry it, or `observability: { reasoning: { requireContinuation: true } }` (`requireReasoningContinuation: true` on `agentLoop$`) to refuse it with an `AgentLoopConfigError`. The refusal is sticky for the process (a later `defineConfig` cannot turn it off) and reads host config, not the journal: tightening this setting fails resumes of executions already using the direct path. Conversations never carry reasoning across turns (history is plain text).
 
 Live view: `createAgentModelEffect(provider, { stream: true, reasoning: { store, live: true, onDelta: hub.reasoningSink() } })` feeds the conversation hub, and `createConversationSseServer({ reasoning: { live: true, store } })` serves `reasoning` and `reasoning-partial` SSE events plus `GET /conversations/:id/reasoning?cursor=<reply cursor>` for the durable record. All off by default; in a shared conversation only the turn's **asker** and the conversation's **owner** receive any of it (live, partial or durable), and everyone else gets the same 404 as for a missing conversation.
 
-### Conversations: chat, barge-in and streaming (`@loom/conversation`, [ADR 0122](adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md))
+### Conversations: chat, barge-in and streaming (`@loomwork/conversation`, [ADR 0122](adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md))
 
 A chat is one long-lived execution. `conversation$` is its flow: it parks on the inbox for each user turn, answers it with `agentLoop$`, records the exchange, and rotates (`continueAsNew`) every `rotateEveryTurns` so no generation's log grows without bound. Needs `kernel.features.inbox` and `kernel.features.continueAsNew`.
 
 ```ts
-import { agent$ } from "@loom/core";
-import { createAgentModelEffect } from "@loom/agent";
-import { ConversationHub, conversation$, createConversations, inboxBargeIn } from "@loom/conversation";
+import { agent$ } from "@loomwork/core";
+import { createAgentModelEffect } from "@loomwork/agent";
+import { ConversationHub, conversation$, createConversations, inboxBargeIn } from "@loomwork/conversation";
 
 const hub = new ConversationHub();
 effects.register("model", createAgentModelEffect(hub.wrapProvider(provider), { stream: true, onDelta: hub.deltaSink() }));
@@ -1019,7 +1019,7 @@ const latest = await conversations.history(conversationId, { principal, directio
   purpose). The verdict is recorded, so replay never re-decides it. With `summarizerToolId`, dropped
   turns fold into a rolling summary (the same effect contract as `agentLoop$` `compaction.toolId`;
   both inputs may carry `tainted()` wrappers, so read each message with `summarizerText` from
-  `@loom/conversation`), delivered fenced in a user message, never the system prompt. A summarizer
+  `@loomwork/conversation`), delivered fenced in a user message, never the system prompt. A summarizer
   that FAILS (anything but a park, authority/safety stop, cancel or divergence) degrades: the previous
   summary is kept, the evicted turns just leave the prompt, and the turn runs. That outcome is a
   recorded decision (`conv#o<ord>:summarize:outcome`), so replay never re-runs a failed summarizer.
@@ -1035,7 +1035,7 @@ const latest = await conversations.history(conversationId, { principal, directio
 **Sharing a conversation (shared mode).** To let several people use one chat, say who: participants, not tenants. Each turn runs as the person who asked (their grants, their quotas), the answer is classified by the tools it used, and a viewer not cleared for that class sees a bare placeholder instead of the answer, in history, on the stream and in the model's context.
 
 ```ts
-import { conversation$, createConversations, logParticipants } from "@loom/conversation";
+import { conversation$, createConversations, logParticipants } from "@loomwork/conversation";
 
 const chat = conversation$({
   key: process.env.CONVERSATION_KEY!,                         // signs EVERY inbox envelope (both modes): the body acts only on the host's
@@ -1070,7 +1070,7 @@ D10.8).
 
 `history` reads `direction: "forward"` (oldest first) unless you pass `"backward"`; the SSE `/history` route takes the same `?direction=forward|backward` and defaults to forward, so a chat UI that wants the latest messages first must ask for `backward` and order the page to match (see the plugin README).
 
-For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
+For a browser, put `@loomwork/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
 
 `manageParticipants` is judged inside a recorded decision in the conversation body: if it throws or rejects, the decision throws and the whole shared conversation fails (the same as `directory.list`). It should not throw; return `false` on a transient error.
 
@@ -1091,12 +1091,12 @@ For blueprint/interpreter-style flows whose tool calls are **data** (a saved man
 the tool, not the code), `mcpInvoke$` dispatches through ONE registered `mcp.invoke` effect
 with the tool name, args, and a pinned schema hash in the run-time input — verified per call,
 failing on the typed `schemaDrift` channel so the flow repairs in-band. `sandboxEval$`
-(`@loom/sdk/sandbox`) executes content-addressed, LLM-authored reshaping scripts in a
+(`@loomwork/sdk/sandbox`) executes content-addressed, LLM-authored reshaping scripts in a
 capability-empty QuickJS VM with in-engine resource limits and shape-hash validation:
 
 ```ts
-import { registerMcpInvoke, mcpInvoke$ } from "@loom/plugin-mcp";
-import { registerSandboxEval, sandboxEval$ } from "@loom/plugin-sandbox";
+import { registerMcpInvoke, mcpInvoke$ } from "@loomwork/plugin-mcp";
+import { registerSandboxEval, sandboxEval$ } from "@loomwork/plugin-sandbox";
 
 const app = defineConfig({
   // …
@@ -1118,7 +1118,7 @@ const shaped = await ctx.run(sandboxEval$(`reshape#${i}`), {
 ```
 
 `sandboxEval$` runs on `QuickJsSandboxBackend`, the reference implementation of the
-`SandboxBackend` SPI (`@loom/sandbox`, ADR 0144). To run the scripts in your own isolation
+`SandboxBackend` SPI (`@loomwork/sandbox`, ADR 0144). To run the scripts in your own isolation
 boundary instead, implement the SPI and register it with `registerSandboxBackend`
 ([Write your own sandbox](plugins.md#write-your-own-sandbox)); `sandboxEval$`, its channels and
 replay are unchanged. The result is the JSON round-trip of what the script returned (`NaN`
@@ -1135,7 +1135,7 @@ also shown the tool: the request carries `resource: "<server>/<tool>"`
 (`McpInvokeOptions.server`, default `"server"`), so a grant can name a single tool.
 
 ```ts
-import { mcpToolCapability } from "@loom/plugin-mcp";
+import { mcpToolCapability } from "@loomwork/plugin-mcp";
 new GrantTable({ triage: [mcpToolCapability("docs", "read_doc")] });   // "mcp.invoke:docs/read_doc"
 ```
 
@@ -1147,7 +1147,7 @@ delegations. A denied tool never reaches the server (`EFFECT_DENIED`).
 
 Loom speaks MCP as a **server** too, so any MCP host (Claude, ChatGPT, an IDE) can consume Loom
 tools — the `createA2AServer` story for a much larger ecosystem. On top of that,
-`@loom/plugin-mcp-app` projects an agent surface onto the **MCP Apps** extension
+`@loomwork/plugin-mcp-app` projects an agent surface onto the **MCP Apps** extension
 (`io.modelcontextprotocol/ui`), so a host renders a Loom-driven UI.
 
 MCP Apps ships HTML. Loom never generates it per flow: **one static, content-pinned template**
@@ -1156,8 +1156,8 @@ renders a declarative payload — the same A2UI catalog component tree from §6 
 logged `structuredContent`), both of which are in the log.
 
 ```ts
-import { createMcpServer } from "@loom/plugin-mcp";
-import { surfaceCursorTool, surfaceHostResource, isStale } from "@loom/plugin-mcp-app";
+import { createMcpServer } from "@loomwork/plugin-mcp";
+import { surfaceCursorTool, surfaceHostResource, isStale } from "@loomwork/plugin-mcp-app";
 
 const server = createMcpServer({
   authenticate: (req) => verifyBearer(req.headers.authorization),   // principal, or undefined => 401
@@ -1227,7 +1227,7 @@ provenance is indistinguishable from arbitrarily old data.
 
 Loom is deliberately **not** an MCP Apps host. Iframe sandboxing, CSP synthesis, permissions
 policy and the sandbox-proxy architecture are browser-application concerns where a mistake is an
-XSS or exfiltration hole. On ingress, `@loom/plugin-mcp` *carries* a UI-bearing tool result (the
+XSS or exfiltration hole. On ingress, `@loomwork/plugin-mcp` *carries* a UI-bearing tool result (the
 `ui://` URI plus a content hash) so an application can render it — carry, never render.
 
 **Connecting a hosted client to it.** Being spec-correct and being *reachable* are different
@@ -1303,8 +1303,8 @@ you declare or re-export each construct. A tool's runnable **effect** is still r
 Compose "type a goal, do the right thing":
 
 ```ts
-const route = await intent.route(goal);   // @loom/intent → primary capability + rationale
-const plan  = await planner.plan(goal);   // @loom/planner → ordered capability steps
+const route = await intent.route(goal);   // @loomwork/intent → primary capability + rationale
+const plan  = await planner.plan(goal);   // @loomwork/planner → ordered capability steps
 
 for (const s of plan.steps) {
   await app.bus.dispatch(s.capabilityId, inputFor(s), prompt);
@@ -1328,7 +1328,7 @@ prompt because it is a security boundary.
 `planner.plan(goal)` returns a flat, un-journaled list and, with a model configured, silently falls back to a keyword heuristic when the model's answer is unusable (`new PlannerRuntime({ strict: true })` turns that into a `PlanFailedError`). For anything that must survive a restart, use the plan graph ([ADR 0123](adr/0123-planning-depth-plan-graphs-replanning-and-goals.md)):
 
 ```ts
-import { planGoal, executePlan, makeReviser, effectPlanModel } from "@loom/planner";
+import { planGoal, executePlan, makeReviser, effectPlanModel } from "@loomwork/planner";
 
 effects.register("plan-model", createAgentModelEffect(provider));      // the model call goes through the effect ring
 const model = effectPlanModel("plan-model");
@@ -1360,7 +1360,7 @@ another principal cannot read, change or detect them. `ctx.continueAsNew` carrie
 store holds the goal. Planning-depth migration notes: `plan()` and `dispatchPlan` keep working
 unchanged; moving a flow to `planGoal` is a body change (ADR 0113).
 
-`@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".data/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both.
+`@loomwork/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".data/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both.
 
 Recall comes in two shapes, and the difference matters more than the API surface suggests:
 
@@ -1379,7 +1379,7 @@ does not — a silent fall back to the tail would look like retrieval and quietl
 ### Knowledge: a corpus of documents
 
 A knowledge base is a `semantic` tier plus one thing memory alone cannot express: the mapping from
-a DOCUMENT — the unit people edit — to the PASSAGES it is searched in. `@loom/knowledge` owns that
+a DOCUMENT — the unit people edit — to the PASSAGES it is searched in. `@loomwork/knowledge` owns that
 mapping and nothing else (storage stays the `MemoryStore`'s, ranking stays the backend's):
 
 ```ts
@@ -1453,7 +1453,7 @@ is INDEXED like any other content, which makes it a useful filter (`retrieve("pa
 team's documents) and a surprising relevance term (a `{ team: "payments" }` on 300 documents makes
 "payments" match all 300). A document's id and a passage's ordinal are deliberately *not* indexed.
 
-`@loom/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
+`@loomwork/orchestrator` packages the recurring route→plan→dispatch→gate loop as composable functions (`dispatchPlan`, `decideApproval`) — use them where they fit; drop to primitives where they don't ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
 The full stack in action: `db-command-center` (in the [examples catalogue](examples.md)).
 
@@ -1497,8 +1497,8 @@ interface LoomConfig {
   storage:
     | { kind: "memory" }
     // Bring your own backend, used verbatim. Concrete backends are presets returning
-    // this shape: sqliteStorage({dir}) from @loom/plugin-sqlite, postgresStorage({url})
-    // from @loom/plugin-postgres, or your own (ADR 0043).
+    // this shape: sqliteStorage({dir}) from @loomwork/plugin-sqlite, postgresStorage({url})
+    // from @loomwork/plugin-postgres, or your own (ADR 0043).
     | { kind: "custom"; eventStore; snapshotStore; branchRegistry? };
   surfaces?: (string | { id: string; redact?: string[] })[]; // redact masks surface egress (K10-R6)
   flows?: RegisteredFlow[];
@@ -1616,7 +1616,7 @@ interface LoomApp {
 
 ## 10. Testing
 
-`@loom/testing`:
+`@loomwork/testing`:
 
 | Helper | Purpose |
 |---|---|
@@ -1631,7 +1631,7 @@ interface LoomApp {
 | `recordingProvider` / `replayingProvider` | VCR LLM: record once, replay deterministically |
 
 ```ts
-import { createTestApp, waitForPhase, captureGolden } from "@loom/testing";
+import { createTestApp, waitForPhase, captureGolden } from "@loomwork/testing";
 
 const app = createTestApp({ surfaces: ["mission"], flows: [myFlow] });
 const handle = await app.runtime.start(myFlow, input);
@@ -1644,20 +1644,20 @@ await app.close();
 VCR keeps LLM tests offline and deterministic (lookup is O(1) by request hash):
 
 ```ts
-import { recordingProvider, replayingProvider, emptyCassette } from "@loom/testing";
+import { recordingProvider, replayingProvider, emptyCassette } from "@loomwork/testing";
 const cassette = emptyCassette();
 const provider = process.env.RECORD ? recordingProvider(realLlm, cassette) : replayingProvider(cassette);
 ```
 
 ---
 
-### One-off agent runs: `runAgentOnce` (`@loom/app`)
+### One-off agent runs: `runAgentOnce` (`@loomwork/app`)
 
 `agentLoop$` needs an `ExecutionContext`, which only a flow has. For a script or a test that just wants "run this agent once", `runAgentOnce` builds the in-memory `defineConfig` app and the one-off flow for you:
 
 ```ts
-import { runAgentOnce } from "@loom/app";
-import { ToolEffect } from "@loom/effect-runtime";
+import { runAgentOnce } from "@loomwork/app";
+import { ToolEffect } from "@loomwork/effect-runtime";
 
 const { output, events } = await runAgentOnce({
   agent,                                   // an agent$ definition
@@ -1684,7 +1684,7 @@ loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name>  s
 loom appgen <intent> [--dir .] [--dry-run] [--check] [--model <spec>]  NL → new project or brownfield edits
 loom doctor [--dir .] [--config <module>] [--manifest <path>]  run every pre-flight check that can run
 loom check --manifest <path>                    static flow-graph checks
-loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
+loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loomwork/verify)
 loom logs  --db <path> <executionId>            print the event timeline
 loom debug --db <path> <executionId> [--at N]   time-travel: state at sequence N
 loom eval  --dir <path>                         replay golden logs vs expectations
@@ -1716,9 +1716,9 @@ loom inspect --db <path> [--port N]             web inspector (timeline + slider
   `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)).
   **`appgen`** turns a natural-language intent into a static Loom app *in the same folder
   convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project)
-  via [`@loom/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate
+  via [`@loomwork/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate
   time or in the output.
-- **`doctor`** is the front door for the pre-flight gates — the flow-graph check, the `@loom/verify`
+- **`doctor`** is the front door for the pre-flight gates — the flow-graph check, the `@loomwork/verify`
   rules, the memory store (durable? can it retrieve by relevance?), and the claim-check lint. It
   discovers each one's input, runs what it can, and **names what it skipped and why** — a skipped
   check never reads as a pass. It also checks what the composition wired for timers: whether this
@@ -1738,14 +1738,14 @@ For a command-by-command walkthrough with flags, exit codes, and example output,
 
 Both replay the durable log — the log *is* the fixture.
 
-**Evals** (`@loom/eval`, `loom eval`): store an execution's event log as a golden fixture (`captureGolden`) plus expectations; `loom eval --dir evals/` replays each and reports pass/fail, exiting non-zero for CI.
+**Evals** (`@loomwork/eval`, `loom eval`): store an execution's event log as a golden fixture (`captureGolden`) plus expectations; `loom eval --dir evals/` replays each and reports pass/fail, exiting non-zero for CI.
 
 ```jsonc
 // evals/happy.json
 { "name": "happy path", "log": [ /* EventEnvelope[] */ ], "expect": { "status": "completed", "stepsCompleted": ["investigate", "apply"] } }
 ```
 
-**Deploy simulation** (`@loom/deploy-sim`, `loom deploy check`): replay historical logs against your
+**Deploy simulation** (`@loomwork/deploy-sim`, `loom deploy check`): replay historical logs against your
 **new** flow definitions to catch resume-incompatibility *before* promoting — a removed step or
 missing flow is flagged breaking; a suspended carry-over is a warning. This catches what
 type-checking can't: whether in-flight executions can still finish after a deploy
@@ -1765,10 +1765,10 @@ flowchart LR
   D --> C["Cloud Run (plugin-cloudrun)"]
 ```
 
-- **Local:** `@loom/worker-runtime-local` — same process.
-- **Remote:** `@loom/plugin-worker-remote` posts an `ExecutionPackage` to `@loom/plugin-worker-server`'s `POST /execute`; the stateless worker rebuilds all state from shared stores.
-- **Cloud Run:** `@loom/plugin-cloudrun` maps dispatch metadata to sizing; see [`plugins/cloudrun/deploy.md`](../plugins/cloudrun/deploy.md).
-- **Fan-out:** `@loom/graph-executor` runs graph nodes as per-node executions (one writer each), joined via lineage.
+- **Local:** `@loomwork/worker-runtime-local` — same process.
+- **Remote:** `@loomwork/plugin-worker-remote` posts an `ExecutionPackage` to `@loomwork/plugin-worker-server`'s `POST /execute`; the stateless worker rebuilds all state from shared stores.
+- **Cloud Run:** `@loomwork/plugin-cloudrun` maps dispatch metadata to sizing; see [`plugins/cloudrun/deploy.md`](../plugins/cloudrun/deploy.md).
+- **Fan-out:** `@loomwork/graph-executor` runs graph nodes as per-node executions (one writer each), joined via lineage.
 
 Workers reference flows/effects **by id** from a statically-wired registry — so a worker must be booted with the same registrations (P5). Suspension is a normal result across the network boundary.
 
@@ -1804,7 +1804,7 @@ Determinism is what makes resume, fork, and replay trustworthy. Keep these in mi
   mint a deterministic distinct id per iteration — `` `${id}#${index}` `` — or iteration 2+ silently
   replays iteration 1's output. The sequence of ids must be a pure function of *logged* inputs (the
   interpreter pattern: a statically compiled flow walking runtime-loaded plan data is fully
-  replayable under this rule). `fanout$(ctx, baseStep, items)` (`@loom/orchestration`) does the
+  replayable under this rule). `fanout$(ctx, baseStep, items)` (`@loomwork/orchestration`) does the
   minting for parallel fan-out; the compiler's `analyzeLoopIdentity` lint flags violations (manifest
   warnings via `loomPlugin()`/`loom check`, or `verify: { lint: { loopIdentityByFlow } }` at boot).
 
@@ -1812,10 +1812,10 @@ Determinism is what makes resume, fork, and replay trustworthy. Keep these in mi
 
 ## 15. Reasoning Runtime — routing & elevation
 
-*(Loom 2.0, M3 — `@loom/reasoning`.)* Instead of a single `LlmProvider.complete()`, the Reasoning Runtime routes across a registry of models and **elevates** to a stronger one when confidence is low.
+*(Loom 2.0, M3 — `@loomwork/reasoning`.)* Instead of a single `LlmProvider.complete()`, the Reasoning Runtime routes across a registry of models and **elevates** to a stronger one when confidence is low.
 
 ```ts
-import { ReasoningRuntime, validatorConfidence } from "@loom/reasoning";
+import { ReasoningRuntime, validatorConfidence } from "@loomwork/reasoning";
 
 const reasoning = new ReasoningRuntime({
   routes: [
@@ -1848,10 +1848,10 @@ See [`loom-2.0/02-reasoning-and-memory.md`](loom-2.0/02-reasoning-and-memory.md)
 
 ## 16. Tiered memory
 
-*(Loom 2.0, M5 — `@loom/memory`.)* `TieredMemory` composes named tiers over the scoped `MemoryRuntime`, each with an eviction *or* summarization policy, plus promotion between tiers.
+*(Loom 2.0, M5 — `@loomwork/memory`.)* `TieredMemory` composes named tiers over the scoped `MemoryRuntime`, each with an eviction *or* summarization policy, plus promotion between tiers.
 
 ```ts
-import { TieredMemory, DEFAULT_TIERS } from "@loom/memory";
+import { TieredMemory, DEFAULT_TIERS } from "@loomwork/memory";
 
 const mem = new TieredMemory({ tiers: DEFAULT_TIERS }); // working / episodic / semantic / procedural
 
@@ -1874,7 +1874,7 @@ const context = await mem.recall("semantic", scope, { limit: 10, decide: ctx.dec
 - **Forgetting one thing.** `forget(tier, scope, ids)` removes entries by id, leaving the rest of the
   scope — `clear` is the whole scope, which is right for a conversation and wrong for a corpus
   ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)). Corpus lifecycle on top of it
-  is [`@loom/knowledge`](#knowledge-a-corpus-of-documents) — see §8.
+  is [`@loomwork/knowledge`](#knowledge-a-corpus-of-documents) — see §8.
 
 ---
 
@@ -1894,12 +1894,12 @@ This section is split into five pages under [`user-guide/`](user-guide/grants-an
 
 ## 18. Event intelligence & self-optimization
 
-*(Loom 2.0, M9–M11 — `@loom/analytics`.)* Pure, **read-only** analyzers over the durable log — never a writer.
+*(Loom 2.0, M9–M11 — `@loomwork/analytics`.)* Pure, **read-only** analyzers over the durable log — never a writer.
 
 ```ts
-import { analyze, runtimeIntelligence } from "@loom/analytics";
-import { rankModels, outcomeAnalytics } from "@loom/analytics";
-import { ucb1, rankedRouter, epsilonGreedy } from "@loom/reasoning";
+import { analyze, runtimeIntelligence } from "@loomwork/analytics";
+import { rankModels, outcomeAnalytics } from "@loomwork/analytics";
+import { ucb1, rankedRouter, epsilonGreedy } from "@loomwork/reasoning";
 
 const events = await eventStore.read(executionId);
 const a = analyze(events);   // { execution, cost, reasoning, failure }
@@ -1932,7 +1932,7 @@ that got lucky once. A loop that destroys its own evidence looks healthy the who
 - **`rankedRouter(rankings, { minSamples, fallback })`** — still fine for a *frozen* ranking; arms
   below `minSamples` count as unranked so thin evidence cannot outvote thick evidence.
 
-### Learning from the log offline (`@loom/learning`, ADR 0080)
+### Learning from the log offline (`@loomwork/learning`, ADR 0080)
 
 Online exploration is only half the loop. `DECISION_RECORDED` carries `context` and
 `policy.propensity` (EVENT_SCHEMA 1.18.0, [ADR 0079](adr/0079-decision-context-and-policy.md)) — the
@@ -1940,7 +1940,7 @@ observation the policy keyed on, and `P(chosen | context)`. **Propensity cannot 
 after the fact**, which is why it is logged rather than derived: together they turn the log into a
 `(state, action, propensity)` dataset.
 
-`@loom/learning` mines it: `trajectories` extracts the episodes, `evaluatePolicy` runs SNIPS
+`@loomwork/learning` mines it: `trajectories` extracts the episodes, `evaluatePolicy` runs SNIPS
 off-policy evaluation of a *candidate* policy against traffic it never served, and `promotionGate`
 refuses a promotion on thin evidence. The learning **algorithm** stays third-party behind the
 one-method `Policy` SPI (`select(context, actions)`); a policy reaches a run through
@@ -1949,10 +1949,10 @@ the CLI with `loom learn report` / `loom learn eval`.
 
 ### The learning lifecycle: registry, rollout, versions, intervals, export (R18, ADR 0124)
 
-A verdict is not a deployment. `PolicyRegistry` (`@loom/learning`) is the state behind "which version is live":
+A verdict is not a deployment. `PolicyRegistry` (`@loomwork/learning`) is the state behind "which version is live":
 
 ```ts
-import { PolicyRegistry, decideWithRollout, promptVersion, evaluatePolicy, promotionGate } from "@loom/learning";
+import { PolicyRegistry, decideWithRollout, promptVersion, evaluatePolicy, promotionGate } from "@loomwork/learning";
 
 const registry = new PolicyRegistry({ kv: durableStateStore, scope: principal.tenant,   // CAS store; scope from the AUTHENTICATED caller
   thresholds: { minSteps: 1000, minUnits: 20, minLiftLowerBound: 0 } });                // the registry runs the gate itself
@@ -1989,12 +1989,12 @@ const route = await decideWithRollout(ctx, "route", { source: registry, policyId
 chosen) preference pairs as canonical JSONL, one tenant only, over a cursor, never loading a log it was not asked for. Tainted
 content (ADR 0085) is dropped or marked; crypto-shredded steps and executions are always excluded.
 
-**Embeddings.** `new EmbeddingMemoryStore({ store, provider, minScore })` (`@loom/memory`) turns any `MemoryStore` into a semantic
+**Embeddings.** `new EmbeddingMemoryStore({ store, provider, minScore })` (`@loomwork/memory`) turns any `MemoryStore` into a semantic
 one for `recallRelevant` and `KnowledgeBase`; `provider` is any `EmbeddingProvider` (check yours with
 `runEmbeddingProviderConformance`). Embeddings are recomputed, never recorded: `recallRelevant` records which entries came back, so
 a replay touches neither the model nor the index. `HashingEmbeddingProvider` is the offline, lexical reference.
 
-**Evaluating answers, not just flows.** `@loom/eval`'s `runEvalSuite` runs cases through a subject with graders (`exactMatch`,
+**Evaluating answers, not just flows.** `@loomwork/eval`'s `runEvalSuite` runs cases through a subject with graders (`exactMatch`,
 `regexMatch`, `jsonSchema`, `llmJudge` — the judge goes through the decide scope) over a `CassetteProvider` (replay never calls a
 model), and `compareReports` turns a prompt change into a list of regressions.
 
@@ -2007,7 +2007,7 @@ counterfactual steps and the gate correctly refuses — which reads like "the ca
 
 ## 19. AI-native codegen (`appgen`)
 
-*(Loom 2.0, P11 — `@loom/appgen`. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md).)* Turn a
+*(Loom 2.0, P11 — `@loomwork/appgen`. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md).)* Turn a
 natural-language intent into a change to a Loom app, then emit
 **plain, static, inspectable TypeScript you own** — there is no runtime interpretation of NL.
 `appgen` is **brownfield-aware**: it scans what already exists and applies a *delta*, in four stages
@@ -2019,7 +2019,7 @@ with NL understanding isolated to exactly one:
 4. **validate** — in-process `tsc` diagnostics (`--check`).
 
 ```ts
-import { scanApp, planChangesDeterministic, applyChanges } from "@loom/appgen";
+import { scanApp, planChangesDeterministic, applyChanges } from "@loomwork/appgen";
 
 const appModel = scanApp("."); // net-new dir → empty; existing app → its flows/steps/gates
 const changeSpec = planChangesDeterministic("Create a planner. Step summarize. Pause for approval.", appModel);
@@ -2034,11 +2034,11 @@ grammar adds `delete <name>`, `delete step <s> from <flow>`, and `grant <tool> t
 directives. See
 [`docs/usage-cli.md`](usage-cli.md#loom-appgen-intent----from-file----from-spec-file---dir--flags).
 
-The generated app follows the same folder convention as `create-loom-app` / `loom new` / `loom gen` (reusing `@loom/scaffold`). The deterministic parser is a small **directive grammar**; the only "understanding" is that one stage producing a `ChangeSpec`, and codegen stays pure and template-based (P4/P5 preserved).
+The generated app follows the same folder convention as `create-loom-app` / `loom new` / `loom gen` (reusing `@loomwork/scaffold`). The deterministic parser is a small **directive grammar**; the only "understanding" is that one stage producing a `ChangeSpec`, and codegen stays pure and template-based (P4/P5 preserved).
 
-**Optional local model.** `@loom/appgen-model` swaps a small on-device Gemma model into the plan
+**Optional local model.** `@loomwork/appgen-model` swaps a small on-device Gemma model into the plan
 stage (`--model <gguf>`): grammar-constrained JSON, a cheap-first elevation ladder
-([`@loom/reasoning`](../packages/reasoning)), and a self-repair loop that re-prompts on a
+([`@loomwork/reasoning`](../packages/reasoning)), and a self-repair loop that re-prompts on a
 semantically invalid plan. It is entirely optional — if the model is missing, too weak, or produces
 an invalid plan, appgen falls back to the deterministic parser, so you always get a valid
 `ChangeSpec`.
@@ -2047,10 +2047,10 @@ an invalid plan, appgen falls back to the deterministic parser, so you always ge
 
 ## 20. Capabilities: versioning, dependencies & authorization
 
-*(Loom 2.0, M7 — `@loom/capability`.)* Capabilities gain governance metadata and access control.
+*(Loom 2.0, M7 — `@loomwork/capability`.)* Capabilities gain governance metadata and access control.
 
 ```ts
-import { capability$, CapabilityCatalog } from "@loom/capability";
+import { capability$, CapabilityCatalog } from "@loomwork/capability";
 
 const triage = capability$({ id: "triage", intent: "Triage an incident", inputSchema, flow,
   version: "2.1.0", dependencies: ["fetch-metrics", "fetch-logs"] });
@@ -2074,31 +2074,31 @@ The kernel is isomorphic by design (architecture P8), but a few packages import 
 bundler (Vite/Rollup) prints `Module "node:..." has been externalized for browser compatibility` when
 they enter a browser bundle. Know which, and why:
 
-- **Browser-safe (no `node:` imports in `src`):** `@loom/core` (pure `sha256Hex`, `canonicalJson`),
-  `@loom/agent`, `@loom/memory`, `@loom/app` (SQLite arrives only through the `sqliteStorage()` preset from `@loom/plugin-sqlite`),
-  and the in-memory subpaths `@loom/event-runtime/memory` and `@loom/snapshot-runtime/memory`. Import
+- **Browser-safe (no `node:` imports in `src`):** `@loomwork/core` (pure `sha256Hex`, `canonicalJson`),
+  `@loomwork/agent`, `@loomwork/memory`, `@loomwork/app` (SQLite arrives only through the `sqliteStorage()` preset from `@loomwork/plugin-sqlite`),
+  and the in-memory subpaths `@loomwork/event-runtime/memory` and `@loomwork/snapshot-runtime/memory`. Import
   those subpaths, never the package barrels, which re-export the SQLite stores.
-  Since ADR 0130 D8 `@loom/app` also depends on `@loom/plugin-crypto` (it builds the sealed default snapshot
-  store), which imports `node:crypto`: a browser bundle of `@loom/app` pulls it in unless the bundler
+  Since ADR 0130 D8 `@loomwork/app` also depends on `@loomwork/plugin-crypto` (it builds the sealed default snapshot
+  store), which imports `node:crypto`: a browser bundle of `@loomwork/app` pulls it in unless the bundler
   tree-shakes it away, so expect that `node:crypto` externalisation warning there.
-- **Server-only by nature:** `@loom/plugin-sqlite`, `-postgres`, `-sandbox`, `-worker-server`,
-  `-crypto`, `-audit-chain`, `-content`, `-mcp`, `-a2a` (server half; use `@loom/plugin-a2a/cards` in
-  a browser), `-conversation-sse`, and `@loom/isolate`.
-- **Mixed, carry the warning:** `@loom/workflow-runtime` and `@loom/effect-runtime`. They use
+- **Server-only by nature:** `@loomwork/plugin-sqlite`, `-postgres`, `-sandbox`, `-worker-server`,
+  `-crypto`, `-audit-chain`, `-content`, `-mcp`, `-a2a` (server half; use `@loomwork/plugin-a2a/cards` in
+  a browser), `-conversation-sse`, and `@loomwork/isolate`.
+- **Mixed, carry the warning:** `@loomwork/workflow-runtime` and `@loomwork/effect-runtime`. They use
   `node:crypto` for HMAC and `timingSafeEqual` (signed resume tokens, delegated-grant tokens) and
   `node:async_hooks` `AsyncLocalStorage` for step/decide scope. These are security- and
   semantics-critical, so they are deliberately NOT replaced with hand-rolled code: run the durable
   runtime on the server and keep a browser to rendering and the A2A/SSE wire. A browser that
   executes flows itself has to alias the crypto built-ins to its own implementations (WebCrypto)
   and accepts that responsibility.
-  `AsyncLocalStorage` is created lazily on first use, so **loading** `@loom/workflow-runtime` in a
+  `AsyncLocalStorage` is created lazily on first use, so **loading** `@loomwork/workflow-runtime` in a
   browser bundle (where the bundler externalizes `node:async_hooks` to an empty module) no longer
   throws at import. Without a real `AsyncLocalStorage`, ENTERING a step/decide scope (a
   `ctx.parallel` branch, `ctx.decide`) throws `AsyncContextUnavailableError` rather than losing the
   scope at the first `await` and recording steps under the wrong identity: run the durable runtime
   on the server. Node, Deno and Bun are unchanged.
 
-The warning is therefore expected when `@loom/workflow-runtime` or `@loom/effect-runtime` is bundled
+The warning is therefore expected when `@loomwork/workflow-runtime` or `@loomwork/effect-runtime` is bundled
 for a browser; it is not a defect in the packages that appear browser-safe above.
 
 ---

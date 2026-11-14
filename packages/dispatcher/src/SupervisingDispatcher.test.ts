@@ -1,5 +1,5 @@
-import type { ExecutionState } from "@loom/core";
-import type { ExecutionPackage, ExecutionResult } from "@loom/worker-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import type { ExecutionPackage, ExecutionResult } from "@loomwork/worker-runtime";
 import { describe, expect, it } from "vitest";
 import { CircuitOpenError, SupervisingDispatcher } from "./SupervisingDispatcher";
 import type { DispatcherHealth, ExecutionDispatcher } from "./types";

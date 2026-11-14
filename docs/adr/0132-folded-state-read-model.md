@@ -1,4 +1,4 @@
-# ADR 0132 — Folded-state read models: durable per-execution projections in `@loom/plugin-read-model`
+# ADR 0132 — Folded-state read models: durable per-execution projections in `@loomwork/plugin-read-model`
 
 - Status: **Accepted** (2026-10-19) — owner accepted and merged the implementation stack 2026-10-19.
 - Date: 2026-10-19
@@ -11,14 +11,14 @@
   [ADR 0130](0130-sealed-payload-delivery-guard.md) (sealed payloads: the envelope shape rule, the
   `metadata.seal` marker, `sealingCapability`), [`docs/data-classification.md`](../data-classification.md) (K10-R1: classify once,
   derive every mechanism's wiring).
-- **KERNEL_ABI unchanged; EVENT_SCHEMA unchanged.** No kernel, `@loom/app` or event-type change; wiring
+- **KERNEL_ABI unchanged; EVENT_SCHEMA unchanged.** No kernel, `@loomwork/app` or event-type change; wiring
   rides the same `onEvent` seam and catch-up scan as ADR 0058. A plugin SPI grows five **optional**
-  methods: `READ_MODEL_STORE_SPI_VERSION` 1.1.0 → **1.2.0**. `@loom/plugin-read-model` gains a dependency on
-  `@loom/classify` (masking vocabulary only; the kernel still names no taxonomy, G3).
+  methods: `READ_MODEL_STORE_SPI_VERSION` 1.1.0 → **1.2.0**. `@loomwork/plugin-read-model` gains a dependency on
+  `@loomwork/classify` (masking vocabulary only; the kernel still names no taxonomy, G3).
 
 ## Context
 
-`@loom/plugin-read-model` indexes **rows**: an extractor turns an event into zero or more rows and a
+`@loomwork/plugin-read-model` indexes **rows**: an extractor turns an event into zero or more rows and a
 query pages over them. A consumer that needs *the current state of one thing* — "what is the ingestion
 status of this document?" — has to query every row the thing ever produced and fold them itself, per
 request. The first such consumer is DocMind: one ingest execution per document per generation
@@ -206,7 +206,7 @@ removes the model's folded state and header — an extension of "all rows and wa
 sensible meaning of "drop everything for this model" once folded state exists. On Postgres it does so
 only if the folded tables already exist and never creates them, so a store that never used a folded model
 (or a role that cannot run DDL) clears exactly as it did at 1.1.0 (D10). A new
-`runFoldedStateConformance` kit in `@loom/conformance` pins the semantics (idempotent, monotonic,
+`runFoldedStateConformance` kit in `@loomwork/conformance` pins the semantics (idempotent, monotonic,
 version guard, tombstones, key lookup, isolation, concurrent convergence) and skips for backends without
 the methods. In-memory (reference), SQLite and Postgres implement it.
 
@@ -325,7 +325,7 @@ not leave this to documentation alone. The guard is built only from primitives L
 | `sensitive()` marks → `sensitivePathsFromSteps` / the `EncryptingEventStore` `sensitive` map (K10-R1, `docs/data-classification.md`) | the declared set: `eventType → payload dot-paths`, `[]` array wildcards allowed |
 | `metadata.seal.covers` stamped on every envelope that holds a sealed field, and `sealingCapability().covers` (ADR 0130 residuals D7) | the marked set, with no configuration, on every read-through-store feed |
 | The envelope shape rule: a plain object with an OWN string `__loomEnc` (ADR 0130 D2) | recognising ciphertext without keys or knowledge of the cipher |
-| `maskPaths`, `expandPaths`, `REDACTED` (`@loom/classify`) | masking, wildcard resolution, the sentinel `"[redacted]"` |
+| `maskPaths`, `expandPaths`, `REDACTED` (`@loomwork/classify`) | masking, wildcard resolution, the sentinel `"[redacted]"` |
 | The bounded breadth-first walk, budget 100 000 nodes, exhaustion = fail closed (ADR 0130 D2) | every scan the guard makes |
 
 ```ts
@@ -518,7 +518,7 @@ only half of the events) converge with the cache disabled and with it enabled.
 
 - **Cross-execution folds** (D2) — would need a merge with enforced laws; separate ADR when a consumer exists.
 - **Paging, range or field-filtered queries over folded state** (D9) — equality by `executionId`/`key`/`scope` only.
-- **Push / subscription** of state changes — `@loom/live-query` territory; a durable model is read on demand.
+- **Push / subscription** of state changes — `@loomwork/live-query` territory; a durable model is read on demand.
 - **Serving reads from the state cache** (D15) — the cache is write-path only; `getMany` / `refresh` hit the store.
 - **A sensitive-value *detector*** (entropy, regex, ML scanning of state) — D11 guards what is declared or sealed and states
   its limits; guessing at undeclared sensitivity is a different product.
@@ -564,7 +564,7 @@ only half of the events) converge with the cache disabled and with it enabled.
 ## Implementation
 
 Accepted by the owner on 2026-10-19. Shipped as a stack of draft PRs against
-`@loom/plugin-read-model`, `@loom/plugin-sqlite` / `@loom/plugin-postgres` and the docs: types and SPI 1.2.0
+`@loomwork/plugin-read-model`, `@loomwork/plugin-sqlite` / `@loomwork/plugin-postgres` and the docs: types and SPI 1.2.0
 (#646), conformance kit (#647), in-memory store (#648), fold engine and live tail (#649-#655), sensitive-state
 guard (#656-#661, #672-#673), state cache (#662-#666), service wiring, catch-up and rebuild (#667-#671),
 erasure (#674-#675), SQLite store (#676-#677), Postgres placement, DDL and store (#678-#682), docs (#683) and

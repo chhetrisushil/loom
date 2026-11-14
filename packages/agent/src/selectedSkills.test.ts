@@ -1,10 +1,10 @@
-import type { EventEnvelope, FlowDefinition, SkillDefinition } from "@loom/core";
-import { agent$, instructions$, skill$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { LlmRequest, LlmResponse } from "@loom/llm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import type { EventEnvelope, FlowDefinition, SkillDefinition } from "@loomwork/core";
+import { agent$, instructions$, skill$ } from "@loomwork/core";
+import { EffectRuntime } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { LlmRequest, LlmResponse } from "@loomwork/llm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";

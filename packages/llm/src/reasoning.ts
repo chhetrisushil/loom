@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { type TaintedValue, tainted } from "@loom/classify";
-import type { EffectContext } from "@loom/effect-runtime";
+import { type TaintedValue, tainted } from "@loomwork/classify";
+import type { EffectContext } from "@loomwork/effect-runtime";
 import type { LlmReasoning, LlmReasoningKind, LlmReasoningPart } from "./parts";
 import type { ContentResolver } from "./resolveContent";
 

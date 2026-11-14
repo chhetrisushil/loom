@@ -1,4 +1,4 @@
-# @loom/saga — saga / compensation for Loom flows
+# @loomwork/saga — saga / compensation for Loom flows
 
 Register compensating actions as a flow makes forward progress, then run them in **reverse** if the
 flow fails. Compensators are ordinary `ctx.run` steps — which are already replay-guarded — so
@@ -6,7 +6,7 @@ rollback is **replay-safe with no new syscall, no new event type, and no fold ch
 [ADR 0041](../../docs/adr/0041-saga-compensation.md).
 
 ```ts
-import { withSaga } from "@loom/saga";
+import { withSaga } from "@loomwork/saga";
 
 const runner = async (ctx, input) =>
   withSaga(ctx, async (saga) => {

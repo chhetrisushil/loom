@@ -1,9 +1,9 @@
-import { ERASURE_STREAM } from "@loom/compliance";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore, SenderErasedError } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { ERASURE_STREAM } from "@loomwork/compliance";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore, SenderErasedError } from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";

@@ -1,10 +1,10 @@
 import { randomBytes } from "node:crypto";
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   buildReservedSegment,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingArchiveStore } from "./EncryptingArchiveStore";
 import { EncryptingEventStore } from "./EncryptingEventStore";

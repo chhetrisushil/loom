@@ -1,4 +1,4 @@
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
 
 /** A serializable record of LLM request→response pairs. Persist it as JSON. */
 export interface LlmCassette {

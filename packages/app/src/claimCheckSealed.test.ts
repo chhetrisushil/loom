@@ -1,13 +1,13 @@
-import { type LlmRequest, createLlmEffect } from "@loom/llm";
-import { isClaimCheck, resolveClaimCheck } from "@loom/middleware";
-import { sweepUnpinnedContent } from "@loom/plugin-content";
+import { type LlmRequest, createLlmEffect } from "@loomwork/llm";
+import { isClaimCheck, resolveClaimCheck } from "@loomwork/middleware";
+import { sweepUnpinnedContent } from "@loomwork/plugin-content";
 import {
   ContentAccessRequiredError,
   EncryptingContentStore,
   EncryptingEventStore,
   InMemoryKeyStore,
   shredSubject,
-} from "@loom/plugin-crypto";
+} from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { CloningEventStore, CountingContentStore, boot } from "./__fixtures__/claimCheckHarness";
 import { payload } from "./__fixtures__/claimCheckHarness";

@@ -1,4 +1,4 @@
-import type { ExecutionPackage, WorkerLease } from "@loom/worker-runtime";
+import type { ExecutionPackage, WorkerLease } from "@loomwork/worker-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { CloudRunWorkerRuntime } from "./CloudRunWorkerRuntime";
 import { StaticCloudRunPlatform } from "./StaticCloudRunPlatform";

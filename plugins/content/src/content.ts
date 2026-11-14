@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { expandPaths, hasWildcard } from "@loom/classify";
+import { expandPaths, hasWildcard } from "@loomwork/classify";
 
 // ── ADR 0046 — content-addressed references ───────────────────────────────────
 //
@@ -49,7 +49,7 @@ export function decodeValue(bytes: Uint8Array): unknown {
 
 /**
  * An ADR 0054 claim-check envelope, recognised structurally with the same test as
- * `@loom/middleware`'s `isClaimCheck` (`__loomClaimCheck === true` AND a string
+ * `@loomwork/middleware`'s `isClaimCheck` (`__loomClaimCheck === true` AND a string
  * `ref.__loomContent`), so this plugin takes no dependency for it (ADR 0055 D3).
  *
  * The read-side walkers below treat one as a LEAF. An envelope is resolved only by the

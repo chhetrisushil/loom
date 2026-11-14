@@ -1,16 +1,16 @@
-import { toolInputJsonSchema } from "@loom/agent";
-import type { CapabilityCatalog } from "@loom/capability";
-import { tainted } from "@loom/classify";
-import type { TaintedValue } from "@loom/classify";
-import { UNTRUSTED_CONTENT_SYSTEM_NOTE, guardRequest } from "@loom/llm";
+import { toolInputJsonSchema } from "@loomwork/agent";
+import type { CapabilityCatalog } from "@loomwork/capability";
+import { tainted } from "@loomwork/classify";
+import type { TaintedValue } from "@loomwork/classify";
+import { UNTRUSTED_CONTENT_SYSTEM_NOTE, guardRequest } from "@loomwork/llm";
 import type {
   LlmContent,
   LlmMessageInput,
   LlmProvider,
   LlmRequestInput,
   LlmResponse,
-} from "@loom/llm";
-import type { DecideScope, ExecutionContext } from "@loom/workflow-runtime";
+} from "@loomwork/llm";
+import type { DecideScope, ExecutionContext } from "@loomwork/workflow-runtime";
 import { claimId } from "./claim";
 import {
   DEFAULT_PLAN_LIMITS,

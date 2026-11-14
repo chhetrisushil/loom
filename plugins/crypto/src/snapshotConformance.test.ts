@@ -1,5 +1,5 @@
-import { runSnapshotStoreConformance } from "@loom/conformance";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { runSnapshotStoreConformance } from "@loomwork/conformance";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
 import { InMemoryKeyStore } from "./keystore";
 

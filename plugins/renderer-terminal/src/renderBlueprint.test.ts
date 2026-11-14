@@ -10,7 +10,7 @@ import {
   customWidget$,
   grid,
   stack,
-} from "@loom/blueprint-runtime";
+} from "@loomwork/blueprint-runtime";
 import { describe, expect, it } from "vitest";
 import { type TerminalWidgetRenderer, defaultTerminalRegistry } from "./defaultRegistry";
 import { TerminalRenderer, renderBlueprintToString } from "./renderBlueprint";

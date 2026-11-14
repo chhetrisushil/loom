@@ -1,4 +1,4 @@
-// @loom/live-query — live reads of in-flight executions.
+// @loomwork/live-query — live reads of in-flight executions.
 //
 // `snapshot(id)` folds current state on demand; `subscribe(id, cb)` pushes the state
 // again on every new event. A read-model over loadState + EventStore.subscribe — no

@@ -35,7 +35,7 @@ export class UngroundedCitationError extends Error {
  * quality heuristic.
  *
  * What it does NOT check is whether the answer's CLAIMS follow from the cited passage.
- * That needs a judge, it belongs to `@loom/learning`'s evaluation surface, and conflating
+ * That needs a judge, it belongs to `@loomwork/learning`'s evaluation surface, and conflating
  * the two would turn a decidable check into an approximate one.
  *
  * Ids are compared exactly: a corpus's document ids are its own keys, and normalizing

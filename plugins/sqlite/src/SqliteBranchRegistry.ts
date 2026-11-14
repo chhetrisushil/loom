@@ -6,7 +6,7 @@ import {
   type ListRefsOptions,
   type PromoteOptions,
   assertListRefsLimit,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
 
@@ -49,7 +49,7 @@ function rowToLineage(row: LineageRow): LineageRecord {
 }
 
 /**
- * SQLite-backed {@link BranchRegistry}. Lives in @loom/event-runtime because
+ * SQLite-backed {@link BranchRegistry}. Lives in @loomwork/event-runtime because
  * refs describe event-log topology; point it at the same DB file as the
  * SqliteEventStore (migrate() creates the `refs`/`lineage` tables idempotently).
  */

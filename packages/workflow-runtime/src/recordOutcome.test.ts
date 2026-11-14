@@ -1,25 +1,25 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EventEnvelope } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
+import type { EventEnvelope } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import {
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
-} from "@loom/event-runtime";
-import type { EventStore, TimerStore } from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
+import type { EventStore, TimerStore } from "@loomwork/event-runtime";
 import {
   PostgresEventStore,
   PostgresSnapshotStore,
   PostgresTimerStore,
   migratePostgresStores,
   postgresPool,
-} from "@loom/plugin-postgres";
-import { SqliteEventStore, SqliteSnapshotStore, SqliteTimerStore } from "@loom/plugin-sqlite";
-import { foldEvents } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/plugin-postgres";
+import { SqliteEventStore, SqliteSnapshotStore, SqliteTimerStore } from "@loomwork/plugin-sqlite";
+import { foldEvents } from "@loomwork/replay-vm";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import type { WorkflowRuntime } from "./WorkflowRuntime";

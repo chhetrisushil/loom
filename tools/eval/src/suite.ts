@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
 
 // ── An LLM evaluation harness (R18, ADR 0124) ────────────────────────────────
 //
@@ -57,7 +57,7 @@ export interface EvalSuiteOptions<I = unknown, O = unknown> {
   concurrency?: number;
   /**
    * Content-addressed versions in force for this run, e.g. `{ prompt: promptVersion(...), model:
-   * modelVersion(...) }` from `@loom/learning`. Carried into the report so two runs can be
+   * modelVersion(...) }` from `@loomwork/learning`. Carried into the report so two runs can be
    * compared by what produced them.
    */
   versions?: Record<string, { id: string; version: string }>;

@@ -1,7 +1,7 @@
-import { selectedSkillsOf } from "@loom/agent";
-import { SkillRegistry } from "@loom/agent";
-import { agent$, instructions$, skill$, tool$ } from "@loom/core";
-import { GrantTable, ToolEffect } from "@loom/effect-runtime";
+import { selectedSkillsOf } from "@loomwork/agent";
+import { SkillRegistry } from "@loomwork/agent";
+import { agent$, instructions$, skill$, tool$ } from "@loomwork/core";
+import { GrantTable, ToolEffect } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { runAgentOnce } from "./runAgentOnce";

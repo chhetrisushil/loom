@@ -1,4 +1,4 @@
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import { createSurfaceEmitter } from "./emitter";
 import type { SurfaceEmitter } from "./emitter";
 import { DEFAULT_SURFACE } from "./types";
@@ -6,9 +6,9 @@ import { DEFAULT_SURFACE } from "./types";
 // ADR 0114 — `ctx.ui` leaves the kernel. The kernel's `ExecutionContext` extends an EMPTY
 // `ExecutionContextExtensions`; this package merges the UI accessor into it, so `ctx.ui`
 // type-checks wherever agent-surface is in the program and nowhere else. At runtime the accessor
-// comes from the injected `WorkflowRuntimeDeps.surface` factory (`defineConfig`, `@loom/testing`
+// comes from the injected `WorkflowRuntimeDeps.surface` factory (`defineConfig`, `@loomwork/testing`
 // and the scaffold pass `createSurfaceEmitter`).
-declare module "@loom/workflow-runtime" {
+declare module "@loomwork/workflow-runtime" {
   interface ExecutionContextExtensions {
     /** Drive durable, replayable UI surfaces. Prefer `surface(ctx)`. */
     readonly ui: SurfaceEmitter;

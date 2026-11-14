@@ -1,6 +1,6 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import type { EventStore } from "@loomwork/event-runtime";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
 
 // ── IX-1 — the read-only boundary, enforced by the type system ────────────────
 //

@@ -6,7 +6,7 @@
 //
 // The declaration is a plain value under a `Symbol.for` key, so a third-party library can attach it
 // with ZERO dependency on loom: `Object.defineProperty(x, Symbol.for("loom.verify.reach"), { value })`.
-// `declareReach` is the convenience for code that already imports `@loom/verify`.
+// `declareReach` is the convenience for code that already imports `@loomwork/verify`.
 
 /** The well-known key a declaration lives under. Equal to `Symbol.for("loom.verify.reach")`. */
 export const REACH_DECLARATION: unique symbol = Symbol.for("loom.verify.reach") as never;

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { analyze, costAnalytics } from "./analyze";
 import { MAX_CUSTOM_DIMENSIONS, OTHER_DIMENSION } from "./customDimensions";

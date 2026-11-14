@@ -15,8 +15,8 @@ function configModule(durable: boolean): string {
   const path = join(dir, durable ? "config.js" : "config-volatile.js");
   writeFileSync(
     path,
-    `const { defineConfig } = require(${JSON.stringify(require.resolve("@loom/app"))});
-const { InMemoryMemoryStore } = require(${JSON.stringify(require.resolve("@loom/memory"))});
+    `const { defineConfig } = require(${JSON.stringify(require.resolve("@loomwork/app"))});
+const { InMemoryMemoryStore } = require(${JSON.stringify(require.resolve("@loomwork/memory"))});
 module.exports = defineConfig({
   storage: { kind: "memory" },
   ${durable ? "memoryStore: new InMemoryMemoryStore()," : ""}

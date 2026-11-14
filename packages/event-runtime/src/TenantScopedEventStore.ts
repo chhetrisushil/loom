@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import { compareExecutionIds } from "./executionIdOrder";
 import { StaleFenceError } from "./fencing";
 import { type DecoratorPlan, installOptional } from "./installOptional";

@@ -1,4 +1,4 @@
-# @loom/appgen — turn an intent into Loom code you own
+# @loomwork/appgen — turn an intent into Loom code you own
 
 Takes a plain-language intent and produces ordinary, static TypeScript: flows, steps, capabilities and
 a `defineConfig`, either as a new project or as edits to an existing app. Only one stage reads natural
@@ -7,7 +7,7 @@ generated once, not interpreted at run time. The `loom appgen` command is the us
 library is for building your own front end, or for tests.
 
 ```ts
-import { applyChanges, planChangesDeterministic, scanApp, typecheck } from "@loom/appgen";
+import { applyChanges, planChangesDeterministic, scanApp, typecheck } from "@loomwork/appgen";
 
 const model = scanApp("./my-app"); // flows, steps, gates, and whether each handler is still a stub
 const spec = planChangesDeterministic("create a triage flow. step classify. pause for approval.", model);
@@ -26,7 +26,7 @@ const result = typecheck("./my-app"); // { ok, skipped, diagnostics }
 - **Scan.** `scanApp(dir)` and `isExistingApp(dir)` summarize an app without returning file contents.
 - **Plan.** `planChangesDeterministic(intent, appModel)` returns a `ChangeSpec`, whose capabilities and
   steps are tagged `create`, `extend`, `modify` or `delete`. A model-driven planner is the separate
-  `@loom/appgen-model` package. `parseIntent(text)` produces an `AppSpec` for a net-new app.
+  `@loomwork/appgen-model` package. `parseIntent(text)` produces an `AppSpec` for a net-new app.
 - **Apply.** `applyChanges(spec, appModel)` returns a `FilePlan` (`creates`, `edits`, `deletes`, `skips`,
   `regenRegistration`). `generateProject`, `generateFlows` and `generateApp` build files from an `AppSpec`.
   `FlowEditor` and `wireGrantsIntoConfig` do the surgical edits.
@@ -60,6 +60,6 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 - [ADR 0042](../../docs/adr/0042-ai-native-brownfield-appgen.md) (the four stages) and
   [ADR 0050](../../docs/adr/0050-appgen-model-provider-agnostic.md) (model-driven planning).
 - CLI: `loom appgen` ([docs/usage-cli.md](../../docs/usage-cli.md)).
-- API reference: section "`@loom/appgen` — AI-native, brownfield-aware codegen *(2.0)*" in
+- API reference: section "`@loomwork/appgen` — AI-native, brownfield-aware codegen *(2.0)*" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

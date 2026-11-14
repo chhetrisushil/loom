@@ -1,4 +1,4 @@
-import { loomPlugin } from "@loom/compiler";
+import { loomPlugin } from "@loomwork/compiler";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
@@ -7,24 +7,24 @@ export default defineConfig({
   resolve: { conditions: ["require", "default"] },
   optimizeDeps: {
     include: [
-      "@loom/app",
-      "@loom/agent-surface",
-      "@loom/blueprint-runtime",
-      "@loom/capability",
-      "@loom/core",
-      "@loom/intent",
-      "@loom/effect-runtime",
-      "@loom/event-runtime",
-      "@loom/projection-runtime",
-      "@loom/plugin-a2ui",
-      "@loom/plugin-renderer-react",
-      "@loom/sdk",
-      "@loom/snapshot-runtime",
-      "@loom/telemetry",
-      "@loom/workflow-runtime",
+      "@loomwork/app",
+      "@loomwork/agent-surface",
+      "@loomwork/blueprint-runtime",
+      "@loomwork/capability",
+      "@loomwork/core",
+      "@loomwork/intent",
+      "@loomwork/effect-runtime",
+      "@loomwork/event-runtime",
+      "@loomwork/projection-runtime",
+      "@loomwork/plugin-a2ui",
+      "@loomwork/plugin-renderer-react",
+      "@loomwork/sdk",
+      "@loomwork/snapshot-runtime",
+      "@loomwork/telemetry",
+      "@loomwork/workflow-runtime",
     ],
   },
-  // The @loom/* workspace packages ship CommonJS. `vite build` hands them to
+  // The @loomwork/* workspace packages ship CommonJS. `vite build` hands them to
   // Rollup, whose CommonJS interop cannot statically trace named exports through
   // the transitive re-export getter chain (e.g. "step$ is not exported by
   // dist/index.js"). transformMixedEsModules resolves those named exports.

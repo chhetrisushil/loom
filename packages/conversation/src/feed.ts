@@ -1,4 +1,4 @@
-import type { EventStore } from "@loom/event-runtime";
+import type { EventStore } from "@loomwork/event-runtime";
 import { generationId } from "./ids";
 import { type ConversationReader, parseCursor } from "./reader";
 import type { HistoryEntry } from "./types";

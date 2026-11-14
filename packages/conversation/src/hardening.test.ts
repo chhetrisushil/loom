@@ -1,6 +1,6 @@
-import { isTainted } from "@loom/classify";
-import { flow$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
+import { isTainted } from "@loomwork/classify";
+import { flow$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Latch, boot, lastUserText, messages, until } from "./__fixtures__/harness";

@@ -1,5 +1,5 @@
-import { externalizedPaths } from "@loom/classify";
-import type { StepDefinition } from "@loom/core";
+import { externalizedPaths } from "@loomwork/classify";
+import type { StepDefinition } from "@loomwork/core";
 
 // ── ADR 0046 — derive the externalize map from `externalized()` marks ──────────
 //

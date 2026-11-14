@@ -1,19 +1,19 @@
-import { type AppModel, type ChangeSpec, planChangesDeterministic } from "@loom/appgen";
-import type { LlmMessage } from "@loom/llm";
+import { type AppModel, type ChangeSpec, planChangesDeterministic } from "@loomwork/appgen";
+import type { LlmMessage } from "@loomwork/llm";
 import {
   type DecideFn,
   type ModelRoute,
   ReasoningRuntime,
   type ReasoningTraceEntry,
   validatorConfidence,
-} from "@loom/reasoning";
+} from "@loomwork/reasoning";
 import { tryParseChangeSpec } from "./parse";
 import { buildRepairPrompt, buildSystem, buildUser } from "./prompt";
 import { validateChangeSpec } from "./validateSpec";
 
 // ── Stage 2 (the AI stage): intent + AppModel → ChangeSpec via a local model ──
 //
-// The "reasoning-ladder-on-itself": we run the planner through @loom/reasoning's
+// The "reasoning-ladder-on-itself": we run the planner through @loomwork/reasoning's
 // cheap-first elevation ladder. The confidence signal is a VALIDATOR — "does the output
 // parse into a usable ChangeSpec?" — so a weak tier that emits junk drops below the
 // threshold and the runtime elevates to a stronger model, logging each elevation via

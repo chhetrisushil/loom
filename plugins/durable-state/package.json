@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-durable-state",
+  "name": "@loomwork/plugin-durable-state",
   "version": "0.1.0",
   "description": "Typed, versioned, migratable keyed state for Loom (ADR 0051 D2) — carry state across bounded runs as RECORDED effects: load/save results land in STEP_COMPLETED so replay folds the recorded value and never re-reads the store. Zod-validated envelopes, registered version-to-version migrations (loud StateContractMismatch when absent), compare-and-set revisions, and a sentinelState convenience for schedule-driven agents.",
   "main": "./dist/index.js",
@@ -19,12 +19,12 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/core": "workspace:^",
-    "@loom/effect-runtime": "workspace:^",
+    "@loomwork/core": "workspace:^",
+    "@loomwork/effect-runtime": "workspace:^",
     "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@loom/conformance": "workspace:*",
+    "@loomwork/conformance": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

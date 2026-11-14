@@ -10,7 +10,7 @@ import ts from "typescript";
 //
 // IMPORTANT: this analyzes a SOURCE REGION you give it. Step `handler$` bodies are memoized
 // (their STEP_COMPLETED output is logged and served on replay), so they are NOT the target —
-// feed this the flow runner / orchestration source. Output is shaped to `@loom/verify`'s
+// feed this the flow runner / orchestration source. Output is shaped to `@loomwork/verify`'s
 // `NonDeterministicCall` and can be fed to its determinism rule via
 // `resolveVerifyInput({ nonDeterministicByFlow })`.
 
@@ -121,7 +121,7 @@ export function analyzeNode(
 
 /**
  * Analyze a source string (e.g. a flow runner / orchestration body) for non-deterministic
- * calls. Feed the result to `@loom/verify` via `resolveVerifyInput({ nonDeterministicByFlow })`.
+ * calls. Feed the result to `@loomwork/verify` via `resolveVerifyInput({ nonDeterministicByFlow })`.
  */
 export function analyzeNonDeterminism(
   source: string,

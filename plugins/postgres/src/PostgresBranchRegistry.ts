@@ -6,7 +6,7 @@ import {
   type ListRefsOptions,
   type PromoteOptions,
   assertListRefsLimit,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 

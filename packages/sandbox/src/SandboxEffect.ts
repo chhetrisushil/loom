@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { TypedFailure, fail } from "@loom/core";
-import type { Effect, EffectContext, ErrorChannelSchema } from "@loom/effect-runtime";
+import { TypedFailure, fail } from "@loomwork/core";
+import type { Effect, EffectContext, ErrorChannelSchema } from "@loomwork/effect-runtime";
 import { SANDBOX_MESSAGE_LIMIT, boundText } from "./boundText";
 import { SANDBOX_ERRORS, SandboxEvalInput, type SandboxEvalInputValue } from "./errors";
 import type { ScriptReader } from "./errors";

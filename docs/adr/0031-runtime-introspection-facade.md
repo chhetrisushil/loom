@@ -1,8 +1,8 @@
 # ADR 0031 — Runtime Introspection facade
 
-- Status: Accepted (2026-07-10) — accepted item #4 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `introspect()` + `executionNodes`/`taskGraph`/`resourceGraph`/`dependencyGraph`/`formatIntrospection` in `@loom/analytics` + `loom introspect --db <path> <executionId> [--graph N]` CLI. Reuses `decisionGraph` (ADR 0030). Log-derived graphs from events; placement/dependency graphs from optional app projections.
+- Status: Accepted (2026-07-10) — accepted item #4 in the [Execution-OS evaluation](../requirements/2026-07-10-execution-operating-system-evaluation.md). Implemented: `introspect()` + `executionNodes`/`taskGraph`/`resourceGraph`/`dependencyGraph`/`formatIntrospection` in `@loomwork/analytics` + `loom introspect --db <path> <executionId> [--graph N]` CLI. Reuses `decisionGraph` (ADR 0030). Log-derived graphs from events; placement/dependency graphs from optional app projections.
 - Date: 2026-07-10
-- Builds on: `@loom/event-runtime` (`BranchRegistry`), `@loom/replay-vm` (`foldAt`), `@loom/analytics`, `@loom/dispatcher`, `@loom/cli`
+- Builds on: `@loomwork/event-runtime` (`BranchRegistry`), `@loomwork/replay-vm` (`foldAt`), `@loomwork/analytics`, `@loomwork/dispatcher`, `@loomwork/cli`
 
 ## Context
 
@@ -14,7 +14,7 @@ task graph; fibers were rejected — see the evaluation.)
 
 ## Decision
 
-Add a read-only `introspect(config)` facade (surfaced in `@loom/analytics` or a thin `@loom/introspect`)
+Add a read-only `introspect(config)` facade (surfaced in `@loomwork/analytics` or a thin `@loomwork/introspect`)
 returning typed graphs, all folded from existing sources — no new state, no durable events:
 
 - **execution / task graph** — from the folded `ExecutionState` frames.

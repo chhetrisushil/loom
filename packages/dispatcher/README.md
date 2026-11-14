@@ -1,4 +1,4 @@
-# @loom/dispatcher — placement
+# @loomwork/dispatcher — placement
 
 The dispatcher decides where an execution runs and owns the allocate, execute, release cycle around a
 [`WorkerRuntime`](../worker-runtime/README.md): worker allocation, retries, a per-attempt timeout, and
@@ -14,8 +14,8 @@ import {
   PlacementDispatcher,
   SupervisingDispatcher,
   defaultPlacementPolicy,
-} from "@loom/dispatcher";
-import { LocalWorkerRuntime } from "@loom/worker-runtime-local";
+} from "@loomwork/dispatcher";
+import { LocalWorkerRuntime } from "@loomwork/worker-runtime-local";
 import { app } from "./config"; // your defineConfig({ storage, flows, ... }) result
 
 const local = new LocalDispatcher(new LocalWorkerRuntime(app.runtime), { maxAttempts: 2 });
@@ -45,7 +45,7 @@ console.log(result.status, await dispatcher.health());
 - **Contract.** `ExecutionDispatcher` (`dispatch`, `cancel`, `health`), `DispatchMetadata` (`lane`,
   `priority`, `estimatedCpu`, `estimatedMemory`, `estimatedDuration`, `target`), `DispatcherHealth`,
   `PlacementPolicy`, and `DISPATCHER_SPI_VERSION` (1.2.0). `ExecutionPackage`, `ExecutionResult` and
-  `ExecutionOutcome` are re-exported from `@loom/worker-runtime`.
+  `ExecutionOutcome` are re-exported from `@loomwork/worker-runtime`.
 - **`LocalDispatcher(worker, { maxAttempts, executeTimeoutMs })`.** One worker: allocate, execute, release.
 - **`PlacementDispatcher({ targets, default, policy?, onWarn? })`.** Routes each dispatch to a named
   target dispatcher. `defaultPlacementPolicy` honours `meta.target` when it is registered;
@@ -78,7 +78,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## See also
 
-- API reference: section "`@loom/dispatcher` — placement" in [docs/api-reference.org](../../docs/api-reference.org), which still quotes `DISPATCHER_SPI_VERSION` as 1.1.0.
+- API reference: section "`@loomwork/dispatcher` — placement" in [docs/api-reference.org](../../docs/api-reference.org), which still quotes `DISPATCHER_SPI_VERSION` as 1.1.0.
 - Guides: [user guide, section 13: where executions run](../../docs/user-guide.md#13-where-executions-run-compute), [scaling](../../docs/scaling.md).
 - ADRs: [0001 dispatcher and worker runtime](../../docs/adr/0001-execution-dispatcher-and-worker-runtime.md), [0004 failure recovery](../../docs/adr/0004-failure-recovery.md), [0033 SPI conformance](../../docs/adr/0033-spi-conformance-contracts.md).
-- Source: `packages/dispatcher/src`; `runExecutionDispatcherConformance` in `@loom/conformance` proves a dispatcher.
+- Source: `packages/dispatcher/src`; `runExecutionDispatcherConformance` in `@loomwork/conformance` proves a dispatcher.

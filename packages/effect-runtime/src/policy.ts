@@ -8,7 +8,7 @@
 // can tighten, never widen, a grant (defense in depth). Pure + synchronous like
 // every authorizer, so the decision is deterministic and replay-safe.
 
-import type { PolicyDefinition } from "@loom/core";
+import type { PolicyDefinition } from "@loomwork/core";
 import { capabilityId } from "./authz";
 import type { CapabilityAuthorizer, CapabilityDecision, CapabilityRequest } from "./authz";
 

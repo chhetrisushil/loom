@@ -1,4 +1,4 @@
-# @loom/verify
+# @loomwork/verify
 
 Pre-flight **runtime verification** for Loom — a pure, read-only, **off-log** check that runs
 *before* an execution starts and catches invariant violations that would otherwise surface as a
@@ -59,7 +59,7 @@ if (!report.ok) process.exitCode = 1;
 loom verify --config ./dist/loom.config.js   # exits non-zero on any error finding
 ```
 
-`defineConfig` maps the resolved app → `VerifyInput` via the `@loom/app` adapter
+`defineConfig` maps the resolved app → `VerifyInput` via the `@loomwork/app` adapter
 (`resolveVerifyInput`): flows + `flowContentHash` + each step's effect capability, the
 `GrantTable` projection, and `PlacementDispatcher` targets. `"off"` never even builds the
 input (G2).
@@ -67,7 +67,7 @@ input (G2).
 ### Direct (engine)
 
 ```ts
-import { verify, runVerification } from "@loom/verify";
+import { verify, runVerification } from "@loomwork/verify";
 
 const report = verify(input); // input: a structural VerifyInput
 if (!report.ok) console.error(report.findings);
@@ -77,9 +77,9 @@ runVerification(mode, () => buildInput()); // "off" skips buildInput entirely
 
 `VerifyInput` is a **structural projection** of a resolved config. The engine is
 dependency-free on purpose so the rules stay pure and testable; the config→`VerifyInput`
-adapter lives in `@loom/app`.
+adapter lives in `@loomwork/app`.
 
-**What feeds each rule.** Build with the `@loom/compiler` and the manifest carries three per-flow
+**What feeds each rule.** Build with the `@loomwork/compiler` and the manifest carries three per-flow
 source analyses — `loopIdentity` (ADR 0061), `nonDeterministic`, and `runnerReach` (ADR 0086) —
 which `loom verify` auto-injects from a discovered `loom-manifest.json`, and which `defineConfig`
 accepts directly. That puts `determinism`, `capability-compat`, `effect-class` and
@@ -100,7 +100,7 @@ object:
 
 ```ts
 // library (no loom import needed): Symbol.for("loom.verify.reach") -> { run?, transient? }
-declareReach(planner, { transient: ["llm.complete"] }); // from @loom/verify
+declareReach(planner, { transient: ["llm.complete"] }); // from @loomwork/verify
 
 // app
 defineConfig({ checks: { verify: { mode: "warn", reach: { planner } } } });
@@ -116,8 +116,8 @@ declareReach(fanout$, { run: [], transient: [], stepArgs: [1] });
 
 `ctx.parallel([[step, input], ...])` is read like `ctx.run`. Effect ids given by a same-module (or
 relative-imported) `const`, or minted by a factory (`llmStep$(id, LLM_X)`, `mcpInvoke$` = `mcp.invoke`,
-`sandboxEval$`), resolve; anything else stays unresolved. In `@loom/orchestration`, `@loom/learning`,
-`@loom/analytics` and `@loom/knowledge` the hand-offs declare their reach (none run a tool). `agentLoop$` does
+`sandboxEval$`), resolve; anything else stays unresolved. In `@loomwork/orchestration`, `@loomwork/learning`,
+`@loomwork/analytics` and `@loomwork/knowledge` the hand-offs declare their reach (none run a tool). `agentLoop$` does
 not: its reach depends on the config, so declare it in `verify.reach` for your own tool set.
 
 The compiler records `planner.compose(input, ctx)` as an escape; declared tools join the flow's
@@ -135,7 +135,7 @@ add. A declaration is a claim about the library; the tools it names are checked,
   same-module helpers; `ctx.run`/`ctx.suspend` handed out as values are escapes too. Anything not
   followable is reported unresolved, never skipped.
 - **Test the claim.** Library authors should run the library against `recordReach()` and
-  `assertReachMatches(declaration, recorder.recorded)` (both from `@loom/verify`): the recorder
+  `assertReachMatches(declaration, recorder.recorded)` (both from `@loomwork/verify`): the recorder
   wraps a ctx, records the toolIds passed to `run`/`execute`/`parallel` and to
   `scope.invokeTransient` inside `decide`, and the assertion throws if anything ran that the
   declaration does not name.

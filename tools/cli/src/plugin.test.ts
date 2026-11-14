@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { type PluginFinding, checkPlugin, wiresConformance } from "./plugin";
 
 const WIRED = [
-  'import { runEventStoreConformance } from "@loom/conformance";',
+  'import { runEventStoreConformance } from "@loomwork/conformance";',
   "runEventStoreConformance(() => new X());",
 ].join("\n");
 
@@ -15,7 +15,7 @@ describe("checkPlugin", () => {
       {
         name: "loom-plugin-redis",
         keywords: ["loom", "loom-plugin"],
-        peerDependencies: { "@loom/event-runtime": "*", "@loom/snapshot-runtime": "*" },
+        peerDependencies: { "@loomwork/event-runtime": "*", "@loomwork/snapshot-runtime": "*" },
       },
       [WIRED]
     );
@@ -71,7 +71,7 @@ describe("checkPlugin", () => {
 
   it("errors when the plugin depends on the replay fold engine", () => {
     const findings = checkPlugin(
-      { name: "@loom/plugin-x", dependencies: { "@loom/replay-vm": "workspace:*" } },
+      { name: "@loomwork/plugin-x", dependencies: { "@loomwork/replay-vm": "workspace:*" } },
       []
     );
     expect(levels(findings, "error")[0]).toMatch(/replay fold/);
@@ -82,7 +82,7 @@ describe("checkPlugin", () => {
       {
         name: "loom-plugin-x",
         keywords: ["loom-plugin"],
-        dependencies: { "@loom/event-runtime": "*" },
+        dependencies: { "@loomwork/event-runtime": "*" },
       },
       [WIRED]
     );
@@ -102,7 +102,10 @@ describe("checkPlugin", () => {
 
   it("allows a legitimate workflow-runtime dependency (a2a/renderer pattern)", () => {
     const findings = checkPlugin(
-      { name: "@loom/plugin-a2a", dependencies: { "@loom/workflow-runtime": "workspace:*" } },
+      {
+        name: "@loomwork/plugin-a2a",
+        dependencies: { "@loomwork/workflow-runtime": "workspace:*" },
+      },
       [WIRED]
     );
     expect(levels(findings, "error")).toEqual([]);
@@ -142,7 +145,7 @@ describe("checkPlugin", () => {
 });
 
 describe("wiresConformance", () => {
-  const IMPORT = 'import { runEventStoreConformance } from "@loom/conformance";';
+  const IMPORT = 'import { runEventStoreConformance } from "@loomwork/conformance";';
   it("accepts a real import plus a real call", () => {
     expect(wiresConformance(`${IMPORT}\nrunEventStoreConformance(() => new X());`)).toBe(true);
   });
@@ -156,39 +159,45 @@ describe("wiresConformance", () => {
     expect(wiresConformance(`${IMPORT}\nconst s = "runEventStoreConformance(";`)).toBe(false);
     expect(
       wiresConformance(
-        '// import { runEventStoreConformance } from "@loom/conformance";\nrunEventStoreConformance(x);'
+        '// import { runEventStoreConformance } from "@loomwork/conformance";\nrunEventStoreConformance(x);'
       )
     ).toBe(false);
   });
   it("rejects a bare mention and an import without a call", () => {
-    expect(wiresConformance("@loom/conformance")).toBe(false);
+    expect(wiresConformance("@loomwork/conformance")).toBe(false);
     expect(wiresConformance(IMPORT)).toBe(false);
   });
   it("accepts an aliased import, a namespace import, a default import and a subpath", () => {
-    expect(wiresConformance('import { runA as go } from "@loom/conformance";\ngo(x);')).toBe(true);
-    expect(wiresConformance('import * as c from "@loom/conformance";\nc.runAConformance(x);')).toBe(
-      true
-    );
-    expect(wiresConformance('import c from "@loom/conformance";\nc.runAConformance(x);')).toBe(
+    expect(wiresConformance('import { runA as go } from "@loomwork/conformance";\ngo(x);')).toBe(
       true
     );
     expect(
-      wiresConformance('import { runA } from "@loom/conformance/event-store";\nrunA(x);')
+      wiresConformance('import * as c from "@loomwork/conformance";\nc.runAConformance(x);')
     ).toBe(true);
-    expect(wiresConformance('import { type T, runA } from "@loom/conformance";\nrunA(x);')).toBe(
+    expect(wiresConformance('import c from "@loomwork/conformance";\nc.runAConformance(x);')).toBe(
       true
     );
+    expect(
+      wiresConformance('import { runA } from "@loomwork/conformance/event-store";\nrunA(x);')
+    ).toBe(true);
+    expect(
+      wiresConformance('import { type T, runA } from "@loomwork/conformance";\nrunA(x);')
+    ).toBe(true);
   });
   it("accepts dynamic import and require bindings", () => {
     expect(
-      wiresConformance('const c = await import("@loom/conformance");\nc.runAConformance(x);')
+      wiresConformance('const c = await import("@loomwork/conformance");\nc.runAConformance(x);')
     ).toBe(true);
     expect(
-      wiresConformance('const { runA: go, b } = await import("@loom/conformance");\ngo(x);')
+      wiresConformance('const { runA: go, b } = await import("@loomwork/conformance");\ngo(x);')
     ).toBe(true);
-    expect(wiresConformance('const { runA } = require("@loom/conformance");\nrunA(x);')).toBe(true);
-    expect(wiresConformance('(await import("@loom/conformance")).runAConformance(x);')).toBe(true);
-    expect(wiresConformance('const c = await import("@loom/conformance");\nc.other(x);')).toBe(
+    expect(wiresConformance('const { runA } = require("@loomwork/conformance");\nrunA(x);')).toBe(
+      true
+    );
+    expect(wiresConformance('(await import("@loomwork/conformance")).runAConformance(x);')).toBe(
+      true
+    );
+    expect(wiresConformance('const c = await import("@loomwork/conformance");\nc.other(x);')).toBe(
       false
     );
   });
@@ -215,17 +224,17 @@ describe("wiresConformance", () => {
     expect(wiresConformance(`${IMPORT}\nconst r = /runEventStoreConformance(/;`)).toBe(false);
   });
   it("rejects a type-only import, an unrelated object's method and a local definition", () => {
-    expect(wiresConformance('import type { runA } from "@loom/conformance";\nrunA(x);')).toBe(
+    expect(wiresConformance('import type { runA } from "@loomwork/conformance";\nrunA(x);')).toBe(
       false
     );
-    expect(wiresConformance('import { type runA } from "@loom/conformance";\nrunA(x);')).toBe(
+    expect(wiresConformance('import { type runA } from "@loomwork/conformance";\nrunA(x);')).toBe(
       false
     );
     expect(wiresConformance(`${IMPORT}\nother.runEventStoreConformance(1);`)).toBe(false);
     expect(wiresConformance(`${IMPORT}\nfunction runMyConformance() {}`)).toBe(false);
-    expect(wiresConformance('import { x } from "@loom/other";\nrunA(x);')).toBe(false);
+    expect(wiresConformance('import { x } from "@loomwork/other";\nrunA(x);')).toBe(false);
     expect(
-      wiresConformance('import * as c from "@loom/conformance";\nother.runAConformance(1);')
+      wiresConformance('import * as c from "@loomwork/conformance";\nother.runAConformance(1);')
     ).toBe(false);
   });
   it("handles a large semicolon-less file linearly (and correctly)", () => {
@@ -236,24 +245,24 @@ describe("wiresConformance", () => {
     expect(wiresConformance(`${noKit}\n${IMPORT}\nrunEventStoreConformance(x)`)).toBe(true);
   });
   it("a run of unmatched `}` before require() is linear and still correct", () => {
-    // Each `} = require("@loom/conformance");` used to walk back to the file start looking for
+    // Each `} = require("@loomwork/conformance");` used to walk back to the file start looking for
     // its `{` (quadratic: minutes at this size). The correct answer here is "nothing wired".
-    const crafted = 'const { a } = 1;\n} = require("@loom/conformance");\n'.repeat(30000);
+    const crafted = 'const { a } = 1;\n} = require("@loomwork/conformance");\n'.repeat(30000);
     expect(wiresConformance(crafted)).toBe(false);
     // Without `;` boundaries the walk is capped, not unbounded.
-    const noSemis = '} = require("@loom/conformance")\n'.repeat(30000);
+    const noSemis = '} = require("@loomwork/conformance")\n'.repeat(30000);
     expect(wiresConformance(noSemis)).toBe(false);
     // A real destructure after the noise still counts.
     expect(
-      wiresConformance(`${crafted}\nconst { runA } = require("@loom/conformance");\nrunA(1);`)
+      wiresConformance(`${crafted}\nconst { runA } = require("@loomwork/conformance");\nrunA(1);`)
     ).toBe(true);
   });
 
   it("recognises a long renamed destructure (300 names), the walk-back cap is not hit", () => {
     const names = Array.from({ length: 300 }, (_, i) => `n${i}: m${i}`).join(", ");
-    const src = `const { runEventStoreConformance: run, ${names} } = await import("@loom/conformance");\nrun(x);`;
+    const src = `const { runEventStoreConformance: run, ${names} } = await import("@loomwork/conformance");\nrun(x);`;
     expect(wiresConformance(src)).toBe(true);
-    const tail = `const { ${names}, runEventStoreConformance: run } = require("@loom/conformance");\nrun(x);`;
+    const tail = `const { ${names}, runEventStoreConformance: run } = require("@loomwork/conformance");\nrun(x);`;
     expect(wiresConformance(tail)).toBe(true);
   });
 
@@ -275,11 +284,11 @@ describe("wiresConformance", () => {
     });
     it("a quote touching a keyword is code, not a JSX apostrophe (both modes)", () => {
       const src =
-        'import { runEventStoreConformance } from"@loom/conformance";\nrunEventStoreConformance(x)';
+        'import { runEventStoreConformance } from"@loomwork/conformance";\nrunEventStoreConformance(x)';
       expect(wiresConformance(src, { jsx: true })).toBe(true);
       expect(wiresConformance(src)).toBe(true);
       const req =
-        'const k = require("@loom/conformance");\nswitch (a) { case"x": k.runEventStoreConformance(x) }';
+        'const k = require("@loomwork/conformance");\nswitch (a) { case"x": k.runEventStoreConformance(x) }';
       expect(wiresConformance(req, { jsx: true })).toBe(true);
     });
     it("a backtick after `=>` or a comparison is a template, a backtick in JSX text is not", () => {

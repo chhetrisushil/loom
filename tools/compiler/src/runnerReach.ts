@@ -2,7 +2,7 @@ import ts from "typescript";
 
 // ── Runner-body reach analysis ───────────────────────────────────────────────
 //
-// Three `@loom/verify` rules — `capability-compat`, `effect-class` and
+// Three `@loomwork/verify` rules — `capability-compat`, `effect-class` and
 // `suspension-safety` — define "what a flow reaches" as the toolIds of its
 // DECLARED `FlowDefinition.steps`. A step invoked through `ctx.run(...)` but not
 // listed there is invisible to all three, and `FlowSpec.suspends` had no
@@ -56,7 +56,7 @@ export interface RunnerSuspend {
 
 /**
  * L32 — the flow's `ctx` (or its `ctx.decide`) is handed to code outside this region. The
- * compiler cannot see that code, so it records WHERE it went; `@loom/verify`'s adapter
+ * compiler cannot see that code, so it records WHERE it went; `@loomwork/verify`'s adapter
  * resolves `callee`/`root` against the app's declared reach (`verify.reach`) and either
  * counts the declared tools or reports the escape unresolved.
  */
@@ -116,12 +116,12 @@ export type StepFactoryShape =
 
 /**
  * First-party factories whose effect id is fixed and whose source is in a package (never followed
- * through an import). `mcp.invoke` is `MCP_INVOKE_TOOL_ID` in `@loom/plugin-mcp` and `sandbox.eval` is
- * `SANDBOX_TOOL_ID` in `@loom/sandbox` (re-exported by `@loom/plugin-sandbox`, ADR 0144); a test pins each to its package.
+ * through an import). `mcp.invoke` is `MCP_INVOKE_TOOL_ID` in `@loomwork/plugin-mcp` and `sandbox.eval` is
+ * `SANDBOX_TOOL_ID` in `@loomwork/sandbox` (re-exported by `@loomwork/plugin-sandbox`, ADR 0144); a test pins each to its package.
  */
 export const KNOWN_STEP_FACTORIES: Readonly<Record<string, StepFactoryShape>> = {
   mcpInvoke$: { fixed: "mcp.invoke" },
-  // `sandboxEval$(id, toolId = SANDBOX_TOOL_ID)` in `@loom/sandbox` (ADR 0144).
+  // `sandboxEval$(id, toolId = SANDBOX_TOOL_ID)` in `@loomwork/sandbox` (ADR 0144).
   sandboxEval$: { argIndex: 1, default: "sandbox.eval" },
 };
 
@@ -367,7 +367,7 @@ function stepBindingEscapes(
             })()
           ) {
             // `flow$({ steps: [s] })` DECLARES the step: loom's own `flow$` (imported unshadowed from
-            // @loom/core / @loom/sdk) keeps the list and the runtime only reads it.
+            // @loomwork/core / @loomwork/sdk) keeps the list and the runtime only reads it.
             ok = true;
           } else {
             ok =
@@ -579,12 +579,12 @@ function importedNames(sf: ts.SourceFile): Map<string, { spec: string; imported:
 
 /**
  * Module specifiers a {@link KNOWN_STEP_FACTORIES} entry may be imported from: its package, and
- * `@loom/sdk` where the SDK re-exports it (`export * from "@loom/plugin-mcp"`; the sandbox plugin
- * is only at the `@loom/sdk/sandbox` subpath).
+ * `@loomwork/sdk` where the SDK re-exports it (`export * from "@loomwork/plugin-mcp"`; the sandbox plugin
+ * is only at the `@loomwork/sdk/sandbox` subpath).
  */
 const KNOWN_FACTORY_SOURCES: Readonly<Record<string, readonly string[]>> = {
-  mcpInvoke$: ["@loom/plugin-mcp", "@loom/sdk"],
-  sandboxEval$: ["@loom/plugin-sandbox", "@loom/sandbox", "@loom/sdk/sandbox"],
+  mcpInvoke$: ["@loomwork/plugin-mcp", "@loomwork/sdk"],
+  sandboxEval$: ["@loomwork/plugin-sandbox", "@loomwork/sandbox", "@loomwork/sdk/sandbox"],
 };
 
 /** The string a literal-ish expression denotes (`"x"`, an expression-free template, `"x" as const`). */
@@ -1269,8 +1269,8 @@ export function analyzeReachRegion(
     }
     const callee = unwrap(call.expression);
     // A step with NO `toolId` dispatches its own id: the runtime resolves `step.toolId ?? step.id`
-    // (WorkflowRuntime). Followed only for `step$` itself (an unshadowed import from @loom/core or
-    // @loom/sdk, any alias) whose object has no `toolId` key and no spread: a wrapper might add one.
+    // (WorkflowRuntime). Followed only for `step$` itself (an unshadowed import from @loomwork/core or
+    // @loomwork/sdk, any alias) whose object has no `toolId` key and no spread: a wrapper might add one.
     if (
       first !== undefined &&
       ts.isObjectLiteralExpression(first) &&
@@ -1285,7 +1285,10 @@ export function analyzeReachRegion(
       )
     ) {
       const imp = imports.get(callee.text);
-      if (imp?.imported === "step$" && (imp.spec === "@loom/core" || imp.spec === "@loom/sdk")) {
+      if (
+        imp?.imported === "step$" &&
+        (imp.spec === "@loomwork/core" || imp.spec === "@loomwork/sdk")
+      ) {
         const id = constProp(first, "id");
         return id === undefined ? undefined : { toolId: id, stepId: id };
       }
@@ -1329,7 +1332,9 @@ export function analyzeReachRegion(
     const c = unwrap(callee);
     if (!ts.isIdentifier(c) || !unshadowed(c.text)) return false;
     const imp = imports.get(c.text);
-    return imp?.imported === "flow$" && (imp.spec === "@loom/core" || imp.spec === "@loom/sdk");
+    return (
+      imp?.imported === "flow$" && (imp.spec === "@loomwork/core" || imp.spec === "@loomwork/sdk")
+    );
   };
   const escapeCache = new Map<string, boolean>();
   const resolveTarget = (target: ts.Expression, depth = 0): RunnerStepRef | undefined => {
@@ -1951,7 +1956,7 @@ export function analyzeReachRegion(
 
 /**
  * Analyze a source string (a flow runner / orchestration body). Feed the result
- * to `@loom/verify` via `resolveVerifyInput({ runnerReachByFlow })`.
+ * to `@loomwork/verify` via `resolveVerifyInput({ runnerReachByFlow })`.
  */
 export function analyzeRunnerReach(source: string, location?: string): RunnerReach {
   const sf = ts.createSourceFile("runner.ts", source, ts.ScriptTarget.ESNext, true);

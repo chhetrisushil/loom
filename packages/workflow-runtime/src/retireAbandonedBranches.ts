@@ -1,4 +1,4 @@
-import type { BranchRegistry } from "@loom/event-runtime";
+import type { BranchRegistry } from "@loomwork/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 
 // ── Retiring branches nobody ever answered ────────────────────────────────────

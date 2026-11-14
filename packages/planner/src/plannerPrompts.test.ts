@@ -1,8 +1,8 @@
-import { CapabilityCatalog, capability$ } from "@loom/capability";
-import { flow$, handler$, step$ } from "@loom/core";
-import { UNTRUSTED_CONTENT_SYSTEM_NOTE } from "@loom/llm";
-import type { LlmRequestInput } from "@loom/llm";
-import type { RegisteredFlow } from "@loom/workflow-runtime";
+import { CapabilityCatalog, capability$ } from "@loomwork/capability";
+import { flow$, handler$, step$ } from "@loomwork/core";
+import { UNTRUSTED_CONTENT_SYSTEM_NOTE } from "@loomwork/llm";
+import type { LlmRequestInput } from "@loomwork/llm";
+import type { RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { DEFAULT_PLANNER_SYSTEM, planGoal, plannerSystemPrompt } from "./planGoal";

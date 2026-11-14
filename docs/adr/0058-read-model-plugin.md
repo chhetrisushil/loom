@@ -1,4 +1,4 @@
-# ADR 0058 — `@loom/plugin-read-model`: durable, checkpointed cross-execution read models
+# ADR 0058 — `@loomwork/plugin-read-model`: durable, checkpointed cross-execution read models
 
 - Status: **Accepted — shipped** (plugin + in-memory/SQLite/Postgres backends + conformance kit)
 - Date: 2026-07-15
@@ -61,7 +61,7 @@ duplicates/gaps across pages — conformance-pinned in both directions). Backend
 reference (deep-cloning), SQLite (`json_extract` equality, row-value cursor comparison, same
 one-file-one-backup discipline as the other stores), Postgres (JSONB `@>` containment over a
 `jsonb_path_ops` GIN index, `GREATEST` watermark upserts — multi-node convergent without
-locks). `runReadModelStoreConformance` in `@loom/conformance` (structural idiom).
+locks). `runReadModelStoreConformance` in `@loomwork/conformance` (structural idiom).
 
 ### D4 — Explicitly out of scope
 
@@ -78,6 +78,6 @@ SP paging (#184) will bound `catchUp`'s enumeration when it lands.
   warm re-scan touches zero events; drop-and-rebuild yields identical rows.
 - The copilot wires it in three lines today: construct the service, register models, pass
   `onEvent: (e) => service.handleEvent(e)` to `defineConfig` and run `catchUp([live, archive])`
-  at boot — no kernel or `@loom/app` change, layering guard intact.
+  at boot — no kernel or `@loomwork/app` change, layering guard intact.
 - Postgres `apply` inserts rows one statement at a time (idempotence makes batching a pure
   optimization); batch it when a real ingest rate demands.

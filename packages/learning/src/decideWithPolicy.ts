@@ -1,4 +1,4 @@
-import { declareReach } from "@loom/verify";
+import { declareReach } from "@loomwork/verify";
 import type { Policy, PolicyChoice, PolicyContext, PolicyStamp } from "./types";
 
 // ── The one-line entry point (ADR 0080) ──────────────────────────────────────

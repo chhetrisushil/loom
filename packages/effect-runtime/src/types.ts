@@ -1,5 +1,5 @@
-import type { TaintedValue } from "@loom/classify";
-import type { EffectKind, EffectMode } from "@loom/core";
+import type { TaintedValue } from "@loomwork/classify";
+import type { EffectKind, EffectMode } from "@loomwork/core";
 import type { PrincipalChain } from "./authz";
 
 export type { EffectKind, EffectMode };
@@ -157,7 +157,7 @@ export interface EffectContext {
   readonly idempotencyKey?: string;
   /**
    * Scheduling priority for this effect (M6), used when the EffectRuntime routes
-   * effects through a Scheduler with a finite concurrency cap. A `@loom/scheduler`
+   * effects through a Scheduler with a finite concurrency cap. A `@loomwork/scheduler`
    * Priority value (0 = Immediate … 3 = Idle). Undefined ⇒ Normal.
    */
   readonly priority?: number;
@@ -265,7 +265,7 @@ export interface Warmer {
 
 /**
  * Minimal structural view of a Zod schema's `safeParse` — kept structural so
- * `@loom/effect-runtime` stays zod-free (the same dependency-light idiom as
+ * `@loomwork/effect-runtime` stays zod-free (the same dependency-light idiom as
  * core's AgentSkillDef). A `Record<string, z.ZodSchema>` satisfies it directly.
  */
 export interface ErrorChannelSchema {
@@ -276,7 +276,7 @@ export interface ErrorChannelSchema {
 
 /**
  * ADR 0133 D7 - app-level defaults for model-reasoning capture, structural so the composition root
- * needs no dependency on `@loom/llm`. `store` is the sidecar where readable reasoning is kept
+ * needs no dependency on `@loomwork/llm`. `store` is the sidecar where readable reasoning is kept
  * (a content store satisfies it); `capture` defaults to on iff a store is configured.
  */
 export interface EffectReasoningDefaults {

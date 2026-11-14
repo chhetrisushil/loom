@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 /**
  * SPI 2.2.0 — the LEGACY (pre-ADR 0129) opaque creation marker `appendIfUnchanged` compares (see `TipObservation`):

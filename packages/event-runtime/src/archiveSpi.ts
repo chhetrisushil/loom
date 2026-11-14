@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // ── ADR 0138 — the compaction archive SPI ────────────────────────────────────────────────────────
 //

@@ -1,5 +1,6 @@
-import type { ExecutableTask, ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
-import type { DeltaSink, PrincipalChain } from "@loom/effect-runtime";
+import type { ExecutableTask, ExecutionState } from "@loomwork/core";
+import type { FlowDefinition, StepDefinition } from "@loomwork/core";
+import type { DeltaSink, PrincipalChain } from "@loomwork/effect-runtime";
 
 export interface SuspendConfig {
   on: string;
@@ -242,7 +243,7 @@ export interface ExecutionContext extends ExecutionContextExtensions {
   // `opts` is read when DECISION_RECORDED is committed, AFTER the decider settles (only
   // `estimatedCost` is validated before it runs), so a decider may fill in fields of the object
   // it was handed, e.g. a `policy` stamp that needs the propensity of the policy it consulted
-  // (`@loom/learning`'s decideWithPolicy / decideWithRollout rely on this). A served decision
+  // (`@loomwork/learning`'s decideWithPolicy / decideWithRollout rely on this). A served decision
   // reads no `opts` at all. Pinned by DecisionSeam.test.ts ("opts are read at commit").
   decide<T = unknown>(
     decisionId: string,
@@ -349,7 +350,7 @@ export interface ExecutionContext extends ExecutionContextExtensions {
    * wait, and once every step still in flight has settled (bounded by `parkDrainMs`); otherwise
    * it throws {@link ContinueAsNewRefusedError} and appends nothing. A carry over `maxCarryBytes`
    * (default 1 MiB) throws {@link CarryTooLargeError}. There is no `shouldContinueAsNew()`: count
-   * your own turns (`@loom/agent`'s `continueEvery(n)`). Needs `kernel.features.continueAsNew`.
+   * your own turns (`@loomwork/agent`'s `continueEvery(n)`). Needs `kernel.features.continueAsNew`.
    *
    * The predecessor's handle resolves `waitForCompletion()` with its own state (status `continued`,
    * `variables._continuedTo` names the successor) and rejects `waitForSuspend()` with
@@ -376,7 +377,7 @@ export interface ExecutionContext extends ExecutionContextExtensions {
   // An `emit` of `{ delta, done }` — the same once-per-execution rule.
   stream(eventType: string, delta: string, done?: boolean): void;
 
-  // `ctx.ui` (agent-surface) is NOT declared here (ADR 0114): `@loom/agent-surface` merges
+  // `ctx.ui` (agent-surface) is NOT declared here (ADR 0114): `@loomwork/agent-surface` merges
   // `readonly ui: SurfaceEmitter` into `ExecutionContextExtensions` below, so it type-checks
   // wherever that package is in the program and nowhere else. New code spells it `surface(ctx)`.
 }
@@ -384,7 +385,7 @@ export interface ExecutionContext extends ExecutionContextExtensions {
 /**
  * Types owned by packages ABOVE the kernel, merged into `ExecutionContext` by declaration
  * merging (ADR 0114). Empty in the kernel on purpose: the kernel names no UI vocabulary.
- * `@loom/agent-surface` adds `ui`.
+ * `@loomwork/agent-surface` adds `ui`.
  */
 // biome-ignore lint/suspicious/noEmptyInterface: the extension point is the empty interface.
 export interface ExecutionContextExtensions {}
@@ -888,7 +889,7 @@ export class StartLeaseHeldError extends Error {
   }
 }
 
-export { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
+export { SnapshotIdentityMismatchError } from "@loomwork/snapshot-runtime";
 
 /**
  * ADR 0107 — `fork()` refused a fork point it cannot serve exactly, because compaction removed
@@ -963,7 +964,7 @@ export class ResumePayloadValidationError extends Error {
  * caller can tell a RETRIABLE refusal from a permanent one without matching on
  * message text — `not-suspended` is the only one worth retrying WITH THE SAME EVENT
  * (a suspend that has not become readable yet on an async store), and
- * `@loom/orchestration` does exactly that when a child outruns its parent's suspend.
+ * `@loomwork/orchestration` does exactly that when a child outruns its parent's suspend.
  * `null-answer-after-parked-failure` is recoverable only with a DIFFERENT event: a
  * non-null answer to the same gate.
  */
@@ -1093,7 +1094,7 @@ export class FlowCodeMismatchError extends Error {
     super(
       kind === "code"
         ? `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): the body fingerprint recorded at start is ${recordedHash}, registered code is ${registeredHash}. Exits: (1) PIN — deploy/register the original flow code and resume on it; (2) COMPATIBLE — if the edit is replay-compatible, add ${recordedHash} to the flow's \`compatibleWith\`; (3) MIGRATE — resumeAs; (4) DRAIN — cancel() the execution and restart it on the new code.`
-        : `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): log was recorded under ${recordedHash}, registered code is ${registeredHash}. Exits: (1) PIN — deploy/register the original flow code and resume on it; (2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying fold-compatibility (loom deploy check / @loom/deploy-sim); (3) DRAIN — cancel() the execution and restart it on the new code.`
+        : `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): log was recorded under ${recordedHash}, registered code is ${registeredHash}. Exits: (1) PIN — deploy/register the original flow code and resume on it; (2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying fold-compatibility (loom deploy check / @loomwork/deploy-sim); (3) DRAIN — cancel() the execution and restart it on the new code.`
     );
     this.name = "FlowCodeMismatchError";
     Object.setPrototypeOf(this, FlowCodeMismatchError.prototype);

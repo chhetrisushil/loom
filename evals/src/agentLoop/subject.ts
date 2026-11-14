@@ -1,6 +1,6 @@
-import type { AgentLoopConfig } from "@loom/agent";
-import { CassetteMissError, type CassetteProvider, type Subject } from "@loom/eval";
-import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import type { AgentLoopConfig } from "@loomwork/agent";
+import { CassetteMissError, type CassetteProvider, type Subject } from "@loomwork/eval";
+import type { LlmProvider, LlmRequest, LlmResponse } from "@loomwork/llm";
 import { FLOW, World, answerApproval, boot, isErrorOutput } from "./world";
 
 /** What one scripted task asks of the loop (the model's side is the cassette). */
@@ -147,7 +147,7 @@ export async function runTask(
 }
 
 /**
- * The `@loom/eval` Subject: `runTask` over a cassette. A cassette MISS never reads as a loop failure (the model
+ * The `@loomwork/eval` Subject: `runTask` over a cassette. A cassette MISS never reads as a loop failure (the model
  * effect would swallow it into `status: "failed"`): it is rethrown, so the case is `errored` and the report names
  * `CassetteMissError`, and no live call is ever made.
  */

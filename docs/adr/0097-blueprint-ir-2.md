@@ -186,8 +186,8 @@ both only display one a compiler already resolved and attached.
 
 ### D4 — `DataBinding.sensitivity` is a field, not an enforcement point
 
-`DataBinding.sensitivity?: DataClass` is a type-only import from `@loom/classify` — a new
-dependency of `@loom/blueprint-runtime`, erased at build time, adding no runtime coupling to the
+`DataBinding.sensitivity?: DataClass` is a type-only import from `@loomwork/classify` — a new
+dependency of `@loomwork/blueprint-runtime`, erased at build time, adding no runtime coupling to the
 classification package. The field lets a compiler *declare* a binding's confidentiality class on
 the artifact a downstream audience check reads; it does not perform that check. `validateBlueprint`
 confirms the value is a real `DataClass`, nothing more, and no renderer branches on it — reading
@@ -240,7 +240,7 @@ retrofitting a fourth structural field onto artifacts that predate it.
   child), and a layout child that is neither a `Widget` nor a `Layout` — a stray `null`, a
   string, a `GridCell` stranded outside a grid — is `malformed-node` and the walk continues, so
   a model-composed artifact can never make `validateBlueprint` throw.
-- `@loom/plugin-renderer-react` exports `WidgetFrame` (the matrix wrapper) and `useWidgetSlice`
+- `@loomwork/plugin-renderer-react` exports `WidgetFrame` (the matrix wrapper) and `useWidgetSlice`
   (a fiber selector over `{ value, status }` together, so a status-only change re-renders a
   widget without forcing a value-only render to pay for it, and vice versa). A grid child gains
   a wrapper element ONLY when its span exceeds 1, where it carries `gridColumn: span N`;
@@ -249,7 +249,7 @@ retrofitting a fourth structural field onto artifacts that predate it.
 - **Both renderers take an optional `check(widget, value)`** — `TerminalRenderOptions.check`,
   and the `check` prop on `BlueprintRenderer` (both render paths) and `WidgetFrame`. It is the
   value-contract slot between `error` and `stale`; loom supplies no check of its own.
-- `@loom/plugin-renderer-terminal`'s `TerminalWidgetRenderer` becomes `(widget, value, status?) =>
+- `@loomwork/plugin-renderer-terminal`'s `TerminalWidgetRenderer` becomes `(widget, value, status?) =>
   string`, an additive optional third parameter — every existing two-argument renderer in a
   caller's own registry keeps compiling and keeps its old output for widgets with no status
   channel. `renderBlueprintToString` applies the matrix with `⋯` (pending, and the loading row — a
@@ -257,7 +257,7 @@ retrofitting a fourth structural field onto artifacts that predate it.
   `~` (stale) and `✗` (error, finding appended) glyphs, and appends the degraded-from suffix
   from `source` to the first line of a widget's render when present.
 - `KERNEL_ABI_VERSION` stays 1.1.0, `EVENT_SCHEMA_VERSION` stays 1.18.0: no event, no fold, no
-  syscall changed. `@loom/spec`'s capability registry lists this ADR in `NOT_A_CAPABILITY` for
+  syscall changed. `@loomwork/spec`'s capability registry lists this ADR in `NOT_A_CAPABILITY` for
   the same reason ADR 0096 is there — a declared IR version and two renderer options are a
   contract and an adapter surface, not a runtime subsystem the registry grades.
 

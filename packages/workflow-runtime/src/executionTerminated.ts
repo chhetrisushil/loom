@@ -1,4 +1,4 @@
-import type { ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loomwork/core";
 
 /**
  * Issue #710 - what `ExecutionHandle.waitForSuspend()` rejects with when the run TERMINATES before

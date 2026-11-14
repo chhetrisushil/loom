@@ -31,7 +31,7 @@ which is the signal; regenerate with `pnpm eval:author` and review the diff.
 ## Re-recording live (on demand only, with Gemini)
 
 `pnpm eval:record` is the only code in `evals/` that can reach a model. It is a dry run unless `--live` is passed, and
-it refuses under `CI=true`. It uses loom's own `GeminiProvider` from `@loom/llm` (the adapter behind the CLI's
+it refuses under `CI=true`. It uses loom's own `GeminiProvider` from `@loomwork/llm` (the adapter behind the CLI's
 `--model gemini:<m>`), with the key from `GEMINI_API_KEY` (else `GOOGLE_API_KEY`), never printed. No model name is
 assumed.
 

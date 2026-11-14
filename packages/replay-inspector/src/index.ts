@@ -1,8 +1,8 @@
-// @loom/replay-inspector — IX series (read-only replay inspector).
+// @loomwork/replay-inspector — IX series (read-only replay inspector).
 //
 // Explicit named re-exports, not `export *`: a barrel of `export *` compiles to a
 // runtime `__exportStar(require(...))` that bundlers cannot statically trace, which is
-// why `@loom/core` does the same. See its index.ts for the full note.
+// why `@loomwork/core` does the same. See its index.ts for the full note.
 
 export { ReplayInspector } from "./ReplayInspector";
 export type {

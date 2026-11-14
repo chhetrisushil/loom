@@ -1,4 +1,4 @@
-import type { RegisteredFlow } from "@loom/workflow-runtime";
+import type { RegisteredFlow } from "@loomwork/workflow-runtime";
 import type { ZodSchema } from "zod";
 
 // A capability is the proposal's unit of application composition: a runnable

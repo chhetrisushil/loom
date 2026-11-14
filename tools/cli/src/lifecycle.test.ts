@@ -2,14 +2,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { brandPayloadShredded } from "@loom/event-runtime";
+import type { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { brandPayloadShredded } from "@loomwork/event-runtime";
 import {
   type EncryptingSnapshotStore,
   type InMemoryKeyStore,
   shredSubject,
-} from "@loom/plugin-crypto";
-import { SqliteEventStore, SqliteLeaseStore, SqliteTimerStore } from "@loom/plugin-sqlite";
+} from "@loomwork/plugin-crypto";
+import { SqliteEventStore, SqliteLeaseStore, SqliteTimerStore } from "@loomwork/plugin-sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./cli";
 import {
@@ -29,7 +29,7 @@ import { loadLoomApp } from "./stores";
 // authorizer denial may add is the app's OWN audit fact (`EXECUTION_DENIED`), exactly as when
 // the app's code is the caller - never a state change.
 //
-// The temp modules live INSIDE the package so `import "@loom/app"` resolves through the
+// The temp modules live INSIDE the package so `import "@loomwork/app"` resolves through the
 // workspace's node_modules. Each load needs a FRESH file: an ES module is cached per path,
 // and a cached module hands back an app whose stores were already closed.
 
@@ -58,11 +58,11 @@ interface AppOpts {
 }
 
 const APP = (dir: string, o: AppOpts = {}): string => `
-import { defineConfig } from "@loom/app";
-import { flow$, step$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import { SqliteTimerStore, sqliteStorage } from "@loom/plugin-sqlite";
-import { executionAccessPolicy } from "@loom/workflow-runtime";
+import { defineConfig } from "@loomwork/app";
+import { flow$, step$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import { SqliteTimerStore, sqliteStorage } from "@loomwork/plugin-sqlite";
+import { executionAccessPolicy } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 const { InMemoryKillSwitch: RealKillSwitch } = await import(${JSON.stringify(MIDDLEWARE)});
 const SECRET = "hunter2-secret-value";
@@ -224,13 +224,13 @@ interface Shred {
 
 /** An app over ENCRYPTING in-memory stores kept on globalThis, so a test can shred between loads. */
 const SHRED_APP = `
-import { defineConfig } from "@loom/app";
-import { flow$, step$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { executionAccessPolicy } from "@loom/workflow-runtime";
+import { defineConfig } from "@loomwork/app";
+import { flow$, step$ } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore } from "@loomwork/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { executionAccessPolicy } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 
 const g = (globalThis.__lcShred ??= (() => {

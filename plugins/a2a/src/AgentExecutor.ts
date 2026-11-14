@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { ExecutionState } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
-import type { RegisteredFlow, ResumeEvent, WorkflowRuntime } from "@loom/workflow-runtime";
+import type { ExecutionState } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import type { RegisteredFlow, ResumeEvent, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import type { A2ATask, A2ATaskResult, A2ATaskStatus } from "./types";
 
 /**

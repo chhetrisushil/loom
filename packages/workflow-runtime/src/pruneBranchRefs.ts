@@ -1,4 +1,4 @@
-import { type BranchRegistry, type EventStore, headOf } from "@loom/event-runtime";
+import { type BranchRegistry, type EventStore, headOf } from "@loomwork/event-runtime";
 
 // ── Refs that point at nothing ────────────────────────────────────────────────
 //

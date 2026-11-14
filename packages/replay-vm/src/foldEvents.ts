@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionFrame, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionFrame, ExecutionState } from "@loomwork/core";
 import {
   FAILED_WHILE_PARKED,
   FLOW_EMIT_DIGEST,

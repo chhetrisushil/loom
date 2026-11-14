@@ -1,5 +1,5 @@
-import { SURFACE_PATCH } from "@loom/agent-surface";
-import type { EventEnvelope } from "@loom/core";
+import { SURFACE_PATCH } from "@loomwork/agent-surface";
+import type { EventEnvelope } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { A2UISurfaceBridge } from "./A2UISurfaceBridge";
 import {

@@ -1,6 +1,6 @@
-import { flowContentHash, flowHashMatches } from "@loom/core";
-import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { replayAsFixture } from "@loom/eval";
+import { flowContentHash, flowHashMatches } from "@loomwork/core";
+import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
+import { replayAsFixture } from "@loomwork/eval";
 
 /** The minimal view of a new flow definition needed to check compatibility. */
 export interface FlowDefinitionView {

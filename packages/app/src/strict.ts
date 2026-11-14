@@ -1,4 +1,4 @@
-import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
+import type { EffectContext, EffectMiddleware } from "@loomwork/effect-runtime";
 import {
   type Budget,
   type BudgetLedger,
@@ -9,8 +9,8 @@ import {
   llmUsageTokens,
   nestedBudgetMiddleware,
   rateLimitMiddleware,
-} from "@loom/middleware";
-import type { WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/middleware";
+import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
 import type { VerifyConfig } from "./verifyAdapter";
 
 // ── R9 — the strict profile and the autonomy envelope ─────────────────────────
@@ -84,7 +84,7 @@ export interface StrictOptions {
    * R13 — a resume authenticator is required. With none wired, ANY caller of `resume()` approves
    * a parked gate and no `APPROVAL_GRANTED { actor, verifiedBy }` evidence is ever recorded, so
    * strict refuses to compose without `security.resumeAuthenticator`
-   * (`signedResumeAuthenticator()` from `@loom/workflow-runtime` is the first-party one; strict
+   * (`signedResumeAuthenticator()` from `@loomwork/workflow-runtime` is the first-party one; strict
    * cannot default it — it needs your approver keys). `false` acknowledges an app with no
    * approval gates at all, visibly in the config. Default: required.
    */
@@ -98,7 +98,7 @@ export interface StrictOptions {
  */
 export interface AutonomyEnvelopeOptions {
   /**
-   * Child-spawn bounds (`@loom/orchestration`). The app must hand them to its supervisor:
+   * Child-spawn bounds (`@loomwork/orchestration`). The app must hand them to its supervisor:
    * `superviseChildren({ runtime, flows, limits: app.envelope?.spawn })`, and may use
    * `boundOrchestration(app.envelope.spawn)` in flows for a parent-side refusal.
    */
@@ -129,8 +129,8 @@ export interface AutonomyEnvelopeOptions {
 }
 
 /**
- * Structurally identical to `@loom/orchestration`'s `SpawnLimits`, declared here so
- * these two numbers need no import. (`@loom/app` does depend on `@loom/orchestration` since the
+ * Structurally identical to `@loomwork/orchestration`'s `SpawnLimits`, declared here so
+ * these two numbers need no import. (`@loomwork/app` does depend on `@loomwork/orchestration` since the
  * `awaitedByParent` retention pin, ADR 0145 amendment; this stays structural, not imported.)
  */
 export interface SpawnLimits {
@@ -278,7 +278,7 @@ export function strictProblems(p: PostureInputs): string[] {
   }
   if (p.resumeAuthenticator === undefined && p.resumeAuthenticatorOptional !== true) {
     problems.push(
-      "`security.resumeAuthenticator` is required — with none, ANY caller of `resume()` approves a parked gate and nobody is on record as having approved it. Supply one (`signedResumeAuthenticator()` from `@loom/workflow-runtime`), or acknowledge an app with no approval gates with `strict: { requireResumeAuthenticator: false }`."
+      "`security.resumeAuthenticator` is required — with none, ANY caller of `resume()` approves a parked gate and nobody is on record as having approved it. Supply one (`signedResumeAuthenticator()` from `@loomwork/workflow-runtime`), or acknowledge an app with no approval gates with `strict: { requireResumeAuthenticator: false }`."
     );
   }
   if (verifyMode(p.verify) === "off") {

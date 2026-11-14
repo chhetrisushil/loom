@@ -16,7 +16,7 @@ import { readWorkspaceGraph } from "./layering";
 //    which a bundler resolves and native Node ESM refuses (ERR_MODULE_NOT_FOUND; the package has
 //    no `"type": "module"` either). Node's `import` offers ["node", "import", "default"], so with
 //    `node` first it gets the CJS build, which it can load; swap the two and every
-//    `import "@loom/core"` in Node breaks while a bundler (no `node` condition) keeps working, so
+//    `import "@loomwork/core"` in Node breaks while a bundler (no `node` condition) keeps working, so
 //    nothing in a browser-only check would notice.
 //  - `require` before `import`, `types` first and `default` (CJS) last: see
 //    exportsConditions.test.ts.
@@ -30,11 +30,11 @@ const REPO_ROOT = resolve(__dirname, "../../..");
 
 /** The dual-built packages. A new one must be added here (the discovery test below says so). */
 const DUAL_BUILT = [
-  "@loom/blueprint-runtime",
-  "@loom/classify",
-  "@loom/core",
-  "@loom/projection-runtime",
-  "@loom/scheduler",
+  "@loomwork/blueprint-runtime",
+  "@loomwork/classify",
+  "@loomwork/core",
+  "@loomwork/projection-runtime",
+  "@loomwork/scheduler",
 ];
 
 const ORDER = ["types", "require", "node", "import", "default"];
@@ -138,7 +138,7 @@ function manifests(): Array<{ pkg: Manifest; dir: string; esmConfig: boolean }> 
 }
 
 const GOOD: Manifest = {
-  name: "@loom/fixture",
+  name: "@loomwork/fixture",
   main: "./dist/index.js",
   module: "./dist/esm/index.js",
   types: "./dist/index.d.ts",
@@ -257,7 +257,7 @@ describe("dual-built package exports (fitness)", () => {
     it("refuses a mapped file the build did not emit", () => {
       const problems = dualBuildProblems(GOOD, resolve(REPO_ROOT, "packages/spec/no-such-dir"));
       expect(problems).toContain(
-        "@loom/fixture maps ./dist/esm/index.js, which the build did not emit"
+        "@loomwork/fixture maps ./dist/esm/index.js, which the build did not emit"
       );
     });
   });

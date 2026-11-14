@@ -34,12 +34,12 @@ What remained was a **packaging** decision. A grounded inventory of all 53 packa
      `SqliteEventStore`/`SqliteBranchRegistry`/`SqliteTimerStore` alongside the `EventStore`
      *interface* and the in-memory reference. The kernel event package literally carries a native
      DB driver.
-  2. **`workflow-runtime` (kernel) imports `@loom/a2ui`** (`createA2UIEmitter` in
+  2. **`workflow-runtime` (kernel) imports `@loomwork/a2ui`** (`createA2UIEmitter` in
      `WorkflowContext.ts`). a2ui's emitter *contract* is fused into the `ui` KERNEL_SYSCALL, so
      a2ui is not a leaf adapter.
 
 The maintainer additionally requires a **first-party / third-party split**: 1P plugins in this
-repo under the `@loom/` scope; 3P plugins in a separate `loom-plugins` community repo, with
+repo under the `@loomwork/` scope; 3P plugins in a separate `loom-plugins` community repo, with
 authors free to keep plugins in any repo they like.
 
 ## Decision
@@ -59,10 +59,10 @@ path-coupled config (workspace globs, tsconfig `references`/`paths`) updates.
 
 ### D2 — Split the two packages that mix an SPI with a vendor driver
 
-- Extract the SQLite drivers into a new plugin **`@loom/plugin-sqlite`** (takes `better-sqlite3`
+- Extract the SQLite drivers into a new plugin **`@loomwork/plugin-sqlite`** (takes `better-sqlite3`
   with it). `event-runtime` / `snapshot-runtime` keep the interface + in-memory reference and
-  **shed the native dependency**. The `@loom/event-runtime/memory` subpath is unchanged.
-- Leave `@loom/dispatcher` intact: its interface + `LocalDispatcher` (reference) are kernel-grade;
+  **shed the native dependency**. The `@loomwork/event-runtime/memory` subpath is unchanged.
+- Leave `@loomwork/dispatcher` intact: its interface + `LocalDispatcher` (reference) are kernel-grade;
   `PlacementDispatcher` / `SupervisingDispatcher` are *advisory policies*, not vendor adapters.
   **Do not fragment it into three packages.**
 - `a2ui`: keep the `A2UIEmitter` contract in the kernel/SPI tier (it backs the `ui` syscall).
@@ -71,17 +71,17 @@ path-coupled config (workspace globs, tsconfig `references`/`paths`) updates.
 
 ### D3 — Preset inversion (resolves the storage-`kind` fork on 1P/3P grounds)
 
-`@loom/app` today hard-depends on `@loom/store-postgres` and lazy-loads SQLite from
+`@loomwork/app` today hard-depends on `@loomwork/store-postgres` and lazy-loads SQLite from
 `event-runtime`, and the `storage` union names vendors (`kind:"postgres"|"sqlite"`). A third-party
 store plugin can *never* add a `kind:` arm to the core union — so vendor `kind`s make 1P and 3P
 **asymmetric**. Therefore each store plugin exports a **preset** returning a `StorageConfig`:
 
 ```ts
-storage: postgresStorage({ url })   // from @loom/plugin-postgres
-storage: sqliteStorage({ dir })     // from @loom/plugin-sqlite
+storage: postgresStorage({ url })   // from @loomwork/plugin-postgres
+storage: sqliteStorage({ dir })     // from @loomwork/plugin-sqlite
 ```
 
-`@loom/app` keeps only `kind:"memory"` (default) and `kind:"custom"` (the escape hatch presets
+`@loomwork/app` keeps only `kind:"memory"` (default) and `kind:"custom"` (the escape hatch presets
 resolve to), and **drops its vendor dependencies**. 1P and 3P storage backends are now wired
 identically. Trade-off, accepted: one extra import versus the old zero-import `kind` sugar. This
 is the CL1–CL7 `(opts) => Partial<config>` pattern applied to the (singleton) storage seam.
@@ -91,15 +91,15 @@ is the CL1–CL7 `(opts) => Partial<config>` pattern applied to the (singleton) 
 Both use the **identical contract** (§Plugin contract). The kernel treats them the same; there is
 no 1P/3P branch anywhere in the runtime.
 
-- **1P plugins** live in this repo under `plugins/`, published as **`@loom/plugin-<name>`**
-  (npm scopes are single-level, so `@loom/plugins` is realised as the `plugins/` workspace dir
-  plus an optional `@loom/plugins` umbrella meta-package that re-exports the set — *not* a package
+- **1P plugins** live in this repo under `plugins/`, published as **`@loomwork/plugin-<name>`**
+  (npm scopes are single-level, so `@loomwork/plugins` is realised as the `plugins/` workspace dir
+  plus an optional `@loomwork/plugins` umbrella meta-package that re-exports the set — *not* a package
   namespace). 1P plugins are conformance-gated in loom CI, versioned with the kernel, and
   security-reviewed by core.
 - **3P plugins** live in a separate **`loom-plugins`** community repo (the curated-but-not-core
   home) *or in any repository the author chooses*. Convention: name them **`loom-plugin-<name>`**
   (or `@scope/loom-plugin-<name>`) and tag the npm keyword `loom-plugin` for discovery — mirroring
-  `eslint-plugin-*` / `vite-plugin-*`. They depend on the published `@loom/*` **SPI** packages
+  `eslint-plugin-*` / `vite-plugin-*`. They depend on the published `@loomwork/*` **SPI** packages
   only. **No central registry is required or wanted**: a plugin is a statically-imported value
   passed to `defineConfig` (P5), so "use a plugin" is always an explicit `import`, never
   discovery.
@@ -108,10 +108,10 @@ no 1P/3P branch anywhere in the runtime.
 
 ### D5 — Make "plugin" a checkable category, not just a folder
 
-- Every plugin's test runs the matching **conformance suite** from `@loom/testing/conformance`
+- Every plugin's test runs the matching **conformance suite** from `@loomwork/testing/conformance`
   (ADR 0033). 1P runs it in loom CI; 3P is expected to run the published vectors in its own CI.
 - Add a **CI layering guard**: no `packages/*` (kernel/SPI/advisory) may depend on `plugins/*`.
-  A small test over the workspace graph (reusing `@loom/spec`'s manifest machinery) fails the
+  A small test over the workspace graph (reusing `@loomwork/spec`'s manifest machinery) fails the
   build if an adapter creeps inward. This is the structural guarantee that keeps the kernel
   minimal over time; it is also what flags the a2ui exception explicitly.
 
@@ -144,7 +144,7 @@ A preset and any adapter constructor run at **composition time with full ambient
 and **cannot be sandboxed** — K7 data-plane isolation governs *tool effects at runtime*, not the
 code that builds your runtime. Consequences:
 
-- **1P** plugins are vetted by core; that is the trust basis for the `@loom/` scope.
+- **1P** plugins are vetted by core; that is the trust basis for the `@loomwork/` scope.
 - **3P** plugins are the **app author's supply-chain responsibility.** Importing a 3P plugin is
   granting it boot-time host authority. The `loom-plugins` repo README must carry a vetting
   checklist; the docs must state that a 3P plugin is as trusted as any dependency you `import`.
@@ -157,13 +157,13 @@ code that builds your runtime. Consequences:
 
 - Kernel = ~8 mechanism + ~6 SPI-contract packages, none naming a vendor or shipping a native
   driver. `event-runtime`/`snapshot-runtime` lose `better-sqlite3`.
-- `plugins/` = ~11 conformance-tested adapters under `@loom/plugin-*`; advisory modules untouched.
-- `@loom/app` drops its `@loom/store-postgres` dependency; storage backends (1P and 3P) are
+- `plugins/` = ~11 conformance-tested adapters under `@loomwork/plugin-*`; advisory modules untouched.
+- `@loomwork/app` drops its `@loomwork/store-postgres` dependency; storage backends (1P and 3P) are
   symmetric.
-- The public `@loom/sdk` barrel currently re-exports some adapters (`a2a`, `a2ui`, `mcp`,
+- The public `@loomwork/sdk` barrel currently re-exports some adapters (`a2a`, `a2ui`, `mcp`,
   `renderer-terminal`). Relocation does not change that; **whether the blessed barrel should
   re-export adapters at all is a separate public-surface decision** (tracked, not decided here).
-- Renaming `@loom/store-postgres` → `@loom/plugin-postgres` (etc.) is a breaking rename; ship
+- Renaming `@loomwork/store-postgres` → `@loomwork/plugin-postgres` (etc.) is a breaking rename; ship
   thin re-export shims under the old names for one release, then remove.
 
 ## Non-goals / explicitly deferred
@@ -179,33 +179,33 @@ code that builds your runtime. Consequences:
 
 Landed on branch `feat/plugin-packaging-1p-3p`, each phase built + tested + linted green:
 
-- **Done — Phase 0:** `plugins/*` workspace tier; `@loom/spec` layering guard
+- **Done — Phase 0:** `plugins/*` workspace tier; `@loomwork/spec` layering guard
   (`findLayeringViolations`, transitive) enforced in CI. ADR 0044 (compiler) recorded.
-- **Done — Phase 2 (SQLite split):** `@loom/plugin-sqlite` created; `@loom/event-runtime` and
-  `@loom/snapshot-runtime` **dropped `better-sqlite3`** from their dependencies (kernel packages
-  now depend only on `@loom/core`). 20 importers relocated; kernel *tests* take the plugin as a
+- **Done — Phase 2 (SQLite split):** `@loomwork/plugin-sqlite` created; `@loomwork/event-runtime` and
+  `@loomwork/snapshot-runtime` **dropped `better-sqlite3`** from their dependencies (kernel packages
+  now depend only on `@loomwork/core`). 20 importers relocated; kernel *tests* take the plugin as a
   devDependency (guard checks runtime deps only).
 - **Done — Phase 3 (preset inversion):** `sqliteStorage()` / `postgresStorage()` presets;
-  `@loom/app` **dropped its vendor dependencies** and the `kind:"sqlite"/"postgres"` union arms +
+  `@loomwork/app` **dropped its vendor dependencies** and the `kind:"sqlite"/"postgres"` union arms +
   the `loadNodeModule` hack. 1P and 3P storage backends now wire identically. Examples migrated.
-- **Done — Phase 1/4 (storage family):** relocated + renamed `store-postgres → @loom/plugin-postgres`,
-  `store-crypto → @loom/plugin-crypto`, `audit-chain → @loom/plugin-audit-chain`, all under
+- **Done — Phase 1/4 (storage family):** relocated + renamed `store-postgres → @loomwork/plugin-postgres`,
+  `store-crypto → @loomwork/plugin-crypto`, `audit-chain → @loomwork/plugin-audit-chain`, all under
   `plugins/`. 3P authoring guide: [`docs/plugins.md`](../plugins.md).
-- **Done — all remaining adapters relocated:** `worker-runtime-remote → @loom/plugin-worker-remote`,
-  `worker-server → @loom/plugin-worker-server`, `platform-cloudrun → @loom/plugin-cloudrun`,
-  `renderer-react → @loom/plugin-renderer-react`, `mcp → @loom/plugin-mcp`, `a2a → @loom/plugin-a2a`,
-  `renderer-terminal → @loom/plugin-renderer-terminal`. **`plugins/` now holds all 11 first-party
+- **Done — all remaining adapters relocated:** `worker-runtime-remote → @loomwork/plugin-worker-remote`,
+  `worker-server → @loomwork/plugin-worker-server`, `platform-cloudrun → @loomwork/plugin-cloudrun`,
+  `renderer-react → @loomwork/plugin-renderer-react`, `mcp → @loomwork/plugin-mcp`, `a2a → @loomwork/plugin-a2a`,
+  `renderer-terminal → @loomwork/plugin-renderer-terminal`. **`plugins/` now holds all 11 first-party
   adapters**; `packages/` is kernel + SPI + advisory + tooling only.
 - **Done — sdk re-exports 1P plugins** per the decision below: light plugins (`a2a`, `mcp`,
-  `renderer-terminal`) in the main barrel; native/heavy store plugins behind `@loom/sdk/sqlite` and
-  `@loom/sdk/postgres` subpaths so a bare `@loom/sdk` import stays lean.
+  `renderer-terminal`) in the main barrel; native/heavy store plugins behind `@loomwork/sdk/sqlite` and
+  `@loomwork/sdk/postgres` subpaths so a bare `@loomwork/sdk` import stays lean.
 - **Deferred by design:** the a2ui contract/impl split (Phase 5) and the `LoomPlugin` manifest/brand
   (CL8) remain gated as recorded above.
-- **Decided (2026-07-13):** `@loom/sdk` **re-exports 1P plugins** — this is *curation*, not the
+- **Decided (2026-07-13):** `@loomwork/sdk` **re-exports 1P plugins** — this is *curation*, not the
   forbidden *mechanical* 1P/3P asymmetry (D4 bans a runtime branch; a barrel re-export is neither).
   Guardrail: dependency-light 1P plugins (protocols, renderers) re-export from the **main** barrel;
   **native/heavy** ones (`plugin-sqlite`→better-sqlite3, `plugin-postgres`→pg) re-export via a
-  **subpath** (`@loom/sdk/sqlite`, `@loom/sdk/postgres`) so a bare `import "@loom/sdk"` stays lean
+  **subpath** (`@loomwork/sdk/sqlite`, `@loomwork/sdk/postgres`) so a bare `import "@loomwork/sdk"` stays lean
   and browser-safe — preserving the very native-dep-shedding win this ADR lands. 3P plugins are
   never in the barrel (they are not core's to vouch for); both remain explicit imports, so
   value-level symmetry holds.
@@ -215,8 +215,8 @@ Landed on branch `feat/plugin-packaging-1p-3p`, each phase built + tested + lint
 0. **Guard first** — land the CI layering check against today's graph (annotates the a2ui
    exception). The invariant is enforced before anything moves.
 1. **Relocate clean adapters** (`git mv` to `plugins/`, names stable) — pure move, green build.
-2. **SQLite split** into `@loom/plugin-sqlite`; ship the store-conformance suite with it.
-3. **Preset inversion** (D3); `@loom/app` drops vendor deps.
-4. **1P rename** to `@loom/plugin-*` with shims; stand up the `loom-plugins` repo + author
+2. **SQLite split** into `@loomwork/plugin-sqlite`; ship the store-conformance suite with it.
+3. **Preset inversion** (D3); `@loomwork/app` drops vendor deps.
+4. **1P rename** to `@loomwork/plugin-*` with shims; stand up the `loom-plugins` repo + author
    template + vetting checklist.
 5. **a2ui split** — only if/when the wire format must be swappable.

@@ -1,11 +1,11 @@
 # ADR 0063 — MCP dynamic dispatch: canonical schema hash, drift channel, principal handling
 
-- Status: **Accepted** (`jsonSchemaHash` in `@loom/core`, `mcpInvoke$` in
-  `@loom/plugin-mcp`, read-model dispatch index)
+- Status: **Accepted** (`jsonSchemaHash` in `@loomwork/core`, `mcpInvoke$` in
+  `@loomwork/plugin-mcp`, read-model dispatch index)
 - Date: 2026-07-19
 - Builds on: [DE-series evaluation](../requirements/2026-07-19-dynamic-execution-de-series-evaluation.md)
   (DE-8/DE-9), ADR 0060 (typed channels), ADR 0061 (dynamic step ids), ADR 0058
-  (read-model), ADR 0043 (plugin litmus), K10-R1 (`@loom/classify`), K12.1
+  (read-model), ADR 0043 (plugin litmus), K10-R1 (`@loomwork/classify`), K12.1
   (principal chain).
 - Part of: the GenUI/DE corrected series. No kernel changes; no EVENT_SCHEMA bump.
 
@@ -13,14 +13,14 @@
 
 Deterministic blueprints call MCP tools whose backends move. The safety loop —
 pin the tool's schema hash at plan time, verify at execution time, fail typed on
-drift so the flow repairs in-band — existed nowhere: `@loom/plugin-mcp` captured
+drift so the flow repairs in-band — existed nowhere: `@loomwork/plugin-mcp` captured
 `jsonInputSchema` but never hashed it, and its tool wrappers were `z.unknown()`
 pass-throughs. Placement: MCP dispatch exists because of a specific external
 system ⇒ plugin (ADR 0043), with only the hash canonicalization in core.
 
 ## Decisions
 
-### D1 — One canonical schema hash, in `@loom/core`
+### D1 — One canonical schema hash, in `@loomwork/core`
 
 `canonicalJson` (RFC 8785-style subset: lexicographically sorted keys, no
 whitespace, arrays in order, throws on non-JSON values) + `jsonSchemaHash` →
@@ -44,7 +44,7 @@ replay-substituted, branchable into repair without re-invoking the backend.
 
 Primary: the opaque K12.1 `ctx.principal` chain, mapped to transport headers
 inside the effect body — never part of the logged input. Fallback (per-call
-tokens): the input field is classified `secret()` (`@loom/classify`) so
+tokens): the input field is classified `secret()` (`@loomwork/classify`) so
 `redactionMiddleware` substitutes a SecretRef before STEP_STARTED persists.
 This is DE-9 applied — the classification vocabulary already shipped (K10-R1);
 this ADR makes it the normative pattern for principal-carrying tool contracts.
@@ -56,7 +56,7 @@ and impossible later.
 The effect emits `MCP_DISPATCHED { toolName, server, schemaHash }` — a domain
 event the fold skips (unknown types advance only the sequence), so no
 EVENT_SCHEMA change. "Which executions called tool X at schema H" — the
-proactive-repair query — is a `@loom/plugin-read-model` projection (ADR 0058),
+proactive-repair query — is a `@loomwork/plugin-read-model` projection (ADR 0058),
 not log parsing and not a governed event type.
 
 ## Consequences

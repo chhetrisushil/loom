@@ -24,4 +24,4 @@ export type {
   ExecutionOutcome,
   ExecutionPackage,
   ExecutionResult,
-} from "@loom/worker-runtime";
+} from "@loomwork/worker-runtime";

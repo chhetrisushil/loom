@@ -7,7 +7,7 @@ import {
   renderCompatibilityMatrix,
   renderManifestText,
   renderMaturityTable,
-} from "@loom/spec";
+} from "@loomwork/spec";
 
 /**
  * `loom kernel-manifest [--json] [--emit-docs <dir>]` — the machine-readable kernel manifest

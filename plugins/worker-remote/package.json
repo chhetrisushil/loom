@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-worker-remote",
+  "name": "@loomwork/plugin-worker-remote",
   "version": "0.1.0",
   "description": "HTTP WorkerRuntime for Loom — dispatches an ExecutionPackage to a stateless worker's POST /execute endpoint and collects the ExecutionResult",
   "main": "./dist/index.js",
@@ -20,7 +20,7 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/worker-runtime": "workspace:^"
+    "@loomwork/worker-runtime": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

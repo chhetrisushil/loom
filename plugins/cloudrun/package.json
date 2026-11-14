@@ -1,5 +1,5 @@
 {
-  "name": "@loom/plugin-cloudrun",
+  "name": "@loomwork/plugin-cloudrun",
   "version": "0.1.0",
   "description": "Cloud Run platform adapter for Loom — CloudRunWorkerRuntime maps DispatchMetadata to a Cloud Run sizing config, resolves a service endpoint, and invokes the stateless worker. Cloud specifics stay behind the CloudRunPlatform SPI",
   "main": "./dist/index.js",
@@ -20,23 +20,23 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@loom/dispatcher": "workspace:^",
-    "@loom/worker-runtime": "workspace:^",
-    "@loom/plugin-worker-remote": "workspace:^"
+    "@loomwork/dispatcher": "workspace:^",
+    "@loomwork/worker-runtime": "workspace:^",
+    "@loomwork/plugin-worker-remote": "workspace:^"
   },
   "devDependencies": {
-    "@loom/core": "workspace:*",
-    "@loom/effect-runtime": "workspace:*",
-    "@loom/event-runtime": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
-    "@loom/worker-runtime-local": "workspace:*",
-    "@loom/plugin-worker-server": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*",
+    "@loomwork/core": "workspace:*",
+    "@loomwork/effect-runtime": "workspace:*",
+    "@loomwork/event-runtime": "workspace:*",
+    "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/worker-runtime-local": "workspace:*",
+    "@loomwork/plugin-worker-server": "workspace:*",
+    "@loomwork/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",
     "zod": "^3.23.8",
-    "@loom/plugin-sqlite": "workspace:*"
+    "@loomwork/plugin-sqlite": "workspace:*"
   },
   "license": "Apache-2.0",
   "repository": {

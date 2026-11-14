@@ -56,7 +56,7 @@ export interface IsolatedToolSpec {
    * How long a cold child may take to boot the runner AND load the tool module, measured from
    * spawn, before it is killed and whatever waits on it (a run, `warm()`) fails with
    * `IsolatedToolStartupError`. Independent of `timeoutMs` on purpose (same shape as
-   * `@loom/plugin-sandbox`'s `coldStartMs`, ADR 0089 D4). Default 10 000 ms; must be finite and
+   * `@loomwork/plugin-sandbox`'s `coldStartMs`, ADR 0089 D4). Default 10 000 ms; must be finite and
    * STRICTLY greater than 0 — it is the only clock a cold start is judged against, so 0 would
    * fail every cold start, forever. Set it above this host's real cold start.
    *

@@ -1,8 +1,8 @@
-import { step$ } from "@loom/core";
-import { GrantTable, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { step$ } from "@loomwork/core";
+import { GrantTable, ToolEffect } from "@loomwork/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig, normalizeConfig } from "./defineConfig";

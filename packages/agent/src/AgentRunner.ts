@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { tainted, unwrapTainted } from "@loom/classify";
-import type { AgentDefinition, ToolDefinition } from "@loom/core";
-import { TypedFailure, canonicalJson, fail, loadInstructions } from "@loom/core";
-import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
-import { LlmEffect } from "@loom/effect-runtime";
+import { tainted, unwrapTainted } from "@loomwork/classify";
+import type { AgentDefinition, ToolDefinition } from "@loomwork/core";
+import { TypedFailure, canonicalJson, fail, loadInstructions } from "@loomwork/core";
+import type { EffectContext, EffectRuntime } from "@loomwork/effect-runtime";
+import { LlmEffect } from "@loomwork/effect-runtime";
 import type {
   ContentResolver,
   LlmContent,
@@ -13,7 +13,7 @@ import type {
   LlmToolCall,
   LlmToolResultPartInput,
   LlmToolSpecInput,
-} from "@loom/llm";
+} from "@loomwork/llm";
 import {
   LLM_INTERRUPTED,
   MAX_INLINE_TOTAL_BYTES,
@@ -22,10 +22,10 @@ import {
   collectStream,
   guardRequest,
   resolveRequestContent,
-} from "@loom/llm";
-import type { MemoryRuntime } from "@loom/memory";
-import type { ReasoningRuntime } from "@loom/reasoning";
-import { parallelLimit, throwIfAborted } from "@loom/scheduler";
+} from "@loomwork/llm";
+import type { MemoryRuntime } from "@loomwork/memory";
+import type { ReasoningRuntime } from "@loomwork/reasoning";
+import { parallelLimit, throwIfAborted } from "@loomwork/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";

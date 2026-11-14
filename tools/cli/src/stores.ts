@@ -2,22 +2,22 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { LoomApp } from "@loom/app";
+import type { LoomApp } from "@loomwork/app";
 import type {
   ArchiveStore,
   BranchRegistry,
   EventStore,
   LeaseStore,
   TimerStore,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import {
   SqliteBranchRegistry,
   SqliteEventStore,
   SqliteLeaseStore,
   SqliteSnapshotStore,
-} from "@loom/plugin-sqlite";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
-import type { ArchiveStores, WorkflowRuntime } from "@loom/workflow-runtime";
+} from "@loomwork/plugin-sqlite";
+import type { SnapshotStore } from "@loomwork/snapshot-runtime";
+import type { ArchiveStores, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { CliError } from "./args";
 import { STORE_FLAG_HELP, hasStoreFlags, storeFlagsOf } from "./storeFlags";
 

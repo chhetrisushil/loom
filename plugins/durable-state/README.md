@@ -1,4 +1,4 @@
-# @loom/plugin-durable-state — typed, versioned state that survives between runs
+# @loomwork/plugin-durable-state — typed, versioned state that survives between runs
 
 Keyed state that a bounded run loads at the start and saves at the end, for work that wakes on a
 schedule and has to remember something between wakes (a cursor, a watermark, counters). Each value has
@@ -8,10 +8,10 @@ recorded result is used and the store is not read again (ADR 0053). Use it direc
 carried state, or through `sentinelState` for a `schedule$`-driven agent.
 
 ```ts
-import { defineConfig } from "@loom/app";
-import { flow$ } from "@loom/core";
-import { InMemoryDurableStateStore, durableState } from "@loom/plugin-durable-state";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { defineConfig } from "@loomwork/app";
+import { flow$ } from "@loomwork/core";
+import { InMemoryDurableStateStore, durableState } from "@loomwork/plugin-durable-state";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { z } from "zod";
 
 const watcher = durableState({
@@ -53,7 +53,7 @@ export const app = defineConfig({
   exposes `load(ctx)`, `save(ctx, value, expectedRevision)` and `clear(ctx)` without the key argument.
 - **Stores.** `DurableStateStore` is the SPI: `load`, `save` with an expected revision, `clear`.
   `InMemoryDurableStateStore` is here; durable ones are `SqliteDurableStateStore`
-  (`@loom/plugin-sqlite`) and `PostgresDurableStateStore` (`@loom/plugin-postgres`).
+  (`@loomwork/plugin-sqlite`) and `PostgresDurableStateStore` (`@loomwork/plugin-postgres`).
 - **Errors.** `RevisionConflictError` and `StateContractMismatchError` (reasons: `no-migration-path`,
   `migration-failed`, `future-version`, `validation-failed`).
 
@@ -77,7 +77,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 - [ADR 0053](../../docs/adr/0053-durable-state-plugin.md) and
   [ADR 0051](../../docs/adr/0051-perpetual-agents-placement-schedule-remodel.md): the design.
-- `@loom/plugin-sentinel` bundles this with a schedule and claim-checked telemetry.
-- API reference: section "`@loom/plugin-durable-state` — carry state across wakes" in
+- `@loomwork/plugin-sentinel` bundles this with a schedule and claim-checked telemetry.
+- API reference: section "`@loomwork/plugin-durable-state` — carry state across wakes" in
   [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/plugins.md](../../docs/plugins.md), [docs/user-guide.md](../../docs/user-guide.md).

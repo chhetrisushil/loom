@@ -1,15 +1,15 @@
-# @loom/projection-runtime — in-memory read models folded from events
+# @loomwork/projection-runtime — in-memory read models folded from events
 
 A projection folds an execution's events into a small state object that a UI or another reader can
 query and subscribe to. This package holds the `Projection` and `ProjectionRuntime` types and the one
 implementation, `InMemoryProjectionRuntime`. `defineConfig` creates one for you when you do not pass
 `projectionRuntime`, registers your `projections`, and feeds it every event, so most apps use it through
-`@loom/app` and the renderers rather than constructing it. Reach for it directly in tests, or when you
+`@loomwork/app` and the renderers rather than constructing it. Reach for it directly in tests, or when you
 wire a surface of your own.
 
 ```ts
-import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
-import type { EventEnvelope } from "@loom/core";
+import { InMemoryProjectionRuntime } from "@loomwork/projection-runtime";
+import type { EventEnvelope } from "@loomwork/core";
 
 const runtime = new InMemoryProjectionRuntime({ coalesceNotifications: true });
 
@@ -61,5 +61,5 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 - [ADR 0068](../../docs/adr/0068-projection-selector-subscription.md): selector subscriptions.
 - [ADR 0095](../../docs/adr/0095-binding-semantics-pin.md): the declared `version` and pin checks.
-- API reference: section "`@loom/projection-runtime`" in [docs/api-reference.org](../../docs/api-reference.org).
+- API reference: section "`@loomwork/projection-runtime`" in [docs/api-reference.org](../../docs/api-reference.org).
 - Guides: [docs/user-guide.md](../../docs/user-guide.md), [docs/README.md](../../docs/README.md).

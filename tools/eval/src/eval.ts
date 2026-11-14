@@ -1,5 +1,5 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { ReplayVM } from "@loom/replay-vm";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { ReplayVM } from "@loomwork/replay-vm";
 
 /**
  * Fold a recorded event log back into its final ExecutionState — the "the log IS

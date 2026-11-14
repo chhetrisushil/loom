@@ -1,4 +1,4 @@
-import { policy$ } from "@loom/core";
+import { policy$ } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import type { CapabilityAuthorizer, CapabilityRequest } from "./authz";
 import { PolicyAuthorizer } from "./policy";

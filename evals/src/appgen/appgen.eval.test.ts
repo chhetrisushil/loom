@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CassetteMissError, CassetteProvider, reportDigest } from "@loom/eval";
+import { CassetteMissError, CassetteProvider, reportDigest } from "@loomwork/eval";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializeCassette } from "../cassetteFiles";
 import { failingMetrics, toRows } from "../gate";
@@ -16,7 +16,7 @@ import { createTypechecker } from "./typecheck";
 // metric (and, for an invalid plan, the underlying error). Every degraded test sits beside the real run clearing the
 // same gate, so the failure is the degradation. The typecheck is real compiler work: the timeouts are raised.
 
-const T = 180_000; // timing-bound: a cold TypeScript program over the lib + @loom/core declarations is a few seconds
+const T = 180_000; // timing-bound: a cold TypeScript program over the lib + @loomwork/core declarations is a few seconds
 
 const kase = (id: string): AppgenCase => {
   const c = APPGEN_CASES.find((x) => x.id === id);
@@ -28,7 +28,7 @@ const gate = (run: SuiteRun) => failingMetrics(run.scores, APPGEN_THRESHOLDS[run
 const swap = (id: string, data: ReturnType<typeof store.load>) => (c: AppgenCase) =>
   c.id === id ? data : store.load(c.id);
 
-describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cassettes)", () => {
+describe("appgen plan eval (@loomwork/appgen + @loomwork/appgen-model, hand-authored cassettes)", () => {
   const typechecker = createTypechecker();
   let model: SuiteRun;
   let reference: SuiteRun;

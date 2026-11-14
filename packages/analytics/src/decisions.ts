@@ -1,10 +1,10 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 
 // ── Decision materialization (ADR 0030) ──────────────────────────────────────
 //
 // Pure, read-only lenses that MATERIALIZE the decision history the log already
 // carries: DECISION_RECORDED (choice + D1 descriptive fields) and OUTCOME_RECORDED
-// (how a choice turned out). Like every @loom/analytics lens they never write and
+// (how a choice turned out). Like every @loomwork/analytics lens they never write and
 // never touch the fold — they turn the durable log into a queryable read-model
 // (D2 DecisionStore) and an explainability graph (D3 DecisionGraph). Advisory only
 // (P9/P10); decisions still replay from the log via getDecision, not from here.
@@ -78,7 +78,7 @@ function outcomeFrom(e: EventEnvelope): OutcomeRecord {
  * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
  * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
  * compacted, build the events from the folded state first —
- * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loomwork/learning` — and
  * pass THOSE.
  */
 export function decisionRecords(events: EventEnvelope[]): DecisionRecord[] {
@@ -91,7 +91,7 @@ export function decisionRecords(events: EventEnvelope[]): DecisionRecord[] {
  * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
  * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
  * compacted, build the events from the folded state first —
- * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loomwork/learning` — and
  * pass THOSE.
  */
 export function outcomeRecords(events: EventEnvelope[]): OutcomeRecord[] {
@@ -113,7 +113,7 @@ export interface DecisionQuery {
  * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
  * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
  * compacted, build the events from the folded state first —
- * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loomwork/learning` — and
  * pass THOSE.
  */
 export interface DecisionStore {

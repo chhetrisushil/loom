@@ -10,7 +10,7 @@ import { COMMANDS, type CommandSpec, UsageError, specOf, suggest } from "./args"
 export const SHELLS = ["zsh", "bash", "fish"] as const;
 export type Shell = (typeof SHELLS)[number];
 
-/** The @loom/cli package version (read from package.json next to `dist/` or `src/`). */
+/** The @loomwork/cli package version (read from package.json next to `dist/` or `src/`). */
 export function cliVersion(): string {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")) as {
     version?: string;

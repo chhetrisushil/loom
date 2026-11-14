@@ -241,4 +241,4 @@ Incremental and layered — teams adopt one capability at a time.
 - **Effect** — a sandboxed side effect (tool/LLM/human/agent) that runs once and is remembered.
 - **Resumability** — restoring a live/suspended execution without re‑running work.
 - **Agent surface** — agents drive interfaces via durable patch events (Loom's native UI mechanism).
-- **A2UI** — the external [Agent‑to‑UI](https://a2ui.org) wire protocol; Loom surfaces are exposed to A2UI‑compliant clients via the `@loom/plugin-a2ui` adapter.
+- **A2UI** — the external [Agent‑to‑UI](https://a2ui.org) wire protocol; Loom surfaces are exposed to A2UI‑compliant clients via the `@loomwork/plugin-a2ui` adapter.

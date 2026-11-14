@@ -2,7 +2,7 @@
 
 - Status: **Verdicts recorded. Net kernel change is zero — KERNEL_ABI stays 1.1.0 and
   EVENT_SCHEMA stays 1.18.0.** Nine gaps accepted, all at the 1P-package layer (one an additive SPI
-  MINOR; `@loom/effect-runtime` untouched — the field once planned for R9 was dropped on
+  MINOR; `@loomwork/effect-runtime` untouched — the field once planned for R9 was dropped on
   implementation, §2.9); five proposals rejected as app code, as correctly-absent mechanisms, or as
   already-recorded rejections. No ADR is proposed by this document — §5 lists the ones the accepted
   work would need.
@@ -29,15 +29,15 @@ part of an agent loop that is genuinely hard to build already exists as a syscal
 | Interrupt a running agent | K8 cancellation — `ctx.signal`, honoured at every await point |
 | Bound what a tool may do | K2 `CapabilityAuthorizer` + `EFFECT_DENIED` |
 | Bound what an agent may spend | K3 metering, quotas, `ctx.negotiateBudget` |
-| Sub-agents | `awaitChild` / `awaitChildren` (`@loom/orchestration`) — no new syscall |
+| Sub-agents | `awaitChild` / `awaitChildren` (`@loomwork/orchestration`) — no new syscall |
 | Deterministic parallel tool fan-out | Results in **input** order at every layer — `parallelLimit` (`scheduler/src/structured.test.ts:7`), `ctx.parallel` (`WorkflowContext.ts:360-377`), `awaitChildren` (`orchestration/src/parallelChildren.test.ts:158-160`); and replay is keyed by `task.id`, not completion order ([ADR 0061](../adr/0061-step-identity-interpreter-guardrails.md)) |
-| Make the loop *evaluable* | `ctx.decide` + [ADR 0079](../adr/0079-decision-context-and-policy.md) propensity + `@loom/learning` |
-| Stream output | `ctx.stream`, `ctx.ui` (`@loom/agent-surface`) |
+| Make the loop *evaluable* | `ctx.decide` + [ADR 0079](../adr/0079-decision-context-and-policy.md) propensity + `@loomwork/learning` |
+| Stream output | `ctx.stream`, `ctx.ui` (`@loomwork/agent-surface`) |
 | Agents dormant for weeks | [ADR 0081](../adr/0081-long-lived-suspensions-no-promotion.md) — already true, nothing to promote |
 
 **The gap is one layer up, and it has a single shape:**
 
-> `@loom/agent` implements the ReAct loop on the wrong side of **both** boundaries — inside a
+> `@loomwork/agent` implements the ReAct loop on the wrong side of **both** boundaries — inside a
 > step handler, so it has no syscalls; and outside the `EffectRuntime`, so it has no protection
 > ring. The kernel's entire agent-relevant surface is present and unreachable from the agent.
 
@@ -50,15 +50,15 @@ seam, or a new plugin.
 
 | # | Gap | Layer | Kernel? | Size |
 |---|---|---|---|---|
-| **R1** | The loop runs inside a step handler, which has no syscalls | 1P package — `@loom/agent` | no | large |
-| **R2** | The model call is not an effect, so the taint guard never runs | 1P package — `@loom/agent`, `@loom/reasoning` | no | small, **security** |
-| **R3** | `@loom/verify` has no notion of an agent's tool menu | 1P packages — `@loom/verify` + `@loom/app` | no | small |
-| **R4** | A capability denial is fed back to the model as a retryable result | 1P package — `@loom/agent` | no | ~5 lines |
-| **R5** | Sub-agent spawn does not attenuate authority | 1P package — `@loom/orchestration` wiring | no | small |
-| **R6** | An interrupted generation's partial output is discarded, not journaled | 1P package — `@loom/agent` (shipped, after R9) | no | small |
-| **R7** | `ctx.stream` journals one event per delta, so token-granular streaming bloats the log | 1P — `@loom/agent` + docs guidance | no | small (shipped: docs + `chunkDeltas`) |
-| **R8** | The streaming SPI drops `toolCalls` / `stopReason` / `usage`, so it cannot carry an agent turn | 1P — `@loom/llm` SPI + `@loom/conformance` | no, additive SPI MINOR | small |
-| **R9** | No streaming LLM effect, so R6 has no mechanism | 1P — `@loom/llm`; **needs R2 + R8** | no — `effect-runtime` untouched (the planned field was dropped, §2.9) | medium |
+| **R1** | The loop runs inside a step handler, which has no syscalls | 1P package — `@loomwork/agent` | no | large |
+| **R2** | The model call is not an effect, so the taint guard never runs | 1P package — `@loomwork/agent`, `@loomwork/reasoning` | no | small, **security** |
+| **R3** | `@loomwork/verify` has no notion of an agent's tool menu | 1P packages — `@loomwork/verify` + `@loomwork/app` | no | small |
+| **R4** | A capability denial is fed back to the model as a retryable result | 1P package — `@loomwork/agent` | no | ~5 lines |
+| **R5** | Sub-agent spawn does not attenuate authority | 1P package — `@loomwork/orchestration` wiring | no | small |
+| **R6** | An interrupted generation's partial output is discarded, not journaled | 1P package — `@loomwork/agent` (shipped, after R9) | no | small |
+| **R7** | `ctx.stream` journals one event per delta, so token-granular streaming bloats the log | 1P — `@loomwork/agent` + docs guidance | no | small (shipped: docs + `chunkDeltas`) |
+| **R8** | The streaming SPI drops `toolCalls` / `stopReason` / `usage`, so it cannot carry an agent turn | 1P — `@loomwork/llm` SPI + `@loomwork/conformance` | no, additive SPI MINOR | small |
+| **R9** | No streaming LLM effect, so R6 has no mechanism | 1P — `@loomwork/llm`; **needs R2 + R8** | no — `effect-runtime` untouched (the planned field was dropped, §2.9) | medium |
 | — | A `Session` / `Conversation` construct | **app code** — rejected, §3.1 | — | — |
 | — | Mid-flight message injection into a live run | **app code** — rejected, §3.2 | — | — |
 | — | Token-level resumability | **rejected permanently**, §3.3 | — | — |
@@ -92,11 +92,11 @@ affordance the agent has. Four consequences, all real:
 |---|---|
 | **No per-turn durability** | Forty model calls and N tool calls are one frame. A crash at turn 39 re-runs all 39. `maxIterations` (`AgentRunner.ts:51,120`) is the only bound that exists. |
 | **No mid-loop HITL** | The agent cannot `suspend` before a destructive tool call. Approval has to be hoisted out of the agent entirely, which is precisely the design the feature exists to avoid. |
-| **No `ctx.decide` per turn** | `AgentRunner.complete` hand-emits `DECISION_RECORDED` through `emit` (`AgentRunner.ts:243`). That is a fact in the log, but it is **not** served on replay and carries no propensity — so an agent's routing choices are logged in a shape `@loom/learning` cannot evaluate. This is the exact failure the `learning-router` example was written to demonstrate: a bare log that *looks* scored while being unevaluable. |
+| **No `ctx.decide` per turn** | `AgentRunner.complete` hand-emits `DECISION_RECORDED` through `emit` (`AgentRunner.ts:243`). That is a fact in the log, but it is **not** served on replay and carries no propensity — so an agent's routing choices are logged in a shape `@loomwork/learning` cannot evaluate. This is the exact failure the `learning-router` example was written to demonstrate: a bare log that *looks* scored while being unevaluable. |
 | **No streaming** | `ctx.stream` exists; `LlmProvider.stream?` exists and two providers implement it (`AnthropicProvider.ts:110`, `OpenAiProvider.ts:107`); `AgentRunner` uses neither, and structurally cannot reach the first. Nor does anything else — `ctx.stream` has no caller in the repository, and `provider.stream` has none outside conformance (§2.6). |
 | **Unbounded recall** | `AgentRunner` takes a flat `MemoryRuntime` (`AgentRunner.ts:6,28`) and replays **every** entry for the scope into the prompt (`AgentRunner.ts:102`). Conversation length is therefore a hard wall — not a cost curve — and it is reached before `maxIterations` matters. The bound already exists one package over (`TieredMemory`); the agent is not wired to it. See the trade-off note below. |
 
-**Verdict: 1P package (`@loom/agent`). No kernel change, no new seam.**
+**Verdict: 1P package (`@loomwork/agent`). No kernel change, no new seam.**
 
 The licensed idiom already exists and is already crash-tested. [ADR 0061](../adr/0061-step-identity-interpreter-guardrails.md)
 D1 defines the identity rule for exactly this shape, and `interpreterLoop.test.ts` crash-injects a
@@ -124,7 +124,7 @@ Half 1 alone is not sufficient: offloading blobs by reference bounds the size of
 the *number* of them, which is the wall named in the table above. So the R1 work includes one wiring
 item beyond the loop itself — the summarize pass runs per turn through `ctx.execute`, against the
 existing `Summarizer` seam, so that a lossy nondeterministic summary becomes a durable fact replay
-can serve. No new mechanism, and nothing in `@loom/memory` needs to change.
+can serve. No new mechanism, and nothing in `@loomwork/memory` needs to change.
 
 `agentStep$` remains available for adopters who want neither half.
 
@@ -220,7 +220,7 @@ Two findings beyond "the fence is missing":
    outright, calling it *"the vector most often forgotten"*. With MCP dynamic dispatch
    ([ADR 0063](../adr/0063-mcp-dynamic-dispatch.md)), those descriptions are third-party bytes.
 
-**Verdict: 1P packages (`@loom/agent`, `@loom/reasoning`). No kernel change.** Build an
+**Verdict: 1P packages (`@loomwork/agent`, `@loomwork/reasoning`). No kernel change.** Build an
 `LlmRequestInput`, pass it through `guardRequest`, and invoke the model through the
 `EffectRuntime` so the rest of the ring applies too.
 
@@ -231,12 +231,12 @@ indistinguishable, in a green suite, from a guard that fires on the path that ne
 missing artifact is the negative test on the **agent** path. It should be written first, and it
 should fail on today's `main`.
 
-### 2.3 R3 — `@loom/verify` has no notion of an agent
+### 2.3 R3 — `@loomwork/verify` has no notion of an agent
 
 `resolveVerifyInput` builds `FlowSpec.effects` from `FlowDefinition.steps` plus runner-body reach
 (`packages/app/src/verifyAdapter.ts:174-232`, [ADR 0086](../adr/0086-runner-body-reach-analysis.md)).
 `AgentDefinition.tools` — a statically declared list that *is* the agent's reachable effect set —
-is read by nothing in `@loom/verify`.
+is read by nothing in `@loomwork/verify`.
 
 **Correction, found while implementing this (2026-08-18):** an earlier draft said an `agentStep$`
 contributes exactly *one* effect, itself. It contributes **zero**. `agentStep$` calls `step$`
@@ -261,7 +261,7 @@ produces `EFFECT_DENIED`. It is the static ceiling — the half ADR 0084 exists 
 that answers *"what is this allowed to do"* **before** approval — that reads green without having
 checked anything.
 
-**Verdict: 1P packages (`@loom/verify` producer + `@loom/app` adapter). No kernel, no new seam.**
+**Verdict: 1P packages (`@loomwork/verify` producer + `@loomwork/app` adapter). No kernel, no new seam.**
 
 Second consumer: A2A peer agents. `AgentCard.skills` is the same shape — a declared capability
 menu reachable through a single step — so the producer generalizes rather than special-casing
@@ -282,7 +282,7 @@ tool. `EFFECT_DENIED` is durably logged, so the behaviour is auditable after the
 loop treats a security refusal as a transient failure, which is exactly what turns one denial into
 a search over the grant table.
 
-**Verdict: 1P package (`@loom/agent`), roughly five lines.** A denial should be terminal for the
+**Verdict: 1P package (`@loomwork/agent`), roughly five lines.** A denial should be terminal for the
 turn, or at minimum a distinct non-retryable channel via
 [ADR 0060](../adr/0060-typed-failure-channels.md) typed failures. The blanket catch is correct for
 ordinary tool errors and wrong for authority errors; the fix is to tell them apart.
@@ -290,7 +290,7 @@ ordinary tool errors and wrong for authority errors; the fix is to tell them apa
 ### 2.5 R5 — Sub-agent spawn does not attenuate authority
 
 K12.4 `DelegatedGrant` exists precisely for verifiable attenuated delegation. Nothing in
-`@loom/agent` or `@loom/orchestration` wired the two together.
+`@loomwork/agent` or `@loomwork/orchestration` wired the two together.
 
 **Correction, found while implementing this (2026-08-18).** This section said `awaitChild` "starts
 a child execution carrying the principal it is given", and that a sub-agent "runs with the full
@@ -310,7 +310,7 @@ claim does hold — `DelegationAuthorizer` verifies signature, expiry, holder-bi
 intersection with the callee's own grants — so the mechanism was genuinely built and genuinely
 unreachable.
 
-**Verdict: 1P package (`@loom/orchestration` wiring). No kernel change.** Shipped as: the parent
+**Verdict: 1P package (`@loomwork/orchestration` wiring). No kernel change.** Shipped as: the parent
 names the conferred subset (`awaitChild({ …, grants })`), and a supervisor wired with
 `delegation: { secret }` mints the signed, holder-bound token **at start time**.
 
@@ -342,7 +342,7 @@ agent that generated 4,000 useful tokens before a user stop, a `guard$` trip, or
 exhaustion loses all of it. For a ReAct loop that is not a cosmetic loss: the partial text is
 often the most expensive artifact the turn produced.
 
-**Verdict: 1P package (`@loom/agent`), and it is downstream of R9. No kernel change, no new event
+**Verdict: 1P package (`@loomwork/agent`), and it is downstream of R9. No kernel change, no new event
 kind.** This is a payload convention, not a lifecycle primitive —
 [ADR 0060](../adr/0060-typed-failure-channels.md) typed failures already carry
 `STEP_FAILED { channel, payload }`, which is the shape for "aborted, and here is what had been
@@ -360,7 +360,7 @@ document's own recommendation. The negative test to write first is therefore *"a
 `STEP_FAILED` payload carries the text produced so far"*, which is unwritable until R9 lands, and
 that unwritability is the signal.
 
-**Shipped (2026-08-18), and it carries more than the text.** `AGENT_INTERRUPTED` (`@loom/agent`)
+**Shipped (2026-08-18), and it carries more than the text.** `AGENT_INTERRUPTED` (`@loomwork/agent`)
 carries `{ content, iterations, toolCallLog }`. The partial generation was the stated target, but
 implementing it made the larger loss obvious: the **completed tool calls** are the expensive,
 already-paid-for half of a turn, and they were being discarded by the same abort. A stop that lands
@@ -372,7 +372,7 @@ Composed carefully with the two neighbours: only an abort is an interruption. An
 still propagates untouched (R4 — terminal by design, not lost work), and an ordinary failure still
 propagates untouched (a broken run, not an interrupted one), each with its own test.
 
-The accumulate-and-capture loop lives once, in `@loom/llm`'s `collectStream`, shared by
+The accumulate-and-capture loop lives once, in `@loomwork/llm`'s `collectStream`, shared by
 `createLlmEffect` and `AgentRunner` — two copies would be two chances to differ about what
 "interrupted" means, and the whole point is that the partial survives identically either way.
 
@@ -428,13 +428,13 @@ Three separate documents also cite it as an already-shipped transport (ST-0,
 evaluation). So the first consumer to follow the documented shape gets per-token durable events by
 construction. Guidance before the first consumer is cheap; after it is a migration.
 
-**Verdict: 1P (`@loom/agent`) plus a correction to the two docs above. No kernel change, no new
+**Verdict: 1P (`@loomwork/agent`) plus a correction to the two docs above. No kernel change, no new
 log format.** Two halves:
 
 - **Chunk, don't tokenize.** When R1's `agentLoop$` streams, it should emit at a semantic
   granularity (per sentence / per tool-call / per turn), not per provider chunk. The delta count is
   an author's choice and should be documented as one.
-- **Fine-grained tailing is transient.** Per-token UI feedback belongs on `@loom/live-query`
+- **Fine-grained tailing is transient.** Per-token UI feedback belongs on `@loomwork/live-query`
   `subscribe` or `progressHub` (`packages/app/src/progressHub.ts`) — the transient side of the
   determinism boundary, where nothing is load-bearing forever.
 
@@ -475,7 +475,7 @@ actively discard the frames that carry the data:
 | `AnthropicProvider.ts:150-160` | Handles only `content_block_delta`/`text_delta`; ignores `message_delta` (which carries output-token usage) and `input_json_delta` (tool-call arguments) |
 | `OpenAiProvider.ts:143-147` | Reads only `choices[0].delta.content`; ignores `delta.tool_calls`, and never requests `stream_options: { include_usage: true }` |
 
-**Verdict: 1P packages (`@loom/llm` SPI + `@loom/conformance`). No kernel change; an additive SPI
+**Verdict: 1P packages (`@loomwork/llm` SPI + `@loomwork/conformance`). No kernel change; an additive SPI
 MINOR.** Two parts, and the second is the load-bearing one:
 
 1. **Carry the outcome.** The terminal chunk gains optional `toolCalls?`/`stopReason?`/`usage?` (or
@@ -547,7 +547,7 @@ latency for an interactive agent is then a third, and the one that will motivate
 but it is no longer the argument. Under [ADR 0083](../adr/0083-second-consumer-rule.md) this passes
 on the first two alone.
 
-**Verdict: 1P packages (`@loom/llm` + `@loom/agent` wiring). No new syscall; KERNEL_ABI unchanged.**
+**Verdict: 1P packages (`@loomwork/llm` + `@loomwork/agent` wiring). No new syscall; KERNEL_ABI unchanged.**
 The effect consumes `provider.stream` internally, accumulates, and returns one assembled
 `LlmResponse`; deltas go to a transient sink; it falls back to `complete` when the provider has no
 `stream`. Five invariants, each with the test that proves it:
@@ -560,7 +560,7 @@ The effect consumes `provider.stream` internally, accumulates, and returns one a
 | **Usage as it goes** | ~~The incremental usage R8 adds feeds K8.4's severance via a usage-reporter hook.~~ **Dropped on implementation** — both providers report usage once, at the end, so the hook could only ever fire where metering already reads the number. See below. |
 | **A dead stream is in-doubt, not resumable** | A stream that dies mid-generation is a K9 in-doubt effect: retry re-runs the whole turn under the same `idempotencyKey`. No mid-stream resume — §3.3 is unaffected. |
 
-**The one place this touches `@loom/effect-runtime`.** K8.4's usage-reporter needs a way for an
+**The one place this touches `@loomwork/effect-runtime`.** K8.4's usage-reporter needs a way for an
 in-flight effect to report incremental spend, which is an additive optional field on `EffectContext`
 — the same shape as the five already there (`toolId?`, `signal?`, `resources?`, `idempotencyKey?`,
 `priority?`), each documented as costing nothing when unwired. `EffectContext` is the effect seam,
@@ -607,7 +607,7 @@ tested property. It is documented on `onDelta` instead, because the expectation 
 them through `ctx.stream` opts into per-delta durability and owes the granularity choice R7 names;
 the effect's own sink is transient — `progressHub`, or the app's own `onDelta` handler.
 
-**Correction (2026-09-27): `@loom/live-query` is not that sink.** An earlier draft of this
+**Correction (2026-09-27): `@loomwork/live-query` is not that sink.** An earlier draft of this
 paragraph named it alongside `progressHub` as a transient delta destination. `LiveQuery` is
 `snapshot` + `subscribe` over DURABLE events — it has no delta-push API — so a reader following
 that advice found nothing to call, and a delta actually routed through it would be exactly the
@@ -679,7 +679,7 @@ Two corrections to the framing, recorded so the next instance starts from them:
 
 1. **The open/append/close mechanism exists — one layer down.**
    [ADR 0059](../adr/0059-content-put-stream.md) D1 ships `ContentStore.putStream?`, with
-   `streamResult` / stream-typed claim-check results in `@loom/middleware`, under the explicit
+   `streamResult` / stream-typed claim-check results in `@loomwork/middleware`, under the explicit
    framing *"streaming as a transport on the transient side of the determinism boundary, with only
    the outcome durable."* An incremental record already exists; it is an **SPI**, and its
    deliberately-not-the-log placement is the whole decision.
@@ -702,7 +702,7 @@ remove a shipped enforcement point. K3 already meters **tokens / cost / ms** —
 quota middleware can *enforce* deterministically. The split to hold is enforcement vs. reporting:
 denying the next effect, or severing a generation mid-stream (K8.4), cannot be done from a
 read-only projection computed after the fact, whereas cost attribution and dashboards are app-layer
-and already are — `@loom/analytics` read-only lenses. Both halves are shipped, on the correct sides.
+and already are — `@loomwork/analytics` read-only lenses. Both halves are shipped, on the correct sides.
 
 ---
 
@@ -728,7 +728,7 @@ mechanism R6 and K8.4 both wait on, so leaving it out leaves two accepted items 
 kernel-reserved item (K8.4) permanently un-triggerable. Its cost is concentrated in the five
 invariants in §2.9 rather than in volume of code — the accumulate-and-return part is small, and the
 tests that keep the streamed and completed paths from diverging are most of the work. It is also the
-one item that touches `@loom/effect-runtime`, via one optional field.
+one item that touches `@loomwork/effect-runtime`, via one optional field.
 
 ---
 

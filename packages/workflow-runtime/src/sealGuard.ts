@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type DecoratorPlan,
   type EventStore,
@@ -8,8 +8,9 @@ import {
   installOptional,
   isKeyUnavailable,
   isReservedStream,
-} from "@loom/event-runtime";
-import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import type { OptionalSnapshotStoreMethod } from "@loomwork/snapshot-runtime";
+import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
 import { UNKNOWN_OWNER_REASON } from "./executionAccessPolicy";
 import { assertNotTransientFold } from "./transientFold";
 import { ExecutionDeniedError, type ExecutionOp, SealedPayloadUnreadableError } from "./types";
@@ -47,7 +48,7 @@ const details = new WeakMap<object, SealedDetail>();
  * not hold). To the CALLER it is an ordinary unknown-owner denial: an `ExecutionDeniedError` built
  * with {@link UNKNOWN_OWNER_REASON}, `name` NOT overridden, and no extra own property, so it reveals
  * nothing about whether the id exists or is sealed. The true cause is in a module-private WeakMap,
- * read only through `sealedDetailOf` (the `@loom/workflow-runtime/operator` entry).
+ * read only through `sealedDetailOf` (the `@loomwork/workflow-runtime/operator` entry).
  */
 export class SealedStreamUnreadableError extends ExecutionDeniedError {
   constructor(

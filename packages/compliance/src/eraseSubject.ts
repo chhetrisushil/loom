@@ -1,5 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import {
   ArchiveConflictError,
   type ArchiveSegment,
@@ -21,9 +21,9 @@ import {
   recordsErasureIntent,
   senderDigestOf,
   senderErasedMarker,
-} from "@loom/event-runtime";
-import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
-import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
+} from "@loomwork/event-runtime";
+import { foldEvents, normalizeSnapshotState } from "@loomwork/replay-vm";
+import { assertSnapshotIdentity } from "@loomwork/snapshot-runtime";
 import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
 
 // ── T3-R3/R4.5 — subject erasure (GDPR Art. 17, right to be forgotten) ─────────

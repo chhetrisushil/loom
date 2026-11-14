@@ -1,5 +1,5 @@
-import type { TaskDefinition } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
+import type { TaskDefinition } from "@loomwork/core";
+import { ToolEffect } from "@loomwork/effect-runtime";
 import { z } from "zod";
 import { canonicalEqual } from "./canonical";
 import { RevisionConflictError, StateContractMismatchError } from "./errors";

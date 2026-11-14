@@ -1,12 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import {
   ContentResolvingEventStore,
   encodeValue,
   sweepUnpinnedContent,
-} from "@loom/plugin-content";
+} from "@loomwork/plugin-content";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { SqliteContentStore } from "./SqliteContentStore";

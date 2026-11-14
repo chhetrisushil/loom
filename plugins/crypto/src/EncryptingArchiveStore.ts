@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   type ArchiveExecutionPage,
   type ArchiveSegment,
@@ -7,7 +7,7 @@ import {
   KeyUnavailableError,
   archiveChainOf,
   forwardStoreMarkers,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { decryptValue, encryptValue, hasEnvelope } from "./crypto";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";

@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope } from "@loomwork/core";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
@@ -8,13 +8,13 @@ import {
   creationMarker,
   fenceOf,
   isAnsweringKind,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import type {
   AcquireFenceIfResult,
   AppendIfUnchangedResult,
   EventStore,
   TipObservation,
-} from "@loom/event-runtime";
+} from "@loomwork/event-runtime";
 import { Client, type Notification } from "pg";
 import { type PgConfig, type PoolLike, nextSenderId, toClientConfig, toPool } from "./pool";
 import { ANSWERING_KINDS_SQL, KERNEL_KINDS_SQL, NOTIFY_CHANNEL, migrate } from "./schema";

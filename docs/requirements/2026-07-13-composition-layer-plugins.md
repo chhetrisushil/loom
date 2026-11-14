@@ -12,7 +12,7 @@
 ## The proposal, in one paragraph
 
 Introduce a `LoomPlugin` abstraction so a developer can add a cross-cutting feature (e.g.
-`@loom/plugin-observability` = telemetry adapter + metering middleware + projection + CLI
+`@loomwork/plugin-observability` = telemetry adapter + metering middleware + projection + CLI
 subcommand + blueprint widget) with one import and one config line, instead of hand-wiring
 five seams in the right order. `setup(ctx)` runs **once at boot**, is pure, and returns
 **contributions** to the *existing* seams; `defineConfig` concatenates them with the user's
@@ -61,9 +61,9 @@ rejects those three as fatal.
    `defineConfig` key… the bar is loom-starter's ~10-line wiring"). The seams keep proving
    sufficient *without* a packaging abstraction.
 
-5. **`@loom/plugin-observability` — the motivating example spanning
+5. **`@loomwork/plugin-observability` — the motivating example spanning
    middleware+projection+CLI+telemetry+widget simultaneously — does not exist.** The closest
-   thing (`@loom/analytics`) is a read-only offline lens deliberately *not* wired into config
+   thing (`@loomwork/analytics`) is a read-only offline lens deliberately *not* wired into config
    at all. The abstraction's flagship consumer is hypothetical.
 
 ## The four non-negotiables (inherited from the kernel-hardening evaluation)
@@ -166,28 +166,28 @@ are ≥2 real modules whose interaction actually needs policing.
 
 - **PK-E1** `event-runtime` has a hard `better-sqlite3` dependency and holds
   `SqliteEventStore`/`SqliteBranchRegistry`/`SqliteTimerStore` next to the interface.
-- **PK-E2** `workflow-runtime` (kernel) imports `@loom/a2ui` (`createA2UIEmitter`). a2ui's emitter
+- **PK-E2** `workflow-runtime` (kernel) imports `@loomwork/a2ui` (`createA2UIEmitter`). a2ui's emitter
   contract backs the `ui` KERNEL_SYSCALL → a2ui is not a leaf adapter; its contract stays in the
   kernel/SPI tier, concrete-protocol split deferred.
 
 ### Packaging requirements
 
-- **PK1 — split, don't just move.** Extract SQLite → `@loom/plugin-sqlite` (takes `better-sqlite3`);
-  `event-runtime`/`snapshot-runtime` shed the native dep; `@loom/event-runtime/memory` subpath
-  unchanged; repoint `@loom/app`'s lazy `kind:"sqlite"` loader.
-- **PK2 — relocation is name-stable.** `git mv packages/x plugins/x` keeps `@loom/x`; only
-  workspace globs + tsconfig `references`/`paths` update. Renaming to `@loom/plugin-*` is a
+- **PK1 — split, don't just move.** Extract SQLite → `@loomwork/plugin-sqlite` (takes `better-sqlite3`);
+  `event-runtime`/`snapshot-runtime` shed the native dep; `@loomwork/event-runtime/memory` subpath
+  unchanged; repoint `@loomwork/app`'s lazy `kind:"sqlite"` loader.
+- **PK2 — relocation is name-stable.** `git mv packages/x plugins/x` keeps `@loomwork/x`; only
+  workspace globs + tsconfig `references`/`paths` update. Renaming to `@loomwork/plugin-*` is a
   *separate*, breaking step gated on re-export shims.
 - **PK3 — preset inversion (required for 1P/3P symmetry).** Store plugins export
-  `postgresStorage()`/`sqliteStorage()` returning a `StorageConfig`; `@loom/app` keeps only
+  `postgresStorage()`/`sqliteStorage()` returning a `StorageConfig`; `@loomwork/app` keeps only
   `kind:"memory"|"custom"` and drops vendor deps. A 3P store backend cannot add a `kind:` arm, so
   vendor `kind`s would make 1P/3P asymmetric — this **resolves the storage fork in favour of
   presets** on architectural, not aesthetic, grounds.
 - **PK4 — 1P/3P is organisational, not mechanical.** Identical contract; no runtime 1P/3P branch.
-  1P = `plugins/` under `@loom/plugin-*` (the `@loom/plugins` "namespace" = the workspace dir +
+  1P = `plugins/` under `@loomwork/plugin-*` (the `@loomwork/plugins` "namespace" = the workspace dir +
   optional umbrella meta-package, since npm scopes are single-level), conformance-gated in loom CI.
   3P = the `loom-plugins` community repo *or any repo*, named `loom-plugin-*` / keyword
-  `loom-plugin`, depending only on published `@loom/*` SPI packages. No central registry (P5:
+  `loom-plugin`, depending only on published `@loomwork/*` SPI packages. No central registry (P5:
   plugins are explicit imports).
 - **PK5 — checkable, not just foldered.** Each plugin runs the ADR-0033 conformance suite for its
   SPI; a CI layering guard forbids `packages/* → plugins/*` deps.
@@ -197,10 +197,10 @@ are ≥2 real modules whose interaction actually needs policing.
 
 ### Open public-surface question (tracked, not decided)
 
-`@loom/sdk` re-exports some adapters (`a2a`, `a2ui`, `mcp`, `renderer-terminal`). Relocation
+`@loomwork/sdk` re-exports some adapters (`a2a`, `a2ui`, `mcp`, `renderer-terminal`). Relocation
 doesn't change that; whether the blessed barrel *should* re-export adapters is a separate call.
 
-### Compiler plugin support (`@loom/compiler`) — analysed, rejected
+### Compiler plugin support (`@loomwork/compiler`) — analysed, rejected
 
 Applying the kernel/1P/3P triage to the **build-time** layer.
 

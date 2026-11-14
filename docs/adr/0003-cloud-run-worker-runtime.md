@@ -12,7 +12,7 @@ cloud-specific concern isolated behind an adapter, per ADR 0001's Platform SPI.
 
 ## Decision
 
-New package `@loom/platform-cloudrun`:
+New package `@loomwork/platform-cloudrun`:
 
 - **`CloudRunPlatform`** — the Cloud Run Platform SPI. Load-bearing method
   `resolveEndpoint(config: CloudRunConfig): Promise<string>` returns the base URL
@@ -28,7 +28,7 @@ New package `@loom/platform-cloudrun`:
 - **`defaultSizingPolicy`** maps `DispatchMetadata` → `CloudRunConfig`: explicit
   estimates win, else `planning`/`heavy` lane → 4 vCPU / 8 GiB, else 1 vCPU /
   512 MiB (the plan's Epic 7 example).
-- Container: `startWorkerServer(worker)` (in `@loom/worker-server`) reads Cloud
+- Container: `startWorkerServer(worker)` (in `@loomwork/worker-server`) reads Cloud
   Run's `$PORT` and binds `$HOST` (default `0.0.0.0`; `createWorkerServer` itself is loopback); a reference `Dockerfile` + `deploy.md` document the image and
   `gcloud run deploy`.
 

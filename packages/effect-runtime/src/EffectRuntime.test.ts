@@ -1,4 +1,4 @@
-import { SuspendError } from "@loom/core";
+import { SuspendError } from "@loomwork/core";
 import { describe, expect, it, vi } from "vitest";
 import { EffectRuntime } from "./EffectRuntime";
 import { HumanEffect } from "./effects/HumanEffect";

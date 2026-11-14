@@ -1,15 +1,15 @@
 import { cpus, totalmem } from "node:os";
-import { flow$, step$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { ProfilingEventStore } from "@loom/event-runtime";
-import { effectTimingMiddleware } from "@loom/middleware";
+import { flow$, step$ } from "@loomwork/core";
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { ProfilingEventStore } from "@loomwork/event-runtime";
+import { effectTimingMiddleware } from "@loomwork/middleware";
 import {
   PostgresEventStore,
   PostgresSnapshotStore,
   migratePostgresStores,
-} from "@loom/plugin-postgres";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+} from "@loomwork/plugin-postgres";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import type { FlowRunner, RegisteredFlow } from "@loomwork/workflow-runtime";
 import { Pool } from "pg";
 import { z } from "zod";
 import { drive } from "./harness";
@@ -27,7 +27,7 @@ import { drive } from "./harness";
 // host's output. It exists because "re-measure on your target hardware" is only honest
 // advice if it is also a single command.
 //
-//   LOOM_TEST_POSTGRES_URL=postgres://… pnpm --filter @loom/bench-throughput hardware
+//   LOOM_TEST_POSTGRES_URL=postgres://… pnpm --filter @loomwork/bench-throughput hardware
 //
 // Deliberately NOT the full A–H suite: those characterise the *system*, this characterises
 // the *host*, and it has to finish in minutes on a box you are paying for by the hour.
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
   if (PG_URL === undefined) {
     console.log(
       "SKIP: the hardware report needs a real Postgres.\n" +
-        "  LOOM_TEST_POSTGRES_URL=postgres://user@host/db pnpm --filter @loom/bench-throughput hardware"
+        "  LOOM_TEST_POSTGRES_URL=postgres://user@host/db pnpm --filter @loomwork/bench-throughput hardware"
     );
     return;
   }

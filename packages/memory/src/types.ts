@@ -58,7 +58,7 @@ export interface MemoryEntry {
  *
  * Same rules as the other store SPIs: MINOR for an additive, optional-with-fallback
  * method; MAJOR only for a change that breaks an existing backend. It exists because
- * implementations now live OUTSIDE this repo — `loom-plugin-vector` is third-party —
+ * implementations now live OUTSIDE this repo — `@loomwork/plugin-vector` is third-party —
  * so a breaking change would otherwise reach a backend nothing in this workspace
  * builds, tests, or can even see.
  *
@@ -75,7 +75,7 @@ export interface MemoryEntry {
  *   is a requirement on every backend, including ones that do not implement `remove`:
  *   a store that decomposes an entry into columns (both first-party SQL backends did)
  *   silently dropped a field it had never been told to keep, and the conformance kit
- *   now fails it. A backend that persists the entry object whole — `loom-plugin-vector`
+ *   now fails it. A backend that persists the entry object whole — `@loomwork/plugin-vector`
  *   is the third-party example — conforms unchanged.
  */
 export const MEMORY_STORE_SPI_VERSION = "2.1.0";
@@ -92,7 +92,7 @@ export interface MemorySearchOptions {
 export const DEFAULT_SEARCH_LIMIT = 20;
 
 /**
- * Hard ceiling on a search page, mirroring `@loom/plugin-read-model`'s `MAX_QUERY_LIMIT`.
+ * Hard ceiling on a search page, mirroring `@loomwork/plugin-read-model`'s `MAX_QUERY_LIMIT`.
  * One answer per repo to "how much may a single query return".
  */
 export const MAX_SEARCH_LIMIT = 10_000;
@@ -160,7 +160,7 @@ export interface MemoryStore {
    * has to mean something, and for such a backend the only available meaning is a
    * minimum score. Expose it: the right value is a property of the embedding model,
    * not of the store, and it does not transfer between models.
-   * (`loom-plugin-vector`, third-party, is the worked example.)
+   * (`@loomwork/plugin-vector`, third-party, is the worked example.)
    */
   search?(key: string, query: string, opts?: MemorySearchOptions): Promise<MemoryEntry[]>;
   /**

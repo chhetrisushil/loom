@@ -1,5 +1,9 @@
-import { type EventStore, InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import { InMemoryKeyStore } from "@loom/plugin-crypto";
+import {
+  type EventStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loomwork/event-runtime";
+import { InMemoryKeyStore } from "@loomwork/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import {

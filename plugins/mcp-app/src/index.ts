@@ -1,4 +1,4 @@
-// @loom/plugin-mcp-app — project a Loom agent surface onto the MCP Apps
+// @loomwork/plugin-mcp-app — project a Loom agent surface onto the MCP Apps
 // extension (SEP-1865, `io.modelcontextprotocol/ui`) so any MCP host renders a
 // Loom-driven UI.
 //

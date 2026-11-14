@@ -8,8 +8,8 @@ import {
   runMemoryStoreConformance,
   runReadModelStoreConformance,
   runTimerStoreConformance,
-} from "@loom/conformance";
-import { CoalescingEventStore, TenantScopedEventStore } from "@loom/event-runtime";
+} from "@loomwork/conformance";
+import { CoalescingEventStore, TenantScopedEventStore } from "@loomwork/event-runtime";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe } from "vitest";
 import { PostgresArchiveStore } from "./PostgresArchiveStore";

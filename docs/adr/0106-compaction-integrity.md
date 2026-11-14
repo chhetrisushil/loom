@@ -10,7 +10,7 @@
   [ADR 0055](0055-k10-6-pin-seam-content-gc.md) (D1 pinned retention, and the "known gap"
   D6 recorded as L11, which this closes), [ADR 0074](0074-storage-scale-out-decorators.md)
   (every decorator must decide every optional SPI method).
-- Placement: **kernel (`@loom/workflow-runtime`, `@loom/event-runtime`)** for the defects,
+- Placement: **kernel (`@loomwork/workflow-runtime`, `@loomwork/event-runtime`)** for the defects,
   plus one additive SPI method. **KERNEL_ABI unchanged (1.1.0)**: no syscall changes.
   **EVENT_SCHEMA unchanged**: no event kind, payload or fold changes. **EventStore SPI
   1.4.0 → 1.5.0** (additive MINOR): optional `truncatePrefixKeeping`. **SnapshotStore SPI
@@ -61,7 +61,7 @@ finding's evidence (ADR 0055 D6 recorded this as the L11 known gap).
   `fork`). A **blank** field is filled: the id the caller read, the workflowId sequence 0
   records, and the registered flow's version. The version is what the un-snapshotted path seeds,
   so both paths fold to the same state. A **non-blank field that disagrees** is refused with
-  `SnapshotIdentityMismatchError` (`@loom/snapshot-runtime`, with the shared
+  `SnapshotIdentityMismatchError` (`@loomwork/snapshot-runtime`, with the shared
   `assertSnapshotIdentity` rule, beside the `Snapshot` type it checks): only a store or tenant-scoping
   defect produces one, and
   filling it over would hide that defect. `fork` passes an explicit retarget flag, because a
@@ -130,7 +130,7 @@ checkpoint.
     fails with an error naming the fix. It never guesses a sequence.
   - **ADR 0083 disposition: accepted as an EXCEPTION.** There is one consumer today: the
     `shredSubject` retry. The seam is driven by layering, not by a workload. The alternative
-    is for a kernel package (`@loom/snapshot-runtime`'s `TenantScopedSnapshotStore`) to know
+    is for a kernel package (`@loomwork/snapshot-runtime`'s `TenantScopedSnapshotStore`) to know
     and forward a plugin's private method (`EncryptingSnapshotStore`'s), which inverts the
     dependency direction. The generic "at rest, never decrypted" read keeps the plugin
     boundary intact. The anticipated second consumer is retention/`evaluate` reading a

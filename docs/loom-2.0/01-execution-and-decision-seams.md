@@ -144,7 +144,7 @@ export interface ExecutionResources {
 export interface ExecutionPolicy {
   /** The execution this policy applies to. */
   executionId?: string;
-  /** Scheduling priority (lower = sooner); maps to @loom/scheduler Priority. */
+  /** Scheduling priority (lower = sooner); maps to @loomwork/scheduler Priority. */
   priority?: number;
   resources?: ExecutionResources;
   /** Named compute placement target (e.g. "local" | "cloudrun:svc"). */

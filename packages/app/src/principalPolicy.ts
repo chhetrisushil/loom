@@ -1,4 +1,4 @@
-import type { PrincipalCodec, PrincipalIdentityMode } from "@loom/workflow-runtime";
+import type { PrincipalCodec, PrincipalIdentityMode } from "@loomwork/workflow-runtime";
 
 // ── R3k (ADR 0111 D1) — how the durable principal may carry identity ───────────────────────
 //
