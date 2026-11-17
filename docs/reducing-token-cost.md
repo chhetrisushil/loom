@@ -119,6 +119,7 @@ agentLoop$(ctx, {
   modelToolId: "model",
   memory,
   memoryTier: "facts",
+  memoryScope: `user:${userId}`, // facts accumulate per user; the default scope is this execution's id
   writeBack: { toolId: "memory-write", distill: { toolId: "distill" } },
 }, input);
 ```

@@ -717,7 +717,7 @@ agentLoop$(ctx, {
   signal: turn.signal,           // stop THIS run (barge-in): no further model or tool call, AGENT_INTERRUPTED
   turnTimeoutMs: 60_000,         // the model frame's kernel deadline
   toolTimeoutMs: 15_000,         // a tool that exceeds it is an isError result
-  memory, writeBack: { toolId: "memwrite" },  // persist prompt + answer; or { unless } / { allowDirect: true } (a bare `true` does not compile)
+  memory, writeBack: { toolId: "memwrite" },  // persist prompt + answer; or { unless } / { allowDirect: true } (a bare `true` does not compile); `distill` stores facts instead (below)
 }, input);
 ```
 
@@ -770,6 +770,32 @@ agentLoop$(ctx, {
 ```
 
 `recallLimit` matters more than it looks: without it, every remembered entry reaches the prompt and conversation length becomes a hard wall rather than a cost curve.
+
+**Remember facts, not transcripts ([ADR 0149](adr/0149-distilled-memory-writeback.md)).** By default `writeBack` stores each run's prompt and answer verbatim, so recall grows by two entries per run, the same fact is stored again every time it comes up, and a fact that changed sits beside the one it replaced. `recallLimit` then drops the oldest entries, true or not. Opt in to `writeBack.distill` and the loop instead asks a model for short facts, consolidated against the facts the scope already holds, and stores only those:
+
+```ts
+const memory = new TieredMemory({ store, tiers: { facts: { maxEntries: 1_000 } } });   // a tier WITHOUT summarizeAfter
+effects.register("memwrite", memoryWriteBackEffect(memory));
+effects.register("distill", createDistillerEffect(provider));   // or your own { prompt, answer, existing } -> { add, supersede }
+
+agentLoop$(ctx, {
+  definition: dbaAgent,
+  modelToolId: "model",
+  memory, memoryTier: "facts",
+  memoryScope: `user:${userId}`,  // where facts accumulate; the default (this execution's id) is never recalled by another run
+  writeBack: { toolId: "memwrite", distill: { toolId: "distill" } },   // maxExisting 200, maxFacts 16, maxFactChars 1000
+}, input);
+```
+
+What it guarantees:
+
+- **Consolidation.** The distiller sees the scope's newest `maxExisting` facts with their ids (read through a recorded decision, so a replay sees the same set) and returns `{ add, supersede }`. A superseded fact is forgotten; an id it was not shown is dropped, so injected text can at most retire the facts it was shown, by naming them.
+- **Facts only.** The raw prompt and answer are not written; the execution log keeps the transcript. A fact's id is `fact:<sha256 of its text>`, so the same fact from two runs, or twice in one reply, is one entry. A fact is recalled as a `user` message `Remembered fact: …`.
+- **Provenance.** A fact is stored tainted, and recalled fenced, when anything the distiller was shown was untrusted: a `promptOrigin` prompt, a tainted `history` turn or tool result, or a tainted existing fact. Through `conversation$` every fact is tainted (the prompt is the end user's words).
+- **Failure.** A distiller that fails (including a denial, quota or rate limit, or unparsable output, `DistillerOutputError`) writes nothing and warns once (`LOOM_AGENT_DISTILL`, naming only the error class); the run still returns its answer. Only cancel, park, a safety stop, the kill switch or divergence end the run.
+- **Refused config.** A target tier with `summarizeAfter`, which includes the default `working` tier, throws `AgentLoopConfigError` before any model call: summarizing would fold facts into an entry the distiller can never supersede.
+
+It costs one model call per finished run (journaled; a replay makes none). It pays off for a scope that is recalled many times; for a one-off run, the raw write-back or none at all is cheaper. [Reducing token cost](reducing-token-cost.md) places it beside compaction, the conversation budget and claim-check.
 
 Use `reasoning` **or** `modelToolId`, not both. The Reasoning Runtime routes and elevates across
 model tiers and records every choice, and the response is journaled (R10), so a resume does not

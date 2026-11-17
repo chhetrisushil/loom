@@ -42,6 +42,28 @@ const transcript = input.messages.map((m) => `${m.role}: ${summarizerText(m.cont
 
 The text is **untrusted data**: summarize or quote it, never put it in a system prompt or assistant message (if the summarizer calls an LLM with this text, re-wrap it with `tainted(text, origin)` and put it in a user message, never the system prompt: `guardRequest` can no longer refuse it after unwrapping). The returned summary is clipped to `maxSummaryTokens` and re-injected as a fenced `user` message with origin `conversation:summary`, never the system prompt.
 
+## Remembering facts across conversations (`agent.writeBack.distill`)
+
+`conversation$` passes `agent.writeBack` to every turn's `agentLoop$`, so the opt-in distilled write-back
+([ADR 0149](../../docs/adr/0149-distilled-memory-writeback.md)) works per turn with no extra setup: each finished
+turn stores short facts, consolidated against the facts already in the scope, instead of the raw exchange. Give
+it a tier without `summarizeAfter` (a summarizing tier is refused). In shared mode the scope must come from
+`shared.memoryScope(asker)`, so each participant's facts stay in their own scope. Every fact a conversation
+distills is stored tainted (the prompt is the end user's words) and is recalled fenced. Outside shared mode, set
+`agent.memoryScope` to where facts should accumulate (the user, say): without it the scope defaults to the turn's
+own execution id, so no later turn ever recalls what it wrote.
+
+```ts
+agent: {
+  definition, modelToolId: "model",
+  memory, memoryTier: "facts", memoryScope: `user:${userId}`,
+  writeBack: { toolId: "memwrite", distill: { toolId: "distill" } },   // createDistillerEffect(provider) under "distill"
+},
+```
+
+Every turn recalls the scope's facts at its start, in this conversation and later ones. That is separate from
+`budget` (above), which decides which of this conversation's own turns the model sees.
+
 ## Work after a turn (`turnSettledObserver`)
 
 To start work once a reply exists (a title, an index entry, something composed from the answer), observe the runtime's durable writes. The listener is called once per settled turn of ANY conversation of the flow, after the closing record is in the log:

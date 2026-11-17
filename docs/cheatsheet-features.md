@@ -187,7 +187,7 @@ All optional, all separate.
 
 | | |
 |---|---|
-| `@loomwork/agent` | `agentLoop$` — ReAct loop over declared tools. `needsApproval` (`true` **parks**; bound to what the approver saw), `parallelTools`, `writeBack` (memory), `toolSearch` / `skillActivation` for big menus, `returnsMedia` tools. A tainted `input.context` is refused (`UntrustedContextError`) |
+| `@loomwork/agent` | `agentLoop$` — ReAct loop over declared tools. `needsApproval` (`true` **parks**; bound to what the approver saw), `parallelTools`, `writeBack` (memory; `distill` stores consolidated facts, `createDistillerEffect`, ADR 0149), `toolSearch` / `skillActivation` for big menus, `returnsMedia` tools. A tainted `input.context` is refused (`UntrustedContextError`) |
 | `@loomwork/conversation` | `conversation$` / `createConversations`: multi-turn chat on one chained execution; barge-in; token budget; `shared` mode runs each turn as its asker. SSE: `@loomwork/plugin-conversation-sse` |
 | `@loomwork/llm` | provider-agnostic completion + streaming; content parts (images, files) claim-checked by address via a `ContentResolver` (ADR 0120) |
 | `@loomwork/memory` | scoped, TTL/size-bounded agent memory |
