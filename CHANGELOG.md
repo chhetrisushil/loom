@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-18
+
 ### Added
 
 - **`agentLoop$` warns when `writeBack.distill` has no scope ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md) amendment).** With neither `memoryScope` nor `writeBack.scope`, distilled facts went to the execution's own scope, which no later run recalls (including every `conversation$` turn outside shared mode), so they were written and never read. The loop now emits one `LOOM_AGENT_DISTILL_SCOPE` warning per run through `onWarn`. A warning, not an error; the raw write-back is unchanged.
+
+### Fixed
+
+- **Published packages' READMEs no longer say they are unpublished.** Seven hand-written READMEs (`agent`, `app`, `core`, `effect-runtime`, `workflow-runtime`, `plugin-postgres`, `plugin-sqlite`) still said "Not published to npm yet" on their npm pages; 0.1.2 had fixed only the generated ones. Their Install sections now give `npm install`, and `packageReadmes.test.ts` refuses the claim in any non-private package's README.
 
 ## [0.1.3] - 2026-11-18
 
