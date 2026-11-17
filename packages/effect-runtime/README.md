@@ -15,8 +15,9 @@ signed delegation), metering and quotas, deadlines and delivery fencing.
 
 ## Install
 
-Not published to npm yet: `"@loomwork/effect-runtime": "workspace:*"` in this workspace, or a `link:`
-override from a sibling checkout (see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/effect-runtime` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep
+them on the same release. Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override
+(see [AGENTS.md](../../AGENTS.md)).
 
 ## Entry points
 

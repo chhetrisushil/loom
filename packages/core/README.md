@@ -18,10 +18,9 @@ Most apps get the rest of the framework through [`@loomwork/app`](../app/README.
 
 ## Install
 
-Loom's `@loomwork/*` packages are not published to npm yet (publishing is deferred). Inside this repo's
-pnpm workspace depend on it as `"@loomwork/core": "workspace:*"`. From a sibling checkout (for example
-`loom-examples`) use a `link:` path override to `../loom/packages/core`; see
-[AGENTS.md](../../AGENTS.md) and [getting-started](../../docs/getting-started.md#1-scaffold-an-app).
+`npm install @loomwork/core` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep
+them on the same release. Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override
+(see [AGENTS.md](../../AGENTS.md)). To start an app, see [getting-started](../../docs/getting-started.md#1-scaffold-an-app).
 
 ## Entry points
 
