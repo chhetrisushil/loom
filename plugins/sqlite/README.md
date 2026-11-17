@@ -16,9 +16,9 @@ reference. The native driver lives here so the kernel packages stay free of it.
 
 ## Install
 
-Not published to npm yet: `"@loomwork/plugin-sqlite": "workspace:*"` in this workspace, or a `link:`
-override from a sibling checkout (see [AGENTS.md](../../AGENTS.md)). `better-sqlite3` is a native
-module, so `pnpm install` must be allowed to build it.
+`npm install @loomwork/plugin-sqlite` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep
+them on the same release. Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override
+(see [AGENTS.md](../../AGENTS.md)). `better-sqlite3` is a native module, so the install must be allowed to build it.
 
 ## Entry points
 

@@ -18,8 +18,9 @@ infrastructure or tests that need a different composition.
 
 ## Install
 
-Not published to npm yet: use `"@loomwork/workflow-runtime": "workspace:*"` inside this repo, or a
-`link:` override from a sibling checkout (see [AGENTS.md](../../AGENTS.md)).
+`npm install @loomwork/workflow-runtime` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep
+them on the same release. Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override
+(see [AGENTS.md](../../AGENTS.md)).
 
 ## Entry points
 

@@ -16,9 +16,9 @@ that needs a different composition.
 
 ## Install
 
-Not published to npm yet. Inside this repo's workspace use `"@loomwork/app": "workspace:*"`; from a
-sibling checkout use a `link:` override to `../loom/packages/app` (see
-[AGENTS.md](../../AGENTS.md)). Storage backends are separate packages you add yourself:
+`npm install @loomwork/app` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep
+them on the same release. Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override
+(see [AGENTS.md](../../AGENTS.md)). Storage backends are separate packages you add yourself:
 [`@loomwork/plugin-sqlite`](../../plugins/sqlite/README.md) and
 [`@loomwork/plugin-postgres`](../../plugins/postgres/README.md). The default is in-memory.
 

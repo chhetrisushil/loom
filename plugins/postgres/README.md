@@ -15,9 +15,10 @@ cluster-visible heartbeat leases. For one machine or local work,
 
 ## Install
 
-Not published to npm yet: add `"@loomwork/plugin-postgres": "workspace:*"` in this workspace (the
-create-loom-app scaffold does not include it), or a `link:` override from a sibling checkout (see
-[AGENTS.md](../../AGENTS.md)). `pg` is its own dependency, so the kernel packages never load it.
+`npm install @loomwork/plugin-postgres` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep
+them on the same release. Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override
+(see [AGENTS.md](../../AGENTS.md)). The create-loom-app scaffold does not include it. `pg` is its own dependency, so the kernel
+packages never load it.
 
 ## Entry points
 

@@ -20,6 +20,10 @@ const REPO_ROOT = resolve(__dirname, "../../..");
 
 type Entry = { file: string; text: string; state: "missing" | "stale" | "ok" };
 
+// 4. a non-private package's README does not claim it is unpublished. 0.1.2 fixed the generated
+//    READMEs; seven hand-written ones still said "Not published to npm yet" on their npm pages.
+const UNPUBLISHED_CLAIM = /\bnot (?:yet )?published\b|\bunpublished\b|publishing is deferred/i;
+
 function titleOf(readme: string): string | undefined {
   const line = readme.split("\n").find((l) => /^# /.test(l));
   return line?.replace(/^# /, "").replace(/`/g, "").trim();
@@ -35,9 +39,14 @@ function violations(root: string): string[] {
       out.push(`${rel}: no README.md`);
       continue;
     }
-    const title = titleOf(readFileSync(file, "utf8"));
+    const text = readFileSync(file, "utf8");
+    const title = titleOf(text);
     if (title !== pkg.name && !title?.startsWith(`${pkg.name} `)) {
       out.push(`${rel}: README title "${title}" does not name ${pkg.name}`);
+    }
+    // npm shows this README on the package's page: a published package must not say it is not published.
+    if (!(pkg as { private?: boolean }).private && UNPUBLISHED_CLAIM.test(text)) {
+      out.push(`${rel}: README says the package is not published, but it is`);
     }
   }
   for (const e of plan(root) as Entry[]) {
@@ -132,6 +141,25 @@ describe("package READMEs (fitness)", () => {
         pkg.description = `${pkg.description} (changed)`;
         writeFileSync(pj, JSON.stringify(pkg));
         expect(violations(root)).toEqual(["plugins/beta/README.md: generated README is stale"]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("a published package whose README says it is unpublished is reported; a private one is not", () => {
+      const root = scratch();
+      try {
+        const handWritten = "# @loomwork/alpha\n\n## Install\n\nNot published to npm yet.\n";
+        writeFileSync(join(root, "packages/alpha/README.md"), handWritten);
+        expect(violations(root)).toEqual([
+          "packages/alpha: README says the package is not published, but it is",
+        ]);
+        const pj = join(root, "packages/alpha/package.json");
+        writeFileSync(
+          pj,
+          JSON.stringify({ ...JSON.parse(readFileSync(pj, "utf8")), private: true })
+        );
+        expect(violations(root)).toEqual([]);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
