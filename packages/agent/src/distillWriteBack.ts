@@ -60,13 +60,14 @@ export async function distillWriteBack(a: {
   const { ctx, distill: d } = a;
   const maxFacts = d.maxFacts ?? 16;
   const maxFactChars = d.maxFactChars ?? 1000;
-  const existing = (
-    await a.memory.recall(a.tier, a.scope, {
-      limit: d.maxExisting ?? 200,
-      decide: ctx.decide,
-      decisionKey: `${a.idPrefix}#writeback:existing`,
-    })
-  ).filter((e) => e.role === "fact" && typeof e.id === "string");
+  // Filter to facts BEFORE the limit, inside the recorded decision: a tier that also holds raw
+  // entries (distill turned on for an existing tier) must still show the newest facts, and only
+  // the facts shown are journaled.
+  const existing = await ctx.decide(`${a.idPrefix}#writeback:existing`, async () =>
+    (await a.memory.recall(a.tier, a.scope))
+      .filter((e) => e.role === "fact" && typeof e.id === "string")
+      .slice(-(d.maxExisting ?? 200))
+  );
   const shown = new Set(existing.map((e) => e.id as string));
   let origin = a.promptOrigin ?? a.sawTaintFrom;
   for (const e of existing) {

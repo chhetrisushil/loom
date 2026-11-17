@@ -149,6 +149,21 @@ describe("ADR 0149 distilled write-back", () => {
     expect(b.warnings).toHaveLength(1);
   });
 
+  it("existing: facts are filtered BEFORE maxExisting, so raw entries in the tier never crowd them out", async () => {
+    const mem = memory();
+    await mem.remember("working", SCOPE, {
+      id: "fact:old",
+      role: "fact",
+      content: "the tenant is on Free",
+    });
+    for (let i = 0; i < 5; i++) {
+      await mem.remember("working", SCOPE, { id: `raw:${i}`, role: "user", content: `raw ${i}` });
+    }
+    const b = boot({ mem, distill: { maxExisting: 2 }, distiller: () => ({ add: [] }) });
+    expect((await run(b, "e1")).status).toBe("completed");
+    expect(b.distillCalls[0]?.existing.map((e) => e.id)).toEqual(["fact:old"]);
+  });
+
   it("dedupe: the same fact distilled by two runs is one entry", async () => {
     const mem = memory();
     const b = boot({ mem, distiller: () => ({ add: ["same fact"] }) });
