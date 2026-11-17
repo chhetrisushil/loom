@@ -36,6 +36,7 @@ export type {
   EffectRegistry,
   NeedsApprovalPolicy,
 } from "./agentLoop$";
+export type { AgentLoopDistill } from "./distillWriteBack";
 export { continueEvery } from "./continueEvery";
 export type { TurnCounter } from "./continueEvery";
 export { chunkDeltas } from "./chunkDeltas";
