@@ -142,6 +142,11 @@ export interface AgentLoopWriteBackFields {
    * Accept a direct, unconditional, un-journaled write (no `toolId`, no `unless`). Required
    * to say so: the type needs one of the three, and an untyped caller with none gets
    * {@link AgentLoopConfigError} before the first model call.
+   *
+   * Un-journaled means a resume RE-RUNS the write (as it does whenever `toolId` is unset, `unless`
+   * included). It is idempotent by entry id, so nothing is duplicated, but it is replayed against the
+   * store as it is NOW: with `distill`, a fact superseded by the first write and re-added by another
+   * execution before the resume is forgotten again. Set `toolId` when the write must happen once.
    */
   allowDirect?: boolean;
   /**
