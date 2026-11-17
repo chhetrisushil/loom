@@ -50,6 +50,14 @@ export {
   createSummarizerEffect,
 } from "./createSummarizerEffect";
 export { SUMMARIZER_TEXT_TRUNCATED, summarizerText } from "./summarizerText";
+export {
+  DEFAULT_DISTILLER_INSTRUCTION,
+  DEFAULT_DISTILLER_MAX_TOKENS,
+  DISTILLER_INPUT_ORIGIN,
+  DistillerOutputError,
+  createDistillerEffect,
+} from "./createDistillerEffect";
+export type { DistillerInput, DistillerOutput } from "./createDistillerEffect";
 export { isMediaResult, mediaResult, toolResultPart } from "./toolResultContent";
 export type { ToolMediaResult } from "./toolResultContent";
 export { agentStep$ } from "./agentStep$";

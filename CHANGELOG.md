@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A tainted `history` turn now taints the raw R10 write-back answer (`agentLoop$`).** `input.history` entries with an `origin` were fenced in the prompt but did not set the run's taint, so the answer written back was stored plain and recalled in assistant position. They now count as untrusted input, like a tainted tool result.
 
+- **`createDistillerEffect` and a "Reducing token cost" recipe ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md) D6).** `createDistillerEffect(provider, { instruction?, maxTokens? })` in `@loomwork/agent`, beside `createSummarizerEffect`: a ready-made `{ prompt, answer, existing } -> { add, supersede }` effect that puts the exchange and the existing facts (with ids) in a tainted user message and parses the model's JSON reply, throwing `DistillerOutputError` on anything else. [`docs/reducing-token-cost.md`](docs/reducing-token-cost.md) ties together the opt-ins that bound an agent's token spend and how to measure them.
+
 ## [0.1.2] - 2026-11-15
 
 ### Changed
