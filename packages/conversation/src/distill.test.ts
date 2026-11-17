@@ -4,7 +4,7 @@ import { agent$ } from "@loomwork/core";
 import { ToolEffect } from "@loomwork/effect-runtime";
 import { InMemoryMemoryStore, TieredMemory } from "@loomwork/memory";
 import { describe, expect, it } from "vitest";
-import { boot, messages, until } from "./__fixtures__/harness";
+import { alice, boot, carol, messages, until } from "./__fixtures__/harness";
 
 // ADR 0149 D7: `agent.writeBack.distill` passes through the conversation layer unchanged, so each
 // turn distills into the conversation's memory scope.
@@ -61,5 +61,56 @@ describe("conversation: per-turn distilled write-back (ADR 0149 D7)", () => {
     expect(facts.map((e) => e.role)).toEqual(["fact"]);
     expect(isTainted(facts[0]?.content)).toBe(true);
     expect(seen[1]?.existing).toHaveLength(1);
+  });
+
+  it("shared mode: each asker's facts land in the asker's own scope (shared.memoryScope)", async () => {
+    const mem = new TieredMemory({
+      store: new InMemoryMemoryStore(),
+      tiers: { working: { maxEntries: 100 } },
+    });
+    const b = boot({
+      shared: { memoryScope: (a) => `scope:${a.actor}` },
+      config: {
+        agent: {
+          definition: agent$({ id: "chat", name: "Chat", tools: [] }),
+          modelToolId: "model",
+          memory: mem,
+          writeBack: { toolId: "memwrite", distill: { toolId: "summarize" } },
+        } as never,
+      },
+      extraEffects: (e) => {
+        e.register("memwrite", memoryWriteBackEffect(mem));
+        // the shared harness grants every asker "summarize"; reuse that id for the distiller
+        e.register(
+          "summarize",
+          new ToolEffect(async (input: unknown) => ({
+            add: [`fact from: ${JSON.stringify((input as { prompt: unknown }).prompt)}`],
+          }))
+        );
+      },
+    });
+    const { conversationId: id } = await b.conv.start({ principal: alice });
+    await b.conv.addParticipant(
+      id,
+      { actor: carol.actor as string, tenant: carol.tenant },
+      {
+        principal: alice,
+      }
+    );
+    await b.conv.sendTurn(id, "alice says hi", { principal: alice });
+    await until(
+      async () => (await mem.recall("working", `scope:${alice.actor}`)).length === 1,
+      "alice's facts"
+    );
+    await b.conv.sendTurn(id, "carol says yo", { principal: carol });
+    await until(
+      async () => (await mem.recall("working", `scope:${carol.actor}`)).length === 1,
+      "carol's facts"
+    );
+    const text = async (scope: string) =>
+      JSON.stringify((await mem.recall("working", scope)).map((e) => e.content));
+    expect(await text(`scope:${alice.actor}`)).toContain("alice says hi");
+    expect(await text(`scope:${alice.actor}`)).not.toContain("carol says yo");
+    expect(await text(`scope:${carol.actor}`)).toContain("carol says yo");
   });
 });

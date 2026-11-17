@@ -31,7 +31,10 @@ maxFactChars?: number }`. Everything else about `writeBack` is unchanged: the wr
 `writeBack.toolId` (or `unless` / `allowDirect`), the `unless` verdict is still recorded, and an interrupted or
 failed run still writes nothing. With `distill` set, the run writes **facts only**: the raw prompt / answer
 entries are not written (the full transcript is in the execution log for audit). `requireEffectRing` applies to
-the distiller exactly as to the write: `distill.toolId` is always an effect id.
+the distiller exactly as to the write: `distill.toolId` is always an effect id. The target tier (`writeBack.tier
+?? memoryTier ?? "working"`) must not have `summarizeAfter`: `TieredMemory.remember` would fold its oldest facts
+into prose the distiller can no longer supersede by id, so `agentLoop$` refuses that config with
+`AgentLoopConfigError` (use a tier such as `tiers: { facts: { maxEntries: N } }`; `DEFAULT_TIERS.working` summarizes).
 
 **D2 — the distiller contract.** One effect, `{ prompt, answer, existing } -> { add, supersede }`:
 - `prompt`, `answer`: the run's prompt and final answer, with the provenance they had in the run (a prompt with
@@ -52,8 +55,9 @@ data, not authority.
   them).
 - `add` entries that are not non-empty strings are dropped; each is cut to `maxFactChars` (default 1000); at most
   `maxFacts` (default 16) are kept. Anything dropped or cut is reported once through `onWarn`.
-- A fact's id is `fact:<fnv1a64(text)>` within the scope, so the same fact distilled twice (by two runs, or by a
-  resume) is one entry: the write `forget`s the superseded ids and the new ids, then `remember`s the new facts.
+- A fact's id is `fact:<sha256(text), first 32 hex chars>` within the scope, so the same fact distilled twice (by
+  two runs, or by a resume) is one entry, and a fact repeated within one reply collapses to one before `maxFacts`
+  is applied (counted in the same single warning): the write `forget`s the superseded ids and the new ids, then `remember`s the new facts.
   The write is idempotent under re-run, as R10's is.
 - Facts are stored with `role: "fact"`. Recall places a plain fact in a `user` message prefixed
   `Remembered fact: `; a tainted one in a fenced `user` message, as any tainted entry.
@@ -63,7 +67,8 @@ existing registration of `memoryWriteBackEffect` handles both shapes; a request 
 before.
 
 **D4 — provenance.** A fact is stored `tainted(text, origin)` when ANY input the distiller was shown was
-tainted: the prompt (`promptOrigin`), the run (`sawTaintFrom`, which already includes tainted recalled entries),
+tainted: the prompt (`promptOrigin`), the run (`sawTaintFrom`, which already includes tainted recalled entries
+and tainted `history` turns),
 or an `existing` fact. The origin is the first one seen, as for R10's answer. Otherwise it is stored plain, as
 R10's answer is. Through the conversation layer the prompt is the end user's words (`promptOrigin` set), so
 every fact a conversation distills is tainted and recalled fenced; that is the intended result, and the same
@@ -114,3 +119,6 @@ is a recall that stays roughly the size of the facts the scope actually holds, i
 entries every run. The implementing change must show this with a deterministic test that counts recalled
 entries and bytes over many runs, with distillation on and off. The "80% fewer tokens" claim from the video is
 not adopted: the saving depends on the baseline and the workload.
+
+`createDistillerEffect` (D6) lands in PR #796. The un-journaled direct path (`allowDirect`, or `unless` without
+`toolId`) re-runs its write on replay, as R10's always has; that is out of scope here.

@@ -1,5 +1,5 @@
 import { isTainted, taintOf, tainted } from "@loomwork/classify";
-import { fnv1a64 } from "@loomwork/core";
+import { sha256Hex } from "@loomwork/core";
 import type { TieredMemory } from "@loomwork/memory";
 import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import { classifyModelCallFailure } from "./toolFailure";
@@ -95,7 +95,8 @@ export async function distillWriteBack(a: {
         return { ok: true as const };
       } catch (e) {
         if (classifyModelCallFailure(e) === "terminal") throw e;
-        return { failed: e instanceof Error ? e.message : String(e) };
+        // The class only: a message may carry text the model produced (untrusted), and this verdict is journaled.
+        return { failed: e instanceof Error ? e.name : "non-Error throw" };
       }
     },
     { source: "agent-distiller" }
@@ -115,23 +116,27 @@ export async function distillWriteBack(a: {
     if (typeof id === "string" && shown.has(id)) forget.push(id);
     else dropped.add("a supersede id that was not shown to the distiller");
   }
-  const texts: string[] = [];
+  // Cut, then dedupe by text (the id is the text's hash), THEN cap: a repeated fact must not take a
+  // maxFacts slot or store two entries under one id.
+  const texts = new Set<string>();
   for (const t of Array.isArray(out?.add) ? out.add : []) {
-    if (typeof t !== "string" || t.trim() === "")
+    if (typeof t !== "string" || t.trim() === "") {
       dropped.add("a fact that is not a non-empty string");
-    else if (texts.length >= maxFacts) dropped.add(`facts over maxFacts (${maxFacts})`);
-    else {
-      if (t.length > maxFactChars) dropped.add(`a fact cut to maxFactChars (${maxFactChars})`);
-      texts.push(t.slice(0, maxFactChars));
+      continue;
     }
+    if (t.length > maxFactChars) dropped.add(`a fact cut to maxFactChars (${maxFactChars})`);
+    const cut = t.slice(0, maxFactChars);
+    if (texts.has(cut)) dropped.add("a duplicate fact in one reply");
+    else if (texts.size >= maxFacts) dropped.add(`facts over maxFacts (${maxFacts})`);
+    else texts.add(cut);
   }
   if (dropped.size > 0) {
     a.warn(
       `agentLoop$: the memory distiller's output was trimmed: ${[...dropped].join("; ")} (ADR 0149 D3).`
     );
   }
-  const entries = texts.map((t) => ({
-    id: `fact:${fnv1a64(t)}`,
+  const entries = [...texts].map((t) => ({
+    id: `fact:${sha256Hex(t).slice(0, 32)}`,
     role: "fact",
     content: origin === undefined ? t : tainted(t, origin),
   }));
