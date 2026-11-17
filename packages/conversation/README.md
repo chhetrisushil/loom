@@ -51,7 +51,7 @@ it a tier without `summarizeAfter` (a summarizing tier is refused). In shared mo
 `shared.memoryScope(asker)`, so each participant's facts stay in their own scope. Every fact a conversation
 distills is stored tainted (the prompt is the end user's words) and is recalled fenced. Outside shared mode, set
 `agent.memoryScope` to where facts should accumulate (the user, say): without it the scope defaults to the turn's
-own execution id, so no later turn ever recalls what it wrote.
+own execution id, so no later turn ever recalls what it wrote (the loop warns: `LOOM_AGENT_DISTILL_SCOPE`).
 
 ```ts
 agent: {
