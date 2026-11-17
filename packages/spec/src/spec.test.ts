@@ -399,6 +399,9 @@ const NOT_A_CAPABILITY = new Set([
   "0147",
   // 0148 - npm publishing under @loomwork: release tooling and a package rename. No runtime subsystem.
   "0148",
+  // 0149 - opt-in distilled memory write-back (`writeBack.distill`, `createDistillerEffect`): an option on
+  // one `@loomwork/agent` function plus a built-in effect. No event, SPI, ABI or subsystem change; nothing to grade.
+  "0149",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

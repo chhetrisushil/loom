@@ -1,6 +1,6 @@
 # ADR 0149 — Distilled memory write-back: facts, consolidated against what the scope already holds
 
-- Status: **Proposed** (2026-11-18)
+- Status: **Accepted** (2026-11-18) — proposed and implemented the same day (#794, #795, #796); accepted by the owner
 - Date: 2026-11-18
 - Builds on: [ADR 0121](0121-one-canonical-agent-loop.md) (R10 `writeBack`), [ADR 0137](0137-agent-state-growth-warning-and-builtin-summarizer.md)
   (a built-in model effect the caller supplies the model for), [ADR 0122](0122-conversation-layer-streaming-transport-and-token-budgeting.md)
