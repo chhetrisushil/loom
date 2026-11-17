@@ -73,7 +73,11 @@ treatment its rolling summary gets.
 step that fails with anything but control flow (park, authority / safety stop, cancel, divergence) writes
 NOTHING, warns once through `onWarn`, and the run completes with its answer. The outcome is a recorded decision
 (`<loop>#writeback:distill:outcome`), so a resume reaches the same verdict, the pattern of ADR 0122's
-2026-11-03 amendment. It never falls back to writing the raw entries: that would mix transcript entries into a
+2026-11-03 amendment. An authorization DENIAL of the distill effect also degrades (it is classified `denied`, not
+terminal, the same rule the conversation summarizer applies): memory fails closed, nothing is written, and the
+warning names the denial. Quota and rate-limit
+exhaustion degrade the same way (`classifyModelCallFailure`'s `quota` / `rate-limited`). Only control flow that
+the classifier calls `terminal` (cancel, park, safety stop, divergence) ends the run. It never falls back to writing the raw entries: that would mix transcript entries into a
 facts-only tier.
 
 **D6 — a built-in distiller.** `createDistillerEffect(provider, { instruction?, maxTokens? })`, beside
