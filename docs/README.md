@@ -10,6 +10,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[User Guide](user-guide.md)** | Look up a specific feature: fork, A2A, middleware, projections, testing, CLI, compute… |
 | **[CLI Usage Guide](usage-cli.md)** | Drive the `loom` command: scaffold (`new`/`gen`/`appgen`), validate (`doctor`/`check`/`verify`/`lint`), observe (`logs`/`debug`/`inspect`), data protection (`retention run`/`compliance report`), and gate a deploy (`eval`/`deploy check`). |
 | **[Data classification](data-classification.md)** | Field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6). |
+| **[Reducing token cost](reducing-token-cost.md)** | Cut what an agent loop or conversation sends to the model: compaction, the conversation token budget, claim-check and lean log, memory recall limits and distilled write-back, and how to measure each. |
 | **[Compliance](compliance.md)** | GDPR/CCPA-enabling: subject index, data export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3). |
 | **[Composed surfaces](composed-surfaces.md)** | Record a runtime-composed UI as a durable artifact: validate → content-address → `ctx.emit` → replay, with pinning, and what not to do. |
 | **[Transient manifest interpreter](transient-interpreter.md)** | Run a hot, content-addressed read path with zero events, escalating to a durable run only when a repair must be recorded. |
@@ -207,6 +208,7 @@ all just *lenses on it*.
 - [`transient-interpreter.md`](transient-interpreter.md) — the transient/interpreter grain (`invokeTransient`, dynamic step minting).
 - [`benchmarks.md`](benchmarks.md) — committed performance baselines.
 - [`scaling.md`](scaling.md) — capacity guide: which regime your workload is in, what scaling support ships today, and what each further change is waiting on.
+- [`reducing-token-cost.md`](reducing-token-cost.md) — the opt-ins that bound an agent's token spend (compaction, conversation budget, claim-check, recall, distilled write-back), what each trades away, and how to measure.
 - [`examples/`](examples/) — reference walkthroughs (`acme-support`, a Postgres storage backend).
 
 ## Runnable examples
