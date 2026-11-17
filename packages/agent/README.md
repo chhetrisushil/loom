@@ -15,14 +15,16 @@ When a flow needs a model to choose and call tools. Define the agent with `agent
 
 ## Install
 
-Not published to npm yet: `"@loomwork/agent": "workspace:*"` in this workspace, or a `link:` override
-from a sibling checkout (see [AGENTS.md](../../AGENTS.md)). You also need an LLM provider from
+`npm install @loomwork/agent` (or pnpm / yarn). Pre-1.0: every `@loomwork/*` package shares one version, so keep
+them on the same release. Inside this repo use `workspace:*`; a sibling checkout links it with a `link:` override
+(see [AGENTS.md](../../AGENTS.md)). You also need an LLM provider from
 [`@loomwork/llm`](../llm/README.md).
 
 ## Entry points
 
 `@loomwork/agent` (single entry): `agentLoop$`, `createAgentModelEffect`, `agentStep$` and `AgentRunner`
-(deprecated), `registerReasoningRoutes`, `memoryWriteBackEffect`, `mediaResult`, `toolSearchDocs`,
+(deprecated), `registerReasoningRoutes`, `memoryWriteBackEffect`, `createSummarizerEffect` (compaction),
+`createDistillerEffect` (distilled `writeBack`, ADR 0149), `mediaResult`, `toolSearchDocs`,
 `Bm25ToolRanker`, `deterministicSkillSelector`, `llmSkillSelector`, and their config types
 (`AgentLoopConfig`, `ToolSearchConfig`, `SkillActivationConfig`, ...).
 
@@ -73,6 +75,12 @@ defineConfig({
 - **`input.context` must not hold tainted values.** It is flattened into plain text in the user message, where the
   prompt boundary could not see a mark, so `agentLoop$`, `AgentRunner` and the skill selectors throw
   `UntrustedContextError` before any model call. Pass untrusted text as `prompt` with `promptOrigin`, or in `history`.
+- **Memory: facts, not transcripts.** `writeBack.distill` stores model-extracted facts consolidated against the
+  scope's existing ones instead of each run's raw prompt and answer, so recall stays about the size of what is
+  known; `createDistillerEffect(provider)` is the built-in distiller. Opt-in; the tier must not summarize
+  ([ADR 0149](../../docs/adr/0149-distilled-memory-writeback.md)).
+- **Token cost**: compaction, claim-check, the lean log and distilled memory side by side in
+  [Reducing token cost](../../docs/reducing-token-cost.md).
 - **Large tool menus**: `toolSearch` keeps them out of the prompt
   ([ADR 0125](../../docs/adr/0125-tool-search.md)).
 - Tool and MCP results can be untrusted content and are guarded before they reach a prompt.
