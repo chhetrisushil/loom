@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **ADR 0149 (Proposed): distilled memory write-back ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md); design only, no code yet).** An opt-in `writeBack.distill` for `agentLoop$` that stores model-extracted facts, consolidated against the facts the scope already holds, instead of the raw prompt and answer, so recall stays about the size of what is known rather than growing by two entries per run.
+- **`agentLoop$` `writeBack.distill` ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md) D1-D5, D7).** Opt-in: a run writes model-extracted facts (`role: "fact"`, id `fact:<fnv1a64>`) instead of its raw prompt and answer. The distiller effect sees the scope's existing facts (a recorded read), its output is validated (unshown supersede ids dropped, facts capped and cut, one warning), facts are tainted when any input was, and a failing distiller degrades to writing nothing (recorded outcome). `WriteBackRequest` gains `forget`, which `memoryWriteBackEffect` honours; recall renders a plain fact as `Remembered fact: ...`. New export: `AgentLoopDistill`. `createDistillerEffect` (D6) follows.
 
 ## [0.1.2] - 2026-11-15
 

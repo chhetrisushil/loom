@@ -36,6 +36,7 @@ import type { BranchContext, DecideOptions, ExecutionContext } from "@loomwork/w
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
+import { type AgentLoopDistill, distillWriteBack, validateDistill } from "./distillWriteBack";
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { type SkillActivationConfig, SkillActivationSession } from "./skillActivation";
@@ -143,6 +144,11 @@ export interface AgentLoopWriteBackFields {
    * {@link AgentLoopConfigError} before the first model call.
    */
   allowDirect?: boolean;
+  /**
+   * ADR 0149 - store model-extracted FACTS (consolidated against the scope's existing facts) instead of
+   * the raw prompt and answer. See {@link AgentLoopDistill}. Opt-in; without it nothing changes.
+   */
+  distill?: AgentLoopDistill;
 }
 
 export interface AgentLoopConfig {
@@ -960,6 +966,11 @@ export async function agentLoop$(
       );
     }
   }
+  if (typeof config.writeBack === "object" && config.writeBack.distill !== undefined) {
+    validateDistill(config.writeBack.distill, (m) => {
+      throw new AgentLoopConfigError(m);
+    });
+  }
   if (config.writeBack !== undefined && config.writeBack !== false && config.memory === undefined) {
     // A write-back with nowhere to write reads as persistence it isn't.
     throw new Error("agentLoop$ writeBack requires `memory`");
@@ -1234,7 +1245,10 @@ export async function agentLoop$(
       }
       textMessage({
         role: entry.role === "assistant" ? "assistant" : "user",
-        content: String(entry.content),
+        content:
+          entry.role === "fact"
+            ? `Remembered fact: ${String(entry.content)}`
+            : String(entry.content),
       });
     }
   }
@@ -1971,15 +1985,39 @@ export async function agentLoop$(
             source: SOURCE_ABORT,
           });
     if (!skip) {
-      const req = writeBackRequest({
-        tier: o.tier ?? config.memoryTier ?? "working",
-        scope: o.scope ?? config.memoryScope ?? ctx.executionId,
-        key: `${ctx.executionId}:${idPrefix}`,
-        prompt: input.prompt,
-        answer: lastContent,
-        ...(sawTaintFrom !== undefined && { taintOrigin: sawTaintFrom }),
-      });
-      if (o.toolId !== undefined) {
+      const tier = o.tier ?? config.memoryTier ?? "working";
+      const scope = o.scope ?? config.memoryScope ?? ctx.executionId;
+      let req: WriteBackRequest | undefined;
+      if (o.distill !== undefined) {
+        const w = await distillWriteBack({
+          ctx,
+          memory: config.memory,
+          tier,
+          scope,
+          idPrefix,
+          distill: o.distill,
+          prompt: input.prompt,
+          promptOrigin: input.promptOrigin,
+          answer: lastContent,
+          sawTaintFrom,
+          warn: (m) => emitLoopWarning(config, m, "LOOM_AGENT_DISTILL"),
+        });
+        if (w !== undefined && (w.entries.length > 0 || w.forget.length > 0)) {
+          req = { tier, scope, entries: w.entries, forget: w.forget };
+        }
+      } else {
+        req = writeBackRequest({
+          tier,
+          scope,
+          key: `${ctx.executionId}:${idPrefix}`,
+          prompt: input.prompt,
+          answer: lastContent,
+          ...(sawTaintFrom !== undefined && { taintOrigin: sawTaintFrom }),
+        });
+      }
+      if (req === undefined) {
+        // distill produced nothing to write
+      } else if (o.toolId !== undefined) {
         await ctx.execute(
           {
             _tag: "TaskDefinition",
@@ -2126,6 +2164,8 @@ interface WriteBackRequest {
   tier: string;
   scope: string;
   entries: { id: string; role: string; content: unknown }[];
+  /** ADR 0149: ids to forget as well as the entry ids (the facts a distilled write supersedes). */
+  forget?: string[];
 }
 
 /**
@@ -2157,11 +2197,9 @@ function writeBackRequest(w: {
 
 /** Idempotent: a keyed `forget` of the ids, then the append, so a re-run writes nothing twice. */
 async function applyWriteBack(memory: TieredMemory, req: WriteBackRequest): Promise<void> {
-  await memory.forget(
-    req.tier,
-    req.scope,
-    req.entries.map((e) => e.id)
-  );
+  await memory.forget(req.tier, req.scope, [
+    ...new Set([...(req.forget ?? []), ...req.entries.map((e) => e.id)]),
+  ]);
   for (const entry of req.entries) await memory.remember(req.tier, req.scope, entry);
 }
 
