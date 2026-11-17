@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **ADR 0149 (Proposed): distilled memory write-back ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md); design only, no code yet).** An opt-in `writeBack.distill` for `agentLoop$` that stores model-extracted facts, consolidated against the facts the scope already holds, instead of the raw prompt and answer, so recall stays about the size of what is known rather than growing by two entries per run.
+
 ## [0.1.2] - 2026-11-15
 
 ### Changed
