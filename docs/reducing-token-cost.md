@@ -102,27 +102,29 @@ agentLoop$(ctx, { definition, modelToolId: "model", toolCallLog: "lean" }, input
   most relevant to a query rather than the newest, recorded as a decision so a replay sees the same set. It needs
   a searchable tier (a semantic `MemoryStore`; see [ADR 0090](adr/0090-knowledge-is-retrieval-over-memory.md)). Use it from your own
   code when the prompt should carry only what matches the question; `agentLoop$`'s own recall is newest-first.
-- **Distilled write-back ([ADR 0149](adr/0149-distilled-memory-writeback.md); the `distill` field lands in a
-  sibling PR to this page, so it is not yet in the published packages):** by default write-back stores the raw
-  prompt and answer, so recall grows by two entries per run and a changed fact sits beside the one it replaced.
-  With `writeBack.distill` the loop instead asks a model for short facts and the ids of existing facts they
-  replace, and stores only those, so recall stays about the size of what is known.
+- **Distilled write-back ([ADR 0149](adr/0149-distilled-memory-writeback.md)):** by default write-back stores
+  the raw prompt and answer, so recall grows by two entries per run and a changed fact sits beside the one it
+  replaced. With `writeBack.distill` the loop instead asks a model for short facts and the ids of existing facts
+  they replace, and stores only those, so recall stays about the size of what is known. The target tier must
+  not summarize (no `summarizeAfter`; the default `working` tier does), or the loop refuses the config: a
+  summarizing tier would fold facts into a summary the distiller can never supersede.
 
-```text
+```ts
+const memory = new TieredMemory({ store, tiers: { facts: { maxEntries: 1_000 } } });
+effects.register("memory-write", memoryWriteBackEffect(memory));
 effects.register("distill", createDistillerEffect(provider));
 
 agentLoop$(ctx, {
   definition,
   modelToolId: "model",
   memory,
-  recallLimit: 50,
+  memoryTier: "facts",
   writeBack: { toolId: "memory-write", distill: { toolId: "distill" } },
 }, input);
 ```
 
-  This block is not a `ts` block because `writeBack.distill` is not in the built types until that PR lands.
-  `createDistillerEffect(provider, { instruction?, maxTokens? })` is the built-in distiller; it needs a model call
-  per run.
+  `createDistillerEffect(provider, { instruction?, maxTokens? })` is the built-in distiller; it costs one model
+  call per run.
 - **Trade-off:** distilling pays one model call per run to save tokens on every later recall, so it wins for a
   scope that is recalled many times. The model decides what is worth remembering and may omit something you
   wanted; the full transcript stays in the execution log for audit. Distilled facts derived from tainted
