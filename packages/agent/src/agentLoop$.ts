@@ -971,6 +971,16 @@ export async function agentLoop$(
       throw new AgentLoopConfigError(m);
     });
   }
+  if (typeof config.writeBack === "object" && config.writeBack.distill !== undefined) {
+    const tier = config.writeBack.tier ?? config.memoryTier ?? "working";
+    if (config.memory?.tierPolicy(tier)?.summarizeAfter !== undefined) {
+      // TieredMemory.remember folds a tier's oldest entries into a summary past `summarizeAfter`: facts
+      // would be folded into prose the distiller can no longer supersede by id (ADR 0149 D1).
+      throw new AgentLoopConfigError(
+        `agentLoop$ writeBack.distill: tier "${tier}" has \`summarizeAfter\`, which folds facts into a summary. Use a tier without it (e.g. \`tiers: { facts: { maxEntries: N } }\`) and set it via \`writeBack.tier\` or \`memoryTier\`.`
+      );
+    }
+  }
   if (config.writeBack !== undefined && config.writeBack !== false && config.memory === undefined) {
     // A write-back with nowhere to write reads as persistence it isn't.
     throw new Error("agentLoop$ writeBack requires `memory`");
@@ -1256,6 +1266,8 @@ export async function agentLoop$(
   // words) is tainted here, so the prompt boundary fences it and refuses it outside a `user` message.
   for (const h of input.history ?? []) {
     const content: LlmContent = h.origin !== undefined ? tainted(h.content, h.origin) : h.content;
+    // An untrusted earlier turn is untrusted input to this run: whatever is written back from it stays so.
+    if (h.origin !== undefined) sawTaintFrom ??= h.origin;
     pushMessage({ role: h.role, content }, [textBytes(content)]);
   }
   if (input.promptOrigin !== undefined) {
@@ -2197,6 +2209,12 @@ function writeBackRequest(w: {
 
 /** Idempotent: a keyed `forget` of the ids, then the append, so a re-run writes nothing twice. */
 async function applyWriteBack(memory: TieredMemory, req: WriteBackRequest): Promise<void> {
+  if (
+    req.forget !== undefined &&
+    !(Array.isArray(req.forget) && req.forget.every((x) => typeof x === "string"))
+  ) {
+    throw new TypeError("agentLoop$ write-back: `forget` must be an array of strings");
+  }
   await memory.forget(req.tier, req.scope, [
     ...new Set([...(req.forget ?? []), ...req.entries.map((e) => e.id)]),
   ]);
