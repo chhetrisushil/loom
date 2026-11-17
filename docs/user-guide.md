@@ -794,6 +794,7 @@ What it guarantees:
 - **Provenance.** A fact is stored tainted, and recalled fenced, when anything the distiller was shown was untrusted: a `promptOrigin` prompt, a tainted `history` turn or tool result, or a tainted existing fact. Through `conversation$` every fact is tainted (the prompt is the end user's words).
 - **Failure.** A distiller that fails (including a denial, quota or rate limit, or unparsable output, `DistillerOutputError`) writes nothing and warns once (`LOOM_AGENT_DISTILL`, naming only the error class); the run still returns its answer. Only cancel, park, a safety stop, the kill switch or divergence end the run.
 - **Refused config.** A target tier with `summarizeAfter`, which includes the default `working` tier, throws `AgentLoopConfigError` before any model call: summarizing would fold facts into an entry the distiller can never supersede.
+- **Scope warning.** With neither `memoryScope` nor `writeBack.scope` the facts land in this execution's own scope, which no later run recalls; the loop warns once per run (`LOOM_AGENT_DISTILL_SCOPE`).
 
 It costs one model call per finished run (journaled; a replay makes none). It pays off for a scope that is recalled many times; for a one-off run, the raw write-back or none at all is cheaper. [Reducing token cost](reducing-token-cost.md) places it beside compaction, the conversation budget and claim-check.
 

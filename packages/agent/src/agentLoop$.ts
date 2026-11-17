@@ -985,6 +985,16 @@ export async function agentLoop$(
         `agentLoop$ writeBack.distill: tier "${tier}" has \`summarizeAfter\`, which folds facts into a summary. Use a tier without it (e.g. \`tiers: { facts: { maxEntries: N } }\`) and set it via \`writeBack.tier\` or \`memoryTier\`.`
       );
     }
+    if (config.writeBack.scope === undefined && config.memoryScope === undefined) {
+      // The scope then defaults to THIS execution's id, which no other run recalls from: the facts are
+      // written and never read (a conversation turn is its own execution, so it hits this too). A
+      // warning, not an error: a host may recall that scope itself.
+      emitLoopWarning(
+        config,
+        "agentLoop$ writeBack.distill has no `memoryScope` (or `writeBack.scope`), so facts go to this execution's own scope, which no later run recalls. Set `memoryScope` to where facts should accumulate (for example the user). ADR 0149.",
+        "LOOM_AGENT_DISTILL_SCOPE"
+      );
+    }
   }
   if (config.writeBack !== undefined && config.writeBack !== false && config.memory === undefined) {
     // A write-back with nowhere to write reads as persistence it isn't.

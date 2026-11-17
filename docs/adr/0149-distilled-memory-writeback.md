@@ -122,3 +122,13 @@ not adopted: the saving depends on the baseline and the workload.
 
 `createDistillerEffect` (D6) lands in PR #796. The un-journaled direct path (`allowDirect`, or `unless` without
 `toolId`) re-runs its write on replay, as R10's always has; that is out of scope here.
+
+## Amendment (2026-11-18) — a distill with no scope warns
+
+Found writing the docs: with neither `memoryScope` nor `writeBack.scope`, the scope defaults to the execution's own
+id, which no later run recalls (a `conversation$` turn outside shared mode is its own execution, so it hits this
+too). The facts are written and never read, and nothing said so. `agentLoop$` now emits one
+`LOOM_AGENT_DISTILL_SCOPE` warning per run through the existing `onWarn` seam when `writeBack.distill` is set without
+either. A warning, not a config error: a host may recall that scope itself. The raw write-back (no `distill`) keeps
+its old behaviour and stays silent. No log or model-request change.
+

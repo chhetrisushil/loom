@@ -52,6 +52,10 @@ interface Opts {
   grants?: string[];
   /** false: the raw R10 write-back (no distill). */
   raw?: boolean;
+  /** Omit `memoryScope` (the scope then defaults to the execution id). */
+  noScope?: boolean;
+  /** `writeBack.scope`, set explicitly. */
+  writeBackScope?: string;
 }
 
 function boot(o: Opts) {
@@ -90,12 +94,16 @@ function boot(o: Opts) {
     modelToolId: "model",
     maxIterations: 4,
     memory: o.mem,
-    memoryScope: SCOPE,
+    ...(o.noScope !== true && { memoryScope: SCOPE }),
     onWarn: (m) => warnings.push(m),
     writeBack:
       o.raw === true
         ? { toolId: "memwrite" }
-        : { toolId: "memwrite", distill: { toolId: "distill", ...o.distill } },
+        : {
+            toolId: "memwrite",
+            ...(o.writeBackScope !== undefined && { scope: o.writeBackScope }),
+            distill: { toolId: "distill", ...o.distill },
+          },
   };
   runtime.registerFlow(flowDef, async (ctx) =>
     agentLoop$(ctx, config, {
@@ -223,6 +231,30 @@ describe("ADR 0149 distilled write-back", () => {
       role: "user",
       content: '<untrusted-input origin="end-user">\nfrom the user\n</untrusted-input>',
     });
+  });
+
+  it("scope: distill with neither memoryScope nor writeBack.scope warns once; either one silences it", async () => {
+    const SCOPE_WARNING = /writeBack\.distill.*no `memoryScope`/;
+    const bare = boot({ mem: memory(), noScope: true, distiller: () => ({ add: ["a fact"] }) });
+    expect((await run(bare, "e1")).status).toBe("completed");
+    expect(bare.warnings.filter((w) => SCOPE_WARNING.test(w))).toHaveLength(1);
+
+    const scoped = boot({ mem: memory(), distiller: () => ({ add: ["a fact"] }) });
+    expect((await run(scoped, "e2")).status).toBe("completed");
+    expect(scoped.warnings.filter((w) => SCOPE_WARNING.test(w))).toEqual([]);
+
+    const wbScoped = boot({
+      mem: memory(),
+      noScope: true,
+      writeBackScope: SCOPE,
+      distiller: () => ({ add: ["a fact"] }),
+    });
+    expect((await run(wbScoped, "e3")).status).toBe("completed");
+    expect(wbScoped.warnings.filter((w) => SCOPE_WARNING.test(w))).toEqual([]);
+
+    const raw = boot({ mem: memory(), noScope: true, raw: true });
+    expect((await run(raw, "e4")).status).toBe("completed");
+    expect(raw.warnings.filter((w) => SCOPE_WARNING.test(w))).toEqual([]);
   });
 
   it("config errors: empty toolId and non-positive limits are refused before any call", async () => {
