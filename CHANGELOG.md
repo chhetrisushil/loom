@@ -7,16 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-18
+
 ### Added
 
-- **ADR 0149 (Proposed): distilled memory write-back ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md); the wiring lands in the next entry).** An opt-in `writeBack.distill` for `agentLoop$` that stores model-extracted facts, consolidated against the facts the scope already holds, instead of the raw prompt and answer, so recall stays about the size of what is known rather than growing by two entries per run.
+- **ADR 0149 (Accepted): distilled memory write-back ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md); the wiring lands in the next entry).** An opt-in `writeBack.distill` for `agentLoop$` that stores model-extracted facts, consolidated against the facts the scope already holds, instead of the raw prompt and answer, so recall stays about the size of what is known rather than growing by two entries per run.
+
 - **`agentLoop$` `writeBack.distill` ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md) D1-D5, D7).** Opt-in: a run writes model-extracted facts (`role: "fact"`, id `fact:<sha256, 32 hex>`) instead of its raw prompt and answer. The distiller effect sees the scope's existing facts (a recorded read), its output is validated (unshown supersede ids dropped, facts cut, deduplicated and capped, one warning), facts are tainted when any input was, and a failing distiller degrades to writing nothing (recorded outcome, error class only). A target tier with `summarizeAfter` is refused at config time. `WriteBackRequest` gains `forget`, which `memoryWriteBackEffect` honours; recall renders a plain fact as `Remembered fact: ...`. New export: `AgentLoopDistill`. `createDistillerEffect` (D6) follows.
+
+- **`createDistillerEffect` and a "Reducing token cost" recipe ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md) D6).** `createDistillerEffect(provider, { instruction?, maxTokens? })` in `@loomwork/agent`, beside `createSummarizerEffect`: a ready-made `{ prompt, answer, existing } -> { add, supersede }` effect that puts the exchange and the existing facts (with ids) in a tainted user message and parses the model's JSON reply, throwing `DistillerOutputError` on anything else. [`docs/reducing-token-cost.md`](docs/reducing-token-cost.md) ties together the opt-ins that bound an agent's token spend and how to measure them.
 
 ### Fixed
 
 - **A tainted `history` turn now taints the raw R10 write-back answer (`agentLoop$`).** `input.history` entries with an `origin` were fenced in the prompt but did not set the run's taint, so the answer written back was stored plain and recalled in assistant position. They now count as untrusted input, like a tainted tool result.
-
-- **`createDistillerEffect` and a "Reducing token cost" recipe ([ADR 0149](docs/adr/0149-distilled-memory-writeback.md) D6).** `createDistillerEffect(provider, { instruction?, maxTokens? })` in `@loomwork/agent`, beside `createSummarizerEffect`: a ready-made `{ prompt, answer, existing } -> { add, supersede }` effect that puts the exchange and the existing facts (with ids) in a tainted user message and parses the model's JSON reply, throwing `DistillerOutputError` on anything else. [`docs/reducing-token-cost.md`](docs/reducing-token-cost.md) ties together the opt-ins that bound an agent's token spend and how to measure them.
 
 ## [0.1.2] - 2026-11-15
 
