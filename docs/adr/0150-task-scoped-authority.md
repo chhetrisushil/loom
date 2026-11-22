@@ -10,7 +10,7 @@
   [ADR 0115](0115-open-vocabularies.md) (custom metered dimensions), [ADR 0117](0117-approvals-bound-to-what-the-approver-saw.md)
   (approvals bound to what the approver saw), [ADR 0144](0144-sandbox-backend-spi.md) (sandbox backends declare what they
   enforce), [ADR 0083](0083-second-consumer-rule.md) (second consumer).
-- Found by: evaluation of the whitepaper *Task-Scoped Authority for Autonomous Agents* (2026-11-23).
+- Found by: evaluation of the whitepaper [*Task-Scoped Authority for Autonomous Agents*](../spec/task-scoped-authority-whitepaper.md) (2026-11-23).
 - Gate: second-consumer claim, see [Second consumers](#second-consumers).
 - Placement verdict: **first-party package `@loomwork/task-authority`**, plus additive opt-in options in
   `@loomwork/agent`, `@loomwork/orchestration` and `@loomwork/verify`. **Kernel change: zero.** Every piece sits
