@@ -91,9 +91,10 @@ export interface TickRuntime {
 }
 
 /**
- * ADR 0150 D6/D12 - after a tick COMPLETED, record what it left unused at the broker (`settleChild`, net of its
- * `lease.<n>` meters), so the schedule's owner can take it once (`broker.takeReturn(tickId, scheduleId)`). A tick that
- * has not completed records nothing (R7). Returns whether it settled. Call it from the host when a tick is done.
+ * ADR 0150 D6/D12 - after a tick COMPLETED, settle it at the broker (`settleChild`, net of its `lease.<n>` meters).
+ * The schedule grant has no fold, so the broker REFUNDS the unused lease to its headroom, once (R25); `takeReturn`
+ * then yields nothing. A tick that has not completed records nothing (R7). Returns whether it settled. Call it
+ * from the host when a tick is done.
  */
 export async function settleScheduledTick(
   runtime: TickRuntime,

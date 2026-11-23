@@ -28,6 +28,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.renew-stale-epoch",
   "broker.renew-born-expired",
   "broker.reservation-never-released",
+  "broker.refund-foldless",
   "broker.identity-fixed",
   "broker.reads-sandbox",
   "broker.signs-current-key",
@@ -68,6 +69,7 @@ const CHECKS: Record<string, Check> = {
   "broker.take-return-once": async (s) => {
     const b = mk(s);
     await b.mint(mintReq("p", 4));
+    await b.claim("p", "exec-p"); // a HELD parent has a fold: the slice-1 take-return rule
     await b.mint(mintReq("c", 4, "p"));
     await b.settleChild("c", { w: 1 });
     must(!Object.keys(await b.takeReturn("c", "other")).length, "a wrong parent took a return");
@@ -79,6 +81,7 @@ const CHECKS: Record<string, Check> = {
   "broker.unstarted-return": async (s) => {
     const b = mk(s);
     await b.mint(mintReq("p", 8));
+    await b.claim("p", "exec-p"); // a HELD parent has a fold (an unheld one is refunded: broker.refund-foldless)
     const none = (o: Record<string, number>) => !Object.keys(o).length;
     await b.reserve("p", "u", { w: 3 });
     await b.reserve("p", "u", { w: 3 }); // idempotent
@@ -196,6 +199,21 @@ const CHECKS: Record<string, Check> = {
     await b.mint(mintReq("c1", 4, "p"));
     await b.revoke("c1", "kit");
     await mustRefuse(b.mint(mintReq("c2", 1, "p")), "a revoked child's reservation was released");
+  },
+  "broker.refund-foldless": async (s) => {
+    const b = mk(s);
+    await b.mint(mintReq("p", 10)); // never claimed: no fold (a schedule grant)
+    await b.mint(mintReq("c1", 10, "p"));
+    await mustRefuse(b.mint(mintReq("c2", 1, "p")), "the parent had no headroom left");
+    await b.settleChild("c1", { w: 1 }); // spent 1 of 10
+    must(
+      !Object.keys(await b.takeReturn("c1", "p")).length,
+      "a fold-less parent's refund was also takeable (double count)"
+    );
+    await b.mint(mintReq("c2", 9, "p")); // the 9 unused went back to the parent's headroom
+    await mustRefuse(b.mint(mintReq("c3", 1, "p")), "the refund exceeded what was unused");
+    await b.settleChild("c1", { w: 1 }); // a repeat must not refund again
+    await mustRefuse(b.mint(mintReq("c4", 1, "p")), "a second settleChild refunded again");
   },
   "broker.identity-fixed": async (s) => {
     const b = mk(s, () => ({}));

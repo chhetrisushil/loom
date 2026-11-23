@@ -83,7 +83,7 @@ A schedule has no human per run, so its root authority is a **schedule grant** a
    Each occurrence runs under its own child grant `<scheduleId>@<occurrence>`; a missing, expired, revoked or exhausted schedule grant skips that occurrence
    (`SchedulePrincipalError`), never an anonymous run. Under `requirePrincipal`, `committed()` receives that principal.
 3. After a completed tick, `settleScheduledTick(runtime, broker, scheduleId, occurrence)` records its unused lease (`broker.takeReturn` takes it once).
-   The reference broker never releases a child's headroom, so the schedule's ceiling is a lifetime budget; renew the schedule grant to extend it.
+   A completed tick's unused lease is REFUNDED to the schedule grant's headroom (a parent no execution holds has no fold; broker contract, ADR 0150 D12), so a ceiling of 100 and 10 per tick runs well past 10 ticks.
 
 ## Child leases
 

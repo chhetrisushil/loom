@@ -80,6 +80,10 @@ export interface GrantBroker extends GrantSource {
    * D6: record, once, what a COMPLETED child left unused (`high-water ceiling - spend[n]`; `spend` is its net
    * `lease.<n> + reserved - returned`). Called by the supervisor only; a revoked or parentless task records
    * nothing (R7), and a second call changes nothing.
+   * REFUND (ADR 0150 D12): when the parent is NOT held by an execution (`holder(parent)` is undefined: a schedule
+   * grant has no fold), the broker also lowers the child's reserved high-water mark by the unused amount, so the
+   * parent's headroom is restored exactly once and `takeReturn` then yields nothing. A HELD parent keeps the
+   * slice-1 rule: the amount is takeable once into its fold's `returned` meter and headroom is not released.
    */
   settleChild(taskId: string, spend: Record<string, number>): Promise<void>;
   /**
@@ -229,12 +233,20 @@ export class InMemoryGrantLedger {
     }
     const r = this.tasks.get(taskId);
     if (!r || r.revoked || r.parent === undefined || r.settled !== undefined) return;
-    r.settled = Object.fromEntries(
+    const unused = Object.fromEntries(
       Object.entries(r.high).map(([n, h]) => [
         n,
         Math.min(h, Math.max(0, h - (Number(spend[n]) || 0))),
       ])
     );
+    if (this.claims.has(r.parent)) r.settled = unused;
+    else {
+      // REFUND (ADR 0150 D12): a parent no execution holds has NO fold to take a return into (a schedule grant),
+      // so the unused part of the child's reservation goes straight back to the parent's headroom, once
+      // (`settled` guards a second call). `takeReturn` then has nothing to hand out: no double count.
+      for (const [n, u] of Object.entries(unused)) r.high[n] = (r.high[n] ?? 0) - u;
+      r.settled = {};
+    }
   }
   async takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>> {
     const v = this.reservations.get(taskId);

@@ -855,6 +855,7 @@ describe("never-started child (R33)", () => {
       });
     const b = mk();
     await root(b);
+    await b.claim(PARENT, "exec-parent"); // a held parent has a fold (an unheld one is refunded)
     // settleChild first (a started child): a later settleUnstarted adds nothing
     await b.reserve(PARENT, "s", { w: 6 });
     await m(b, "s", 6);
