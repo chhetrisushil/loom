@@ -39,6 +39,7 @@
     "@loomwork/orchestration": "workspace:*",
     "@loomwork/replay-vm": "workspace:*",
     "@loomwork/snapshot-runtime": "workspace:*",
+    "@loomwork/task-authority": "workspace:*",
     "@loomwork/worker-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
