@@ -1,6 +1,6 @@
 # ADR 0150 — Task-scoped authority: grants per task, effect leases that pause when spent, and accounting by lineage, as an opt-in package
 
-- Status: **Accepted** (2026-11-23) — design accepted by the owner; implementation (slice 1, then slice 2) pending
+- Status: **Accepted** (2026-11-23) — design accepted by the owner; amended 2026-11-23 (slice 1 as built, see the end of this ADR); slice 2 pending
 - Date: 2026-11-23
 - Builds on: [ADR 0024](0024-k12-identity-tenancy-delegated-authority.md) (`PrincipalChain`, signed attenuated
   delegation, nested budgets, `ResumeAuthenticator`), [ADR 0111](0111-durable-principal.md) (the principal is
@@ -356,3 +356,118 @@ with side-effecting tools share a namespace has the transfer gap.
 | Asymmetric signatures now | ADR 0024's deferral holds: no consumer spans trust domains yet. | A second, unrelated consumer that delegates across organisations. |
 | A per-task egress host allowlist in this ADR | Needs a sandbox backend SPI change, and no backend implements one today. | A backend that can enforce a per-request allowlist, plus a consumer that needs more than `network: "none"`. |
 | Shipping a production broker (OPA / IAM adapters) in loom | Policy is the organisation's half of the model, and adapters are 3P by the plugin rule (ADR 0043). | A 3P adapter that wants to become 1P under the usual rules. |
+
+## Amendment (2026-11-23) — slice 1 as built
+
+Slice 1 is implemented (`@loomwork/task-authority`, with the kernel seams of [ADR 0151](0151-effect-context-flush.md)). The sections
+above are unchanged; this amendment records where the build departs from or narrows them. Rulings are numbered R1–R29 in the slice's
+ledger; each item cites the decision it changes.
+
+### D2/D3 — one grant backs exactly one execution, and the holder is bound in the ref
+
+- **R16.** One task grant backs exactly one execution. `GrantSource.claim(taskId, executionId)` is an atomic compare-and-set: the first
+  claim wins and is idempotent for the same execution. `fromRef` refuses a `ta1:` ref claimed by another execution, so a fork cannot
+  act as the task. Leases are counted per execution fold (D4); sharing a grant would multiply the ceiling.
+- **R15.** The ref binds the holder: `ta1:<taskId>.<hmac(secret, taskId \n issuedTo)>`. `fromRef` refuses a current grant whose
+  `issuedTo` does not match, so reusing a `taskId` or reissuing it to another agent cannot change who a run acts as.
+- **R17.** A task-governed run cannot `continueAsNew` under the same grant, and a fork of a task-held run is denied in either mode
+  (fail closed, pinned by test). A new generation must be started with a NEW child grant (a D6 mint). The kernel's `fromRef` context
+  carries only the execution id, so a lineage-aware claim would need a kernel hook; perpetual task runs pay one mint per generation.
+
+### D3 — a supervised child no longer keeps both its delegation and its grant (retracted)
+
+- **R13.** The claim "a supervised child keeps both its delegation and its grant" is retracted. A chain that carries a `taskGrant`
+  together with `tenant`, `onBehalfOf` or a `delegation` is REFUSED at start (`toRef` throws, before the append), as is a grant that
+  fails `verify`, holder or expiry checks. `orchestrationPrincipalCodec.toRef` returns `undefined` for any chain with a `taskGrant`.
+  Under task authority a child is narrowed by its own task grant (D6), not a delegation. Failing closed beats a silent drop to base
+  authority; multi-tenant chains are a follow-up (broker-held identity).
+- **R14.** A failed restore answers EVERY `ta1:` ref with an unresolved principal (`{ principalUnresolved }`, never `undefined`),
+  so no other codec or resolver can answer a ref this one owns.
+- **R4.** `verifyTaskGrant` is verify-and-snapshot: it returns a frozen plain copy (strict key allowlist, at most 64 KiB) or
+  `undefined`, and all later code uses only the copy. A boolean over a caller-held object was a time-of-check hole.
+
+### D4 — lease counting needs the ADR 0151 seams, and leases are narrower
+
+- **R19.** Lease-governed effects need `EffectContext.flush()` and `readResources()` ([ADR 0151](0151-effect-context-flush.md) D1/D6). The
+  middleware works on live reads: a synchronous live read, a ceiling check, an emit of the digest and meter, a live re-read asserting
+  that `lease.<n>` advanced (else `LeaseDimensionDroppedError`, not renewable, fail closed), then `await flush()`, then `next()`. It
+  refuses to run when `readResources` is absent (`LeaseDurabilityError`). There is no reservation map. This closes the crash window in
+  which an effect ran and its count was never stored (owner decision: a kernel seam, not a documented gap).
+- **R21.** `strictLeases` defaults to TRUE. Slice 1 refuses, at grant shape, leases that overlap (an effect in two leases) and lease
+  entries naming a resource-qualified effect (`toolId:resource`): the effect context carries no resource.
+- **R22.** The lease middleware must sit INSIDE (after) any retry middleware, and `TaskGrantAuthorizer` is required alongside it.
+  `QUOTA_EXCEEDED`'s `_resources.exceeded` is sticky across a renewal.
+- **R26.** The `lease.*` dimensions are reserved against flow emits: `installTaskAuthority` calls
+  `WorkflowRuntime.reserveEffectDimensions("lease.")` (ADR 0151 D7), and a flow-scope `RESOURCE_METERED` whose custom dimension starts
+  with a reserved prefix is refused; effect and middleware scope is unchanged. The kernel names no 1P vocabulary.
+- **Trust line.** Grants bound the model and flow code. App-registered effects and middleware are trusted: an effect can still emit
+  any dimension and a hostile middleware can bypass the lease.
+
+### D5 — renewal
+
+- **R23.** `withRenewal` records EVERY attempt's outcome as a normal decision (`{ ok: true }` or `{ request }`), with no sentinel
+  throw. On `{ ok: true }` it calls `fn(attemptId)` again outside the decider, so the value is read back from completed frames. `fn`
+  MUST be replay-pure (only durable `ctx` calls) and MUST NOT park; steps keyed by the attempt id re-run after a renewal, and the id
+  must be unique per call site per execution.
+- **R24.** The expired-grant reason has one exported formatter/parser pair (`formatExpiredReason` / `parseExpiredReason`).
+  `answerRenewal` overwrites `request.epoch` from `broker.current(taskId)` when available and recomputes the view digest as a tamper
+  check. `withRenewal` treats any verdict other than `granted === true` as denied.
+- **R12/R8.** An expired grant may be renewed (expiry pauses, renewal resumes); `renew` refuses a result whose clamped `exp` is not in
+  the future.
+- **R20.** Revocation is checked against `GrantSource.revoked` with a TTL cache (`revocationCacheMs`, default 1000 ms; revoked is
+  sticky; a non-boolean answer counts as revoked). A revocation therefore bites within the TTL, not instantly.
+- **R27.** Agent park (`authority.onExhausted: "park"`) keeps the feedback log. The first attempt's decision id is `${id}:outcome`
+  in both modes; a renewable error returns `{ request }`, mirrored at `renewalDecisionId(id, 0)`. A cause-chain walk stops at the first
+  terminal layer, so a safety, kill-switch or divergence error never parks.
+
+### D6 — the lineage bound is structural
+
+- **R25.** The bound holds whatever the flow code passes. (1) A reservation is a recorded step keyed by the child id, and the
+  minter checks the parent's live fold: it refuses unless `lease.<n>.reserved` is at least the sum of the children's high-water
+  ceilings including the new one. (2) Returns go through the broker: the supervisor records the child's unused amount with
+  `settleChild(childTaskId, unused)` (once, completed children only, clamped to `[0, high]`) and the return effect takes only the
+  child id and does a one-time `takeReturn`. (3) A child's renewal never raises its ceiling above the one minted; a top-up is a new
+  parent reservation. (4) `holder(taskId)` is a side-effect-free read; the minter requires `holder(parentTask) === parentExecutionId`
+  and never claims. `holder()` replaces the earlier `claim`-based check.
+- **R7/R11.** The broker never releases a child's reservation (revocation included): it promises only that the sum of every child's
+  high-water ceiling ever minted stays at or below the parent's ceiling. A child may renew down but never frees capacity.
+- **In-doubt outcomes (operator action).** The child-lease effect is not idempotent: a crash inside its step parks the step in doubt
+  and an operator resolves it. For a RESERVE the operator adopts the step with output `{ taskId, lease }`; a wrong value changes the
+  spawn ceiling the minter then checks against the parent's fold, so it cannot exceed what was metered. An in-doubt RETURN is lost,
+  never doubled (the broker's one-time `takeReturn` has already run or not).
+- **Known residual.** A child that never starts loses its reservation: nothing observes the never-started child to settle it.
+
+### D13 — the `GrantSource` SPI grew
+
+`GrantSource` is `current`, `revoked?`, **`claim`** (atomic CAS, R16) and **`holder`** (R25). `GrantBroker` adds `mint`, `renew`,
+`revoke`, **`settleChild`** and **`takeReturn`**. `RenewalVerdict` is a discriminated union (R9). A lease name matches
+`/^[a-z][a-z0-9_-]{0,48}$/` (R5, so `a` and `a.reserved` cannot collide). `InMemoryGrantBroker` is the reference; a durable broker
+passes the conformance kit.
+
+### D14 — the replay property and the kit
+
+- **R29.** The replay property is "replay adds no broker calls per replayed effect". Principal restoration on each execute is by
+  design (D3: the codec restores the grant from the broker), so zero calls overall is impossible; "no broker calls per replayed
+  effect" is what the kit asserts.
+- Covered laundering (which needs the D7 provenance taint, slice 2) and A2A laundering are reported by the kit as **skipped**, not
+  as passed.
+- The kit lives at `@loomwork/task-authority/conformance` (`checkTaskAuthorityConformance`: broker contract, runtime wiring,
+  laundering, forged meters, revocation, carve, pause-and-renew, replay), each check with a fail-proof.
+
+### Pull requests
+
+Draft stack, in order: #808 principal codec and `installTaskAuthority` (D3), #809 `EffectContext.flush()` (ADR 0151, Proposed), #810
+`taskLeaseMiddleware` (D3/D4/D5), #811 `withRenewal` (D5), #812 orchestration child-lease spawn hook (D6), #813 child lease
+reservation (D6), #814 `agentLoop$` park on exhausted authority (D5), #815 conformance kit, #816 runtime-level conformance checks,
+#817 carve, pause-renew and replay checks, #818 slice-1 minors wave. Earlier: #802 (this ADR accepted), #803 and #804 (grant shape
+and signing).
+
+### Follow-ups
+
+- Key rotation for parked runs (a run parked across a secret rotation cannot restore its grant).
+- Multi-tenant chains: a `taskGrant` together with `tenant`, `onBehalfOf` or a delegation (R13).
+- A never-started child's reservation (D6 residual).
+- Branding the child-lease tool id (`CHILD_LEASE_TOOL`), so an app effect cannot shadow it.
+- Cancelling the other group members when a mint is refused.
+- A pre-existing kernel issue: `ctx.resources` exposes the fold-owned object, not a copy (the `readResources()` seam returns a copy).
+- Slice 2: provenance taint across lineages (D7) and covered laundering.

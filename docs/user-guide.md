@@ -1112,6 +1112,64 @@ conversation unless the closer is the owner, the service principal or a `manageP
 manager, send a turn over `maxTurnChars` (the body rejects it), or send a malformed body
 (`InvalidEnvelopeError`, thrown by the signer). Keep the key server-side.
 
+### Task-scoped authority: grants, leases and renewal (`@loomwork/task-authority`, [ADR 0150](adr/0150-task-scoped-authority.md))
+
+A valid credential does not say whose work is being done. A task grant binds authority to the task: it names the effects an execution may run and gives side-effect **leases** (a ceiling per group of effects). When a lease is spent, or the grant expires or is revoked, the run **parks** on a renewal gate instead of failing, and a broker decides whether to renew. One grant backs exactly one execution, and the holder is bound into the principal. Needs the ADR 0151 effect-context seams (`flush`, `readResources`).
+
+```ts
+import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import {
+  InMemoryGrantBroker,
+  RENEWAL_GATE,
+  TaskGrantAuthorizer,
+  answerRenewal,
+  installTaskAuthority,
+  renewalResumeSchema,
+  taskLeaseMiddleware,
+  withRenewal,
+} from "@loomwork/task-authority";
+
+const secret = process.env.TASK_AUTHORITY_SECRET!;   // signs grants and binds the holder; one secret per deployment
+
+// 1. The broker mints, renews and revokes. Its policy decides what a renewal grants (false = deny).
+const broker = new InMemoryGrantBroker({ secret, policy: () => ({ leases: { writes: 10 } }) });
+const grant = await broker.mint({
+  taskId: "t1",
+  issuedTo: "agent-a",
+  effects: ["write"],                                              // the only effect this run may call
+  leases: { writes: { ceiling: 5, effects: ["write"] } },          // at most 5 attempts, then park
+  ttlMs: 60 * 60_000,
+});
+
+// 2. Lease middleware counts each leased effect on live fold state, durably, before it runs.
+//    The authorizer denies anything outside the grant; it is required alongside the middleware.
+const effects = new EffectRuntime(
+  [taskLeaseMiddleware({ secret, source: broker })],
+  { authorizer: new TaskGrantAuthorizer({ secret, base: { authorize: () => ({ allowed: true }) } }) },
+);
+effects.register("write", new ToolEffect(async () => ({ ok: true })));
+
+// 3. Install the principal codec, and register the flow with a typed schema for the renewal gate.
+const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
+installTaskAuthority(runtime, { source: broker, secret });         // also reserves the `lease.` meter prefix
+// definition: flow$({ ..., resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema } })
+runtime.registerFlow(definition, async (ctx) => {
+  // fn must be replay-pure (durable ctx calls only) and must not park; the id is unique per call site
+  return withRenewal(ctx, "write-1", (attemptId) => ctx.run(writeTask(attemptId), {}));
+});
+
+// 4. Start AS the task. The principal carries the grant; a chain with tenant / onBehalfOf / delegation is refused.
+const handle = await runtime.start(flow, {}, { executionId: "e1", principal: { actor: grant.issuedTo, taskGrant: grant } });
+
+// 5. When a lease is spent the run parks on RENEWAL_GATE. Answer it through the broker (resume needs a resumeAuthenticator).
+await handle.waitForSuspend();
+const resumed = await answerRenewal(runtime, broker, "e1");
+await resumed.waitForCompletion();
+```
+
+An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }`. Child leases (`childLeaseEffect`, `childGrantMinter`) and the `@loomwork/task-authority/conformance` kit are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what slice 1 refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
+
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 
 For blueprint/interpreter-style flows whose tool calls are **data** (a saved manifest names
