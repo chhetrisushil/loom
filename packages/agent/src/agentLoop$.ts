@@ -49,7 +49,7 @@ import { type AgentLoopDistill, distillWriteBack, validateDistill } from "./dist
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { type SkillActivationConfig, SkillActivationSession } from "./skillActivation";
-import { isTerminalToolError, markToolRaised } from "./toolFailure";
+import { isTerminalToolError, markToolRaised, taskGrantDenialText } from "./toolFailure";
 import { inlineBytesIn, toolResultPart, toolResultPartOrigin } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import { type ToolSearchConfig, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
@@ -315,7 +315,23 @@ export interface AgentLoopConfig {
    * `AuthorityRenewalDeniedError`. Needs `toolErrors: "feedback"`; `kind: "human"` tools are not renewed.
    * Under `parallelTools` the parks happen after the scope settles, one call at a time in call order.
    */
-  authority?: { onExhausted?: "fail" | "park"; gate?: string; maxRenewals?: number };
+  authority?: {
+    onExhausted?: "fail" | "park";
+    gate?: string;
+    maxRenewals?: number;
+    /**
+     * ADR 0150 D11 - what the model sees when a task-grant capability is refused (a `CapabilityDeniedError`
+     * whose reason starts `task-grant:`). `"fail"` (default) is today's behaviour: the denial is terminal and
+     * never reaches the model. `"opaque"` feeds back `{ error: "not authorized for this task" }` as an
+     * `isError` result and the run continues; `"reason"` adds `(task-grant:<label>: <fixed sentence>)` for the
+     * refusal's label. Never shown: grant contents, task or lineage ids, the foreign set of a cross-lineage
+     * park, the base authorizer's text. Applies only to `task-grant:*` denials (a base-authorizer denial and
+     * every non-denial terminal error stay terminal) and never to a RENEWABLE error (a lease exhaustion, an
+     * expired grant, a cross-lineage park), which parks or fails as `onExhausted` says. The result is a recorded
+     * decision, so a replay feeds the same text and authorizes nothing again. Needs `toolErrors: "feedback"`.
+     */
+    onDenied?: "fail" | "opaque" | "reason";
+  };
   /**
    * R10 — run the tool calls of ONE model turn concurrently through `ctx.parallel`. `false`
    * (default) keeps the strictly sequential gate, run, gate, run order (and the exact frame
@@ -1054,6 +1070,15 @@ export async function agentLoop$(
     config.authority.onExhausted !== "fail"
   )
     throw new AgentLoopConfigError('agentLoop$: authority.onExhausted must be "fail" or "park"');
+  const onDenied = config.authority?.onDenied ?? "fail";
+  if (onDenied !== "fail" && onDenied !== "opaque" && onDenied !== "reason")
+    throw new AgentLoopConfigError(
+      'agentLoop$: authority.onDenied must be "fail", "opaque" or "reason"'
+    );
+  if (onDenied !== "fail" && config.toolErrors === "fail")
+    throw new AgentLoopConfigError(
+      'agentLoop$: authority.onDenied "opaque" / "reason" needs toolErrors "feedback" (a denial is not recorded under "fail", so it could not replay)'
+    );
   if (parks && config.toolErrors === "fail")
     throw new AgentLoopConfigError(
       'agentLoop$: authority.onExhausted "park" needs toolErrors "feedback" (a failing tool is not recorded under "fail", so a renewal could not replay)'
@@ -1605,6 +1630,11 @@ export async function agentLoop$(
                 if (n >= maxRenewals)
                   throw new AuthorityRenewalDeniedError(`more than ${maxRenewals} renewals`);
                 return { request: renewalRequestOf(err, n) };
+              }
+              // ADR 0150 D11: an opted-in task-grant denial is recorded feedback (a renewable error was handled above).
+              if (onDenied !== "fail" && !fatalSeen && !isRenewable(err)) {
+                const text = taskGrantDenialText(err, onDenied);
+                if (text !== undefined) return { failed: { error: text } };
               }
               // Authority, safety, park, cancel and divergence are the runtime's: not recorded.
               if (fatal(err)) {

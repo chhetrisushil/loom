@@ -79,6 +79,11 @@ defineConfig({
   scope's existing ones instead of each run's raw prompt and answer, so recall stays about the size of what is
   known; `createDistillerEffect(provider)` is the built-in distiller. Opt-in; the tier must not summarize
   ([ADR 0149](../../docs/adr/0149-distilled-memory-writeback.md)).
+- **Task-grant refusals: what the model sees.** A refused task-grant capability is terminal and never reaches the
+  model (`authority.onDenied: "fail"`, the default). `"opaque"` feeds back `not authorized for this task` as an
+  `isError` result and the run continues; `"reason"` adds `(task-grant:<label>: <fixed sentence>)`. Only the label is
+  shown, never the grant, task or lineage ids, a foreign set or the base authorizer's text. A renewable error still
+  parks or fails ([ADR 0150](../../docs/adr/0150-task-scoped-authority.md) D11).
 - **Token cost**: compaction, claim-check, the lean log and distilled memory side by side in
   [Reducing token cost](../../docs/reducing-token-cost.md).
 - **Large tool menus**: `toolSearch` keeps them out of the prompt

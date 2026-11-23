@@ -251,6 +251,12 @@ describe("isTerminalToolError — real instances", () => {
     expect(isTerminalToolError(new capability.CapabilityInvokeDeniedError("c", "no"))).toBe(true);
   });
 
+  it("a task-grant denial is terminal by default (`authority.onDenied` is the opt-in that feeds it back)", () => {
+    expect(
+      isTerminalToolError(new effectRuntime.CapabilityDeniedError("x", "task-grant:scope: a"))
+    ).toBe(true);
+  });
+
   it("anything declaring retryable === false is terminal; an ordinary error is not", () => {
     expect(isTerminalToolError(Object.assign(new Error("x"), { retryable: false }))).toBe(true);
     expect(isTerminalToolError(Object.assign(new Error("x"), { retryable: true }))).toBe(false);
