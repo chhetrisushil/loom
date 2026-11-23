@@ -8,6 +8,7 @@ import {
 import {
   type GrantKeys,
   type TaskGrant,
+  globCovers,
   sealKeys,
   validateGrantShape,
   verifyTaskGrant,
@@ -26,6 +27,7 @@ export const TASK_GRANT_DENIAL = {
   error: "task-grant:error",
   crossLineage: "task-grant:cross-lineage",
   untracked: "task-grant:untracked",
+  readScope: "task-grant:read-scope",
 } as const;
 
 export interface TaskGrantAuthorizerOptions {
@@ -156,6 +158,17 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
         TASK_GRANT_DENIAL.scope,
         `effect "${req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`}" not in the task grant`
       );
+    }
+    // ADR 0150 D8: a READ effect (`capabilities.read`, set on the request by the runtime) must be covered by the
+    // grant's `reads`; absent `reads` covers nothing. Own-lineage reads are NOT exempt: the minter lists them.
+    if (req.read === true) {
+      const id = req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`;
+      if (!(g.reads ?? []).some((r) => globCovers(r, id))) {
+        return deny(
+          TASK_GRANT_DENIAL.readScope,
+          `read "${clip(id)}" is not covered by the task grant's reads`
+        );
+      }
     }
     // R34: tenant/onBehalfOf must equal the grant's signed ones (absent = absent), as `toRef` requires. The
     // transient path skips the codec, so a caller could otherwise present another tenant to a tenant-scoped base.
