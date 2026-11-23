@@ -64,3 +64,25 @@ export class LeaseDurabilityError extends Error {
     this.name = "LeaseDurabilityError";
   }
 }
+
+/** The grant a lease middleware was handed is not a verifiable task grant (forged or malformed). */
+export class LeaseGrantInvalidError extends Error {
+  readonly renewable = false;
+  readonly retryable = false;
+  constructor() {
+    super("task lease: the task grant failed verification");
+    this.name = "LeaseGrantInvalidError";
+  }
+}
+
+/** The fold's custom-dimension cap is full, so `lease.<n>` could not be counted: the effect does not run. */
+export class LeaseDimensionDroppedError extends Error {
+  readonly renewable = false;
+  readonly retryable = false;
+  constructor(lease: string) {
+    super(
+      `task lease "${lease}": the meter was not folded (the execution's custom-dimension cap is full); the effect does not run`
+    );
+    this.name = "LeaseDimensionDroppedError";
+  }
+}
