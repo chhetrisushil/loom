@@ -319,3 +319,50 @@ export function classifyModelCallError(err: unknown): "terminal" | "provider" | 
   }
   return "other";
 }
+
+/** ADR 0150 D11: what the model reads for a refused task-grant capability. The label alone, never the detail. */
+const DENIAL_TEXT: Readonly<Record<string, string>> = {
+  blocked: "the principal is blocked",
+  shape: "the task grant is malformed",
+  signature: "the task grant signature is invalid",
+  expired: "the task grant expired",
+  holder: "the task grant belongs to another actor",
+  identity: "the identity differs from the task grant",
+  scope: "the effect is outside the task grant",
+  base: "the callee lacks the capability",
+  error: "authorization failed",
+  "cross-lineage": "the step is directed by another lineage",
+  untracked: "the origins of this step are not tracked",
+  "read-scope": "the read is outside the task grant's reads",
+  sandbox: "the sandbox does not meet the task grant",
+};
+const LABEL = /^task-grant:([a-z-]+)(?::|$)/;
+export const OPAQUE_DENIAL = "not authorized for this task";
+
+/**
+ * ADR 0150 D11 (`agentLoop$` `authority.onDenied`): the text the model reads for a TERMINAL task-grant
+ * denial, or `undefined` when the error is not one (it then stays terminal). Only a `CapabilityDeniedError`
+ * whose reason starts `task-grant:` counts, found on the cause chain; a terminal layer (kill switch, park,
+ * safety) met first wins and nothing is converted. `"opaque"` is {@link OPAQUE_DENIAL}. `"reason"` adds the
+ * LABEL and a fixed per-label sentence: the reason's detail (task ids, the actor a grant was issued to, a
+ * foreign lineage set, the base authorizer's own text) is never copied, so a new detail cannot leak.
+ */
+export function taskGrantDenialText(err: unknown, mode: "opaque" | "reason"): string | undefined {
+  let e: unknown = err;
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth++) {
+    if (typeof e !== "object" || e === null) return undefined;
+    const o = e as { reason?: unknown };
+    if (e instanceof CapabilityDeniedError && typeof o.reason === "string") {
+      const m = LABEL.exec(o.reason);
+      if (m === null) return undefined;
+      if (mode === "opaque") return OPAQUE_DENIAL;
+      const label = m[1] as string;
+      return label in DENIAL_TEXT
+        ? `${OPAQUE_DENIAL} (task-grant:${label}: ${DENIAL_TEXT[label]})`
+        : `${OPAQUE_DENIAL} (task-grant:denied)`;
+    }
+    if (isTerminalLayer(e)) return undefined;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
