@@ -81,10 +81,14 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     rec.spent = req.spent;
     let verdict: ReturnType<RenewalPolicy>;
     try {
-      verdict = this.policy(req, { renewals: rec.digests.length - 1, spentSoFar: rec.spent });
+      verdict = this.policy(req, {
+        renewals: rec.digests.length - 1,
+        spentSoFar: { ...rec.spent },
+      });
     } catch {
       return deny("policy threw");
     }
+    if (rec.revoked) return deny("task revoked during renewal"); // a policy may re-enter revoke()
     if (verdict === false) return deny("policy denied the renewal");
     if (
       typeof verdict !== "object" ||
@@ -100,6 +104,7 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     const parent = rec.parent ? this.tasks.get(rec.parent) : undefined;
     for (const [name, ceiling] of Object.entries(want)) {
       const lease = leases[name];
+      if (typeof ceiling !== "number") return deny(`lease ${name} ceiling must be a number`);
       if (!lease || !Object.hasOwn(leases, name))
         return deny(`policy named a lease the grant lacks: ${name}`);
       if (ceiling < this.reserved(rec, name))
@@ -111,7 +116,9 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     let next: TaskGrant;
     try {
       const { sig: _sig, ...body } = cur;
-      const exp = Math.min(this.now() + rec.ttlMs, parent?.grant.exp ?? Number.POSITIVE_INFINITY);
+      const now = this.now();
+      const exp = Math.min(now + rec.ttlMs, parent?.grant.exp ?? Number.POSITIVE_INFINITY);
+      if (parent && exp <= now) return deny("parent has expired"); // a root may still renew when expired (D5)
       next = signTaskGrant(this.secret, { ...body, leases, exp, epoch: cur.epoch + 1 });
     } catch (e) {
       return deny(e instanceof Error ? e.message : "invalid renewal");
@@ -119,6 +126,8 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     const digest = taskGrantDigest(next);
     rec.grant = next;
     rec.digests.push(digest);
+    for (const [n, l] of Object.entries(leases))
+      rec.high[n] = Math.max(rec.high[n] ?? 0, l.ceiling);
     return { granted: true, epoch: next.epoch, digest };
   }
 }
