@@ -66,6 +66,7 @@ function boot(
     useFlush: boolean;
     order?: string[];
     hang?: boolean;
+    step?: typeof stepA;
     fireAndForget?: boolean;
     /** Runs inside the effect body, before it returns. */
     onEffect?: () => Promise<void>;
@@ -102,12 +103,13 @@ function boot(
     effectRuntime: effects,
     onWarn: () => {},
   });
+  const stepX = opts.step ?? stepA;
   const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
     if (opts.fireAndForget === true) {
-      void ctx.run(stepA, {}).catch(() => {});
+      void ctx.run(stepX, {}).catch(() => {});
       return { ok: true };
     }
-    return ctx.run(stepA, {});
+    return ctx.run(stepX, {});
   };
   const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
     _tag: "FlowDefinition",
@@ -116,7 +118,7 @@ function boot(
     version: "1.0.0",
     inputSchema: io.inputSchema,
     outputSchema: io.outputSchema,
-    steps: [stepA],
+    steps: [stepX],
   };
   runtime.registerFlow(definition, runner);
   return { runtime, flow: { definition, runner }, ran, flushErrors };
@@ -219,4 +221,46 @@ describe("ADR 0151: EffectContext.flush()", () => {
     await recoverAbandoned(b.runtime, { source: durable, isAbandoned: () => true });
     expect(await types(durable, "fl-e")).toContain("RESOURCE_METERED");
   });
+
+  it("(m2) a step whose deadline fired while flush() awaited never dispatches the effect", async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const held = meterStore(durable, order, "hold");
+    const timed = step$({ id: "a", name: "A", toolId: "tool-a", timeoutMs: 100, ...io });
+    const a = boot(held.store, { useFlush: true, order, step: timed });
+    const h = await a.runtime.start(a.flow, {}, { executionId: "fl-m2" });
+    await until(() => order.includes("append:RESOURCE_METERED"), "the held meter append");
+    // timing-bound: the step deadline is a 100 ms timer, so a wait is inherent; 600 ms is a wide
+    // margin over it. The run cannot settle while the append is held (completion drains the journal).
+    await new Promise((r) => setTimeout(r, 600));
+    held.release();
+    const err = await h.waitForCompletion().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect((err as Error).name).toBe("StepTimeoutError");
+    await until(() => a.flushErrors.length === 1, "flush() to settle after release");
+    expect((a.flushErrors[0] as Error).name).toBe("StepTimeoutError");
+    expect(a.ran).toEqual([]);
+    expect(order).not.toContain("effect:a");
+  });
+
+  it("(m3) cancelling the run while the meter append is held settles promptly and never runs the effect", async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const held = meterStore(durable, order, "hold");
+    const a = boot(held.store, { useFlush: true, order });
+    const h = await a.runtime.start(a.flow, {}, { executionId: "fl-m3" });
+    await until(() => order.includes("append:RESOURCE_METERED"), "the held meter append");
+    await a.runtime.cancel("fl-m3");
+    held.release();
+    // Without prompt settlement the handle would stay live for parkDrainMs = 30 s; until() allows 5 s.
+    await until(() => a.runtime.liveHandle("fl-m3") === undefined, "the live handle to release");
+    await h.waitForCompletion().catch(() => undefined);
+    const log = await types(durable, "fl-m3");
+    expect(log).toContain("EXECUTION_CANCELLED");
+    expect(log).toContain("STEP_CANCELLED");
+    expect(a.ran).toEqual([]);
+    expect(order).not.toContain("effect:a");
+  }, 15_000);
 });
