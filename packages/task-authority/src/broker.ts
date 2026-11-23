@@ -114,6 +114,8 @@ export interface Rec {
   children: Set<string>;
   /** Per lease, the highest ceiling ever granted to this task: its reservation against the parent (R11). */
   high: Record<string, number>;
+  /** R37: per lease, the epoch-0 (minted) ceiling. Never changes; the default renewal tranche. */
+  minted: Record<string, number>;
   spent: Record<string, number>;
   justifications: TaintedValue<string>[];
   revoked?: string;
@@ -325,6 +327,7 @@ export class InMemoryGrantLedger {
       parent: parent?.grant.taskId,
       children: new Set(),
       high: Object.fromEntries(Object.entries(grant.leases).map(([n, l]) => [n, l.ceiling])),
+      minted: Object.fromEntries(Object.entries(grant.leases).map(([n, l]) => [n, l.ceiling])),
       spent: {},
       justifications: [],
     });

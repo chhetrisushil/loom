@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`@loomwork/task-authority`: the reference broker's default renewal policy now tops up exhausted leases ([ADR 0150](docs/adr/0150-task-scoped-authority.md), R37).** `InMemoryGrantBroker`'s default policy renewed with the SAME lease ceilings, changing only the epoch and expiry. Lease spend is cumulative in the execution's fold, so renewing an EXHAUSTED lease changed nothing and the run parked again at once: renewal worked only with a custom policy (an expired grant was unaffected). The default now raises each lease the request reports exhausted (`spent[name] >= ceiling`) by its minted (epoch-0) ceiling, one tranche per renewal, still capped at 8 renewals; a lease that is not exhausted keeps its ceiling. A child's exhausted lease is denied with `child lease <n> exhausted: needs a new parent reservation` (a child stays capped at its minted ceiling). `spent` is caller-reported, so a dishonest reporter gets at most 8 extra tranches; production brokers bring their own policy. Impact: `withRenewal` / `agentLoop$({ authority })` over the reference broker with no custom policy now completes after `answerRenewal`. Shipped in 0.1.5; fixed in 0.1.6.
+
 ## [0.1.5] - 2026-11-23
 
 ### Fixed

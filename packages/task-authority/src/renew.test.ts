@@ -276,3 +276,43 @@ describe("InMemoryGrantBroker renew", () => {
     expect(!v.granted && v.reason).toMatch(/must be a number/);
   });
 });
+
+describe("default renewal policy (R37)", () => {
+  const lease2 = () => root({ leases: { w: { ceiling: 2, effects: ["db.write"] } } });
+  const ceilingOf = async (b: InMemoryGrantBroker, id = "root") =>
+    (await b.current(id))?.leases.w?.ceiling;
+  it("tops an exhausted root lease up by its minted ceiling, one tranche per renewal", async () => {
+    const b = mk();
+    await b.mint(lease2());
+    expect(granted(await b.renew(renewal(0, { spent: { w: 2 } })))).toBe(true);
+    expect(await ceilingOf(b)).toBe(4);
+    expect(granted(await b.renew(renewal(1, { spent: { w: 4 } })))).toBe(true);
+    expect(await ceilingOf(b)).toBe(6);
+  });
+  it("keeps the ceiling of a lease that is expired but not exhausted", async () => {
+    const clock = { t: NOW };
+    const b = mk(undefined, clock);
+    await b.mint(lease2());
+    clock.t = NOW + 5000;
+    expect(granted(await b.renew(renewal(0, { spent: { w: 1 } })))).toBe(true);
+    expect(await ceilingOf(b)).toBe(2);
+  });
+  it("denies the renewal after 8", async () => {
+    const b = mk();
+    await b.mint(lease2());
+    for (let i = 0; i < 8; i++)
+      expect(granted(await b.renew(renewal(i, { spent: { w: 99 } })))).toBe(true);
+    const v = await b.renew(renewal(8, { spent: { w: 99 } }));
+    expect(!v.granted && v.reason).toMatch(/policy denied/);
+    expect(await ceilingOf(b)).toBe(18);
+  });
+  it("denies a child's exhausted lease cleanly (capped at minted), but renews a non-exhausted one", async () => {
+    const b = mk();
+    await b.mint(root());
+    await b.mint(child("c1", 4));
+    const v = await b.renew(renewal(0, { taskId: "c1", spent: { w: 4 } }));
+    expect(!v.granted && v.reason).toBe("child lease w exhausted: needs a new parent reservation");
+    expect(granted(await b.renew(renewal(0, { taskId: "c1", spent: { w: 1 } })))).toBe(true);
+    expect(await ceilingOf(b, "c1")).toBe(4);
+  });
+});
