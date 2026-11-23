@@ -9,10 +9,16 @@ import {
   LeaseGrantInvalidError,
   LeaseUnmappedError,
 } from "./errors";
-import { type TaskGrant, taskGrantDigest, verifyTaskGrant } from "./grant";
+import {
+  type GrantKeys,
+  type TaskGrant,
+  sealKeys,
+  taskGrantDigest,
+  verifyTaskGrant,
+} from "./grant";
 
 export interface TaskLeaseOptions {
-  secret: string;
+  secret: GrantKeys;
   /**
    * Revocation source. WITHOUT it revocation is NOT checked at all: a revoked grant keeps running
    * until it expires or its lease is exhausted. Pass the broker (or any `GrantSource` with `revoked`).
@@ -58,6 +64,7 @@ const addCapped = (set: Set<string>, key: string): void => {
  * resource-qualified or overlapping is refused at shape validation.
  */
 export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
+  const secret = sealKeys(opts.secret);
   const timeoutMs = opts.revocationTimeoutMs ?? 5000;
   const cacheMs = opts.revocationCacheMs ?? 1000;
   const now = opts.now ?? Date.now;
@@ -112,7 +119,7 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
   return async (ctx: EffectContext, _input, next) => {
     const claimed = ctx.principal?.taskGrant as TaskGrant | undefined;
     if (claimed === undefined) return next();
-    const grant = verifyTaskGrant(opts.secret, claimed);
+    const grant = verifyTaskGrant(secret, claimed);
     if (grant === undefined) throw new LeaseGrantInvalidError();
     const toolId = ctx.toolId ?? "";
     const digest = taskGrantDigest(grant);

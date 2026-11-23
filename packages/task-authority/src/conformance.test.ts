@@ -6,7 +6,7 @@ import {
   type ConformanceSubject,
   checkTaskAuthorityConformance,
 } from "./conformance";
-import { signTaskGrant } from "./grant";
+import { keyRing, signTaskGrant } from "./grant";
 import { InMemoryGrantBroker } from "./renew";
 
 type Opts = ConstructorParameters<typeof InMemoryGrantBroker>[0];
@@ -74,6 +74,17 @@ class ChildMayNameTenant extends InMemoryGrantBroker {
     return rec.grant;
   }
 }
+class RenewsWithPreviousKey extends InMemoryGrantBroker {
+  override async renew(r: RenewalRequest) {
+    const v = await super.renew(r);
+    const rec = this.tasks.get(r.taskId);
+    if (rec) {
+      const { sig: _s, ...body } = rec.grant;
+      rec.grant = signTaskGrant(keyRing(this.secret).verify.at(-1) as string, body);
+    }
+    return v;
+  }
+}
 class NeverRevokes extends InMemoryGrantBroker {
   override async revoked(): Promise<boolean> {
     return false;
@@ -131,6 +142,12 @@ describe("checkTaskAuthorityConformance", () => {
     ])
       expect(ids).toContain(d14);
   });
+
+  it("fails broker.signs-current-key for a broker that renews with a previous key (R31)", async () => {
+    const r = await checkTaskAuthorityConformance(broken(RenewsWithPreviousKey));
+    expect(find(r, "broker.signs-current-key")?.status).toBe("failed");
+    expect(find(r, "broker.signs-current-key")?.message).toMatch(/not signed with the current key/);
+  }, 30_000);
 
   it("fails carve.total-spend for a broker that ignores parentReserved", async () => {
     const r = await checkTaskAuthorityConformance(broken(IgnoresParentReserved));

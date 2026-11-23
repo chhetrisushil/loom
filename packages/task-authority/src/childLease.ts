@@ -6,7 +6,7 @@ import {
   LeaseExhaustedError,
   LeaseGrantInvalidError,
 } from "./errors";
-import { type TaskGrant, verifyTaskGrant } from "./grant";
+import { type GrantKeys, type TaskGrant, sealKeys, verifyTaskGrant } from "./grant";
 
 /**
  * ADR 0150 D6. The bookkeeping effect behind `reserveChildLease`: it meters `lease.<n>.reserved` /
@@ -34,12 +34,13 @@ const read = (ctx: EffectContext, d: string): number => ctx.readResources?.().cu
  * (this effect, the lease middleware) are trusted.
  */
 export function childLeaseEffect(o: {
-  secret: string;
+  secret: GrantKeys;
   broker: Pick<GrantBroker, "takeReturn">;
 }): ToolEffect<Op, Out> {
+  const secret = sealKeys(o.secret);
   return new ToolEffect<Op, Out>(
     async (input, ctx) => {
-      const grant = verifyTaskGrant(o.secret, ctx.principal?.taskGrant as TaskGrant);
+      const grant = verifyTaskGrant(secret, ctx.principal?.taskGrant as TaskGrant);
       if (grant === undefined) throw new LeaseGrantInvalidError();
       if (ctx.readResources === undefined || ctx.flush === undefined)
         throw new LeaseDurabilityError(CHILD_LEASE_TOOL);

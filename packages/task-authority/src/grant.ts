@@ -174,20 +174,44 @@ function canonicalBody(g: UnsignedTaskGrant): string {
     taskId: g.taskId,
   });
 }
+/** One secret, or a rotation ring: sign/MAC with `current`, verify against `current` then `previous`. */
+export type GrantKeys = string | { current: string; previous?: readonly string[] };
+const MAX_PREVIOUS_KEYS = 8;
+
+/**
+ * Validates a {@link GrantKeys} and splits it: `sign` is the current key, `verify` is every key,
+ * current first. Throws on a non-string or empty key, more than 8 previous keys, or `current` listed
+ * in `previous`.
+ */
+export function keyRing(keys: GrantKeys): { sign: string; verify: readonly string[] } {
+  const ring = typeof keys === "string" ? { current: keys } : keys;
+  const cur = (ring as { current?: unknown } | null)?.current;
+  if (typeof cur !== "string" || cur.length === 0) fail("secret must be a non-empty string");
+  const prev = (ring as { previous?: readonly unknown[] }).previous ?? [];
+  if (!Array.isArray(prev) || prev.length > MAX_PREVIOUS_KEYS)
+    fail(`at most ${MAX_PREVIOUS_KEYS} previous keys`);
+  for (const k of prev)
+    if (typeof k !== "string" || k.length === 0 || k === cur)
+      fail("previous keys must be non-empty and differ from current");
+  return { sign: cur as string, verify: [cur as string, ...(prev as string[])] };
+}
+
+/** Validate and COPY a key ring (a later mutation of the caller's object cannot change it). */
+export function sealKeys(keys: GrantKeys): GrantKeys {
+  const r = keyRing(keys);
+  return Object.freeze({ current: r.sign, previous: Object.freeze(r.verify.slice(1)) });
+}
+
 const mac = (secret: string, g: UnsignedTaskGrant): string =>
   createHmac("sha256", secret)
     .update(VERSION_PREFIX + canonicalBody(g))
     .digest("hex");
 
-function needSecret(secret: unknown): asserts secret is string {
-  if (typeof secret !== "string" || secret.length === 0) fail("secret must be a non-empty string");
-}
-
 /** Mint a grant: validates the shape, then signs EVERY field with HMAC-SHA256. */
-export function signTaskGrant(secret: string, g: UnsignedTaskGrant): TaskGrant {
-  needSecret(secret);
+export function signTaskGrant(keys: GrantKeys, g: UnsignedTaskGrant): TaskGrant {
+  const { sign } = keyRing(keys);
   const snap = snapshot(g, false);
-  return { ...snap, sig: mac(secret, snap) } as TaskGrant;
+  return { ...snap, sig: mac(sign, snap) } as TaskGrant;
 }
 
 // Detached plain-data copy (getters, toJSON, custom iterators, non-enumerables are resolved ONCE
@@ -217,15 +241,18 @@ function deepFreeze<T>(v: T): T {
  * Constant-time verification. Returns a deep-frozen SNAPSHOT of exactly what was signed, or
  * `undefined` (never throws). Use the returned copy, never the input, for every later read.
  */
-export function verifyTaskGrant(secret: string, g: TaskGrant): TaskGrant | undefined {
+export function verifyTaskGrant(keys: GrantKeys, g: TaskGrant): TaskGrant | undefined {
   try {
-    needSecret(secret);
+    const { verify } = keyRing(keys);
     const snap = snapshot(g, true);
     const sig = snap.sig;
     if (typeof sig !== "string" || !/^[0-9a-f]{64}$/.test(sig)) return undefined;
     const { sig: _s, ...body } = snap;
-    if (!timingSafeEqual(Buffer.from(mac(secret, body), "hex"), Buffer.from(sig, "hex")))
-      return undefined;
+    // Every key is compared (no early exit), so timing does not reveal WHICH key matched.
+    let ok = false;
+    for (const k of verify)
+      ok = timingSafeEqual(Buffer.from(mac(k, body), "hex"), Buffer.from(sig, "hex")) || ok;
+    if (!ok) return undefined;
     return deepFreeze(snap as TaskGrant);
   } catch {
     return undefined;

@@ -1,10 +1,11 @@
 import type { GrantBroker, MintRequest, RenewalRequest } from "./broker";
 import { CHILD_LEASE_TOOL } from "./childLease";
+import type { GrantKeys } from "./grant";
 import type { RenewalPolicy } from "./renew";
 
 /** What the kit needs from you: a broker. Honour `secret` (grant signing), `now` (every clock read) and `policy` (renewals). */
 export interface ConformanceSubject {
-  makeBroker(o: { secret: string; now: () => number; policy?: RenewalPolicy }): GrantBroker;
+  makeBroker(o: { secret: GrantKeys; now: () => number; policy?: RenewalPolicy }): GrantBroker;
 }
 export type CheckStatus = "passed" | "failed" | "skipped";
 export interface ConformanceResult {
