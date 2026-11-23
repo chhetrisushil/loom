@@ -113,3 +113,20 @@ export class RenewalDeniedError extends Error {
     this.name = "RenewalDeniedError";
   }
 }
+
+/** `directedBy` parked a cross-lineage step (ADR 0150 D7): renewable, so `withRenewal` parks and a granted renewal approves it. */
+export class CrossLineageParkError extends Error {
+  readonly renewable = true;
+  readonly retryable = false;
+  readonly reason = "task-grant:cross-lineage";
+  constructor(
+    readonly taskId: string,
+    readonly epoch: number,
+    readonly lineages: readonly string[]
+  ) {
+    super(
+      `task "${taskId}": a step directed by a foreign lineage (${lineages.slice(0, 3).join(", ").slice(0, 200)}) needs approval (epoch ${epoch})`
+    );
+    this.name = "CrossLineageParkError";
+  }
+}

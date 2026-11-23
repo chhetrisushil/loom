@@ -6,6 +6,7 @@ import {
   type ConformanceSubject,
   checkTaskAuthorityConformance,
 } from "./conformance";
+import { launderingCovered } from "./conformanceRuntime";
 import { keyRing, signTaskGrant } from "./grant";
 import { InMemoryGrantBroker } from "./renew";
 
@@ -143,24 +144,20 @@ class ReleasesOnRevoke extends InMemoryGrantBroker {
   }
 }
 describe("checkTaskAuthorityConformance", () => {
-  it("passes the reference broker; laundering-covered is skipped explicitly, A2A with a reason", async () => {
+  it("passes the reference broker; only the A2A laundering check is skipped, with a reason", async () => {
     const r = await checkTaskAuthorityConformance(reference);
     expect(failed(r)).toEqual([]);
     expect(r.ok).toBe(true);
     expect(r.results.length).toBeGreaterThan(0);
     expect(r.results.map((x) => x.id)).toEqual([...CONFORMANCE_CHECK_IDS]);
-    expect(find(r, "laundering.covered")).toEqual({
-      id: "laundering.covered",
-      status: "skipped",
-      message: "slice 2 (ADR 0150 D7)",
-    });
+    expect(find(r, "laundering.covered")?.status).toBe("passed");
     expect(find(r, "laundering.uncovered.a2a")?.message).toBe(
       "A2A transport not available in-process"
     );
     const skipped = r.results.filter((x) => x.status === "skipped").map((x) => x.id);
-    expect(skipped).toEqual(["laundering.uncovered.a2a", "laundering.covered"]);
+    expect(skipped).toEqual(["laundering.uncovered.a2a"]);
     expect(r.results.filter((x) => x.status === "passed").length).toBe(
-      CONFORMANCE_CHECK_IDS.length - 2
+      CONFORMANCE_CHECK_IDS.length - 1
     );
   }, 30_000);
 
@@ -208,6 +205,13 @@ describe("checkTaskAuthorityConformance", () => {
     const r = await checkTaskAuthorityConformance(stuckCeiling);
     expect(find(r, "pause-renew")?.status).toBe("failed");
     expect(find(r, "pause-renew")?.message).toMatch(/did not resume the run to completion/);
+  }, 30_000);
+
+  // The fail-proof of the covered-laundering check: a stack WITHOUT `directedBy` lets B's covered, A-directed step
+  // run with no attribution, and the check must say so. (Kills: a check that only asserts the effect ran.)
+  it("laundering.covered fails a stack with no directedBy, and passes with it", async () => {
+    await expect(launderingCovered(reference, false)).rejects.toThrow(/ran with no attribution/);
+    await expect(launderingCovered(reference, true)).resolves.toBeUndefined();
   }, 30_000);
 
   it("the guard checks do not depend on the broker: a broken broker cannot fail them", async () => {

@@ -5,6 +5,7 @@ describe("@loomwork/task-authority public surface", () => {
   it("exports the version marker and the grant token API and the authorizer", () => {
     expect(Object.keys(api).sort()).toEqual([
       "CHILD_LEASE_TOOL",
+      "CrossLineageParkError",
       "GrantBrokerError",
       "GrantRevokedError",
       "InMemoryGrantBroker",
@@ -35,6 +36,7 @@ describe("@loomwork/task-authority public surface", () => {
       "answerRenewal",
       "childGrantMinter",
       "childLeaseEffect",
+      "directedBy",
       "globCovers",
       "installTaskAuthority",
       "isChildLeaseEffect",

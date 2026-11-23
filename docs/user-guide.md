@@ -1217,6 +1217,39 @@ await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acm
 const secret = { current: process.env.TA_KEY_2!, previous: [process.env.TA_KEY_1!] };   // later: { current: KEY_2, refOnly: [KEY_1] }
 ```
 
+#### Covered laundering: `directedBy` (ADR 0150 D7)
+
+A grant that covers a step does not say who asked for it. When agent A's content reaches agent B (shared memory, an
+inbox, a child result) and B then calls a leased effect, B's grant may cover the step, so the authorizer is silent.
+`directedBy` closes that: it reads the run's seen origins (`ctx.seenOrigins`, ADR 0152, behind
+`kernel.features.seenOrigins`) and acts when a **foreign lineage** is among them.
+
+```ts
+import { directedBy, lineageOrigin, lineageSend } from "@loomwork/task-authority";
+import { memoryWriteBackEffect } from "@loomwork/agent";
+
+// Writers tag what they write with their VERIFIED lineage (`lineage:<rootId>`, from the signed grant only):
+const lineage = lineageOrigin(secret);
+effects.register("memory-write", memoryWriteBackEffect(memory, { originOf: (ctx) => lineage(ctx.principal) }));
+const send = lineageSend(runtime, secret); // runtime.send with the payload tagged as the sender's lineage
+
+// The reader's policy, placed AFTER taskLeaseMiddleware:
+const policy = directedBy({ secret, action: "attribute" }); // or "park" | "deny"
+```
+
+- `action` (default `"attribute"`): `attribute` records `task-authority:directed-by { lineages }` before the effect and lets it run;
+  `deny` refuses with `task-grant:cross-lineage`; `park` throws a renewable error, so `withRenewal` parks on the renewal gate and
+  a granted renewal approves exactly that foreign set (a new foreign lineage parks again).
+- `appliesTo` (a predicate or tool ids; default every leased effect) names the effects the policy covers.
+- **Foreign** means a `lineage:` origin whose rootId differs from the acting grant's; the overflow marker counts as foreign.
+  Other untrusted origins (`mcp:`, `inbox:`) are ignored unless `foreign: "any-untrusted"`.
+- **Untracked fails closed.** With the gate off `ctx.seenOrigins` is absent: every action but `park` denies (`task-grant:untracked`),
+  and `park` parks. There is no honest way to attribute what is not tracked.
+- Residual: a writer WITHOUT a grant can label fresh content `lineage:<your own root>` and it reads as yours. Re-labelling someone
+  else's content cannot hide the original origin, and a forged foreign label only makes the policy stricter.
+  `foreign: "any-untrusted"` closes the residual (the inbox origin is still present).
+- A tracked child's seen origins reach the parent on the `CHILD_DONE` body (`childOrigins`), so delegating does not wash them.
+
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 
 For blueprint/interpreter-style flows whose tool calls are **data** (a saved manifest names

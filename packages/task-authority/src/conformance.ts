@@ -6,7 +6,7 @@ import type {
 } from "./conformanceKit";
 import { clock, mintReq, mk, must, mustRefuse, req } from "./conformanceKit";
 import { MORE_CHECKS } from "./conformanceMore";
-import { RUNTIME_CHECKS } from "./conformanceRuntime";
+import { RUNTIME_CHECKS, launderingCovered } from "./conformanceRuntime";
 import { type TaskGrant, taskGrantDigest, verifyTaskGrant } from "./grant";
 
 export type {
@@ -293,7 +293,7 @@ const CHECKS: Record<string, Check> = {
     must(!(await b.renew(req("c", 0, 0))).granted, "a child renewed above its minted ceiling");
   },
   "laundering.uncovered.a2a": async () => "skipped:A2A transport not available in-process",
-  "laundering.covered": async () => "skipped:slice 2 (ADR 0150 D7)",
+  "laundering.covered": (s) => launderingCovered(s),
 };
 
 /**

@@ -24,6 +24,8 @@ export const TASK_GRANT_DENIAL = {
   scope: "task-grant:scope",
   base: "task-grant:base",
   error: "task-grant:error",
+  crossLineage: "task-grant:cross-lineage",
+  untracked: "task-grant:untracked",
 } as const;
 
 export interface TaskGrantAuthorizerOptions {

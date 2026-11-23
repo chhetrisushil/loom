@@ -37,6 +37,7 @@ export { installTaskAuthority } from "./install";
 export type { TaskLeaseOptions } from "./lease";
 export { taskLeaseMiddleware } from "./lease";
 export {
+  CrossLineageParkError,
   GrantRevokedError,
   LeaseDimensionDroppedError,
   LeaseDurabilityError,
@@ -75,3 +76,5 @@ export {
   lineageTainter,
   wrapLineage,
 } from "./lineage";
+export type { CrossLineageAction, DirectedByOptions } from "./directedBy";
+export { directedBy } from "./directedBy";

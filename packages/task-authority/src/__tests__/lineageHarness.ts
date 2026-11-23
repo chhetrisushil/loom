@@ -1,4 +1,4 @@
-import type { FlowDefinition } from "@loomwork/core";
+import { type FlowDefinition, SuspendError } from "@loomwork/core";
 import {
   type EffectContext,
   type EffectMiddleware,
@@ -17,7 +17,8 @@ import { z } from "zod";
 import type { TaskGrant } from "../grant";
 import { installTaskAuthority } from "../install";
 import { taskLeaseMiddleware } from "../lease";
-import { InMemoryGrantBroker } from "../renew";
+import { InMemoryGrantBroker, type RenewalPolicy } from "../renew";
+import { RENEWAL_GATE, renewalResumeSchema, withRenewal } from "../renewal";
 
 export const SECRET = "lineage-secret";
 export const NOW = 1_000_000;
@@ -47,9 +48,14 @@ export function world(
     gate?: boolean;
     maxOrigins?: number;
     middleware?: (effects: () => EffectRuntime) => EffectMiddleware[];
+    policy?: RenewalPolicy;
   } = {}
 ) {
-  const broker = new InMemoryGrantBroker({ secret: SECRET, now: () => NOW });
+  const broker = new InMemoryGrantBroker({
+    secret: SECRET,
+    now: () => NOW,
+    ...(o.policy !== undefined && { policy: o.policy }),
+  });
   const acts: ActCall[] = [];
   const effects: EffectRuntime = new EffectRuntime([
     taskLeaseMiddleware({ secret: SECRET, source: broker }),
@@ -62,8 +68,12 @@ export function world(
       return { ok: true };
     })
   );
+  const eventStore = new InMemoryAsyncEventStore();
   const runtime = new WorkflowRuntime({
-    eventStore: new InMemoryAsyncEventStore(),
+    eventStore,
+    resumeAuthenticator: {
+      verify: () => ({ status: "verified", actor: "ops", verifiedBy: "test" }),
+    },
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: effects,
     inboxEnabled: true,
@@ -82,6 +92,7 @@ export function world(
       inputSchema: z.unknown(),
       outputSchema: z.unknown(),
       steps: [],
+      resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema },
     } as unknown as FlowDefinition;
     runtime.registerFlow(definition, runner);
     return { definition, runner } as never;
@@ -95,15 +106,51 @@ export function world(
       leases: { w: { ceiling: 50, effects: ["act"] } },
       ttlMs: 60_000,
     });
-  /** `receive("t")` then one leased `act` step: agent B reading shared content, then acting. */
+  /** `receive("t")` then one leased `act` step: agent B reading shared content, then acting. A refusal is the output. */
   const reader = flowOf("reader", async (ctx: ExecutionContext) => {
     await ctx.receive("t");
-    await ctx.run(task("s1"), {});
-    return "done";
+    try {
+      await ctx.run(task("s1"), {});
+    } catch (e) {
+      if (e instanceof SuspendError) throw e;
+      return { refused: (e as { reason?: string }).reason ?? String(e) };
+    }
+    return { done: true };
   });
-  const actOnly = flowOf("actOnly", async (ctx: ExecutionContext) => {
-    await ctx.run(task("s1"), {});
-    return "done";
+  /** Like `reader`, but the step goes through `withRenewal`: a park waits on the renewal gate. */
+  const parker = flowOf("parker", async (ctx: ExecutionContext) => {
+    await ctx.receive("t");
+    await withRenewal(ctx as never, "a", (id) => ctx.run(task(id), {}));
+    await ctx.receive("u");
+    await withRenewal(ctx as never, "b", (id) => ctx.run(task(id), {}));
+    return { done: true };
   });
-  return { broker, runtime, effects, acts, flowOf, grant, reader, actOnly };
+  const send = (id: string, topic: string, payload: unknown, principal?: PrincipalChain) =>
+    runtime.send(id, { topic, payload }, principal === undefined ? {} : { principal });
+  const types = async (id: string) => (await eventStore.read(id)).map((e) => e.eventType);
+  const decisions = async (id: string) =>
+    (await eventStore.read(id))
+      .filter(
+        (e) =>
+          e.eventType === "DECISION_RECORDED" &&
+          String((e.payload as { decisionId?: string }).decisionId).endsWith(
+            ":task-authority:directed-by"
+          )
+      )
+      .map((e) => (e.payload as { choice: { lineages: string[] } }).choice.lineages);
+  const outcome = async (id: string) => (await runtime.loadState(id))?.variables._output;
+  return {
+    broker,
+    runtime,
+    effects,
+    acts,
+    flowOf,
+    grant,
+    reader,
+    parker,
+    send,
+    types,
+    decisions,
+    outcome,
+  };
 }
