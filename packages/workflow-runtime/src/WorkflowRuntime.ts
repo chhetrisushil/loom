@@ -47,7 +47,6 @@ import {
   normalizeSnapshotState,
   resolveSeenOriginsLimits,
 } from "@loomwork/replay-vm";
-import type { SeenOriginsKey } from "@loomwork/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
 import { assertSnapshotIdentity } from "@loomwork/snapshot-runtime";
 import { ulid } from "ulid";
@@ -173,13 +172,14 @@ import {
   SealGuardedSnapshotStore,
   type SealedDetail,
   SealedStreamUnreadableError,
+  assertStreamReadable,
   isSealedUnreadable,
   principalLooksSealed,
   readLeftOpaque,
   sealedDetailOf,
   withSealedDetail,
 } from "./sealGuard";
-import { adoptSeenOrigins } from "./seenOriginsSeed";
+import { type SeenOriginsMemo, adoptSeenOrigins } from "./seenOriginsSeed";
 import {
   type StrayPassthroughReport,
   StrayScanner,
@@ -1075,7 +1075,7 @@ export class WorkflowRuntime {
   // ADR 0109 — continue-as-new.
   private readonly continueAsNewEnabled: boolean;
   private readonly seenOriginsEnabled: boolean;
-  private readonly seenOriginsMemo = new Map<string, { key: SeenOriginsKey; atId: string }>();
+  private readonly seenOriginsMemo = new Map<string, SeenOriginsMemo>();
   private readonly compactionArchive: ArchiveStore | undefined;
   private readonly seenOriginsLimits: { maxOrigins: number; maxScanNodes: number };
   private readonly maxCarryBytes: number;
@@ -3583,7 +3583,7 @@ export class WorkflowRuntime {
         [],
         this.withLogIdentity(normalizeSnapshotState(preloadedState), restoredFirst, restoredDurable)
       );
-      if (this.seenOriginsEnabled) await this.adoptSeenOrigins(vm); // the caller's key was dropped: rebuild it from the log
+      if (this.seenOriginsEnabled) await this.adoptSeenOrigins(vm, lease); // the caller's key was dropped: rebuild it from the log
       const originalInput = preloadedState.variables._input;
       return this.execute(
         preloadedState.executionId,
@@ -4271,7 +4271,7 @@ export class WorkflowRuntime {
     // S7g: a resume is ALWAYS eager (a predecessor's leftover row is stood down on or overwritten).
     const lease = await this.takeDriverLease(executionId);
     try {
-      if (this.seenOriginsEnabled) await this.adoptSeenOrigins(vm);
+      if (this.seenOriginsEnabled) await this.adoptSeenOrigins(vm, lease);
       // ADR 0110 D1 — only a resume that PASSED every refusal re-opens a terminal owner's inbox: a
       // refused one (not-suspended, authz, replay-check, migration) must not leave a stream behind
       // for an execution that stays terminal.
@@ -4298,7 +4298,7 @@ export class WorkflowRuntime {
         fence = got.fence;
         runVm = got.vm;
       }
-      if (this.seenOriginsEnabled && runVm !== vm) await this.adoptSeenOrigins(runVm); // a no-op unless the refold lost the key
+      if (this.seenOriginsEnabled && runVm !== vm) await this.adoptSeenOrigins(runVm, lease); // a no-op unless the refold lost the key
       // ADR 0110 D8 — the batch was built from an earlier fold. Whatever was appended since (a
       // journaled operator discard is an ignorable kind, so the fence still holds) may have moved a
       // cursor past a message in it; the fold would accept that consumption as an answer. Judge the
@@ -6982,31 +6982,42 @@ export class WorkflowRuntime {
     return true;
   }
 
-  /**
-   * The driver's own hold: a stand-down is a {@link LeaseHeldError}, nothing appended, no fence taken.
-   * Always EAGER (ADR 0130 D11, S7g): only a fresh `start` and nothing else may lease lazily.
-   */
   /** ADR 0152 S2c: adopt an untracked run (gate on) once this driver holds the lease and before any effect runs. */
-  private adoptSeenOrigins(vm: ReplayVM): Promise<void> {
+  private async adoptSeenOrigins(vm: ReplayVM, lease: DriverLease): Promise<void> {
     const archive = this.compactionArchive;
     const life =
       archive === undefined
         ? undefined
         : new LogLifecycle(this.eventStore, this.snapshotStore, { compactionArchive: archive });
-    return adoptSeenOrigins(
+    const arch = archive;
+    await adoptSeenOrigins(
       {
         enabled: this.seenOriginsEnabled,
         limits: this.seenOriginsLimits,
         events: this.eventStore,
         memo: this.seenOriginsMemo,
-        ...(life !== undefined && {
-          archive: (id, range) => life.readArchived(id, range, { allowIncomplete: true }),
-        }),
+        ...(life !== undefined &&
+          arch !== undefined && {
+            archive: {
+              headers: (id) => arch.headers(id),
+              read: async (id, range) => {
+                const batch = await life.readArchived(id, range, { allowIncomplete: true });
+                // the seal guard covers archived batches too: a marker this node cannot open refuses the read
+                assertStreamReadable(id, batch, () => this.eventStore.sealingCapability?.());
+                return batch;
+              },
+            },
+          }),
       },
       vm
     );
+    if (!lease.valid()) throw lease.lossError(); // a long rescan outliving the hold must not run effects
   }
 
+  /**
+   * The driver's own hold: a stand-down is a {@link LeaseHeldError}, nothing appended, no fence taken.
+   * Always EAGER (ADR 0130 D11, S7g): only a fresh `start` and nothing else may lease lazily.
+   */
   private async takeDriverLease(executionId: string): Promise<DriverLease> {
     const lease = await this.acquireDriverLease(executionId);
     if (lease === null) throw new LeaseHeldError(executionId);
@@ -7547,7 +7558,7 @@ export class WorkflowRuntime {
     // ADR 0130 D11 (S7c) - lease BEFORE the fence and the first append; a stand-down takes no fence.
     const lease = await this.takeDriverLease(executionId);
     try {
-      if (this.seenOriginsEnabled) await this.adoptSeenOrigins(vm);
+      if (this.seenOriginsEnabled) await this.adoptSeenOrigins(vm, lease);
       await this.reopenInbox(executionId, state); // after every refusal (see `resume`)
       const recorded = state.variables._flowHash;
       // ADR 0118 D2 — last, after every refusal that appends nothing (see `resume`).

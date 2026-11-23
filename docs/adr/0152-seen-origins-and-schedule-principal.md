@@ -338,9 +338,9 @@ and replaces the key with the result, `through = state.sequence`; events appende
 - **Error classes.** Permanent errors produce a STICKY overflow (`{ overflow: true }`, persisted by the next snapshot; the run
   continues, it is not failed): `ArchiveIncompleteError`, `ArchiveGapError`, `ArchiveDigestError`, `ArchiveIncarnationError`,
   `ArchiveLogMismatchError`, `ArchiveUnserializableError`, `ArchiveTenantMismatchError`, `PlaintextArchiveError`,
-  `SealedStreamUnreadableError` and `SealedPayloadUnreadableError` (the sealed-refusal classes, `isSealedUnreadable`; `QuarantineHeldError` is a subclass), any error
+  `SealedStreamUnreadableError` and `SealedPayloadUnreadableError` (the sealed-refusal classes, `isSealedUnreadable`) when the cause is a marker this node cannot open, `PayloadUndecryptableError`, any error
   for which `isPayloadShredded(err)` holds (a shredded subject is a BRAND on the thrown error, `event-runtime/src/payloadShredded.ts`, not a class: there is no
-  `PayloadShreddedError`), and "the log is compacted and no archive is configured". Everything else that a read throws and is not in this list is treated as transient. The write-side
+  `PayloadShreddedError`), and "the log is compacted and no archive is configured". A sealed refusal whose recorded reason is `key-unavailable` and a `QuarantineHeldError` are RECOVERABLE (a key can return, a hold can lift), so they are transient, not sticky (S2c review, M-1/M-2). Everything else that a read throws and is not in this list is treated as transient. The write-side
   conflicts and construction errors (`ArchiveConflictError`, `CompactionArchiveRequiredError`,
   `ReservedStreamArchiveRequiredError`, `InboxArchiveRequiredError`) cannot occur on a read and are not caught.
   Transient errors (a timeout, a connection error, a store that is unavailable: anything else an archive or event-store read throws)
@@ -351,6 +351,7 @@ and replaces the key with the result, `through = state.sequence`; events appende
   `WorkflowRuntime.ts:~4238`; a helper call from a non-driver site takes its own hold and releases it in a `finally`). The
   `DriverLeases` keeper renews on a timer, so the rescan only has to yield: it awaits an I/O page at a time and never runs a long synchronous
   loop. A lost hold (`acquire` returns `null`) stands the rescan down as a retryable failure.
+- **A restore covers only what the log holds.** `restoreFromState` rebuilds the key from the log's origins up to the caller's state sequence; origins that only the caller's state carried (and the log does not) are not recovered (S2c review, M-6).
 - **Memo.** The rebuilt key is kept in the seed for that resume and persisted by the next snapshot the cadence writes. The runtime also
   memoizes the result in a bounded LRU keyed by `(executionId, snapshot.id, snapshot.sequence)` (M9), so a repeated resume of the
   same old snapshot does not rescan; a new snapshot has its own key; only successful and permanent-overflow results are memoized.
