@@ -18,6 +18,7 @@ export {
   DEFAULT_STATE_GROWTH_WARN_BYTES,
   resetAgentLoopDefaults,
   MAX_RECORDED_RESPONSE_CHARS,
+  memoryRecallEffect,
   memoryWriteBackEffect,
   registerReasoningRoutes,
 } from "./agentLoop$";
@@ -38,6 +39,7 @@ export type {
   NeedsApprovalPolicy,
 } from "./agentLoop$";
 export type { AgentLoopDistill } from "./distillWriteBack";
+export type { RecallRequest } from "./agentLoop$";
 export { continueEvery } from "./continueEvery";
 export type { TurnCounter } from "./continueEvery";
 export { chunkDeltas } from "./chunkDeltas";

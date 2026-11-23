@@ -29,7 +29,7 @@ import {
   hasReasoningParts,
   withoutReasoningParts,
 } from "@loomwork/llm";
-import type { TieredMemory } from "@loomwork/memory";
+import type { MemoryEntry, TieredMemory } from "@loomwork/memory";
 import type { ModelInvoker, ReasonOptions, ReasoningRuntime } from "@loomwork/reasoning";
 import { approvalViewDigest } from "@loomwork/workflow-runtime";
 import type { BranchContext, DecideOptions, ExecutionContext } from "@loomwork/workflow-runtime";
@@ -484,6 +484,12 @@ export interface AgentLoopConfig {
    * stops being a cost curve and becomes a limit. Set it.
    */
   recallLimit?: number;
+  /**
+   * ADR 0150 D8 - run memory recall as a journaled EFFECT (register {@link memoryRecallEffect} under `toolId`):
+   * the authorizer, middleware and leases see it, with the recall scope as the resource, so a task grant's
+   * `reads` can scope it. A replay serves the recorded entries. Unset keeps the inline `ctx.decide` recall.
+   */
+  recall?: { toolId: string };
   /**
    * Fold older messages into one summary when the transcript grows past
    * `afterMessages` messages OR `afterBytes` UTF-8 bytes, keeping the newest
@@ -1286,13 +1292,28 @@ export async function agentLoop$(
   if (config.memory !== undefined) {
     const tier = config.memoryTier ?? "working";
     const scope = config.memoryScope ?? ctx.executionId;
-    const recalled = await config.memory.recall(tier, scope, {
-      ...(config.recallLimit !== undefined && { limit: config.recallLimit }),
-      // Passed bare: the context binds `decide` in its constructor, exactly so
-      // that a helper taking it as an option gets a working function.
-      decide: ctx.decide,
-      decisionKey: `${idPrefix}#recall`,
-    });
+    const recalled =
+      config.recall !== undefined
+        ? await ctx.execute<RecallRequest, MemoryEntry[]>(
+            {
+              _tag: "TaskDefinition",
+              kind: "memory",
+              id: `${idPrefix}#recall`,
+              toolId: config.recall.toolId,
+            },
+            {
+              tier,
+              scope,
+              ...(config.recallLimit !== undefined && { limit: config.recallLimit }),
+            }
+          )
+        : await config.memory.recall(tier, scope, {
+            ...(config.recallLimit !== undefined && { limit: config.recallLimit }),
+            // Passed bare: the context binds `decide` in its constructor, exactly so
+            // that a helper taking it as an option gets a working function.
+            decide: ctx.decide,
+            decisionKey: `${idPrefix}#recall`,
+          });
     for (const entry of recalled) {
       if (isTainted(entry.content)) {
         // A recalled tainted entry is untrusted input to THIS run: whatever it answers is derived from it.
@@ -2336,6 +2357,24 @@ export function memoryWriteBackEffect(
     await applyWriteBack(memory, { ...req, entries });
     return { written: req.entries.length };
   });
+}
+
+/** The input of {@link memoryRecallEffect}. */
+export interface RecallRequest {
+  tier: string;
+  scope: string;
+  limit?: number;
+}
+
+/**
+ * ADR 0150 D8 - the effect `recall.toolId` resolves to. It declares itself a READ (`capabilities.read`) with the
+ * recall scope as its resource, so `<toolId>:<scope>` is what a task grant's `reads` must cover.
+ */
+export function memoryRecallEffect(memory: TieredMemory): ToolEffect<RecallRequest, MemoryEntry[]> {
+  return new ToolEffect<RecallRequest, MemoryEntry[]>(
+    ({ tier, scope, limit }) => memory.recall(tier, scope, limit !== undefined ? { limit } : {}),
+    { idempotent: true, resourceOf: (i) => i.scope, capabilities: { read: true } }
+  );
 }
 
 /** An already-tainted value keeps its wrapper INSIDE the writer's (unlike `tainted()`, which keeps only one). */

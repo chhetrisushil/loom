@@ -26,6 +26,8 @@ export interface ToolEffectOptions {
    */
   // biome-ignore lint/suspicious/noExplicitAny: the option is not generic; the effect's TIn types the call site
   resourceOf?: (input: any) => string | undefined;
+  /** ADR 0150 D8 — `{ read: true }` marks a READ effect (see {@link Effect.capabilities}). */
+  capabilities?: { read?: boolean };
 }
 
 export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TOut> {
@@ -34,6 +36,7 @@ export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TO
   readonly errors?: Record<string, ErrorChannelSchema>;
   readonly mode?: EffectMode;
   readonly resourceOf?: (input: TIn) => string | undefined;
+  readonly capabilities?: { read?: boolean };
 
   constructor(
     private readonly fn: (input: TIn, ctx: EffectContext) => Promise<TOut>,
@@ -50,6 +53,9 @@ export class ToolEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TO
     }
     if (options.resourceOf !== undefined) {
       this.resourceOf = options.resourceOf;
+    }
+    if (options.capabilities !== undefined) {
+      this.capabilities = options.capabilities;
     }
   }
 

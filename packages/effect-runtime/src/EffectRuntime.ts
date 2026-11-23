@@ -94,6 +94,17 @@ export class EffectRuntime {
     }
   }
 
+  // ADR 0150 D8 — true only for an effect that declares `capabilities.read === true` (read once, never throws).
+  private isRead(toolId: string): boolean {
+    try {
+      return (
+        (this.registry.get(toolId)?.capabilities as { read?: unknown } | undefined)?.read === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
   // The shared execute path for both seams. `seam` records which entry point the
   // caller came through, so the effect-mode boundary is enforced in exactly one
   // place and cannot be spoofed by hand-building a context that merely *looks*
@@ -123,6 +134,7 @@ export class EffectRuntime {
       const decision = this.authorizer.authorize({
         toolId,
         ...(resource !== undefined && { resource }),
+        ...(this.isRead(toolId) && { read: true as const }),
         executionId: ctx.executionId,
         workflowId: ctx.workflowId,
         stepId: ctx.stepId,

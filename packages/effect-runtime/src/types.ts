@@ -396,6 +396,13 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    */
   resourceOf?(input: TIn): string | undefined;
   /**
+   * What the effect declares about itself (ADR 0150 D8). The runtime reads ONE key today:
+   * `read: true` marks a READ effect, and the runtime then sets `CapabilityRequest.read` so a task
+   * grant's `reads` can be enforced. An effect an app registers must be marked by the app; an
+   * unmarked read is not checked. Other keys (a sandbox backend's own `capabilities`) are ignored.
+   */
+  readonly capabilities?: object;
+  /**
    * Advisory pre-warm (latency-only, off the durable path). If present, the
    * kernel may call it BEFORE the effect is needed to spin up a cold resource
    * the effect depends on — a K7 isolated child process, an LLM provider
