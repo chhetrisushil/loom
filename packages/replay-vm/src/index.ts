@@ -24,3 +24,10 @@ export {
   carrySeenOrigins,
 } from "./seenOrigins";
 export type { SeenOriginsKey, SeenOriginsLimits } from "./seenOrigins";
+export {
+  scanSeenOriginsJson,
+  scanSeenOriginsLive,
+  seenOriginsRecord,
+  stampSeenOrigins,
+} from "./seenOriginsRecord";
+export type { SeenOriginsRecord } from "./seenOriginsRecord";

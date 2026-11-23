@@ -238,3 +238,26 @@ export function seenOriginsRecord(
   const all = ch.origin === undefined ? found : [...new Set(found).add(ch.origin)].sort();
   return all.length > key.limits.maxOrigins ? { originsOverflow: true } : { origins: all };
 }
+
+/**
+ * The journal's envelope-metadata step: drop any caller-supplied `origins` / `originsOverflow` (the field is the
+ * kernel's alone, like the `kernel` stamp), then add the record of this event. Returns `metadata` untouched
+ * (same object) when there is nothing to record: an untracked or overflowed run, or a non-channel event.
+ */
+export function stampSeenOrigins(
+  before: ExecutionState | undefined,
+  eventType: string,
+  payload: unknown,
+  metadata: Meta
+): Meta {
+  let meta = metadata;
+  if (
+    meta !== undefined &&
+    (Object.hasOwn(meta, "origins") || Object.hasOwn(meta, "originsOverflow"))
+  ) {
+    const { origins: _o, originsOverflow: _f, ...rest } = meta;
+    meta = rest;
+  }
+  const rec = seenOriginsRecord(before, eventType, payload, meta);
+  return rec === undefined ? meta : { ...meta, ...rec };
+}

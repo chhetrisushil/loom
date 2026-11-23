@@ -6,8 +6,8 @@
       "adr": "baseline"
     },
     "ExecutionJournal.ts": {
-      "codeLines": 259,
-      "adr": "baseline"
+      "codeLines": 269,
+      "adr": "0152"
     },
     "LogLifecycle.ts": {
       "codeLines": 1276,
@@ -22,8 +22,8 @@
       "adr": "0151"
     },
     "WorkflowRuntime.ts": {
-      "codeLines": 6819,
-      "adr": "0151"
+      "codeLines": 6824,
+      "adr": "0152"
     },
     "__tests__/quarantineHarness.ts": {
       "codeLines": 190,
@@ -66,8 +66,8 @@
       "adr": "baseline"
     },
     "continuation.ts": {
-      "codeLines": 293,
-      "adr": "baseline"
+      "codeLines": 297,
+      "adr": "0152"
     },
     "cron.ts": {
       "codeLines": 162,
