@@ -1881,8 +1881,10 @@ class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBroker {
 // renew: the request is cloned (size-capped) then bounds-checked; unknown/revoked/stale-epoch/unserializable => { granted: false, reason }.
 //   No await between the epoch check and the commit, so concurrent renewals at one epoch grant exactly once. The policy may only RESET
 //   ceilings of EXISTING leases (adding effects/leases is refused, not dropped); a non-false, non-object result (Promise, null) denies.
-//   A ceiling below the sum of ALL the task's children's ceilings is refused; a child is bounded by parent headroom. Default policy:
-//   8 renewals (broker-counted). Grant => epoch+1, exp = min(now + original ttl, parent exp); an EXPIRED grant may still renew (D5).
+//   A ceiling below the sum of ALL the task's children's ceilings is refused; a child is bounded by parent headroom. Default policy (R37):
+//   at most 8 renewals (broker-counted); each lease the request reports exhausted (spent[name] >= ceiling) is topped up by its
+//   minted (epoch-0) ceiling, one tranche per renewal; a non-exhausted lease keeps its ceiling; a CHILD's exhausted lease denies
+//   ("child lease <n> exhausted: needs a new parent reservation"). `spent` is caller-reported: a liar gets at most 8 extra tranches. Grant => epoch+1, exp = min(now + original ttl, parent exp); an EXPIRED grant may still renew (D5).
 //   Bounds: justification <= 4096 code units (untainted => wrapped task-authority:renewal; last 16 kept per task), spent <= 10 finite
 //   non-negative keys (last value kept), effectClassesCaused <= 32 entries of <= 64 chars. A policy that always grants makes the digest list grow.
 // revoke: synchronous iterative cascade; current() undefined, revoked(d) true for every digest of the task and its descendants; idempotent.

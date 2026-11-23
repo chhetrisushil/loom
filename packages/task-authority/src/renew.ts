@@ -26,7 +26,7 @@ export type RenewalPolicy = (
 
 export const MAX_JUSTIFICATION = 4096;
 export const MAX_JUSTIFICATIONS_KEPT = 16;
-const defaultPolicy: RenewalPolicy = (_r, h) => (h.renewals < 8 ? {} : false);
+export const MAX_DEFAULT_RENEWALS = 8;
 
 /** Bounds on an untrusted (already cloned) renewal request; returns a reason when out of bounds. */
 function badRenewal(r: RenewalRequest): string | undefined {
@@ -52,11 +52,13 @@ const deny = (reason: string): RenewalVerdict => ({ granted: false, reason });
 
 /**
  * Reference broker with renewal. Each renewal appends a digest, so a custom policy that always grants makes
- * the digest list grow with the renewal count (the default policy stops at 8). Stored justifications are a
+ * the digest list grow with the renewal count (the default policy stops at 8, topping up exhausted leases by their minted ceiling). Stored justifications are a
  * ring of the last 16 per task; `spent` is the last reported value.
  */
 export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBroker {
   private readonly policy: RenewalPolicy;
+  /** Why the built-in policy denied the renewal in flight (read synchronously right after it returns). */
+  private denyWhy = "policy denied the renewal";
 
   constructor(o: {
     secret: GrantKeys;
@@ -64,7 +66,30 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     policy?: RenewalPolicy | undefined;
   }) {
     super(o);
-    this.policy = o.policy ?? defaultPolicy;
+    this.policy = o.policy ?? ((r, h) => this.topUp(r, h));
+  }
+
+  /**
+   * The built-in policy (R37). Renews at most 8 times. Each lease the request reports exhausted
+   * (`spent[name] >= current ceiling`) is raised by its ORIGINAL minted (epoch-0) ceiling: one tranche per
+   * renewal. A lease that is not exhausted (an expired grant) keeps its ceiling. A CHILD's lease stays capped at
+   * its minted ceiling (a top-up is a new parent reservation), so an exhausted child lease denies.
+   * `spent` is caller-reported and untrusted: a dishonest reporter gets at most 8 extra tranches. This is the
+   * reference broker; production brokers bring their own policy.
+   */
+  private topUp(req: Readonly<RenewalRequest>, h: { renewals: number }) {
+    const rec = this.tasks.get(req.taskId);
+    if (!rec || h.renewals >= MAX_DEFAULT_RENEWALS) return false;
+    const leases: Record<string, number> = {};
+    for (const [n, l] of Object.entries(rec.grant.leases)) {
+      if (!((req.spent[n] ?? 0) >= l.ceiling)) continue;
+      if (rec.parent) {
+        this.denyWhy = `child lease ${n} exhausted: needs a new parent reservation`;
+        return false;
+      }
+      leases[n] = l.ceiling + (rec.minted[n] ?? 0);
+    }
+    return { leases };
   }
 
   async renew(request: RenewalRequest): Promise<RenewalVerdict> {
@@ -87,6 +112,7 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     rec.spent = req.spent;
     let verdict: ReturnType<RenewalPolicy>;
     try {
+      this.denyWhy = "policy denied the renewal";
       verdict = this.policy(req, {
         renewals: rec.digests.length - 1,
         spentSoFar: { ...rec.spent },
@@ -95,7 +121,7 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
       return deny("policy threw");
     }
     if (rec.revoked) return deny("task revoked during renewal"); // a policy may re-enter revoke()
-    if (verdict === false) return deny("policy denied the renewal");
+    if (verdict === false) return deny(this.denyWhy);
     if (
       typeof verdict !== "object" ||
       verdict === null ||

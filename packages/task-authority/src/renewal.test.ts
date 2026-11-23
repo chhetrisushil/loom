@@ -165,6 +165,18 @@ describe("withRenewal", () => {
     expect(h.ran.n).toBe(5); // tranches 2 + 2 + 1
   });
 
+  it("completes with NO custom policy: the default tops up exhausted leases (R37)", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker, 2);
+    const h = boot({ broker, runner: five });
+    await (await h.start("e-default", g)).waitForSuspend();
+    const r2 = await answerRenewal(h.runtime, broker, "e-default");
+    await r2.waitForSuspend();
+    const r3 = await answerRenewal(h.runtime, broker, "e-default");
+    expect((await r3.waitForCompletion()).variables._output).toHaveLength(5);
+    expect(h.ran.n).toBe(5);
+  });
+
   it("survives a crash between park and resume: a fresh runtime resumes and completes", async () => {
     const broker = mkBroker(grow);
     const g = await mint(broker, 2);
