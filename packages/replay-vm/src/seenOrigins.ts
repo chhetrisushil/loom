@@ -50,6 +50,33 @@ export function capOrigin(o: string): string {
   return o.length > SEEN_ORIGIN_MAX_CHARS ? `unknown:truncated:${fnv1a64(o)}` : o;
 }
 
+/** Strict construction-time resolution of the `seenOriginsLimits` option: defaults filled, anything out of range REFUSED. */
+export function resolveSeenOriginsLimits(raw?: Partial<SeenOriginsLimits>): SeenOriginsLimits {
+  const out = { ...SEEN_ORIGINS_DEFAULTS } as SeenOriginsLimits;
+  for (const name of ["maxOrigins", "maxScanNodes"] as const) {
+    const v = raw?.[name];
+    if (v === undefined) continue;
+    const [lo, hi] = RANGES[name];
+    if (!Number.isSafeInteger(v) || v < lo || v > hi) {
+      throw new RangeError(
+        `seenOriginsLimits.${name} must be an integer in ${lo}..${hi} (got ${String(v)})`
+      );
+    }
+    out[name] = v;
+  }
+  return out;
+}
+
+/**
+ * The list `EffectContext.seenOrigins` returns: a copy of the key's origins, ending with SEEN_ORIGINS_OVERFLOW when the set
+ * overflowed or is unproven. `undefined` when the run has no (valid) key, i.e. is untracked.
+ */
+export function seenOriginsList(state: Partial<ExecutionState>): string[] | undefined {
+  const key = staleSeenOrigins(state).variables?.[SEEN_ORIGINS_KEY];
+  if (!validKey(key)) return undefined;
+  return key.overflow === true ? [...key.origins, SEEN_ORIGINS_OVERFLOW] : [...key.origins];
+}
+
 export function validKey(k: unknown): k is SeenOriginsKey {
   return (
     isPlain(k) &&

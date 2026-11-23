@@ -22,6 +22,8 @@ export {
   SEEN_ORIGINS_OVERFLOW,
   SEEN_ORIGIN_MAX_CHARS,
   carrySeenOrigins,
+  resolveSeenOriginsLimits,
+  seenOriginsList,
 } from "./seenOrigins";
 export type { SeenOriginsKey, SeenOriginsLimits } from "./seenOrigins";
 export {

@@ -1285,6 +1285,13 @@ export interface LoomConfig {
        */
       continueAsNew?: boolean;
       /**
+       * ADR 0152 - seen-origins tracking: record the taint origins that cross into each run and expose them as
+       * `EffectContext.seenOrigins`. OFF by default (a pre-1.27.0 node copies the `_seenOrigins` fold key through
+       * stale). Turn it on ONLY once every node runs a kernel with EVENT_SCHEMA >= 1.27.0; off, nothing is
+       * stamped and behaviour is byte-identical to 1.26.0.
+       */
+      seenOrigins?: boolean;
+      /**
        * ADR 0113 D1 (R7) — record the structural flow hash as `sha256:<hex>` on new starts. OFF by
        * default because a node that predates ADR 0113 compares a recorded hash with its own 32-bit
        * `fnv1a:` one and refuses (`FlowCodeMismatchError`) every execution a newer node started.
@@ -1293,6 +1300,13 @@ export interface LoomConfig {
        * decision, not a security posture.
        */
       sha256FlowHash?: boolean;
+    };
+    /** ADR 0152 - seen-origins limits (read only when `features.seenOrigins` is on); out of range is refused at construction. */
+    seenOrigins?: {
+      /** Distinct origins kept per run before the set overflows. Integer 1..1024. Default 64. */
+      maxOrigins?: number;
+      /** Nodes walked per committed value before the record overflows. Integer 100..100000. Default 10000. */
+      maxScanNodes?: number;
     };
     /** ADR 0109 D1/D4 — continue-as-new bounds (read only when `features.continueAsNew` is on). */
     continuation?: {
@@ -2302,6 +2316,12 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     }),
     ...(config.kernel?.features?.sha256FlowHash === true && { sha256FlowHash: true }),
     ...(config.kernel?.features?.scopes === true && { scopes: true }),
+    ...(config.kernel?.features?.seenOrigins === true && {
+      seenOriginsEnabled: true,
+      ...(config.kernel.seenOrigins !== undefined && {
+        seenOriginsLimits: config.kernel.seenOrigins,
+      }),
+    }),
     ...(config.kernel?.features?.continueAsNew === true && {
       continueAsNewEnabled: true,
       ...(config.kernel.continuation?.maxCarryBytes !== undefined && {
