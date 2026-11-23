@@ -1,10 +1,27 @@
+import type { PrincipalChain } from "@loomwork/effect-runtime";
+import type { RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import type { GrantBroker, MintRequest, RenewalRequest } from "./broker";
 import { CHILD_LEASE_TOOL } from "./childLease";
 import type { GrantKeys } from "./grant";
 import type { RenewalPolicy } from "./renew";
 
-/** What the kit needs from you: a broker. Honour `secret` (grant signing), `now` (every clock read) and `policy` (renewals). */
+/**
+ * An in-process A2A hop the kit drives for `laundering.uncovered.a2a`: `serve` exposes the callee's `flow` on `runtime` and
+ * returns the CALLER side, `call(prompt, principal)`, which sends one A2A task as that authenticated peer and resolves once it
+ * is terminal. Build it on `LoomAgentExecutor` (`@loomwork/plugin-a2a`); the kit does not depend on that package.
+ */
+export interface A2ATransport {
+  serve(
+    runtime: WorkflowRuntime,
+    flow: RegisteredFlow
+  ): (prompt: string, principal: PrincipalChain) => Promise<void>;
+}
+/**
+ * What the kit needs from you: a broker. Honour `secret` (grant signing), `now` (every clock read) and `policy` (renewals).
+ * `a2a` is optional: without it `laundering.uncovered.a2a` is reported skipped, never passed.
+ */
 export interface ConformanceSubject {
+  a2a?: A2ATransport;
   makeBroker(o: { secret: GrantKeys; now: () => number; policy?: RenewalPolicy }): GrantBroker;
 }
 export type CheckStatus = "passed" | "failed" | "skipped";

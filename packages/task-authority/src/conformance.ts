@@ -10,6 +10,7 @@ import { RUNTIME_CHECKS, launderingCovered } from "./conformanceRuntime";
 import { type TaskGrant, taskGrantDigest, verifyTaskGrant } from "./grant";
 
 export type {
+  A2ATransport,
   CheckStatus,
   ConformanceReport,
   ConformanceResult,
@@ -347,7 +348,6 @@ const CHECKS: Record<string, Check> = {
     await b.mint(mintReq("c", 2, "p"));
     must(!(await b.renew(req("c", 0, 0))).granted, "a child renewed above its minted ceiling");
   },
-  "laundering.uncovered.a2a": async () => "skipped:A2A transport not available in-process",
   "laundering.covered": (s) => launderingCovered(s),
 };
 

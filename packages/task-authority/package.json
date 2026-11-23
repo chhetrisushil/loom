@@ -4,6 +4,11 @@
   "description": "Task-scoped authority for Loom (ADR 0150): signed per-task grants, side-effect leases that pause on exhaustion, and child leases carved by reservation.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "conformance": ["dist/conformance.d.ts"]
+    }
+  },
   "sideEffects": false,
   "exports": {
     ".": {

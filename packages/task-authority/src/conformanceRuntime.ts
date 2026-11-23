@@ -1,5 +1,5 @@
 import { type FlowDefinition, SuspendError } from "@loomwork/core";
-import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import { type CapabilityAuthorizer, EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { awaitChild, superviseChildren } from "@loomwork/orchestration";
 import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
@@ -51,12 +51,14 @@ export function rig(
     readMarked?: boolean;
     /** Sandbox effects (`sbxOk`: network none + fresh, `sbxNet`: network open); `wired: false` is the broken stack. */
     sandbox?: { wired: boolean; effects?: Record<string, object> };
+    /** The callee's OWN authority (`TaskGrantAuthorizer.base`); default allows everything. */
+    base?: CapabilityAuthorizer;
   } = {}
 ) {
   const ran = { act: 0, other: 0, rd: 0, sbx: 0 };
   const authorizer = new TaskGrantAuthorizer({
     secret: SECRET,
-    base: { authorize: () => ({ allowed: true }) },
+    base: o.base ?? { authorize: () => ({ allowed: true }) },
     now: c.now,
   });
   const effects: EffectRuntime = new EffectRuntime(
@@ -150,6 +152,7 @@ export function rig(
     ran,
     stores: s,
     sup: sup.v,
+    flows: defs,
     start: (flow: string, id: string, g: TaskGrant) =>
       runtime.start(
         defs[flow] as RegisteredFlow,
@@ -325,6 +328,7 @@ export const RUNTIME_CHECKS: Record<string, Check> = {
       "B's refusal was not a refusal, or B lost its own authority"
     );
   },
+  "laundering.uncovered.a2a": (s) => launderingA2A(s),
   revocation: async (s) => {
     const c = clock();
     const b = mk(s, undefined, c);
@@ -416,4 +420,72 @@ export async function launderingCovered(s: ConformanceSubject, wired = true): Pr
     off.h.ran.act === 0,
     "an untracked run (seen-origins gate off) ran B's step: it must fail closed"
   );
+}
+
+/**
+ * D14 laundering, UNCOVERED, over A2A (ADR 0150 intro: the callee authorizes only the intersection of the token and its OWN
+ * `base`). A's grant covers `other` (A can do it itself); A asks B over the subject's A2A transport, so B's run carries A's
+ * token, but B's own authority (`base`) does not cover `other`: B must refuse with a `task-grant` denial and never run it.
+ * Control: when B's own authority DOES cover it the same call runs it once, so the transport really delivers. `wired: false`
+ * is the broken stack (B enforces no authority of its own). Skipped without `subject.a2a`.
+ */
+export async function launderingA2A(
+  s: ConformanceSubject,
+  wired = true
+): Promise<string | undefined> {
+  const transport = s.a2a;
+  if (transport === undefined) return "skipped:no A2A transport supplied";
+  const stack = async (bCovers: boolean) => {
+    const c = clock();
+    const b = mk(s, undefined, c);
+    const ga = await b.mint({
+      ...mintReq("a", 5),
+      effects: ["act", "other"],
+      leases: { w: { ceiling: 5, effects: ["act", "other"] } },
+    });
+    const denied: string[] = [];
+    const h = rig(
+      b,
+      c,
+      {
+        b: async (ctx) => {
+          try {
+            await ctx.run(task("asked", "other"), {});
+          } catch (e) {
+            if (e instanceof SuspendError) throw e;
+            denied.push(e instanceof Error ? e.message : String(e));
+          }
+          return "done";
+        },
+      },
+      {
+        base: {
+          authorize: (r) =>
+            bCovers || !wired || r.toolId !== "other"
+              ? { allowed: true }
+              : { allowed: false, reason: "B's own authority does not cover it" },
+        },
+      }
+    );
+    await transport.serve(h.runtime, h.flows.b as RegisteredFlow)("run other", {
+      actor: ga.issuedTo,
+      taskGrant: ga,
+    });
+    return { h, denied };
+  };
+  const covered = await stack(true);
+  must(
+    covered.h.ran.other === 1,
+    "control: a covered A2A step did not run, so the transport is not delivering"
+  );
+  const { h, denied } = await stack(false);
+  must(
+    h.ran.other === 0,
+    `B ran a step its own authority does not cover for A over A2A (other ran ${h.ran.other} times)`
+  );
+  must(
+    denied.some((m) => m.includes("task-grant")),
+    "B's refusal over A2A was not a task-grant denial"
+  );
+  return undefined;
 }
