@@ -93,6 +93,21 @@ describe("sandboxRequirement (ADR 0150 D10, S-R6)", () => {
     expect(r.ran).toEqual([false]);
   });
 
+  // kills: an own-key-only detection (`Object.hasOwn`): caps that inherit network/freshPerRun (getters on a class
+  // prototype) must still be read as a sandbox declaration
+  it("isolated grant + caps inherited from a prototype (open network): denied", async () => {
+    class Caps {
+      get network() {
+        return "open";
+      }
+      get freshPerRun() {
+        return true;
+      }
+    }
+    const r = await outcome({ proto: new Caps() }, ["proto"], ISO);
+    expect(r.ran).toEqual([false]);
+  });
+
   // kills: a middleware that applies to every grant
   it("no sandbox on the grant: a network-capable backend is allowed (behaviour unchanged)", async () => {
     const r = await outcome({ net: { ...BACKEND, network: "open", freshPerRun: false } }, ["net"]);

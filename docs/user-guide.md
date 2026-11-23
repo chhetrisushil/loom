@@ -1279,7 +1279,7 @@ channels above. Close the gaps by routing writes through the helpers, by listing
 `sandboxRequirement({ secret, effects: () => effectRuntime })` is a per-call middleware (place it before `taskLeaseMiddleware` and a refusal burns no lease unit). When the acting, VERIFIED grant has `sandbox: "isolated"` it refuses a sandbox effect whose backend does not declare `network: "none"` AND `freshPerRun: true`, with a terminal `CapabilityDeniedError` (`task-grant:sandbox`; no renewal changes what a backend is). A child of an isolated parent is isolated (the broker forces it), so the check follows a spawn. It is not a `sandboxEval$` change.
 
 - A sandbox effect is one whose `capabilities` carries a sandbox key (`language`, `network`, `freshPerRun`); the `read` marker alone is not one. A partly declared backend is checked and refused (fail closed). The caps are read once per registered effect and cached, so a later mutation cannot weaken the check.
-- Effects with no sandbox declaration (an ambient tool) are NOT refused: D10 names no rule for them, and nothing in an effect says it has ambient authority. Keep such tools off an isolated grant's `effects`.
+- Effects with no sandbox declaration (an ambient tool) are NOT refused: D10 names no rule for them, and nothing in an effect says it has ambient authority. Keep such tools off an isolated grant's `effects`. The same holds for a wrapper or decorator around a sandbox effect that does not expose the backend's `capabilities` itself: it is not detected.
 - A grant without `sandbox` is unchanged, and a run with NO task grant is not governed here. The kit check `sandbox.isolated` fails a stack that does not wire the middleware.
 
 #### Read scope: `reads` (ADR 0150 D8)

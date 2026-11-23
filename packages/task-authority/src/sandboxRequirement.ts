@@ -28,7 +28,8 @@ interface Vetted {
  * - Only sandbox effects are governed. An effect with no sandbox declaration (an ambient tool) is NOT refused: D10 and
  *   S-R6 name no rule for it, and nothing in an effect says it has ambient authority.
  * - A grant with no `sandbox`, and a run with NO task grant, are not governed here (the authorizer decides).
- * Place it anywhere in `effectMiddleware`; BEFORE `taskLeaseMiddleware` a refusal burns no lease unit.
+ * Place it BEFORE `taskLeaseMiddleware` in `effectMiddleware`, so a refusal burns no lease unit. A wrapper effect that
+ * delegates to a sandbox without exposing its own `capabilities` is not detected (same family as the ambient residual).
  */
 export function sandboxRequirement(opts: SandboxRequirementOptions): EffectMiddleware {
   const secret = sealKeys(opts.secret);
@@ -39,7 +40,9 @@ export function sandboxRequirement(opts: SandboxRequirementOptions): EffectMiddl
     const cached = seen.get(effect);
     if (cached !== undefined) return cached;
     const isSandbox =
-      typeof caps === "object" && caps !== null && SANDBOX_KEYS.some((k) => Object.hasOwn(caps, k));
+      typeof caps === "object" &&
+      caps !== null &&
+      SANDBOX_KEYS.some((k) => (caps as Record<string, unknown>)[k] !== undefined);
     const vetted = isSandbox
       ? { network: (caps as Vetted).network, freshPerRun: (caps as Vetted).freshPerRun }
       : null;
@@ -61,6 +64,7 @@ export function sandboxRequirement(opts: SandboxRequirementOptions): EffectMiddl
           toolId,
           `${TASK_GRANT_DENIAL.sandbox}: an isolated grant needs a backend with network "none" and freshPerRun true (declared network ${JSON.stringify(v.network)}, freshPerRun ${JSON.stringify(v.freshPerRun)})`
         );
+      break;
     }
     return next();
   };
