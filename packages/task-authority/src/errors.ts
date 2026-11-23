@@ -26,7 +26,8 @@ export class LeaseExhaustedError extends Error {
     readonly lease: string,
     readonly ceiling: number,
     readonly spent: number,
-    readonly epoch: number
+    readonly epoch: number,
+    readonly taskId?: string
   ) {
     super(`task lease "${lease}" exhausted: ${spent} of ${ceiling} spent (epoch ${epoch})`);
     this.name = "LeaseExhaustedError";
@@ -37,7 +38,10 @@ export class LeaseExhaustedError extends Error {
 export class GrantRevokedError extends Error {
   readonly renewable = true;
   readonly retryable = false;
-  constructor(detail: string) {
+  constructor(
+    detail: string,
+    readonly taskId: string = detail
+  ) {
     super(`task grant revoked: ${detail}`);
     this.name = "GrantRevokedError";
   }
@@ -84,5 +88,15 @@ export class LeaseDimensionDroppedError extends Error {
       `task lease "${lease}": the meter was not folded (the execution's custom-dimension cap is full); the effect does not run`
     );
     this.name = "LeaseDimensionDroppedError";
+  }
+}
+
+/** A renewal was refused (the broker said no, the gate answered `granted: false`, or `maxRenewals` ran out). Not renewable. */
+export class RenewalDeniedError extends Error {
+  readonly renewable = false;
+  readonly retryable = false;
+  constructor(reason: string) {
+    super(`task renewal denied: ${reason}`);
+    this.name = "RenewalDeniedError";
   }
 }

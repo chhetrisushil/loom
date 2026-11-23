@@ -116,7 +116,10 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
     const t = this.now();
     // A NaN or non-numeric clock must not skip expiry: only a finite time below `exp` passes.
     if (!(typeof t === "number" && Number.isFinite(t) && t < g.exp)) {
-      return deny(TASK_GRANT_DENIAL.expired, `grant for task "${g.taskId}" expired at ${g.exp}`);
+      return deny(
+        TASK_GRANT_DENIAL.expired,
+        `grant for task "${g.taskId}" epoch ${g.epoch} expired at ${g.exp}`
+      );
     }
     // Read the actor ONCE: the holder check and everything after it see the same value.
     const actor = req.principal?.actor;
