@@ -54,8 +54,8 @@ class RenewableAfterRefund extends InMemoryGrantBroker {
     await super.settleChild(taskId, spend);
     const r = this.tasks.get(taskId);
     if (r !== undefined) {
-      r.revoked = undefined; // the refund left the grant live and renewable
-      r.settled = undefined;
+      delete r.revoked; // the refund left the grant live and renewable
+      delete r.settled;
     }
   }
 }
