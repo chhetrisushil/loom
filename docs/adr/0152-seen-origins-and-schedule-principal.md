@@ -351,6 +351,8 @@ and replaces the key with the result, `through = state.sequence`; events appende
   `WorkflowRuntime.ts:~4238`; a helper call from a non-driver site takes its own hold and releases it in a `finally`). The
   `DriverLeases` keeper renews on a timer, so the rescan only has to yield: it awaits an I/O page at a time and never runs a long synchronous
   loop. A lost hold (`acquire` returns `null`) stands the rescan down as a retryable failure.
+- **The memo binds two endpoints, not the whole prefix** (R17): sequence 0 (the incarnation) and the envelope at `through`. A false hit needs both byte-identical, millisecond timestamps included, which can only happen under a fake clock with a delete and an id reuse; this residual is accepted.
+- **An event a gate-off node commits after adoption carries no record** (R17), so a later rescan sees only its JSON view, the same limit as for pre-1.27 events; the memo-tail path reads such an event as overflow.
 - **A restore covers only what the log holds.** `restoreFromState` rebuilds the key from the log's origins up to the caller's state sequence; origins that only the caller's state carried (and the log does not) are not recovered (S2c review, M-6).
 - **Memo.** The rebuilt key is kept in the seed for that resume and persisted by the next snapshot the cadence writes. The runtime also
   memoizes the result in a bounded LRU keyed by `(executionId, snapshot.id, snapshot.sequence)` (M9), so a repeated resume of the
