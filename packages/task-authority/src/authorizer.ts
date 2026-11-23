@@ -163,7 +163,19 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
     // grant's `reads`; absent `reads` covers nothing. Own-lineage reads are NOT exempt: the minter lists them.
     if (req.read === true) {
       const id = req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`;
-      if (!(g.reads ?? []).some((r) => globCovers(r, id))) {
+      // Split at the FIRST ':' (a toolId may itself contain ':'): the tool part must equal the toolId EXACTLY, so
+      // `mem:*` (tool `mem`) never covers a read of tool `mem:secret`.
+      const res = req.resource ?? "";
+      const covered = (r: string): boolean => {
+        const i = r.indexOf(":");
+        return (
+          req.resource !== undefined &&
+          i > 0 &&
+          r.slice(0, i) === req.toolId &&
+          globCovers(r.slice(i + 1), res)
+        );
+      };
+      if (!(g.reads ?? []).some(covered)) {
         return deny(
           TASK_GRANT_DENIAL.readScope,
           `read "${clip(id)}" is not covered by the task grant's reads`

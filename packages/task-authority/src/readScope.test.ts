@@ -11,7 +11,7 @@ const grant = (reads?: string[]) =>
     taskId: "t",
     rootId: "t",
     issuedTo: "a",
-    effects: ["mem.recall", "plain"],
+    effects: ["mem.recall", "plain", "mem", "mem:secret"],
     leases: {},
     exp: NOW + 1000,
     epoch: 0,
@@ -54,6 +54,14 @@ describe("TaskGrantAuthorizer reads (D8)", () => {
   it("a read outside every entry is denied", () => {
     for (const r of [["mem.recall:other/*"], ["other:user/1"], ["mem.recall:user"]])
       expect(req(r).reason).toMatch(/^task-grant:read-scope:/);
+  });
+
+  // kills: matching `<toolId>:<resource>` as one string (tool `mem:secret` read through `mem:*`)
+  it("a tool whose id contains ':' is not covered by a shorter tool's glob", () => {
+    expect(req(["mem:*"], { toolId: "mem:secret", resource: undefined }).allowed).toBe(false);
+    expect(req(["mem:*"], { toolId: "mem", resource: "secret" })).toEqual({ allowed: true });
+    expect(req(["mem:*"], { toolId: "mem:secret", resource: "x" }).allowed).toBe(false);
+    expect(req(["mem:secret:x*"], { toolId: "mem:secret", resource: "x1" }).allowed).toBe(false);
   });
 
   // kills: a resource-less read slipping through an `x:*` entry
