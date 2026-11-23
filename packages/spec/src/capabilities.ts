@@ -700,10 +700,12 @@ export const CAPABILITIES: readonly Capability[] = [
     id: "task-authority",
     title: "Task-scoped Authority",
     package: "@loomwork/task-authority",
-    level: "L1",
+    level: "L2",
     summary:
       "ADR 0150 — per-task signed grants, side-effect leases that pause on exhaustion, child leases carved by reservation, cross-lineage provenance.",
-    evidence: {},
-    note: "Design accepted (ADR 0150); the @loomwork/task-authority package exists and builds but holds only a version marker (slice 1 in progress), so evidence-derived it is L1.",
+    evidence: {
+      conformanceTest: "packages/task-authority/src/conformance.test.ts",
+    },
+    note: "ADR 0150 slice 1, implemented (amended 2026-11-23). L2: a real test suite plus a published conformance kit (`@loomwork/task-authority/conformance`, whose checks each carry a fail-proof). Not L3: no example consumes it yet. Needs the ADR 0151 kernel seams, which are still Proposed. Covered laundering (provenance taint) is slice 2 and is reported as skipped by the kit.",
   },
 ];
