@@ -22,6 +22,7 @@ import type {
 
 export class EffectRuntime {
   private readonly registry = new Map<string, Effect>();
+  private readonly readEffects = new Set<string>();
   private readonly middleware: readonly EffectMiddleware[];
   private readonly authorizer: CapabilityAuthorizer | undefined;
   private readonly scheduler: Scheduler | undefined;
@@ -54,6 +55,16 @@ export class EffectRuntime {
         `Effect "${toolId}" declares kind ${JSON.stringify(effect.kind)}: a kind must match ${String(VOCABULARY_NAME_PATTERN)} (ADR 0115)`
       );
     }
+    // ADR 0150 D8: `read` is snapshotted HERE (a later mutation of `capabilities` cannot unmark it) and must be a
+    // boolean. Re-registering a toolId re-snapshots.
+    const read = (effect.capabilities as { read?: unknown } | undefined)?.read;
+    if (read !== undefined && typeof read !== "boolean") {
+      throw new Error(
+        `Effect "${toolId}" declares capabilities.read as ${typeof read}: it must be a boolean (ADR 0150 D8)`
+      );
+    }
+    if (read === true) this.readEffects.add(toolId);
+    else this.readEffects.delete(toolId);
     this.registry.set(toolId, effect);
   }
 
@@ -94,15 +105,9 @@ export class EffectRuntime {
     }
   }
 
-  // ADR 0150 D8 — true only for an effect that declares `capabilities.read === true` (read once, never throws).
+  // ADR 0150 D8 — true only for an effect that declared `capabilities.read === true` WHEN REGISTERED.
   private isRead(toolId: string): boolean {
-    try {
-      return (
-        (this.registry.get(toolId)?.capabilities as { read?: unknown } | undefined)?.read === true
-      );
-    } catch {
-      return false;
-    }
+    return this.readEffects.has(toolId);
   }
 
   // The shared execute path for both seams. `seam` records which entry point the

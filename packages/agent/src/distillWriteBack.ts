@@ -1,6 +1,6 @@
 import { isTainted, taintOf, tainted } from "@loomwork/classify";
 import { sha256Hex } from "@loomwork/core";
-import type { TieredMemory } from "@loomwork/memory";
+import type { MemoryEntry, TieredMemory } from "@loomwork/memory";
 import type { ExecutionContext } from "@loomwork/workflow-runtime";
 import { classifyModelCallFailure } from "./toolFailure";
 
@@ -56,6 +56,8 @@ export async function distillWriteBack(a: {
   answer: string;
   sawTaintFrom?: string | undefined;
   warn: (message: string) => void;
+  /** ADR 0150 D8: when set, the existing-facts read is a journaled recall EFFECT (authorized), not an inline read. */
+  recallToolId?: string | undefined;
 }): Promise<DistilledWrite | undefined> {
   const { ctx, distill: d } = a;
   const maxFacts = d.maxFacts ?? 16;
@@ -63,11 +65,24 @@ export async function distillWriteBack(a: {
   // Filter to facts BEFORE the limit, inside the recorded decision: a tier that also holds raw
   // entries (distill turned on for an existing tier) must still show the newest facts, and only
   // the facts shown are journaled.
-  const existing = await ctx.decide(`${a.idPrefix}#writeback:existing`, async () =>
-    (await a.memory.recall(a.tier, a.scope))
-      .filter((e) => e.role === "fact" && typeof e.id === "string")
-      .slice(-(d.maxExisting ?? 200))
-  );
+  const factsOf = (all: MemoryEntry[]) =>
+    all.filter((e) => e.role === "fact" && typeof e.id === "string").slice(-(d.maxExisting ?? 200));
+  const existing =
+    a.recallToolId !== undefined
+      ? factsOf(
+          await ctx.execute<{ tier: string; scope: string }, MemoryEntry[]>(
+            {
+              _tag: "TaskDefinition",
+              kind: "memory",
+              id: `${a.idPrefix}#writeback:existing`,
+              toolId: a.recallToolId,
+            },
+            { tier: a.tier, scope: a.scope }
+          )
+        )
+      : await ctx.decide(`${a.idPrefix}#writeback:existing`, async () =>
+          factsOf(await a.memory.recall(a.tier, a.scope))
+        );
   const shown = new Set(existing.map((e) => e.id as string));
   let origin = a.promptOrigin ?? a.sawTaintFrom;
   for (const e of existing) {
