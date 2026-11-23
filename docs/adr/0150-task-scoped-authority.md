@@ -584,6 +584,8 @@ Slice 2 (D7–D12) was designed against the code at main 7409550f. The kernel se
 - **S-R6 (D10): enforcement** is a per-call middleware that reads the registered effect's `capabilities` through the `effects` getter; `sandbox: "isolated"` refuses a sandbox effect whose backend is not `network: "none"` plus `freshPerRun`. It is not a `sandboxEval$` change.
 - **S-R7 (D7): A2A ingress** gets a taint in `plugins/a2a` (`a2a-inbound:<peer>`), plus a lineage origin when the caller's principal carries a grant.
 
+- **S-R8 (D7): the seen-origins bounds are configurable and recorded per run.** `maxOrigins` and `maxScanNodes` are set through runtime options and stamped on `EXECUTION_STARTED`, so replay uses the recorded limits and never the current config; a run started before EVENT_SCHEMA 1.27.0 uses the defaults. A pre-1.27 snapshot is rescanned once at upgrade (ADR 0152 D1).
+
 ### Corrected premises
 
 - **D7 "each of these seams already taints third-party content" is partly false (corrected).** Only the inbox is tainted at ingress (`deliveredValue`, `inbox:<topic>`). Memory recall, durable state and A2A-inbound are not tainted at ingress, and no store records a writer. Hence S-R1 (tag at write, content-level) and S-R7 (A2A ingress taint). "D7 only sets the origin label" is therefore wrong: D7 also adds the tainting at those seams.
