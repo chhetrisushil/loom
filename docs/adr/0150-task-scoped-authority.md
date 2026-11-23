@@ -1,6 +1,6 @@
 # ADR 0150 — Task-scoped authority: grants per task, effect leases that pause when spent, and accounting by lineage, as an opt-in package
 
-- Status: **Accepted** (2026-11-23) — design accepted by the owner; amended 2026-11-23 (slice 1 as built; follow-ups closed, see the end of this ADR); slice 2 pending
+- Status: **Accepted** (2026-11-23) — design accepted by the owner; amended 2026-11-23 (slice 1 as built; follow-ups closed, see the end of this ADR); slice 2 designed, see the slice-2 amendment and ADR 0152
 - Date: 2026-11-23
 - Builds on: [ADR 0024](0024-k12-identity-tenancy-delegated-authority.md) (`PrincipalChain`, signed attenuated
   delegation, nested budgets, `ResumeAuthenticator`), [ADR 0111](0111-durable-principal.md) (the principal is
@@ -561,3 +561,33 @@ built by the same helper as `readResources()` ([ADR 0151](0151-effect-context-fl
 ### Still open
 
 Slice 2, none of it built: provenance taint across lineages (D7), `reads` scoping (D8), grant derivation (D9), `ambient` and the enforcing sandbox (D10), the schedule root (D11) and disclosure (D12); and covered laundering, which the kit reports as skipped. The `@loomwork/verify` options the header promised did not ship with slice 1.
+
+## Amendment (2026-11-23, slice 2 design)
+
+Slice 2 (D7–D12) was designed against the code at main 7409550f. The kernel seams it needs are decided in
+[ADR 0152](0152-seen-origins-and-schedule-principal.md) (Proposed). Earlier text above is kept unchanged. Where research showed a premise to be wrong, the correction is marked "(corrected)".
+
+### Owner decisions (2026-11-23)
+
+- **D7 (changed):** the "seen origins" set is a KERNEL field, `EffectContext.seenOrigins` (ADR 0152 D1), so the policy covers every flow, not only agent loops. The text above has `agentLoop$` keep the set; `sawTaintFrom` stays a prompt-fencing local there.
+- **D8 (changed):** reads are made checkable by turning memory recall into an EFFECT (`agentLoop$` `recall.toolId`), with the resource being the scope, so a `reads` grant can be enforced by the existing authorizer path instead of by wrapper stores alone.
+- **D12 (changed):** a small `TimerService` principal hook, `principalFor` (ADR 0152 D2), plus a one-off approval run that mints the schedule grant, because approvals are park-bound and a schedule has no park.
+- **D11 (changed):** disclosure is an opt-in `agentLoop$ authority.onDenied: "fail" | "opaque" | "reason"`. The default `"fail"` keeps today's behaviour.
+
+### Controller rulings
+
+- **S-R1 (D7, D8): writer tagging is content-level.** Writers wrap shared content as `tainted(value, "lineage:<rootId>")` using their verified task grant (memory write-back effect, an inbox-send helper, A2A). Memory and inbox already round-trip taint wrappers, so no store SPI change; re-tainting keeps the original origin, so an `inbox:<topic>` delivery keeps `lineage:A`. This replaces "writes are stamped with the writer's `rootId`" in D8.
+- **S-R2 (D7): the write-class floor is app-supplied.** `directedBy({ appliesTo: (toolId, resource?) => boolean })` (or a set); no `Effect.effectClass` runtime field, which would be a second kernel change. Default: every leased effect. This replaces D7's "`effectClass` at or above a floor (default `write`)".
+- **S-R3 (D7): foreign** means a `lineage:` origin whose rootId differs from the acting grant's rootId. Non-lineage untrusted origins (`mcp:`, `inbox:` without lineage) are reported but do not trigger the policy unless `foreign: "any-untrusted"`. The kernel overflow marker counts as foreign.
+- **S-R4 (D8, D10): grant fields** `reads?: string[]` (globs over `<toolId>:<resource>` read capabilities) and `sandbox?: "isolated"`. `sandbox` is the rename of D10's `ambient` (and of the `grant.ambient = "none"` form), which collides with `EffectMode "ambient"`. Both are signed, encoded only when present (the T13 pattern), children are subsets of the parent, and renewal preserves them.
+- **S-R5 (D9): placement.** `reachOf(runtime, flowId)` lives in `@loomwork/app`, which already builds reach; `deriveGrant(reach)` is structural in task-authority; the rule `task-grant-reach` in `@loomwork/verify` reads app-supplied grant templates (`checks.verify.taskGrants`), since grants are minted at runtime. An `agentLoop$` reach is its tools plus its skills' tools plus the `toolSearch` catalog, documented as wide. This replaces `deriveGrant(flow | agentLoopConfig)` taking the flow directly.
+- **S-R6 (D10): enforcement** is a per-call middleware that reads the registered effect's `capabilities` through the `effects` getter; `sandbox: "isolated"` refuses a sandbox effect whose backend is not `network: "none"` plus `freshPerRun`. It is not a `sandboxEval$` change.
+- **S-R7 (D7): A2A ingress** gets a taint in `plugins/a2a` (`a2a-inbound:<peer>`), plus a lineage origin when the caller's principal carries a grant.
+
+### Corrected premises
+
+- **D7 "each of these seams already taints third-party content" is partly false (corrected).** Only the inbox is tainted at ingress (`deliveredValue`, `inbox:<topic>`). Memory recall, durable state and A2A-inbound are not tainted at ingress, and no store records a writer. Hence S-R1 (tag at write, content-level) and S-R7 (A2A ingress taint). "D7 only sets the origin label" is therefore wrong: D7 also adds the tainting at those seams.
+- **D8 "content refs already refuse foreign references (`acceptContentRefParam`, ADR 0120)" (corrected):** `acceptContentRefParam` does not exist in the code. Do not rely on it; any content-ref refusal is a separate piece of work if wanted.
+- **D11 "`"reason"` ... is today's behaviour" is false (corrected).** A capability denial is TERMINAL: `isTerminalToolError` throws it out of the turn and it never reaches the model (R4, R10; `AgentRunner` and `agentLoop$`). So the model sees neither a reason nor an opaque string today. `"fail"` (default, unchanged) names today's behaviour; `"opaque"` and `"reason"` are NEW modes that hand the model a refusal result instead of ending the run.
+- **D11 and D12 labels are swapped in "Still open" (corrected).** That paragraph says "the schedule root (D11) and disclosure (D12)". The decisions are D11 = refusal disclosure and D12 = root authority for scheduled runs, as in the headings above.
+- **D12 "recorded `APPROVAL_GRANTED` ... answers for every tick" needs a run to hang on (corrected):** approvals are park-bound (`verifyApproval` on resume), so the schedule grant is approved in a one-off run that parks, and `TimerService` starts ticks with no principal today (`startOccurrence`), which ADR 0152 D2 fixes.
