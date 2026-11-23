@@ -40,7 +40,7 @@ Slice 1 surface (see `docs/api-reference.org`):
   runs started under it, so retire through `refOnly` (see the user guide).
 - Strict leases: `taskLeaseMiddleware` defaults to `strictLeases: true`, so an in-scope effect that no lease counts is
   refused when called (`LeaseUnmappedError`).
-- `@loomwork/task-authority/conformance`: a kit that proves a broker and runtime wiring resist laundering.
+- `@loomwork/task-authority/conformance`: a kit that proves a broker and runtime wiring resist laundering. It no longer skips `laundering.uncovered.a2a`: pass `a2a: A2ATransport` on the subject (an in-process hop; build it on `LoomAgentExecutor` from `@loomwork/plugin-a2a`, see `plugins/a2a/src/kitLaundering.test.ts`) and the kit has A ask B for a step B's own authority does not cover and requires a `task-grant` refusal. Without a transport the check is reported `skipped: no A2A transport supplied`, never passed.
 
 ## Isolated sandbox (`sandbox: "isolated"`, ADR 0150 D10)
 

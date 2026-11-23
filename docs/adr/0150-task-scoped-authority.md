@@ -455,7 +455,7 @@ passes the conformance kit.
   design (D3: the codec restores the grant from the broker), so zero calls overall is impossible; "no broker calls per replayed
   effect" is what the kit asserts.
 - Covered laundering (which needs the D7 provenance taint, slice 2) and A2A laundering are reported by the kit as **skipped**, not
-  as passed.
+  as passed. *(Status, slice 2: both are real checks. `laundering.covered` shipped with S5; `laundering.uncovered.a2a` ships with S11: the subject supplies an in-process `A2ATransport` (the kit cannot depend on `@loomwork/plugin-a2a`, which dev-depends on it), and without one the check is still reported skipped, never passed.)*
 - The kit lives at `@loomwork/task-authority/conformance` (`checkTaskAuthorityConformance`: broker contract, runtime wiring,
   laundering, forged meters, revocation, carve, pause-and-renew, replay), each check with a fail-proof.
 

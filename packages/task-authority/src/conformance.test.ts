@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { MintRequest, RenewalRequest } from "./broker";
 import {
+  type A2ATransport,
   CONFORMANCE_CHECK_IDS,
   type ConformanceReport,
   type ConformanceSubject,
   checkTaskAuthorityConformance,
 } from "./conformance";
-import { launderingCovered, readScope } from "./conformanceRuntime";
+import { launderingA2A, launderingCovered, readScope } from "./conformanceRuntime";
 import { keyRing, signTaskGrant } from "./grant";
 import { InMemoryGrantBroker } from "./renew";
 
@@ -177,21 +178,41 @@ class ReleasesOnRevoke extends InMemoryGrantBroker {
   }
 }
 describe("checkTaskAuthorityConformance", () => {
-  it("passes the reference broker; only the A2A laundering check is skipped, with a reason", async () => {
+  it("passes the reference broker; with no A2A transport only laundering.uncovered.a2a is skipped, with a reason", async () => {
     const r = await checkTaskAuthorityConformance(reference);
     expect(failed(r)).toEqual([]);
     expect(r.ok).toBe(true);
-    expect(r.results.length).toBeGreaterThan(0);
     expect(r.results.map((x) => x.id)).toEqual([...CONFORMANCE_CHECK_IDS]);
     expect(find(r, "laundering.covered")?.status).toBe("passed");
-    expect(find(r, "laundering.uncovered.a2a")?.message).toBe(
-      "A2A transport not available in-process"
-    );
+    expect(find(r, "laundering.uncovered.a2a")?.message).toBe("no A2A transport supplied");
     const skipped = r.results.filter((x) => x.status === "skipped").map((x) => x.id);
     expect(skipped).toEqual(["laundering.uncovered.a2a"]);
-    expect(r.results.filter((x) => x.status === "passed").length).toBe(
-      CONFORMANCE_CHECK_IDS.length - 1
-    );
+  }, 30_000);
+
+  // The real LoomAgentExecutor hop is proved in plugins/a2a; this hop starts the run as the peer, as the executor does.
+  const direct: A2ATransport = {
+    serve: (runtime, flow) => async (_prompt, principal) => {
+      await (await runtime.start(flow, { prompt: _prompt }, { principal })).waitForCompletion();
+    },
+  };
+  // kills: B enforcing no authority of its own (wired: false) or a transport that never delivers
+  it("laundering.uncovered.a2a passes with a transport and fails the broken stack", async () => {
+    const withA2A = { ...reference, a2a: direct };
+    await expect(launderingA2A(withA2A)).resolves.toBeUndefined();
+    await expect(launderingA2A(withA2A, false)).rejects.toThrow(/B ran a step its own authority/);
+    const none = { ...reference, a2a: { serve: () => async () => {} } };
+    await expect(launderingA2A(none)).rejects.toThrow(/transport is not delivering/);
+    // kills: not requiring the refusal to be a task-grant denial (a call stripped of its token is refused by `base` alone)
+    const stripped = {
+      ...reference,
+      a2a: {
+        serve: (rt, flow) => async (p, principal) => direct.serve(rt, flow)(p, { actor: "a" }),
+      },
+    } satisfies ConformanceSubject;
+    await expect(launderingA2A(stripped)).rejects.toThrow(/not a task-grant denial/);
+    const r = await checkTaskAuthorityConformance(withA2A);
+    expect(find(r, "laundering.uncovered.a2a")?.status).toBe("passed");
+    expect(r.results.filter((x) => x.status === "skipped")).toEqual([]);
   }, 30_000);
 
   it("names every ADR 0150 D14 check", () => {
