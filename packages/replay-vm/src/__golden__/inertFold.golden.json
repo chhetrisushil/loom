@@ -1,0 +1,130 @@
+{
+  "executionId": "",
+  "workflowId": "",
+  "workflowVersion": "",
+  "status": "running",
+  "frames": {
+    "s1": {
+      "stepId": "s1",
+      "status": "completed",
+      "attempts": 1,
+      "firstSeq": 1,
+      "completedAt": 1002,
+      "startedAt": 1001,
+      "firstStartedAt": 1001,
+      "output": {
+        "r": {
+          "__loomTainted": {
+            "origin": "mcp:t/x"
+          },
+          "value": [1, 2]
+        },
+        "n": 3
+      }
+    },
+    "s2": {
+      "stepId": "s2",
+      "status": "failed",
+      "attempts": 1,
+      "firstSeq": 7,
+      "startedAt": 1007,
+      "firstStartedAt": 1007,
+      "error": "boom",
+      "errorChannel": "typed",
+      "errorPayload": {
+        "__loomTainted": {
+          "origin": "tool:f"
+        },
+        "value": {
+          "e": 1
+        }
+      }
+    }
+  },
+  "variables": {
+    "_input": {
+      "__loomTainted": {
+        "origin": "x:y"
+      },
+      "value": {
+        "m": 1
+      }
+    },
+    "_flowHash": "h",
+    "_inbox": {
+      "cursors": {
+        "orders": 0
+      },
+      "dedupe": ["m1"]
+    },
+    "_waitAnswers": {
+      "w1": {
+        "kind": "inbox",
+        "name": "orders",
+        "payload": {
+          "__loomTainted": {
+            "origin": "lineage:A"
+          },
+          "value": {
+            "a": 1
+          }
+        }
+      }
+    },
+    "_resumePayload": {
+      "ok": {
+        "__loomTainted": {
+          "origin": "human:bob"
+        },
+        "value": "yes"
+      }
+    },
+    "_resumePayloads": [
+      {
+        "ok": {
+          "__loomTainted": {
+            "origin": "human:bob"
+          },
+          "value": "yes"
+        }
+      }
+    ],
+    "_decisions": {
+      "d1": {
+        "choice": {
+          "__loomTainted": {
+            "origin": "memory:k"
+          },
+          "value": {
+            "c": 1
+          }
+        },
+        "source": "opt",
+        "seq": 6
+      }
+    },
+    "_scopes": {
+      "p": {
+        "failedBranch": 0,
+        "errorChannel": "c",
+        "errorPayload": {
+          "__loomTainted": {
+            "origin": "tool:g"
+          },
+          "value": 1
+        },
+        "cancelled": []
+      }
+    },
+    "_migratedTo": "wf2",
+    "_migrations": [
+      {
+        "toFlowId": "wf2",
+        "stateMigrated": true
+      }
+    ]
+  },
+  "sequence": 11,
+  "startedAt": 1000,
+  "updatedAt": 1010
+}

@@ -835,7 +835,7 @@ describe("S7c review P2-4 - disabled really is byte-identical, and the contract 
       "continueAsNew",
       "negotiateBudget",
     ]);
-    expect(EVENT_SCHEMA_VERSION).toBe("1.26.0");
+    expect(EVENT_SCHEMA_VERSION).toBe("1.27.0");
     expect(EVENT_STORE_SPI_VERSION).toBe("2.6.0");
     expect(LEASE_STORE_SPI_VERSION).toBe("2.2.0");
   });

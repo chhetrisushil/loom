@@ -76,7 +76,7 @@ Most of the arcs since landed **outside** the kernel, though not all. `KERNEL_AB
 `1.2.0` (L30: `ctx.decide`'s decider receives a transient-invoker scope) and then `1.3.0`, which reserves
 `continueAsNew`, `receive` and `select`. `EVENT_SCHEMA` moved through typed failure channels (`1.17.0`), the
 learning substrate's decision context (`1.18.0`) and [ADR 0102](adr/0102-flow-emits-append-once.md)'s
-append-once flow emits (`1.19.0`), then on to `1.26.0` ([ADR 0138](adr/0138-compaction-archives-what-it-removes.md)). See the
+append-once flow emits (`1.19.0`), then on to `1.27.0` ([ADR 0152](adr/0152-seen-origins-and-schedule-principal.md)). See the
 [compatibility matrix](spec/compatibility-matrix.md) for what is current:
 
 - **GenUI dynamic execution** ([ADRs 0060–0066](adr/)) — the one that *did* change the kernel, and

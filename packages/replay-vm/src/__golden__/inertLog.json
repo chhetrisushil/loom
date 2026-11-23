@@ -1,0 +1,225 @@
+[
+  {
+    "id": "x-0",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "EXECUTION_STARTED",
+    "sequence": 0,
+    "timestamp": 1000,
+    "payload": {
+      "input": {
+        "__loomTainted": {
+          "origin": "peer:a"
+        },
+        "value": {
+          "q": 1
+        }
+      },
+      "flowHash": "h"
+    }
+  },
+  {
+    "id": "x-1",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "STEP_STARTED",
+    "sequence": 1,
+    "timestamp": 1001,
+    "payload": {
+      "stepId": "s1",
+      "input": {}
+    }
+  },
+  {
+    "id": "x-2",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "STEP_COMPLETED",
+    "sequence": 2,
+    "timestamp": 1002,
+    "payload": {
+      "stepId": "s1",
+      "output": {
+        "r": {
+          "__loomTainted": {
+            "origin": "mcp:t/x"
+          },
+          "value": [1, 2]
+        },
+        "n": 3
+      }
+    },
+    "metadata": {
+      "origins": ["forged:1"]
+    }
+  },
+  {
+    "id": "x-3",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "MESSAGE_CONSUMED",
+    "sequence": 3,
+    "timestamp": 1003,
+    "payload": {
+      "waitId": "w1",
+      "topic": "orders",
+      "messageId": "m1",
+      "inboxSeq": 0,
+      "payload": {
+        "__loomTainted": {
+          "origin": "lineage:A"
+        },
+        "value": {
+          "a": 1
+        }
+      }
+    },
+    "metadata": {
+      "kernel": true,
+      "origins": ["inbox:orders", "lineage:A"]
+    }
+  },
+  {
+    "id": "x-4",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "EXECUTION_SUSPENDED",
+    "sequence": 4,
+    "timestamp": 1004,
+    "payload": {
+      "condition": {
+        "kind": "gate",
+        "on": "approve"
+      }
+    }
+  },
+  {
+    "id": "x-5",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "EXECUTION_RESUMED",
+    "sequence": 5,
+    "timestamp": 1005,
+    "payload": {
+      "ok": {
+        "__loomTainted": {
+          "origin": "human:bob"
+        },
+        "value": "yes"
+      }
+    },
+    "metadata": {
+      "originsOverflow": true
+    }
+  },
+  {
+    "id": "x-6",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "DECISION_RECORDED",
+    "sequence": 6,
+    "timestamp": 1006,
+    "payload": {
+      "decisionId": "d1",
+      "choice": {
+        "__loomTainted": {
+          "origin": "memory:k"
+        },
+        "value": {
+          "c": 1
+        }
+      },
+      "source": "opt"
+    }
+  },
+  {
+    "id": "x-7",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "STEP_STARTED",
+    "sequence": 7,
+    "timestamp": 1007,
+    "payload": {
+      "stepId": "s2"
+    }
+  },
+  {
+    "id": "x-8",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "STEP_FAILED",
+    "sequence": 8,
+    "timestamp": 1008,
+    "payload": {
+      "stepId": "s2",
+      "error": "boom",
+      "channel": "typed",
+      "payload": {
+        "__loomTainted": {
+          "origin": "tool:f"
+        },
+        "value": {
+          "e": 1
+        }
+      }
+    }
+  },
+  {
+    "id": "x-9",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "PARALLEL_COMPLETED",
+    "sequence": 9,
+    "timestamp": 1009,
+    "payload": {
+      "scopePath": "p",
+      "failedBranch": 0,
+      "errorChannel": "c",
+      "errorPayload": {
+        "__loomTainted": {
+          "origin": "tool:g"
+        },
+        "value": 1
+      },
+      "cancelled": []
+    },
+    "metadata": {
+      "kernel": true
+    }
+  },
+  {
+    "id": "x-10",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "EXECUTION_MIGRATED",
+    "sequence": 10,
+    "timestamp": 1010,
+    "payload": {
+      "toFlowId": "wf2",
+      "migratedInput": {
+        "__loomTainted": {
+          "origin": "x:y"
+        },
+        "value": {
+          "m": 1
+        }
+      }
+    }
+  },
+  {
+    "id": "x-11",
+    "workflowId": "wf",
+    "executionId": "x",
+    "eventType": "APP_EVENT",
+    "sequence": 11,
+    "timestamp": 1011,
+    "payload": {
+      "blob": {
+        "__loomTainted": {
+          "origin": "app:z"
+        },
+        "value": 1
+      }
+    }
+  }
+]

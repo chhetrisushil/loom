@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Seen origins, the fold side, inert (EVENT_SCHEMA 1.27.0; [ADR 0152](docs/adr/0152-seen-origins-and-schedule-principal.md) D1, S2a).** The fold gains the reserved variable `_seenOrigins { v, limits, origins, overflow?, through }`, created only for a run whose `EXECUTION_STARTED` carries the optional `seenOriginsLimits` stamp or a carried set (`continuedFrom.carried.seenOrigins`; a stamped successor or fork with no carried set reads as overflow). It unions the origin lists recorded in an event's metadata (`origins`, `originsOverflow`) and advances `through`; it never opens a payload. `normalizeSnapshotState` reads a key whose `through` is not `state.sequence` as overflow. Nothing stamps or records yet (S2a2), so no run is tracked and an untracked log folds byte-identically to 1.26.0 (golden-pinned).
+
 - **ADR 0152 (Proposed): kernel seams for task-authority slice 2 ([ADR 0152](docs/adr/0152-seen-origins-and-schedule-principal.md)); ADR 0150 slice-2 amendment.** Docs only, nothing built. D1 designs `EffectContext.seenOrigins`, a replay-deterministic, bounded set of the taint origins a run has been shown, derived in the fold (EVENT_SCHEMA 1.27.0, no new event kind). D2 designs `TimerServiceOptions.principalFor`, a hook that gives a scheduled occurrence a recorded start principal. The [ADR 0150](docs/adr/0150-task-scoped-authority.md) amendment records the owner decisions, rulings S-R1 to S-R7 and four corrected premises.
 
 ## [0.1.6] - 2026-11-23
