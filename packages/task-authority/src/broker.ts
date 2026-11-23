@@ -27,9 +27,19 @@ export interface RenewalRequest {
 export type RenewalVerdict =
   | { granted: true; epoch: number; digest: string }
   | { granted: false; reason: string };
+/**
+ * Where the principal codec reads a task's CURRENT grant. taskIds MUST NOT be reused or reissued to another
+ * holder (the `ta1:` ref's MAC binds the holder, R15; a reused id would still be one task's history).
+ * After a revoke the execution's owner is unknown to the execution access policy (ADR 0111 `unknownOwner`).
+ */
 export interface GrantSource {
   current(taskId: string): Promise<TaskGrant | undefined>;
   revoked?(digest: string): Promise<boolean>;
+  /**
+   * Bind a task to ONE execution (R16): the first claim wins, a repeat by the same `executionId` is true,
+   * any other execution gets false. An unknown or revoked task is false.
+   */
+  claim(taskId: string, executionId: string): Promise<boolean>;
 }
 export interface GrantBroker extends GrantSource {
   mint(r: MintRequest): Promise<TaskGrant>;
@@ -80,6 +90,7 @@ export function cloneRequest<T>(v: T): T {
 export class InMemoryGrantLedger {
   protected readonly tasks = new Map<string, Rec>();
   protected readonly revokedDigests = new Set<string>();
+  protected readonly claims = new Map<string, string>();
   protected readonly secret: string;
   protected readonly now: () => number;
 
@@ -94,6 +105,13 @@ export class InMemoryGrantLedger {
   }
   async revoked(digest: string): Promise<boolean> {
     return this.revokedDigests.has(digest);
+  }
+  async claim(taskId: string, executionId: string): Promise<boolean> {
+    const r = this.tasks.get(taskId);
+    if (!r || r.revoked) return false;
+    const held = this.claims.get(taskId);
+    if (held === undefined) this.claims.set(taskId, executionId);
+    return held === undefined || held === executionId;
   }
 
   /** Ceiling of `lease` the parent has not yet handed to ANY child (revoked ones included) other than `except`. */

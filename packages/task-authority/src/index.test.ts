@@ -12,6 +12,7 @@ describe("@loomwork/task-authority public surface", () => {
       "TASK_AUTHORITY_VERSION",
       "TASK_GRANT_DENIAL",
       "TASK_REF_PREFIX",
+      "TaskAuthorityPrincipalError",
       "TaskGrantAuthorizer",
       "TaskGrantShapeError",
       "installTaskAuthority",

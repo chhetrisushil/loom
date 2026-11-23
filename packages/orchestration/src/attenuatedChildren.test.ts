@@ -374,6 +374,15 @@ describe("attenuated authority for spawned children (R5)", () => {
     expect(orchestrationPrincipalCodec("other-secret").fromRef(ref, ctx)).toBeUndefined();
   });
 
+  it("ADR 0150 R13: declines a chain carrying a task grant, in either field order", () => {
+    const codec = orchestrationPrincipalCodec(SECRET);
+    const token = signDelegation(SECRET, "kid", ["read-rows"]);
+    const grant = { taskId: "t" } as never;
+    expect(codec.toRef({ actor: "kid", delegation: token, taskGrant: grant })).toBeUndefined();
+    expect(codec.toRef({ taskGrant: grant, delegation: token, actor: "kid" })).toBeUndefined();
+    expect(codec.toRef({ actor: "kid", delegation: token })).toBeTypeOf("string");
+  });
+
   it("P3-1: the MAC key is derived, so a ref MAC is never a valid delegation signature", () => {
     const codec = orchestrationPrincipalCodec(SECRET);
     const token = signDelegation(SECRET, "kid", ["read-rows"]);

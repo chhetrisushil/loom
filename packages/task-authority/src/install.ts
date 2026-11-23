@@ -1,5 +1,9 @@
 import type { GrantSource } from "./broker";
-import { type TaskAuthorityPrincipalCodec, taskAuthorityPrincipalCodec } from "./codec";
+import {
+  type TaskAuthorityCodecOptions,
+  type TaskAuthorityPrincipalCodec,
+  taskAuthorityPrincipalCodec,
+} from "./codec";
 
 /** Structural slice of `WorkflowRuntime` this needs, so no kernel dependency is added. */
 export interface PrincipalCodecHost {
@@ -9,9 +13,10 @@ export interface PrincipalCodecHost {
 /** ADR 0150 D3 — compose the task-authority codec onto a runtime (it keeps any codec already set). */
 export function installTaskAuthority(
   runtime: PrincipalCodecHost,
-  o: { source: GrantSource; secret: string }
+  o: { source: GrantSource } & TaskAuthorityCodecOptions
 ): TaskAuthorityPrincipalCodec {
-  const codec = taskAuthorityPrincipalCodec(o.source, { secret: o.secret });
+  const { source, ...rest } = o;
+  const codec = taskAuthorityPrincipalCodec(source, rest);
   runtime.composePrincipalCodec(codec);
   return codec;
 }
