@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/plugin-renderer-react",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "React renderer for Loom blueprints — validation renderer",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
