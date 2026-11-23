@@ -53,7 +53,7 @@ export interface LoomAgentExecutorOptions {
    */
   namespaceByPrincipal?: boolean;
   /**
-   * ADR 0150 D7 / S-R7 - taint what the peer sends. The prompt (and a `provideInput` payload) is wrapped as
+   * ADR 0150 D7 / S-R7 - taint what the peer sends. The prompt (and a `provideInput` payload, unless the flow declares a `resumeSchema` for that gate) is wrapped as
    * `a2a-inbound:<peer>`, the peer being the AUTHENTICATED principal's `actor` (`anonymous` when none), so the run's seen
    * origins name it. With `lineageOf` (pass `lineageOrigin(secret)` of `@loomwork/task-authority`) a principal that carries a
    * VERIFIED task grant also adds its `lineage:<rootId>` as the outer wrapper; no verified grant, no lineage origin.
@@ -181,6 +181,12 @@ export class LoomAgentExecutor implements AgentExecutor {
     return lineage === undefined ? inner : { __loomTainted: { origin: lineage }, value: inner };
   }
 
+  private typedGate(eventType: string): boolean {
+    const schemas = (this.flow.definition as { resumeSchemas?: Record<string, unknown> })
+      .resumeSchemas;
+    return schemas !== undefined && Object.hasOwn(schemas, eventType);
+  }
+
   async submit(task: A2ATask, call: ExecutorCall = {}): Promise<{ id: string }> {
     const prompt = this.inbound(task.message.parts.map((p) => p.text).join("\n"), call);
     const identity = call.principal !== undefined ? { principal: call.principal } : {};
@@ -217,7 +223,13 @@ export class LoomAgentExecutor implements AgentExecutor {
     const identity = call.principal !== undefined ? { principal: call.principal } : {};
     const handle = await this.runtime.resume(
       this.idFor(call, taskId),
-      { ...event, payload: this.inbound(event.payload, call) },
+      {
+        ...event,
+        // M-8: a gate with a typed `resumeSchema` parses its payload as the schema's shape; a wrapper would refuse it.
+        payload: this.typedGate(event.eventType)
+          ? event.payload
+          : this.inbound(event.payload, call),
+      },
       identity
     );
     return { id: taskId };

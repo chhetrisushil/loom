@@ -12,7 +12,7 @@ import type { A2ATask } from "./types";
 // ADR 0150 D7 / S-R7: A2A ingress taints what the peer sends, plus the peer's VERIFIED lineage.
 const SECRET = "a2a-secret";
 const probeTask = { _tag: "TaskDefinition", kind: "tool", id: "p", toolId: "probe" } as never;
-const world = (opts: ConstructorParameters<typeof LoomAgentExecutor>[2]) => {
+const world = (opts: ConstructorParameters<typeof LoomAgentExecutor>[2], typed = false) => {
   const seen: (readonly string[] | undefined)[] = [];
   const effects = new EffectRuntime();
   effects.register(
@@ -42,6 +42,7 @@ const world = (opts: ConstructorParameters<typeof LoomAgentExecutor>[2]) => {
     inputSchema: z.unknown(),
     outputSchema: z.unknown(),
     steps: [],
+    ...(typed && { resumeSchemas: { InputProvided: z.object({ ok: z.boolean() }) } }),
   } as unknown as FlowDefinition;
   runtime.registerFlow(definition, runner);
   const flow = { definition, runner } as RegisteredFlow;
@@ -107,5 +108,11 @@ describe("A2A inbound taint", () => {
     expect(await run(x, { actor: `evil\nname${"z".repeat(200)}` })).toEqual([
       `a2a-inbound:evil?name${"z".repeat(128 - 9)}`,
     ]);
+  });
+
+  // kills (M-8): wrapping the payload of a gate with a resumeSchema (the typed shape would refuse the wrapper)
+  it("a resume payload for a gate with a resumeSchema is passed through untouched", async () => {
+    const w = world({ taintInbound: true }, true);
+    expect(await run(w, { actor: "peer-a" })).toEqual(["a2a-inbound:peer-a"]);
   });
 });
