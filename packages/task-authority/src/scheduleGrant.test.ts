@@ -14,6 +14,7 @@ import {
   answerScheduleApproval,
   mintScheduleGrant,
   requestScheduleApproval,
+  scheduleViewDigest,
 } from "./scheduleGrant";
 
 const SECRET = "sched-secret";
@@ -27,13 +28,21 @@ const spec: ScheduleGrantSpec = {
   tenant: "acme",
 };
 
-function boot() {
+function boot(o: { auth?: boolean } = {}) {
   const broker = new InMemoryGrantBroker({ secret: SECRET, now: () => NOW });
   const runtime = new WorkflowRuntime({
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: new EffectRuntime(),
     onWarn: () => {},
+    ...(o.auth && {
+      resumeAuthenticator: {
+        verify: (e: { eventType: string; payload: unknown }) =>
+          e.eventType === SCHEDULE_GATE
+            ? { status: "verified" as const, actor: "approver", verifiedBy: "sso" }
+            : { status: "not-applicable" as const },
+      },
+    }),
   });
   const runner: FlowRunner<unknown, unknown> = async (ctx) => {
     await requestScheduleApproval(ctx as never, spec);
@@ -49,33 +58,86 @@ function boot() {
     steps: [],
   };
   runtime.registerFlow(definition, runner);
+  const reg = (id: string, r: FlowRunner<unknown, unknown>) =>
+    runtime.registerFlow({ ...definition, id, name: id }, r);
+  // a flow that CATCHES the refusal and completes; one that forges the proposal; one that forges the marker too
+  reg("catches", async (ctx) => {
+    try {
+      await requestScheduleApproval(ctx as never, spec);
+    } catch (e) {
+      if (!(e instanceof ScheduleDeniedError)) throw e; // a park (SuspendError) must still propagate
+    }
+    return { approved: false };
+  });
+  reg("forges", async (ctx) => {
+    await (ctx as never as { decide: (i: string, f: () => unknown) => Promise<unknown> }).decide(
+      "task-authority:schedule:nightly",
+      () => spec
+    );
+    return {};
+  });
+  reg("forges-marker", async (ctx) => {
+    const c = ctx as never as {
+      executionId: string;
+      decide: (i: string, f: () => unknown) => Promise<unknown>;
+    };
+    await c.decide("task-authority:schedule:nightly", () => spec);
+    await c.decide("task-authority:schedule-approved:nightly", () => ({
+      approved: true,
+      digest: scheduleViewDigest(`${c.executionId}#schedule:nightly`, spec),
+    }));
+    return {};
+  });
+  reg("forges-badmarker", async (ctx) => {
+    const c = ctx as never as { decide: (i: string, f: () => unknown) => Promise<unknown> };
+    await c.decide("task-authority:schedule:nightly", () => spec);
+    await c.decide("task-authority:schedule-approved:nightly", () => ({
+      approved: true,
+      digest: "not-the-digest",
+    }));
+    return {};
+  });
   return { broker, runtime };
 }
 const OPS = { actor: "ops", tenant: "acme" };
-const park = async (app: ReturnType<typeof boot>, id: string, principal: object | null = OPS) => {
-  const h = await app.runtime.start(app.runtime.getFlow("approve-schedule") as never, {}, {
+const park = async (
+  app: ReturnType<typeof boot>,
+  id: string,
+  principal: object | null = OPS,
+  flow = "approve-schedule"
+) => {
+  const h = await app.runtime.start(app.runtime.getFlow(flow) as never, {}, {
     executionId: id,
     ...(principal !== null && { principal }),
   } as never);
   await h.waitForSuspend();
 };
 const NOWOPT = { now: () => NOW };
+const done = async (app: ReturnType<typeof boot>, id: string): Promise<void> => {
+  const deadline = Date.now() + 5_000;
+  while ((await app.runtime.loadState(id))?.status !== "completed") {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${id} to complete`);
+    await new Promise((r) => setTimeout(r, 2));
+  }
+};
 const answer = (
   app: ReturnType<typeof boot>,
   id: string,
   d: { approved: boolean; reason?: string },
   o: object = {}
 ) =>
-  answerScheduleApproval(app.runtime as never, app.broker, id, d, undefined, { ...NOWOPT, ...o });
+  answerScheduleApproval(app.runtime as never, app.broker, id, d, undefined, {
+    ...NOWOPT,
+    expect: { issuedTo: "svc-reports", tenant: "acme" },
+    ...o,
+  });
 
 describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => {
   it("an approved schedule mints the root grant the human saw", async () => {
     // Kills: not minting after approval, or minting a grant that differs from the proposal (ceilings, expiry, identity).
     const app = boot();
     await park(app, "appr-1");
-    const g = await answerScheduleApproval(app.runtime as never, app.broker, "appr-1", {
-      approved: true,
-    });
+    const g = await answer(app, "appr-1", { approved: true });
     expect(g).toMatchObject({
       taskId: "nightly",
       rootId: "nightly",
@@ -92,12 +154,7 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
     // Kills: minting on any resume (ignoring the verdict), or a refusal that leaves the run parked.
     const app = boot();
     await park(app, "appr-2");
-    expect(
-      await answerScheduleApproval(app.runtime as never, app.broker, "appr-2", {
-        approved: false,
-        reason: "no",
-      })
-    ).toBeUndefined();
+    expect(await answer(app, "appr-2", { approved: false, reason: "no" })).toBeUndefined();
     expect(await app.broker.current("nightly")).toBeUndefined();
     expect((await app.runtime.loadState("appr-2"))?.status).toBe("failed");
   });
@@ -113,7 +170,17 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
       },
     };
     await expect(
-      answerScheduleApproval(refusing as never, app.broker, "appr-3", { approved: true })
+      answerScheduleApproval(
+        refusing as never,
+        app.broker,
+        "appr-3",
+        { approved: true },
+        undefined,
+        {
+          ...NOWOPT,
+          expect: { issuedTo: "svc-reports", tenant: "acme" },
+        }
+      )
     ).rejects.toThrow("approval rejected");
     expect(await app.broker.current("nightly")).toBeUndefined();
   });
@@ -121,9 +188,7 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
   it("answering an execution that is not parked on the gate throws before anything is minted", async () => {
     // Kills: resuming/minting for an arbitrary execution id.
     const app = boot();
-    await expect(
-      answerScheduleApproval(app.runtime as never, app.broker, "nope", { approved: true })
-    ).rejects.toThrow(SCHEDULE_GATE);
+    await expect(answer(app, "nope", { approved: true })).rejects.toThrow(SCHEDULE_GATE);
     expect(await app.broker.current("nightly")).toBeUndefined();
   });
 
@@ -186,9 +251,12 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
       ScheduleDeniedError
     );
     await park(app, "x-2", null); // anonymous run, spec names a tenant
-    await expect(answer(app, "x-2", { approved: true })).rejects.toBeInstanceOf(
-      ScheduleDeniedError
-    );
+    await expect(
+      answer(app, "x-2", { approved: true }, { expect: { issuedTo: "svc-reports" } })
+    ).rejects.toBeInstanceOf(ScheduleDeniedError); // the operator vouches for no tenant
+    await expect(answer(app, "x-2", { approved: true }, { expect: undefined })).rejects.toThrow(
+      /vouch/
+    ); // and with no expect at all the holder is unvouched (R26)
     await park(app, "x-3");
     await expect(
       answer(
@@ -199,7 +267,12 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
       )
     ).rejects.toBeInstanceOf(ScheduleDeniedError);
     await expect(
-      answer(app, "x-3", { approved: true }, { expect: { tenant: "beta" } })
+      answer(
+        app,
+        "x-3",
+        { approved: true },
+        { expect: { tenant: "beta", issuedTo: "svc-reports" } }
+      )
     ).rejects.toBeInstanceOf(ScheduleDeniedError);
     expect(await app.broker.current("nightly")).toBeUndefined();
     expect((await app.runtime.loadState("x-3"))?.status).toBe("suspended"); // still parked: a corrected answer works
@@ -226,6 +299,7 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
       return real(r);
     };
     await expect(answer(app, "c-1", { approved: true })).rejects.toThrow("crash after");
+    await done(app, "c-1");
     expect(await app.broker.current("nightly")).toBeUndefined();
     const links: string[] = [];
     const g = await answer(
@@ -238,7 +312,12 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
     expect(links).toEqual(["c-1"]);
     // the recovery path binds the spec to the operator's expectation too
     await expect(
-      answer(app, "c-1", { approved: true }, { expect: { tenant: "beta" } })
+      answer(
+        app,
+        "c-1",
+        { approved: true },
+        { expect: { tenant: "beta", issuedTo: "svc-reports" } }
+      )
     ).rejects.toBeInstanceOf(ScheduleDeniedError);
   });
 
@@ -257,7 +336,10 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
       },
     });
     const run = (rt: object) =>
-      answerScheduleApproval(rt as never, app.broker, "g-1", { approved: true }, undefined, NOWOPT);
+      answerScheduleApproval(rt as never, app.broker, "g-1", { approved: true }, undefined, {
+        ...NOWOPT,
+        expect: { issuedTo: "svc-reports", tenant: "acme" },
+      });
     const tamper = (s: typeof st) => {
       const d = s.variables._decisions["task-authority:schedule:nightly"] as { choice: object };
       d.choice = { ...spec, leases: {} };
@@ -298,5 +380,55 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
       },
     };
     expect(await mintScheduleGrant(raced as never, spec, NOWOPT)).toEqual(winner);
+  });
+
+  it("recovery needs proof the run PARKED and was approved (R26)", async () => {
+    // Kills: minting from any `task-authority:schedule:*` decision of a completed run (a denied-then-caught run, a hand-written decision),
+    // a forged marker with no kernel-written APPROVAL_GRANTED when verification is required, and a recovery that ignores the digest.
+    const app = boot({ auth: true });
+    await park(app, "d-1", OPS, "catches"); // refused, caught, completed
+    await answer(app, "d-1", { approved: false, reason: "no" });
+    await done(app, "d-1");
+    await expect(answer(app, "d-1", { approved: true })).rejects.toThrow(/recorded no approval/);
+    await (
+      await app.runtime.start(app.runtime.getFlow("forges") as never, {}, {
+        executionId: "d-2",
+        principal: OPS,
+      } as never)
+    ).waitForCompletion();
+    await expect(answer(app, "d-2", { approved: true })).rejects.toThrow(/recorded no approval/);
+    await (
+      await app.runtime.start(app.runtime.getFlow("forges-marker") as never, {}, {
+        executionId: "d-3",
+        principal: OPS,
+      } as never)
+    ).waitForCompletion();
+    await (
+      await app.runtime.start(app.runtime.getFlow("forges-badmarker") as never, {}, {
+        executionId: "d-5",
+        principal: OPS,
+      } as never)
+    ).waitForCompletion();
+    await expect(answer(app, "d-5", { approved: true })).rejects.toThrow(/recorded no approval/);
+    // with no verification requirement the hand-written marker works (flow code is the trust root there) ...
+    await expect(
+      answer(app, "d-3", { approved: true }, { requireVerifiedApproval: true })
+    ).rejects.toThrow(/no verified APPROVAL_GRANTED/);
+    expect(await app.broker.current("nightly")).toBeUndefined();
+    // ... and a real approval run (the runtime wrote APPROVAL_GRANTED) recovers with it required
+    await park(app, "d-4");
+    const real = app.broker.mint.bind(app.broker);
+    let boom = true;
+    app.broker.mint = async (r) => {
+      if (boom) {
+        boom = false;
+        throw new Error("crash after the resume");
+      }
+      return real(r);
+    };
+    await expect(answer(app, "d-4", { approved: true })).rejects.toThrow("crash after");
+    await done(app, "d-4");
+    const g = await answer(app, "d-4", { approved: true }, { requireVerifiedApproval: true });
+    expect(g?.taskId).toBe("nightly");
   });
 });
