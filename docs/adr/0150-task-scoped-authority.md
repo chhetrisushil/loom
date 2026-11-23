@@ -586,6 +586,8 @@ Slice 2 (D7–D12) was designed against the code at main 7409550f. The kernel se
 
 - **S-R8 (D7): the seen-origins bounds are configurable and recorded per run.** `maxOrigins` and `maxScanNodes` are set through runtime options and stamped on `EXECUTION_STARTED`, so replay uses the recorded limits and never the current config; a run started before EVENT_SCHEMA 1.27.0 uses the defaults. A pre-1.27 snapshot is rescanned once at upgrade (ADR 0152 D1).
 
+- **S-R9 (D7): review fixes to the seen-origins design (ADR 0152 "Revision").** The set is tracked only behind a fleet gate, `kernel.features.seenOrigins` (the ADR 0109 D8 pattern); `EffectContext.seenOrigins` is ABSENT when untracked and consumers (`directedBy`) fail closed on absent. The key is always written at start, every listed channel is scanned, continueAsNew and fork carry the set, and a child's set reaches the parent through the 1P supervisor tainting the `CHILD_DONE` body (S5). An attested inbox-sender origin is deferred (it would reopen S-R1/S-R3). For D12, `principalFor` must be idempotent and the tick grant is minted inside the run after `start` wins, with the deterministic task id `<schedule>@<occurrence>`.
+
 ### Corrected premises
 
 - **D7 "each of these seams already taints third-party content" is partly false (corrected).** Only the inbox is tainted at ingress (`deliveredValue`, `inbox:<topic>`). Memory recall, durable state and A2A-inbound are not tainted at ingress, and no store records a writer. Hence S-R1 (tag at write, content-level) and S-R7 (A2A ingress taint). "D7 only sets the origin label" is therefore wrong: D7 also adds the tainting at those seams.
