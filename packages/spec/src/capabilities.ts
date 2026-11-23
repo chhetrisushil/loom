@@ -706,6 +706,6 @@ export const CAPABILITIES: readonly Capability[] = [
     evidence: {
       conformanceTest: "packages/task-authority/src/conformance.test.ts",
     },
-    note: "ADR 0150 slice 1, implemented (amended 2026-11-23). L2: a real test suite plus a published conformance kit (`@loomwork/task-authority/conformance`, whose checks each carry a fail-proof). Not L3: no example consumes it yet. Needs the ADR 0151 kernel seams, which are still Proposed. Covered laundering (provenance taint) is slice 2 and is reported as skipped by the kit.",
+    note: "ADR 0150 slices 1 and 2, implemented (amended 2026-11-23/24). L2: a real test suite plus a published conformance kit (`@loomwork/task-authority/conformance`, whose checks each carry a fail-proof). Not L3: no example consumes it yet. Needs the ADR 0151 and 0152 kernel seams, which are Accepted and implemented. Covered laundering is a real kit check; A2A laundering runs when the subject supplies a transport, else it is reported skipped.",
   },
 ];

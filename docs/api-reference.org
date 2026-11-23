@@ -1587,7 +1587,10 @@ interface EffectContext {
   readonly priority?: number;             // (2.0, M6) @loomwork/scheduler Priority when scheduled
   readonly callKey?: string;              // (L30) set only on execution-stamped TRANSIENT calls; id-minting sites append it to (executionId, stepId)
   readonly toolId?: string; readonly taskKind?: string; readonly onDelta?: DeltaSink; readonly idempotencyKey?: string; readonly principal?: PrincipalChain;
+  readonly seenOrigins?: () => readonly string[];  // (ADR 0152 D1) the taint origins this run has been shown, bounded and sorted; contains SEEN_ORIGINS_OVERFLOW ("unknown:seen-origins-overflow", re-exported by @loomwork/effect-runtime) when the bound was hit or a scan failed; ABSENT = untracked (gate kernel.features.seenOrigins off, or the transient seam). Recorded at COMMIT (R11), so a replay reads the record, not a rescan
 }
+// Effect.capabilities?: object (slice-2 S6): { read: true } marks a READ (checked against the grant's `reads`); a sandbox backend declares { language, network, freshPerRun } (checked by sandboxRequirement). ToolEffect takes it in its options.
+// kernel.features.seenOrigins (defineConfig; EVENT_SCHEMA 1.27.0, no new event kind) turns the tracking on and kernel.seenOrigins { maxOrigins (1..1024, default 64), maxScanNodes (100..100000, default 10000) } bounds it; TimerServiceOptions.principalFor(schedule, occurrence, { signal }) gives a scheduled occurrence its recorded start principal (ADR 0152 D2; idempotent and side-effect free apart from the S10 mint).
 // WorkflowRuntime.reserveEffectDimensions(prefix: string): void   // (ADR 0151 D7) composition-time: flow code (ctx.emit) can no longer emit a RESOURCE_METERED whose `custom` names a dimension under `prefix` (include the delimiter: `lease.`); effect-scope emits are unaffected; per runtime instance; idempotent; prefix must match the custom-dimension charset, else it throws. `installTaskAuthority` calls it.
 interface ResourceSnapshot { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean; /* plus optional memBytes, wallMs, netBytes, custom */ }
 interface Effect<TIn, TOut> { kind: EffectKind; execute(input: TIn, ctx: EffectContext): Promise<TOut>; }
@@ -1835,7 +1838,7 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 
 ** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
 
-Slice 1 shipped in 0.1.5 (ADR 0150, amended twice on 2026-11-23). Slice 2 (D7-D12: provenance taint and the rest) is not built. The signed task grant token (D2) is an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. The package also ships =TaskGrantAuthorizer=, the broker SPI with =InMemoryGrantLedger= and =InMemoryGrantBroker= (renewal), the principal codec and installer, =taskLeaseMiddleware=, the renewal helpers, child leases and the conformance kit. It needs the ADR 0151 kernel seams (=EffectContext.flush=, =readResources=, =WorkflowRuntime.reserveEffectDimensions=).
+Slice 1 shipped in 0.1.5 (ADR 0150, amended twice on 2026-11-23). Slice 2 (D7-D12) is built on main after 0.1.6: provenance (=directedBy=), =reads=, the isolated sandbox, grant derivation, denial feedback and scheduled agents, listed in the blocks below and described in the [[file:user-guide.md][user guide]] and ADR 0150's "As built (slice 2)" section. The signed task grant token token (D2) is an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. The package also ships =TaskGrantAuthorizer=, the broker SPI with =InMemoryGrantLedger= and =InMemoryGrantBroker= (renewal), the principal codec and installer, =taskLeaseMiddleware=, the renewal helpers, child leases and the conformance kit. It needs the ADR 0151 kernel seams (=EffectContext.flush=, =readResources=, =WorkflowRuntime.reserveEffectDimensions=).
 
 #+begin_src typescript
 const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
@@ -1952,7 +1955,8 @@ function answerRenewal<H>(runtime: RenewalRuntime<H>, broker: { renew(r): Promis
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
 // ── subpath "@loomwork/task-authority/conformance" (D14) ──
-interface ConformanceSubject { makeBroker(o: { secret: GrantKeys; now: () => number; policy?: RenewalPolicy }): GrantBroker }
+interface ConformanceSubject { makeBroker(o: { secret: GrantKeys; now: () => number; policy?: RenewalPolicy }): GrantBroker; a2a?: A2ATransport }
+type A2ATransport   // (slice-2 S11) the in-process agent-to-agent hop the kit drives for laundering.uncovered.a2a; see packages/task-authority/README.md
 type CheckStatus = "passed" | "failed" | "skipped"
 interface ConformanceResult { id: string; status: CheckStatus; message?: string }   // message = why it failed or was skipped
 interface ConformanceReport { ok: boolean; results: ConformanceResult[] }            // ok = no check failed
@@ -1960,7 +1964,7 @@ const CONFORMANCE_CHECK_IDS: readonly string[]   // broker.* (claim, holder, tak
 function checkTaskAuthorityConformance(subject: ConformanceSubject): Promise<ConformanceReport>
 //   never throws. Broker-contract checks, plus (needs the optional peers core, event-runtime, snapshot-runtime, workflow-runtime, orchestration) runtime checks on a
 //   rig the kit builds: carve.forged-meters and laundering.uncovered.shared-memory guard the package and kernel, NOT the broker (a broken broker cannot fail them); revocation.
-//   skipped with a reason: laundering.uncovered.a2a ("A2A transport not available in-process"), laundering.covered ("slice 2 (ADR 0150 D7)").
+//   laundering.covered and reads.read-scope / sandbox.isolated / broker.reads-sandbox / broker.refund-* are real checks (slice 2). laundering.uncovered.a2a runs when the subject supplies `a2a: A2ATransport` (an in-process hop built on LoomAgentExecutor), else it is reported skipped ("no A2A transport supplied"), never passed.
 //   replay: a run replaying 8 effects makes the same number of broker calls as one replaying 1 (principal resolution is a fixed cost; ruling R29). No broker can fail it: the calls come from the runtime.
 #+end_src
 
@@ -1982,6 +1986,49 @@ function reclaimScheduledTick(broker: Pick<GrantBroker, "current" | "holder" | "
 // answerScheduleApproval(runtime, broker, executionId, decision, resumeOpts?, o?: { expect: { issuedTo; tenant?; onBehalfOf? }; now?; onMinted?(grant, approvalExecutionId); requireVerifiedApproval? }): expect.issuedTo is REQUIRED; tenant/onBehalfOf must equal expect's and the approval run's recorded principal's, BEFORE the resume; an approved COMPLETED run mints from its recorded proposal (crash recovery) only with the approval marker requestScheduleApproval writes after the suspend (and, with requireVerifiedApproval, the kernel's APPROVAL_GRANTED).
 // mintScheduleGrant(broker, spec, o?: { now?; recoveryMs? }): idempotent only if every signed field and the ttl (minted <= SCHEDULE_RECOVERY_MS = 10 min ago) match; an expired or different grant throws GrantBrokerError.
 // Errors: ScheduleDeniedError (approval refused/malformed), ScheduleGrantError { scheduleId } (a tick cannot get its grant).
+
+** ~@loomwork/task-authority~ — slice 2 (ADR 0150 D7-D12)
+
+#+begin_src typescript
+// D7 provenance (S5): who directed an effect. Needs kernel.features.seenOrigins (ADR 0152; EffectContext.seenOrigins).
+const LINEAGE_ORIGIN_PREFIX = "lineage:"; const LINEAGE_ORIGIN_MAX = 256; const LINEAGE_TOO_LONG = "unknown:lineage-too-long"
+interface LineagePrincipal { actor?: string; tenant?: string; taskGrant?: unknown }
+function lineageOrigin(secret: GrantKeys): (principal: LineagePrincipal | undefined) => string | undefined   // "lineage:<rootId>" from the VERIFIED signed grant only; pass the authenticated principal
+function wrapLineage<T>(value: T, origin: string): TaintedValue<T>
+function lineageTainter(secret: GrantKeys): <T>(principal: LineagePrincipal | undefined, value: T) => T | TaintedValue<T>
+function lineageSend(runtime, secret: GrantKeys): (executionId, message: { topic; payload; messageId? }, options: { principal: LineagePrincipal } & Record<string, unknown>) => Promise<unknown>   // runtime.send with the payload tagged as the sender's lineage
+type CrossLineageAction = "attribute" | "park" | "deny"
+interface DirectedByOptions { secret: GrantKeys; action?: CrossLineageAction /* default attribute */; appliesTo?: ((toolId, resource?) => boolean) | readonly string[] /* default: leased effects */;
+  foreign?: "lineage" | "any-untrusted"; foreignPrefixes?: readonly string[] /* ADDS to the always-foreign a2a-inbound: */; defaultForeignPrefixes?: boolean /* false drops a2a-inbound: */ }
+function directedBy(opts: DirectedByOptions): EffectMiddleware   // place AFTER taskLeaseMiddleware. attribute: records task-authority:directed-by { lineages }; deny: task-grant:cross-lineage; park: CrossLineageParkError (renewable, names { lineages, hash })
+const UNTRACKED_ORIGIN = "unknown:seen-origins-untracked"        // gate off: every action but park denies (task-grant:untracked); park parks on this set
+const foreignSetHash: (foreign: readonly string[]) => string     // the hash a park approval must name (the broker adds it to the grant's approvedLineages)
+class CrossLineageParkError extends Error                          // renewable; carries { lineages, hash }
+// Other attributed channels: memoryWriteBackEffect(memory, { originOf }) (@loomwork/agent), LoomAgentExecutor({ taintInbound: true | { lineageOf } }) (@loomwork/plugin-a2a), CHILD_DONE (a child's seen origins).
+
+// D8 reads (S4, S6): TaskGrant.reads globs "<toolId>:<resource>"; READS_MAX_STARS = 4 stars per glob, READS_MAX_TOTAL = 16 KB over the list. Every effect that declares capabilities: { read: true } is checked (task-grant:read-scope); no reads covers nothing.
+const READS_MAX_STARS: 4; const READS_MAX_TOTAL: number
+
+// D10 sandbox (S8): a grant with sandbox: "isolated" refuses a sandbox effect whose backend does not declare network "none" AND freshPerRun true (task-grant:sandbox). Effects with no sandbox declaration are not refused (ruling R24).
+interface SandboxRequirementOptions { secret: GrantKeys; effects: () => { entries(): Iterable<[string, unknown]> } }
+function sandboxRequirement(opts: SandboxRequirementOptions): EffectMiddleware   // place BEFORE taskLeaseMiddleware so a refusal burns no lease unit
+
+// D9 derivation (S7a). reachOf lives in @loomwork/app (below).
+type GrantTemplate = Pick<MintRequest, "effects" | "leases"> & Partial<Omit<MintRequest, "effects" | "leases">>
+function deriveGrant(reach: Iterable<string>, extra?: Partial<Omit<MintRequest, "effects">>): GrantTemplate   // effects = exactly the reach; proposes no leases and no reads (an upper bound for a mint)
+
+// D12 scheduled agents (S10), signatures also above: the approval-run helpers' context/runtime types
+interface ScheduleApprovalContext { readonly executionId: string; suspend(c: { on; correlationKey; viewDigest }): Promise<unknown>; decide<T>(id: string, decider: () => T | Promise<T>): Promise<T> }
+interface ScheduleApprovalRuntime { loadState(id): Promise<...>; resume(id, event: { eventType; payload }, opts?): Promise<unknown> }
+interface ScheduleExpect { issuedTo: string; tenant?: string; onBehalfOf?: string }   // answerScheduleApproval's REQUIRED expect (an approver is not the service it approves)
+interface AnswerScheduleOptions { expect: ScheduleExpect; now?; onMinted?; requireVerifiedApproval? }
+const scheduleResumeSchema: z.ZodDiscriminatedUnion<"approved", ...>   // the typed resume payload of SCHEDULE_GATE
+const scheduleViewDigest: (key: string, spec: ScheduleGrantSpec) => string   // what the approver is shown
+interface SchedulePrincipalOptions { lease: Record<string, number>; ttlMs?: number; effects?: string[]; now?: () => number }
+interface TickRuntime { loadState(id, opts?): Promise<...>; systemOptions(): object }   // settleScheduledTick's runtime
+const SCHEDULE_RECOVERY_MS = 600_000; const RECLAIM_MARGIN_MS = 60_000
+// D11 denial feedback lives in @loomwork/agent: agentLoop$({ authority: { onDenied: "fail" | "opaque" | "reason" } }).
+#+end_src
 
 ** ~@loomwork/compliance~ — subject export & erasure (T3)
 
@@ -3882,6 +3929,14 @@ function formatReport(report: VerificationReport): string
 const RULE_ORDER: readonly RuleName[]  // determinism · replay-safety · suspension-safety · capability-compat ·
                                        // placement-compat · resource-compat · classification-reachability · effect-class · task-grant-reach
 const RULES: Record<RuleName, Rule>
+// Slice 2 (ADR 0150 D9): VerifyInput.taskGrants?: TaskGrantTemplateSpec[] feeds the task-grant-reach rule.
+interface TaskGrantTemplateSpec { flowId: string; effects: readonly string[]; reach?: readonly string[]; unknownChildren?: readonly string[] }
+// App side (@loomwork/app): checks: { verify: { taskGrants: TaskGrantTemplateConfig[] } } where TaskGrantTemplateConfig = { flowId; effects; reach?: ReachEdges }.
+function reachOf(runtime: WorkflowRuntime, flowId: string, options?: ReachOfOptions): string[]   // effect tool ids a flow can reach: steps, reachableTools, runner-body and declared reach, plus declared children and agent loops
+interface ReachOfOptions extends ReachEdges {}
+interface ReachEdges { children?: Record<string, readonly string[]>; agentLoops?: Record<string, readonly AgentLoopReachConfig[]> }   // the edges you declare: a child is started by id and an agent loop is called from a runner body
+function agentLoopReach(config: AgentLoopReachConfig): string[]   // WIDE: the loop's tools, every skill's, the whole toolSearch catalog, plus its ring effects (modelToolId, reasoningToolId, recall/writeBack/compaction toolId)
+type AgentLoopReachConfig = Pick<AgentLoopConfig, "definition" | "skills" | "toolSearch" | "modelToolId" | "reasoning" | "reasoningToolId" | "recall" | "writeBack" | "compaction">
 class VerificationError extends Error { readonly report: VerificationReport }
 #+end_src
 

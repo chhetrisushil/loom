@@ -28,7 +28,7 @@ Slice 1 surface (see `docs/api-reference.org`):
   the middleware throws `LeaseChildEffectUnbrandedError`.
 - Multi-tenant: `tenant` / `onBehalfOf` are signed into the grant, bound in a `ta2:` ref, denied on mismatch
   (`task-grant:identity`) and inherited by children.
-- Grant fields `reads` and `sandbox: "isolated"` (ADR 0150 S-R4; `reads` is enforced from S6 (see "Read scope" below), `sandbox` from S8):
+- Grant fields `reads` and `sandbox: "isolated"` (ADR 0150 S-R4; both are enforced: see "Read scope" and "Isolated sandbox" below):
   `reads` is a list of globs (`*` matches any run of characters, bare `*` refused) over `<toolId>:<resource>` read
   capabilities; `sandbox` asks that a sandbox effect be network-less and fresh per run. Both are signed and encoded only
   when present (a grant without them keeps its signature), a child's `reads` must be covered by the parent's (absent
@@ -46,7 +46,7 @@ Slice 1 surface (see `docs/api-reference.org`):
 
 `sandboxRequirement({ secret, effects: () => effectRuntime })` refuses (terminal, `task-grant:sandbox`), per call, a sandbox
 effect under an isolated grant unless its backend declares `network: "none"` and `freshPerRun: true`. A sandbox effect is
-one whose `capabilities` has `language`, `network` or `freshPerRun` (S6's `read` marker is not one; a partial declaration is
+one whose `capabilities` has `language`, `network` or `freshPerRun` (the `read` marker is not one; a partial declaration is
 refused). Caps are read once per registered effect. Effects without a sandbox declaration are not refused (D10 names no
 rule for ambient tools), a grant without `sandbox` is unchanged, and a run with no task grant is not governed. Kit check: `sandbox.isolated`.
 
