@@ -43,6 +43,16 @@ function clip(v: unknown): string {
   }
 }
 
+/** The ONE definition of the expired-grant denial detail; `parseExpiredReason` reads it back (R24). */
+export const formatExpiredReason = (taskId: string, epoch: number, exp: number): string =>
+  `grant for task "${taskId}" epoch ${epoch} expired at ${exp}`;
+const EXPIRED_REASON = /^task-grant:expired: grant for task "(.*)" epoch (\d+) expired at /s;
+/** `{ taskId, epoch }` out of a `task-grant:expired` reason, or `undefined` when it is not one (greedy: any taskId). */
+export function parseExpiredReason(reason: string): { taskId: string; epoch: number } | undefined {
+  const m = EXPIRED_REASON.exec(reason);
+  return m ? { taskId: m[1] as string, epoch: Number(m[2]) } : undefined;
+}
+
 const deny = (prefix: string, detail: string): CapabilityDecision => ({
   allowed: false,
   reason: `${prefix}: ${detail}`,
@@ -116,10 +126,7 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
     const t = this.now();
     // A NaN or non-numeric clock must not skip expiry: only a finite time below `exp` passes.
     if (!(typeof t === "number" && Number.isFinite(t) && t < g.exp)) {
-      return deny(
-        TASK_GRANT_DENIAL.expired,
-        `grant for task "${g.taskId}" epoch ${g.epoch} expired at ${g.exp}`
-      );
+      return deny(TASK_GRANT_DENIAL.expired, formatExpiredReason(g.taskId, g.epoch, g.exp));
     }
     // Read the actor ONCE: the holder check and everything after it see the same value.
     const actor = req.principal?.actor;

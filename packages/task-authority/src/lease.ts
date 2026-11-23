@@ -106,7 +106,8 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
       throw new LeaseDurabilityError(toolId);
     }
     const digest = taskGrantDigest(grant);
-    if (await isRevoked(digest)) throw new GrantRevokedError(grant.taskId);
+    if (await isRevoked(digest))
+      throw new GrantRevokedError(grant.taskId, grant.taskId, grant.epoch);
 
     // ONE synchronous block: no await between reading the live spend and the meter that raises it.
     const ceiling = (grant.leases[lease] as { ceiling: number }).ceiling;

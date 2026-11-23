@@ -12,11 +12,13 @@ import {
   type ExecutionContext,
   type FlowRunner,
   type ResumeAuthenticator,
+  ResumeRefusedError,
   WorkflowRuntime,
+  recoverAbandoned,
 } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { TaskGrantAuthorizer } from "./authorizer";
+import { TaskGrantAuthorizer, formatExpiredReason, parseExpiredReason } from "./authorizer";
 import {
   GrantRevokedError,
   LeaseDimensionDroppedError,
@@ -71,8 +73,9 @@ function boot(o: {
   broker: InMemoryGrantBroker;
   runner: FlowRunner<unknown, unknown>;
   stores?: Stores;
+  noSchemas?: boolean;
   authorizer?: CapabilityAuthorizer;
-  body?: (n: number) => void;
+  body?: (n: number) => void | Promise<void>;
 }) {
   const ran = { n: 0 };
   const effects = new EffectRuntime(
@@ -83,7 +86,7 @@ function boot(o: {
     "act",
     new ToolEffect(async () => {
       ran.n++;
-      o.body?.(ran.n);
+      await o.body?.(ran.n);
       return { ok: true };
     })
   );
@@ -102,7 +105,7 @@ function boot(o: {
     inputSchema: z.object({}),
     outputSchema: z.unknown(),
     steps: [],
-    resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema },
+    ...(!o.noSchemas && { resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema } }),
   } as unknown as FlowDefinition;
   runtime.registerFlow(definition, o.runner);
   installTaskAuthority(runtime, { source: o.broker, secret: SECRET, now: () => clock.t });
@@ -256,7 +259,7 @@ describe("withRenewal", () => {
     let revoke = true;
     const runner: FlowRunner<unknown, unknown> = async (ctx) =>
       withRenewal(ctx as never, "only", async (a) => {
-        if (revoke) throw new GrantRevokedError("t1");
+        if (revoke) throw new GrantRevokedError("t1", "t1", 0);
         return a;
       });
     const h = boot({ broker, runner });
@@ -317,7 +320,196 @@ describe("withRenewal", () => {
         e.eventType === "DECISION_RECORDED" &&
         String(JSON.stringify(e.payload)).includes("task-authority:attempt")
     );
-    expect(decisions).toHaveLength(2); // only the failed attempts are recorded
+    expect(decisions).toHaveLength(7); // every attempt: c0 c1 c2:0 c2:1 c3 c4:0 c4:1
+  });
+});
+
+const until = async (cond: () => boolean | Promise<boolean>, what: string): Promise<void> => {
+  const deadline = Date.now() + 5_000;
+  while (!(await cond())) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 2));
+  }
+};
+const AFTER = "AFTER_RENEWAL";
+const emits = async (st: Stores, id: string) =>
+  (await st.eventStore.read(id)).filter((e) => e.eventType === AFTER).length;
+
+describe("withRenewal contract (R23-R24)", () => {
+  // stable-id step + nested decide before the failing attempt-id step, then a flow-level emit and a gate
+  const mixed: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext) => {
+    const v = await withRenewal(ctx as never, "w", async (a) => {
+      await ctx.run(task("stable"), {});
+      const inner = await ctx.decide("inner", () => 7);
+      await ctx.run(task(a), {});
+      return `${a}:${inner}`;
+    });
+    ctx.emit(AFTER, { v });
+    await ctx.suspend({ on: "GO" });
+    return v;
+  };
+
+  it("replays stable steps and nested decisions, re-runs attempt-id steps, and emits after it exactly once", async () => {
+    const broker = mkBroker(grow);
+    const g = await mint(broker, 1);
+    const h1 = boot({ broker, runner: mixed });
+    await (await h1.start("m1", g)).waitForSuspend();
+    expect((await parkedOn(h1, "m1"))?.on).toBe(RENEWAL_GATE);
+    const h2 = boot({ broker, runner: mixed, stores: h1.stores });
+    await (await answerRenewal(h2.runtime, broker, "m1")).waitForSuspend(); // now parked on GO
+    expect((await parkedOn(h2, "m1"))?.on).toBe("GO");
+    const h3 = boot({ broker, runner: mixed, stores: h1.stores });
+    const done = await (
+      await h3.runtime.resume("m1", { eventType: "GO", payload: {} })
+    ).waitForCompletion();
+    expect(done.variables._output).toBe("w:r1:7");
+    expect(h1.ran.n + h2.ran.n + h3.ran.n).toBe(2); // stable once, w:r1 once; nothing re-ran on replay
+    expect(await emits(h1.stores, "m1")).toBe(1); // F1: two resumes, one append
+  });
+
+  it("a crash during the retried attempt: a fresh runtime recovers and completes under the new grant", async () => {
+    const broker = mkBroker(grow);
+    const g = await mint(broker, 1);
+    const runner: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext) =>
+      withRenewal(ctx as never, "w", async (a) => {
+        await ctx.run(task(a), {});
+        await ctx.run(task(`${a}:b`), {});
+        return a;
+      });
+    const h1 = boot({ broker, runner });
+    await (await h1.start("m2", g)).waitForSuspend();
+    const hang = () => new Promise<void>(() => {});
+    const h2 = boot({ broker, runner, stores: h1.stores, body: hang });
+    void answerRenewal(h2.runtime, broker, "m2");
+    await until(() => h2.ran.n === 1, "the retried attempt to start, then 'crash'");
+    const h3 = boot({ broker, runner, stores: h1.stores });
+    await recoverAbandoned(h3.runtime, { source: h1.stores.eventStore, isAbandoned: () => true });
+    await until(async () => (await h3.runtime.loadState("m2"))?.status === "completed", "recovery");
+    expect((await h3.runtime.loadState("m2"))?.variables._output).toBe("w:r1");
+  });
+
+  it("treats a payload that is not a valid grant as denied, with no resumeSchemas declared", async () => {
+    for (const payload of [{ granted: "no" }, { granted: true }]) {
+      const broker = mkBroker(grow);
+      const g = await mint(broker, 2);
+      const h = boot({ broker, runner: five, noSchemas: true });
+      await (await h.start("v1", g)).waitForSuspend();
+      const gate = await parkedOn(h, "v1");
+      const r = await h.runtime.resume("v1", {
+        eventType: RENEWAL_GATE,
+        payload: { ...payload, viewDigest: gate?.viewDigest },
+      });
+      await expect(r.waitForCompletion()).rejects.toThrow(/malformed renewal verdict/);
+    }
+  });
+
+  it("refuses a resume with a wrong or missing viewDigest", async () => {
+    const broker = mkBroker(grow);
+    const g = await mint(broker, 2);
+    const h = boot({ broker, runner: five });
+    await (await h.start("v2", g)).waitForSuspend();
+    const verdict = { granted: true, epoch: 1, digest: "d" };
+    for (const payload of [verdict, { ...verdict, viewDigest: "0".repeat(64) }]) {
+      const err = await h.runtime.resume("v2", { eventType: RENEWAL_GATE, payload }).then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(ResumeRefusedError);
+    }
+    expect((await parkedOn(h, "v2"))?.on).toBe(RENEWAL_GATE);
+  });
+
+  it("answerRenewal throws for a run parked elsewhere, a completed run, and a tampered record", async () => {
+    const broker = mkBroker(grow);
+    const g = await mint(broker, 5);
+    const other: FlowRunner<unknown, unknown> = async (ctx) => ctx.suspend({ on: "ELSEWHERE" });
+    const h = boot({ broker, runner: other });
+    await (await h.start("a1", g)).waitForSuspend();
+    await expect(answerRenewal(h.runtime, broker, "a1")).rejects.toThrow(/not parked on/);
+    await (
+      await h.runtime.resume("a1", { eventType: "ELSEWHERE", payload: 1 })
+    ).waitForCompletion();
+    await expect(answerRenewal(h.runtime, broker, "a1")).rejects.toThrow(/not parked on/);
+
+    const b2 = mkBroker(grow);
+    const g2 = await mint(b2, 2);
+    const h2 = boot({ broker: b2, runner: five });
+    await (await h2.start("a2", g2)).waitForSuspend();
+    const state = await h2.runtime.loadState("a2");
+    const rec = (
+      state?.variables._decisions as Record<string, { choice: { request: { spent: object } } }>
+    )["task-authority:attempt:c2:0"];
+    (rec as { choice: { request: { spent: object } } }).choice.request.spent = { w: 0 };
+    const tampered = {
+      ...h2.runtime,
+      loadState: async () => state,
+    } as unknown as typeof h2.runtime;
+    await expect(answerRenewal(tampered, b2, "a2")).rejects.toThrow(
+      /does not match the parked digest/
+    );
+  });
+
+  it("answerRenewal uses the grant's current epoch when it was renewed between park and answer", async () => {
+    const broker = mkBroker(grow);
+    const g = await mint(broker, 2);
+    const h = boot({ broker, runner: five });
+    await (await h.start("s1", g)).waitForSuspend();
+    expect(await broker.renew({ taskId: "t1", epoch: 0, spent: {}, renewals: 0 })).toMatchObject({
+      granted: true,
+      epoch: 1,
+    });
+    // the recorded request says epoch 0, now stale; the helper reads epoch 1 from the broker
+    // a stale epoch 0 would be refused ("stale epoch") and fail the run; epoch 2 grants and it completes
+    const r = await answerRenewal(h.runtime, broker, "s1");
+    expect((await r.waitForCompletion()).variables._output).toEqual([
+      "c0",
+      "c1",
+      "c2:r1",
+      "c3",
+      "c4",
+    ]);
+  });
+
+  it("serves a stale recorded outcome when an id is reused (ids must be unique per call site)", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker, 2);
+    const seen: unknown[] = [];
+    const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+      await withRenewal(ctx as never, "dup", async () => "first");
+      try {
+        await withRenewal(ctx as never, "dup", async () => {
+          throw new LeaseExhaustedError("w", 1, 1, 0, "t1");
+        });
+      } catch (e) {
+        seen.push(e);
+      }
+      return "done";
+    };
+    const h = boot({ broker, runner });
+    expect((await (await h.start("d1", g)).waitForCompletion()).variables._output).toBe("done");
+    expect(seen[0]).toBeInstanceOf(LeaseExhaustedError); // not parked: the recorded { ok: true } was served
+  });
+});
+
+describe("expired-reason codec", () => {
+  it("round-trips any taskId, including quotes", () => {
+    for (const id of ["t1", 'a"b', 'x" epoch 9 expired at 1 "y']) {
+      const reason = `task-grant:expired: ${formatExpiredReason(id, 3, 99)}`;
+      expect(parseExpiredReason(reason)).toEqual({ taskId: id, epoch: 3 });
+    }
+    expect(parseExpiredReason("task-grant:scope: no")).toBeUndefined();
+  });
+
+  it("fails closed when an expired denial cannot be parsed and no taskId is given", async () => {
+    const runner: FlowRunner<unknown, unknown> = async (ctx) =>
+      withRenewal(ctx as never, "p", async () => {
+        throw new CapabilityDeniedError("act", "task-grant:expired: garbled");
+      });
+    const broker = mkBroker();
+    const h = boot({ broker, runner });
+    await expect((await h.start("p1", await mint(broker, 2))).waitForCompletion()).rejects.toThrow(
+      /names no task or epoch/
+    );
   });
 });
 
