@@ -12,6 +12,21 @@
     },
     {
       "path": "../effect-runtime"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../event-runtime"
+    },
+    {
+      "path": "../snapshot-runtime"
+    },
+    {
+      "path": "../workflow-runtime"
+    },
+    {
+      "path": "../orchestration"
     }
   ]
 }
