@@ -1746,8 +1746,15 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             fail(err); // a refused mint starts NO member: the group settles failed.
             for (const m of group.members) memberOf.delete(m.childId);
             groups.delete(correlationKey);
-            // R33: no member starts, so each returns its whole reservation (the broker keeps one that did start).
-            await Promise.all(durable.members.map((m) => settleUnstarted(m.childId, m)));
+            // R33: members already RUNNING (recovery) are cancelled through the cascade, so no orphan keeps
+            // spending; every other member never starts and returns its whole reservation.
+            await Promise.all(
+              durable.members.map((m) =>
+                started.has(m.childId)
+                  ? cascadeCancel(m.childId, group.parentId)
+                  : settleUnstarted(m.childId, m)
+              )
+            );
             await resumeParent(
               group.parentId,
               { settled: durable.members.map(() => refusal(err)) },

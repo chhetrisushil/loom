@@ -30,6 +30,7 @@ describe("@loomwork/task-authority public surface", () => {
       "childGrantMinter",
       "childLeaseEffect",
       "installTaskAuthority",
+      "isChildLeaseEffect",
       "isRenewable",
       "renewalDecisionId",
       "renewalResumeSchema",

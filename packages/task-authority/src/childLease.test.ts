@@ -121,7 +121,9 @@ function boot(
 ) {
   const errors: unknown[] = [];
   const ran = { n: 0, seen: [] as (PrincipalChain | undefined)[] };
-  const effects = new EffectRuntime([taskLeaseMiddleware({ secret: SECRET, source: broker })]);
+  const effects: EffectRuntime = new EffectRuntime([
+    taskLeaseMiddleware({ secret: SECRET, source: broker, effects: () => effects }),
+  ]);
   effects.register(
     "act",
     new ToolEffect(async (_a, ctx) => {

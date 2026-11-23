@@ -18,6 +18,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { GrantSource } from "./broker";
+import { CHILD_LEASE_TOOL, childLeaseEffect } from "./childLease";
 import {
   GrantRevokedError,
   LeaseDimensionDroppedError,
@@ -77,14 +78,17 @@ interface BootOpts {
   /** Throw on the first call only. */
   throwsFirst?: boolean;
   pre?: EffectMiddleware[];
+  /** Give the middleware the registry lookup (R33), so it can tell the branded child-lease effect from an impostor. */
+  registry?: boolean;
 }
 function boot(o: BootOpts) {
   const ran = { n: 0 };
-  const effects = new EffectRuntime([
+  const effects: EffectRuntime = new EffectRuntime([
     ...(o.pre ?? []),
     taskLeaseMiddleware({
       secret: SECRET,
       source: o.broker,
+      ...(o.registry === true && { effects: () => effects }),
       ...(o.strict !== undefined && { strictLeases: o.strict }),
     }),
   ]);
@@ -711,5 +715,64 @@ describe("live-fold counting (R19)", () => {
     expect(h1.ran.n + h2.ran.n).toBe(0);
     expect(errs.length).toBeGreaterThanOrEqual(4); // a resume re-runs the failed steps too
     for (const e of errs) expect(e).toBeInstanceOf(LeaseDimensionDroppedError);
+  });
+});
+
+// R33 (T15): only the effect `childLeaseEffect()` made is exempt from counting; the id alone is not enough.
+describe("child-lease exemption is branded", () => {
+  const grantFor = (b: InMemoryGrantBroker, leaseEffects: string[]) =>
+    b.mint({
+      taskId: "t1",
+      issuedTo: "agent-a",
+      effects: ["act", CHILD_LEASE_TOOL],
+      leases: { w: { ceiling: 2, effects: leaseEffects } },
+      ttlMs: 60_000,
+    });
+  const callTwice = (o: { stoppedAt?: number }): FlowRunner<unknown, unknown> => {
+    return async (ctx: ExecutionContext) => {
+      for (let i = 0; i < 3; i++) {
+        try {
+          await ctx.run(task(`i${i}`, CHILD_LEASE_TOOL), {});
+        } catch (e) {
+          o.stoppedAt = i;
+          return { err: (e as Error).name };
+        }
+      }
+      return { err: undefined };
+    };
+  };
+  const impostor = (ran: { n: number }) =>
+    new ToolEffect(async () => {
+      ran.n++;
+      return { ok: true };
+    });
+
+  // A lease cannot map this id (a colon makes it resource-qualified, refused at shape validation), so under
+  // strict leases an impostor is always refused; with strictLeases:false it is as uncounted as any unmapped effect.
+  it("an app effect under the id is a normal leased effect: strict refuses it unmapped, it never runs", async () => {
+    const broker = mkBroker();
+    const g = await grantFor(broker, ["act"]);
+    const o: { stoppedAt?: number } = {};
+    const h = boot({ broker, runner: callTwice(o), registry: true });
+    const ran = { n: 0 };
+    h.effects.register(CHILD_LEASE_TOOL, impostor(ran));
+    await (await h.start("e", g)).waitForCompletion();
+    expect(o.stoppedAt).toBe(0);
+    expect(ran.n).toBe(0);
+  });
+
+  it("the real branded effect stays exempt; without a registry lookup nothing can prove it, so it is not", async () => {
+    const real = childLeaseEffect({ secret: SECRET, broker: mkBroker() });
+    const mw = (registry: boolean) => {
+      const fx: EffectRuntime = new EffectRuntime([]);
+      fx.register(CHILD_LEASE_TOOL, real);
+      return taskLeaseMiddleware({ secret: SECRET, ...(registry && { effects: () => fx }) });
+    };
+    const g = await mint(mkBroker(), 3);
+    const ctxOf = () => fakeCtx(g, { toolId: CHILD_LEASE_TOOL, flush: false });
+    expect(await mw(true)(ctxOf().ctx, {}, async () => "ran")).toBe("ran");
+    await expect(mw(false)(ctxOf().ctx, {}, async () => "ran")).rejects.toBeInstanceOf(
+      LeaseUnmappedError
+    );
   });
 });

@@ -52,5 +52,6 @@ export {
   CHILD_LEASE_TOOL,
   childGrantMinter,
   childLeaseEffect,
+  isChildLeaseEffect,
   reserveChildLease,
 } from "./childLease";

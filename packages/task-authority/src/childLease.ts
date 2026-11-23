@@ -18,6 +18,11 @@ export const CHILD_LEASE_TOOL = "task-authority:child-lease";
 type Amounts = Record<string, number>;
 type Op = { op: "reserve"; lease: Amounts; child: string } | { op: "return"; child: string };
 
+/** R33: the brand is module-private (a WeakSet, so not forgeable by naming a property); only `childLeaseEffect` sets it. */
+const branded = new WeakSet<object>();
+/** R33: is `e` the real effect `childLeaseEffect()` made? The lease middleware exempts only that one. */
+export const isChildLeaseEffect = (e: unknown): boolean =>
+  typeof e === "object" && e !== null && branded.has(e);
 type Out = { taskId: string; lease?: Amounts };
 const ok = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0;
 const read = (ctx: EffectContext, d: string): number => ctx.readResources?.().custom?.[d] ?? 0;
@@ -39,7 +44,7 @@ export function childLeaseEffect(o: {
   broker: Pick<GrantBroker, "takeReturn" | "reserve">;
 }): ToolEffect<Op, Out> {
   const secret = sealKeys(o.secret);
-  return new ToolEffect<Op, Out>(
+  const effect = new ToolEffect<Op, Out>(
     async (input, ctx) => {
       const grant = verifyTaskGrant(secret, ctx.principal?.taskGrant as TaskGrant);
       if (grant === undefined) throw new LeaseGrantInvalidError();
@@ -86,6 +91,8 @@ export function childLeaseEffect(o: {
     },
     { idempotent: false }
   );
+  branded.add(effect);
+  return effect;
 }
 
 /** The flow-context slice the helpers need (structural: no kernel dependency). */
