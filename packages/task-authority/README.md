@@ -85,8 +85,10 @@ A schedule has no human per run, so its root authority is a **schedule grant** a
    The tick grant inherits the schedule's `reads` and `sandbox`. The hook reserves and mints one grant per occurrence;
    a tick that minted but never started is released by `reclaimScheduledTick(broker, scheduleId, occurrence)` (grant unclaimed and expired
    by `RECLAIM_MARGIN_MS`, 60 s), which revokes it and frees the headroom: run it from a periodic sweep over skipped occurrences.
-   `answerScheduleApproval(..., resumeOpts, { expect: { tenant, onBehalfOf, issuedTo }, onMinted })` refuses a spec whose tenant / onBehalfOf are not the
-   approval run's principal's (a codec-encoded principal needs `expect`); a tick cannot `continueAsNew` (R17).
+   `answerScheduleApproval(..., resumeOpts, { expect: { issuedTo, tenant, onBehalfOf }, onMinted, requireVerifiedApproval })`: `expect.issuedTo` is REQUIRED (an approver is
+   not the service it approves) and the spec's tenant / onBehalfOf must equal `expect`'s and the approval run's principal's (a codec-encoded principal hides it: `expect` binds).
+   Crash recovery (re-answering a completed run) needs the marker `requestScheduleApproval` writes only after an approval, and with `requireVerifiedApproval` (set it when the runtime has a
+   `resumeAuthenticator`) the kernel-written `APPROVAL_GRANTED`; a denied-then-caught run or a hand-written decision mints nothing. a tick cannot `continueAsNew` (R17).
 3. After a completed tick, `settleScheduledTick(runtime, broker, scheduleId, occurrence)` records its unused lease (`broker.takeReturn` takes it once).
    A completed tick's unused lease is REFUNDED to the schedule grant's headroom (a parent no execution holds has no fold; broker contract, ADR 0150 D12), so a ceiling of 100 and 10 per tick runs well past 10 ticks.
 
