@@ -21,6 +21,7 @@ import type { GrantSource } from "./broker";
 import { CHILD_LEASE_TOOL, childLeaseEffect } from "./childLease";
 import {
   GrantRevokedError,
+  LeaseChildEffectUnbrandedError,
   LeaseDimensionDroppedError,
   LeaseDurabilityError,
   LeaseExhaustedError,
@@ -728,13 +729,14 @@ describe("child-lease exemption is branded", () => {
       leases: { w: { ceiling: 2, effects: leaseEffects } },
       ttlMs: 60_000,
     });
-  const callTwice = (o: { stoppedAt?: number }): FlowRunner<unknown, unknown> => {
+  const callTwice = (o: { stoppedAt?: number; err?: string }): FlowRunner<unknown, unknown> => {
     return async (ctx: ExecutionContext) => {
       for (let i = 0; i < 3; i++) {
         try {
           await ctx.run(task(`i${i}`, CHILD_LEASE_TOOL), {});
         } catch (e) {
           o.stoppedAt = i;
+          o.err = (e as Error).name;
           return { err: (e as Error).name };
         }
       }
@@ -749,15 +751,16 @@ describe("child-lease exemption is branded", () => {
 
   // A lease cannot map this id (a colon makes it resource-qualified, refused at shape validation), so under
   // strict leases an impostor is always refused; with strictLeases:false it is as uncounted as any unmapped effect.
-  it("an app effect under the id is a normal leased effect: strict refuses it unmapped, it never runs", async () => {
+  it("an app effect under the id is refused with LeaseChildEffectUnbrandedError and never runs", async () => {
     const broker = mkBroker();
     const g = await grantFor(broker, ["act"]);
-    const o: { stoppedAt?: number } = {};
+    const o: { stoppedAt?: number; err?: string } = {};
     const h = boot({ broker, runner: callTwice(o), registry: true });
     const ran = { n: 0 };
     h.effects.register(CHILD_LEASE_TOOL, impostor(ran));
     await (await h.start("e", g)).waitForCompletion();
     expect(o.stoppedAt).toBe(0);
+    expect(o.err).toBe("LeaseChildEffectUnbrandedError"); // names both causes (no lookup / two module copies)
     expect(ran.n).toBe(0);
   });
 
@@ -772,7 +775,7 @@ describe("child-lease exemption is branded", () => {
     const ctxOf = () => fakeCtx(g, { toolId: CHILD_LEASE_TOOL, flush: false });
     expect(await mw(true)(ctxOf().ctx, {}, async () => "ran")).toBe("ran");
     await expect(mw(false)(ctxOf().ctx, {}, async () => "ran")).rejects.toBeInstanceOf(
-      LeaseUnmappedError
+      LeaseChildEffectUnbrandedError
     );
   });
 });

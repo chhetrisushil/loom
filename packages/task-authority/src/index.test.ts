@@ -9,6 +9,7 @@ describe("@loomwork/task-authority public surface", () => {
       "GrantRevokedError",
       "InMemoryGrantBroker",
       "InMemoryGrantLedger",
+      "LeaseChildEffectUnbrandedError",
       "LeaseDimensionDroppedError",
       "LeaseDurabilityError",
       "LeaseExhaustedError",

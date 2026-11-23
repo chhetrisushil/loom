@@ -16,7 +16,10 @@ Slice 1 surface (see `docs/api-reference.org`):
 - `taskLeaseMiddleware`: counts leased effects on live fold state, durable before the effect runs, with a
   revocation check (only when you pass a `source`).
 - `withRenewal` / `answerRenewal`: pause on an exhausted lease and resume on a renewal verdict.
-- `childLeaseEffect` / `childGrantMinter` / `reserveChildLease`: carve a child's lease from its parent's.
+- `childLeaseEffect` / `childGrantMinter` / `reserveChildLease`: carve a child's lease from its parent's. Register the
+  effect as `CHILD_LEASE_TOOL` and give the lease middleware `effects: () => effectRuntime`: only the effect
+  `childLeaseEffect()` made is exempt from counting, and without the lookup (or with another effect under that id)
+  the middleware throws `LeaseChildEffectUnbrandedError`.
 - `@loomwork/task-authority/conformance`: a kit that proves a broker and runtime wiring resist laundering.
 
 Design: [ADR 0150 — task-scoped authority](../../docs/adr/0150-task-scoped-authority.md).

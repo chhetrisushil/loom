@@ -1751,7 +1751,9 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             await Promise.all(
               durable.members.map((m) =>
                 started.has(m.childId)
-                  ? cascadeCancel(m.childId, group.parentId)
+                  ? m.detached === true
+                    ? Promise.resolve() // ADR 0112 D5: a detached member outlives the group
+                    : cascadeCancel(m.childId, group.parentId)
                   : settleUnstarted(m.childId, m)
               )
             );

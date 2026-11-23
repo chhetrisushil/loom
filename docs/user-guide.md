@@ -1168,7 +1168,7 @@ const resumed = await answerRenewal(runtime, broker, "e1");
 await resumed.waitForCompletion();
 ```
 
-An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }`. Child leases (`childLeaseEffect`, `childGrantMinter`) and the `@loomwork/task-authority/conformance` kit are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what slice 1 refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
+An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }`. Child leases (`childLeaseEffect`, `childGrantMinter`; give `taskLeaseMiddleware` `effects: () => effectRuntime` so it can tell the real child-lease effect from another effect under the same id) and the `@loomwork/task-authority/conformance` kit are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what slice 1 refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 

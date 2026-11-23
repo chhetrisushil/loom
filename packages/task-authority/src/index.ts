@@ -33,6 +33,7 @@ export {
   LeaseDurabilityError,
   LeaseExhaustedError,
   LeaseGrantInvalidError,
+  LeaseChildEffectUnbrandedError,
   LeaseUnmappedError,
   RenewalDeniedError,
 } from "./errors";
