@@ -29,4 +29,13 @@ export {
   LeaseExhaustedError,
   LeaseGrantInvalidError,
   LeaseUnmappedError,
+  RenewalDeniedError,
 } from "./errors";
+export type { RenewalContext, RenewalRuntime } from "./renewal";
+export {
+  RENEWAL_GATE,
+  answerRenewal,
+  isRenewable,
+  renewalResumeSchema,
+  withRenewal,
+} from "./renewal";

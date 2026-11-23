@@ -113,7 +113,7 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
     const dim = `lease.${lease}`;
     const spent = spentOf(ctx, dim);
     if (spent >= ceiling) {
-      const err = new LeaseExhaustedError(lease, ceiling, spent, grant.epoch);
+      const err = new LeaseExhaustedError(lease, ceiling, spent, grant.epoch, grant.taskId);
       ctx.emit("QUOTA_EXCEEDED", { stepId: ctx.stepId, level: "lease", reason: err.message });
       throw err;
     }
