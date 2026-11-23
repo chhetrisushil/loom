@@ -1,6 +1,6 @@
 import type { EffectContext, EffectMiddleware } from "@loomwork/effect-runtime";
 import type { GrantSource } from "./broker";
-import { CHILD_LEASE_TOOL } from "./childLease";
+import { CHILD_LEASE_TOOL, isChildLeaseEffect } from "./childLease";
 import {
   GrantRevokedError,
   LeaseDimensionDroppedError,
@@ -26,6 +26,12 @@ export interface TaskLeaseOptions {
   source?: GrantSource;
   /** Refuse an in-scope effect that no lease counts. Default TRUE; `false` lets it run uncounted. */
   strictLeases?: boolean;
+  /**
+   * R33: where to look the registered effect up (`() => effectRuntime`; a getter, since the runtime is built
+   * AFTER its middleware). Without it nothing can prove an effect under `CHILD_LEASE_TOOL` is the real
+   * `childLeaseEffect()`, so it gets NO exemption: it is a normal leased effect (strict leases refuse it).
+   */
+  effects?: () => { entries(): Iterable<[string, unknown]> };
   /** Revocation check budget in ms; on expiry the grant is treated as revoked (default 5000). */
   revocationTimeoutMs?: number;
   /** How long a clean (not revoked) answer is trusted, in ms (default 1000). A revoked answer is sticky. */
@@ -116,6 +122,13 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
     }
   }
 
+  // R33: the exemption belongs to the BRANDED effect only; an impostor registered under the id is counted.
+  const realChildLease = (): boolean => {
+    for (const [id, e] of opts.effects?.().entries() ?? [])
+      if (id === CHILD_LEASE_TOOL) return isChildLeaseEffect(e);
+    return false;
+  };
+
   return async (ctx: EffectContext, _input, next) => {
     const claimed = ctx.principal?.taskGrant as TaskGrant | undefined;
     if (claimed === undefined) return next();
@@ -123,7 +136,7 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
     if (grant === undefined) throw new LeaseGrantInvalidError();
     const toolId = ctx.toolId ?? "";
     const digest = taskGrantDigest(grant);
-    if (toolId === CHILD_LEASE_TOOL) {
+    if (toolId === CHILD_LEASE_TOOL && realChildLease()) {
       // D6 bookkeeping, not a leased side effect: uncounted, but a revoked task still cannot meter
       if (await isRevoked(digest)) throw new GrantRevokedError(grant.taskId);
       return next();

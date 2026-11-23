@@ -37,8 +37,8 @@ export function rig(
     base: { authorize: () => ({ allowed: true }) },
     now: c.now,
   });
-  const effects = new EffectRuntime(
-    [taskLeaseMiddleware({ secret: SECRET, source: broker, now: c.now })],
+  const effects: EffectRuntime = new EffectRuntime(
+    [taskLeaseMiddleware({ secret: SECRET, source: broker, now: c.now, effects: () => effects })],
     { authorizer }
   );
   for (const k of ["act", "other"] as const)
