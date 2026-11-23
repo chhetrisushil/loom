@@ -109,6 +109,15 @@ export interface EffectContext {
    */
   readonly readResources?: () => ResourceSnapshot;
   /**
+   * ADR 0152 D1 — the distinct taint origins of every tainted value that has crossed INTO this execution so far,
+   * as recorded in the log: first-seen order, a copy, live (read at call time). When the set overflowed (or could
+   * not be proven) the list ENDS WITH `"unknown:seen-origins-overflow"`: a consumer MUST treat that as "unknown,
+   * treat as foreign". ABSENT means UNTRACKED (the fleet gate `kernel.features.seenOrigins` is off, the run
+   * predates tracking, or no fold backs the context: the transient seam, the decide scope's `invokeTransient`,
+   * test harnesses). A consumer that needs the set MUST fail closed when it is absent.
+   */
+  readonly seenOrigins?: () => readonly string[];
+  /**
    * The resolved effect id for this invocation. The runtime sets it on the view
    * of the context the MIDDLEWARE chain receives (additive — hand-built contexts
    * simply leave it unset, and the effect itself still receives the caller's

@@ -45,6 +45,7 @@ import {
   foldEvents,
   knownEventTypes,
   normalizeSnapshotState,
+  resolveSeenOriginsLimits,
 } from "@loomwork/replay-vm";
 import type { Snapshot, SnapshotStore } from "@loomwork/snapshot-runtime";
 import { assertSnapshotIdentity } from "@loomwork/snapshot-runtime";
@@ -383,6 +384,15 @@ export interface WorkflowRuntimeDeps {
    * either way. Set by `defineConfig({ kernel: { features: { continueAsNew: true } } })`.
    */
   continueAsNewEnabled?: boolean;
+  /**
+   * ADR 0152 - seen-origins tracking. **Default `false`** (the rolling-upgrade rule,
+   * `kernel.features.seenOrigins`): a pre-1.27.0 node copies `_seenOrigins` through its fold unchanged, so turn it on
+   * only once every node runs a 1.27.0+ kernel. Off, nothing is stamped (byte-identical to 1.26) and
+   * `EffectContext.seenOrigins` is absent. Set by `defineConfig({ kernel: { features: { seenOrigins: true } } })`.
+   */
+  seenOriginsEnabled?: boolean;
+  /** ADR 0152 - limits stamped on new runs (`maxOrigins` 1..1024, default 64; `maxScanNodes` 100..100000, default 10000); out of range is refused. */
+  seenOriginsLimits?: { maxOrigins?: number; maxScanNodes?: number };
   /**
    * ADR 0113 D3 — the replay-divergence detector. A re-run that is about to make a LIVE journal
    * append (a step, a decision, an emit, a timer or suspend, a spawn, a receive, a continuation)
@@ -1057,6 +1067,8 @@ export class WorkflowRuntime {
   private readonly inboxEnabled: boolean;
   // ADR 0109 — continue-as-new.
   private readonly continueAsNewEnabled: boolean;
+  private readonly seenOriginsEnabled: boolean;
+  private readonly seenOriginsLimits: { maxOrigins: number; maxScanNodes: number };
   private readonly maxCarryBytes: number;
   private readonly maxChainHops: number;
   // ADR 0113 D3 — the replay-divergence detector's mode, and how often it warned.
@@ -1219,6 +1231,8 @@ export class WorkflowRuntime {
     this.scopes = deps.scopes === true;
     this.inboxEnabled = deps.inboxEnabled === true;
     this.continueAsNewEnabled = deps.continueAsNewEnabled === true;
+    this.seenOriginsEnabled = deps.seenOriginsEnabled === true;
+    this.seenOriginsLimits = resolveSeenOriginsLimits(deps.seenOriginsLimits);
     assertPositiveInt("maxCarryBytes", deps.maxCarryBytes);
     assertPositiveInt("maxChainHops", deps.maxChainHops);
     this.maxCarryBytes = deps.maxCarryBytes ?? DEFAULT_MAX_CARRY_BYTES;
@@ -3605,7 +3619,9 @@ export class WorkflowRuntime {
       workflowId: state.workflowId,
       workflowVersion: state.workflowVersion,
     }).getState().variables;
-    const variables: Record<string, unknown> = { ...state.variables };
+    // ADR 0152 M10: a caller-supplied `_seenOrigins` is untrusted (a forged clean key): absent = untracked until S2c rebuilds it.
+    const { _seenOrigins: _forged, ...rest } = state.variables;
+    const variables: Record<string, unknown> = { ...rest };
     for (const key of ["_principal", "_chain", "_parent", "_continuedTo"] as const) {
       delete variables[key];
       if (key !== "_continuedTo" && logged[key] !== undefined) variables[key] = logged[key];
@@ -3763,6 +3779,7 @@ export class WorkflowRuntime {
         ...(definition.codeFingerprint !== undefined && { codeHash: definition.codeFingerprint }),
         principal: principalRecord,
         ...(parent !== undefined && { parent }),
+        ...(this.seenOriginsEnabled && { seenOriginsLimits: this.seenOriginsLimits }),
       },
       // #392 — where this execution belongs, recorded where it can be found again.
       // Sequence 0 is the execution's metadata anchor: `truncatePrefix` preserves it
@@ -8729,6 +8746,7 @@ export class WorkflowRuntime {
           executionId: predecessorId,
           carried: carriedOf(state, chainDeadline),
         },
+        ...(this.seenOriginsEnabled && { seenOriginsLimits: this.seenOriginsLimits }),
       },
       ...(computeTarget !== undefined && { metadata: { [COMPUTE_TARGET_KEY]: computeTarget } }),
     };
@@ -9203,6 +9221,7 @@ export class WorkflowRuntime {
         scopes: this.scopes,
         ...(this.meterCeilings !== undefined && { meterCeilings: this.meterCeilings }),
         reservedDimensions: this.reservedDimensions,
+        seenOrigins: this.seenOriginsEnabled,
         ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
         ...(this.surface !== undefined && { surface: this.surface }),
         // ADR 0130 D11 (S7c): no effect is dispatched under a lease that is no longer valid.

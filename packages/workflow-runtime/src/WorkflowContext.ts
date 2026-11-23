@@ -2,7 +2,7 @@ import { tainted } from "@loomwork/classify";
 import { BUILTIN_METER_DIMENSIONS, SuspendError, TypedFailure, fnv1a64 } from "@loomwork/core";
 import type { ExecutableTask, StepDefinition, SuspendWait } from "@loomwork/core";
 import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loomwork/effect-runtime";
-import { FLOW_DIVERGED_GATE } from "@loomwork/replay-vm";
+import { FLOW_DIVERGED_GATE, seenOriginsList } from "@loomwork/replay-vm";
 import type { ReplayVM } from "@loomwork/replay-vm";
 import { linkSignals, parallelLimit } from "@loomwork/scheduler";
 import type { DecisionInner } from "./DivergenceGuard";
@@ -449,6 +449,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     return this.openParallels > 0;
   }
   private readonly divergence: DivergenceHooks | undefined;
+  private readonly seenOriginsOn: boolean;
   private readonly dispatchGate: (() => void) | undefined;
   private continuation: ContinueAsNewSignal | undefined;
   private rejectContinue: ((err: unknown) => void) | undefined;
@@ -526,8 +527,11 @@ export class WorkflowContextImpl implements WorkflowContext {
       divergence?: DivergenceHooks;
       /** ADR 0130 D11 — throws (a lost lease) when no effect may be dispatched any more. */
       dispatchGate?: () => void;
+      /** ADR 0152 - the fleet gate: expose `seenOrigins` on the effect context of a tracked run. */
+      seenOrigins?: boolean;
     } = {}
   ) {
+    this.seenOriginsOn = opts.seenOrigins === true;
     this.divergence = opts.divergence;
     this.dispatchGate = opts.dispatchGate;
     this.inboxBinding = opts.inbox;
@@ -1057,6 +1061,11 @@ export class WorkflowContextImpl implements WorkflowContext {
       resources: this.resourceCopy(),
       // ADR 0151 D6 — live, synchronous, and a copy (the snapshot object is fold-owned).
       readResources: (): ResourceSnapshot => this.resourceCopy(),
+      // ADR 0152 D1 - only for a TRACKED run with the fleet gate on; absent otherwise (fail closed for consumers).
+      ...(this.seenOriginsOn &&
+        seenOriginsList(this.vm.peekState()) !== undefined && {
+          seenOrigins: (): readonly string[] => seenOriginsList(this.vm.peekState()) ?? [],
+        }),
     };
 
     let output: TOut;
