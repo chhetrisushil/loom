@@ -6,6 +6,7 @@ import {
   type ConformanceSubject,
   checkTaskAuthorityConformance,
 } from "./conformance";
+import { signTaskGrant } from "./grant";
 import { InMemoryGrantBroker } from "./renew";
 
 type Opts = ConstructorParameters<typeof InMemoryGrantBroker>[0];
@@ -46,6 +47,17 @@ class ChildMayRise extends InMemoryGrantBroker {
     } finally {
       if (rec) rec.parent = parent;
     }
+  }
+}
+class DropsTenantOnRenew extends InMemoryGrantBroker {
+  override async renew(r: RenewalRequest) {
+    const v = await super.renew(r);
+    const rec = this.tasks.get(r.taskId);
+    if (rec) {
+      const { sig: _s, tenant: _t, ...body } = rec.grant;
+      rec.grant = signTaskGrant(this.secret, body);
+    }
+    return v;
   }
 }
 class NeverRevokes extends InMemoryGrantBroker {
@@ -111,6 +123,15 @@ describe("checkTaskAuthorityConformance", () => {
     expect(find(r, "carve.total-spend")?.status).toBe("failed");
     expect(find(r, "carve.total-spend")?.message).toMatch(/beyond the parent's reservation/);
   }, 30_000);
+
+  it("fails broker.identity-fixed for a broker that drops tenant on renewal", async () => {
+    const r = await checkTaskAuthorityConformance(broken(DropsTenantOnRenew));
+    expect(find(r, "broker.identity-fixed")?.status).toBe("failed");
+    expect(find(r, "broker.identity-fixed")?.message).toMatch(/renewal dropped or changed/);
+    expect(
+      find(await checkTaskAuthorityConformance(reference), "broker.identity-fixed")?.status
+    ).toBe("passed");
+  }, 60_000);
 
   it("fails pause-renew for a renewal that is granted but leaves the ceiling", async () => {
     const r = await checkTaskAuthorityConformance(stuckCeiling);

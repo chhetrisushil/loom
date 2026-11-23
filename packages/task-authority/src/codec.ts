@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { PrincipalChain } from "@loomwork/effect-runtime";
 import type { GrantSource } from "./broker";
 import { TaskAuthorityPrincipalError } from "./errors";
-import { taskGrantDigest, verifyTaskGrant } from "./grant";
+import { type TaskGrant, taskGrantDigest, verifyTaskGrant } from "./grant";
 
 /**
  * Structural twin of the kernel's `PrincipalCodec` (ADR 0111): declared here so this package
@@ -23,6 +23,11 @@ export interface TaskAuthorityCodecOptions {
 
 /** The ref prefix: `ta1:<taskId>.<mac>`. A ref carries a task id and a MAC only, never a token or an identity. */
 export const TASK_REF_PREFIX = "ta1:";
+/**
+ * R30: the ref of a grant that carries `tenant` / `onBehalfOf`: `ta2:<taskId>.<mac>`, the MAC also binding both, so a
+ * reissue cannot move a task across tenants or users. A grant without either keeps `ta1:` (unchanged); earlier `ta1:` refs restore as before.
+ */
+export const TASK_REF_PREFIX_V2 = "ta2:";
 const MAX_TASK_ID = 256;
 const MAX_REASON = 256;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
@@ -55,7 +60,9 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OU
  * `toRef`: a chain with no `taskGrant` gives `undefined` (other codecs and the default apply). A chain
  * that CARRIES one is either encoded or refused with {@link TaskAuthorityPrincipalError}: returning
  * `undefined` would let the kernel write a default record that drops the grant. It encodes only a
- * verified, unexpired grant held by its own actor, on a chain with no tenant, `onBehalfOf` or `delegation`.
+ * verified, unexpired grant held by its own actor, on a chain whose `tenant`/`onBehalfOf` equal the grant's signed ones (R30, both ways: a chain without them
+ * is refused for a grant that has them) and that has no `delegation`. Identity is restored from the VERIFIED grant only, so under
+ * strict/compliance (ADR 0111) the log holds only the ref; the broker holds identity and the app owns erasure of `onBehalfOf` there.
  *
  * `fromRef` answers EVERY `ta1:` ref, never `undefined` (which would let an older codec or the app's
  * resolver restore a principal without the grant): any failure (bad ref, MAC, miss, revoke, verify,
@@ -75,8 +82,14 @@ export function taskAuthorityPrincipalCodec(
   const { secret } = opts;
   const now = opts.now ?? Date.now;
   const timeoutMs = opts.timeoutMs ?? 5000;
-  const mac = (taskId: string, issuedTo: string): Buffer =>
-    createHmac("sha256", secret).update(`ta1\n${taskId}\n${issuedTo}`).digest();
+  const mac = (g: TaskGrant, v2: boolean): Buffer =>
+    createHmac("sha256", secret)
+      .update(
+        v2
+          ? `ta2\n${JSON.stringify([g.taskId, g.issuedTo, g.tenant ?? null, g.onBehalfOf ?? null])}`
+          : `ta1\n${g.taskId}\n${g.issuedTo}`
+      )
+      .digest();
   const refuse = (why: string): never => {
     throw new TaskAuthorityPrincipalError(why);
   };
@@ -96,22 +109,25 @@ export function taskAuthorityPrincipalCodec(
       if (grant === undefined) return refuse("the task grant does not verify");
       if (typeof chain.actor !== "string" || chain.actor !== grant.issuedTo)
         return refuse("the principal's actor is not the grant's holder");
-      if (chain.tenant !== undefined || chain.onBehalfOf !== undefined)
-        return refuse("a task grant cannot be recorded with a tenant or onBehalfOf");
+      // R30: identity on the chain must EQUAL the grant's signed identity, in both directions.
+      if (chain.tenant !== grant.tenant || chain.onBehalfOf !== grant.onBehalfOf)
+        return refuse("the principal's tenant/onBehalfOf differ from the task grant's");
       if (chain.delegation !== undefined)
         return refuse("a task grant cannot be recorded with a delegation");
       if (!(grant.exp > now())) return refuse("the task grant has expired");
       if (!okTaskId(grant.taskId)) return refuse("the task id is not recordable");
-      return `${TASK_REF_PREFIX}${grant.taskId}.${mac(grant.taskId, grant.issuedTo).toString("base64url")}`;
+      const v2 = grant.tenant !== undefined || grant.onBehalfOf !== undefined;
+      return `${v2 ? TASK_REF_PREFIX_V2 : TASK_REF_PREFIX}${grant.taskId}.${mac(grant, v2).toString("base64url")}`;
     },
     async fromRef(ref, context) {
-      if (typeof ref !== "string" || !ref.startsWith(TASK_REF_PREFIX)) return undefined;
+      const v2 = typeof ref === "string" && ref.startsWith(TASK_REF_PREFIX_V2);
+      if (typeof ref !== "string" || !(v2 || ref.startsWith(TASK_REF_PREFIX))) return undefined;
       let label = "?";
       const fail = (why: string): PrincipalChain => ({
         principalUnresolved: `task grant ${label}: ${why}`.slice(0, MAX_REASON),
       });
       try {
-        const body = ref.slice(TASK_REF_PREFIX.length);
+        const body = ref.slice(TASK_REF_PREFIX.length); // both prefixes are 4 chars
         const dot = body.lastIndexOf(".");
         const taskId = body.slice(0, dot);
         if (dot < 0 || !okTaskId(taskId)) return fail("bad ref format");
@@ -127,7 +143,10 @@ export function taskAuthorityPrincipalCodec(
         const grant = verifyTaskGrant(secret, raw);
         if (grant === undefined) return fail("grant does not verify");
         if (grant.taskId !== taskId) return fail("task id mismatch");
-        const want = mac(taskId, grant.issuedTo);
+        // A ta1 ref carries no identity binding: it must never restore a grant that has one.
+        if (!v2 && (grant.tenant !== undefined || grant.onBehalfOf !== undefined))
+          return fail("ref does not bind the grant's tenant");
+        const want = mac(grant, v2);
         if (given.length !== want.length || !timingSafeEqual(given, want))
           return fail("ref does not match the grant's holder");
         if (
@@ -137,7 +156,12 @@ export function taskAuthorityPrincipalCodec(
           return fail("revoked");
         if ((await ask(source.claim(taskId, context.executionId))) !== true)
           return fail("claimed by another execution");
-        return { actor: grant.issuedTo, taskGrant: grant };
+        return {
+          actor: grant.issuedTo,
+          taskGrant: grant,
+          ...(grant.tenant !== undefined && { tenant: grant.tenant }),
+          ...(grant.onBehalfOf !== undefined && { onBehalfOf: grant.onBehalfOf }),
+        };
       } catch (e) {
         return fail(e === TIMED_OUT ? "grant source timed out" : "grant source failed");
       }

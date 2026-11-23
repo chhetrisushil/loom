@@ -17,7 +17,7 @@ export { GrantBrokerError, InMemoryGrantLedger } from "./broker";
 export type { RenewalPolicy } from "./renew";
 export { InMemoryGrantBroker, MAX_JUSTIFICATION, MAX_JUSTIFICATIONS_KEPT } from "./renew";
 export type { TaskAuthorityCodecOptions, TaskAuthorityPrincipalCodec } from "./codec";
-export { TASK_REF_PREFIX, taskAuthorityPrincipalCodec } from "./codec";
+export { TASK_REF_PREFIX, TASK_REF_PREFIX_V2, taskAuthorityPrincipalCodec } from "./codec";
 export type { PrincipalCodecHost } from "./install";
 export { installTaskAuthority } from "./install";
 export type { TaskLeaseOptions } from "./lease";

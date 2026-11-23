@@ -13,6 +13,13 @@ export interface TaskGrant {
   rootId: string;
   parentId?: string;
   issuedTo: string;
+  /**
+   * R30: the tenant the task runs in (opaque pseudonymous id, ADR 0111). Signed; the principal codec
+   * restores it from this verified grant, and the log only holds the ref. Absent => not tenant-scoped.
+   */
+  tenant?: string;
+  /** R30: the end user the task acts for (opaque pseudonymous id). The broker holds it; the app owns its erasure there. */
+  onBehalfOf?: string;
   effects: string[];
   leases: Record<string, LeaseSpec>;
   exp: number;
@@ -37,12 +44,16 @@ const GRANT_KEYS = [
   "rootId",
   "parentId",
   "issuedTo",
+  "tenant",
+  "onBehalfOf",
   "effects",
   "leases",
   "exp",
   "epoch",
 ];
 const LEASE_KEYS = ["ceiling", "effects"];
+// biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
+const CONTROL = /[\u0000-\u001f\u007f]/;
 const VERSION_PREFIX = "tg1\n";
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -86,6 +97,9 @@ function checkShape(g: unknown, signed: boolean): void {
   const taskId = idField(g, "taskId");
   const rootId = idField(g, "rootId");
   idField(g, "issuedTo");
+  for (const k of ["tenant", "onBehalfOf"])
+    if (own(g, k) !== undefined && CONTROL.test(idField(g, k)))
+      fail(`${k} must not contain control characters`);
   const parentId = own(g, "parentId");
   if (parentId !== undefined) {
     idField(g, "parentId");
@@ -142,7 +156,14 @@ function canonicalBody(g: UnsignedTaskGrant): string {
       const s = g.leases[n] as LeaseSpec;
       return [n, { ceiling: s.ceiling, effects: [...s.effects].sort() }];
     });
+  // R30: identity is appended ONLY when present, so a grant without it encodes byte-identically to before.
+  const identity: Record<string, string> = {};
+  for (const k of ["onBehalfOf", "tenant"]) {
+    const v = own(src, k);
+    if (v !== undefined) identity[k] = v as string;
+  }
   return JSON.stringify({
+    ...identity,
     effects: [...g.effects].sort(),
     epoch: g.epoch,
     exp: g.exp,
