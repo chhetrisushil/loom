@@ -75,8 +75,15 @@ describe("ExecutionJournal records seen origins at commit", () => {
     );
     expect(e.metadata).toEqual({ origins: [] });
     expect(keyOf(vm).overflow).toBeUndefined();
-    const u = rig(false).journal.commit("APP", {}, { metadata: { origins: ["forged"] } });
-    expect(u.metadata).toEqual({});
+    // M-C: application metadata on a NON-channel event is left alone; on an untracked run's CHANNEL event it is stripped
+    const u = rig(false).journal.commit("APP", {}, { metadata: { origins: ["app-owned"] } });
+    expect(u.metadata).toEqual({ origins: ["app-owned"] });
+    const c = rig(false).journal.commit(
+      "STEP_COMPLETED",
+      { stepId: "s", output: 1 },
+      { metadata: { origins: ["forged"] } }
+    );
+    expect(c.metadata).toEqual({});
   });
   it("an exceeded scan records originsOverflow only; a payload key named origins is plain data", () => {
     const { journal, vm } = rig(true);
