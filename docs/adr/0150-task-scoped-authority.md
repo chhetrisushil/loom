@@ -536,13 +536,23 @@ built by the same helper as `readResources()` ([ADR 0151](0151-effect-context-fl
   `takeReturn`, and revokes a grant minted for it but never claimed. A child is EITHER started (`settleChild`, or already claimed) OR
   unstarted, never both: whichever comes first wins and the other changes nothing. This closes the first amendment's known residual.
   The kit gains `broker.unstarted-return`.
+  **Lineage stays within the root ceiling (R36).** The broker compares the parent's fold `lease.<n>.reserved` (a gross counter) against a
+  NEVER-DECREASING per-parent `carved[n]` (each minted ceiling, plus an unminted child's reservation once it settles unstarted), not
+  against the live high-water sum, which a returned reservation lowers: otherwise a flow could spawn an unreserved child on top of the
+  refilled parent lease and reach twice the ceiling. The released high-water serves only the ceiling headroom check. `settleUnstarted`
+  MUST be atomic with `claim` (check-unclaimed and revoke are one compare-and-set); the kit has a non-atomic mutant and a concurrent case.
+  The reserve step refuses a `child` that does not start with `<executionId>::` (a flow cannot squat another execution's child id). A
+  transient failure that makes the supervisor call `settleUnstarted` becomes a permanent "unstarted" outcome (the child is not retried);
+  a `broker.reserve` throw after the flush leaks the fold reservation (the safe direction).
 - **A refused group mint cancels started members (#824).** When a mint for one member of a spawn group is refused, the supervisor
-  cancels the members that already started (`cascadeCancel`), instead of leaving them running beside a refused sibling.
+  cancels the members that already started (`cascadeCancel`), instead of leaving them running beside a refused sibling. A `detached`
+  member is skipped, matching the ADR 0112 cascade.
 - **The child-lease effect is branded (#824).** `childLeaseEffect()` is recognised by a module-private brand (`isChildLeaseEffect`), not by
   its tool id, so an app effect registered under `CHILD_LEASE_TOOL` cannot shadow the exemption.
   **Breaking:** the lease middleware can only see which effect is registered through `effects: () => effectRuntime` (a getter, since
   the runtime is built after its middleware). Wiring that registers `CHILD_LEASE_TOOL` and does not pass `effects` loses the exemption:
-  the child-lease call becomes an ordinary leased effect and strict leases refuse it.
+  the middleware throws `LeaseChildEffectUnbrandedError` (naming both causes: no `effects` lookup, or two copies of the package) and the
+  effect never runs.
 - **`GrantBroker` gained required methods.** A broker written against slice 1 must add `reserve`, `settleUnstarted` and (from the first
   amendment) `claim`, `holder`, `settleChild` and `takeReturn`; the conformance kit fails a broker that lacks or mis-implements them.
 
