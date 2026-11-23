@@ -342,6 +342,7 @@ describe("revocation", () => {
   const g = signTaskGrant(SECRET, grantBody());
   const src = (revoked: (d: string) => Promise<boolean>): GrantSource => ({
     current: async () => g,
+    holder: async () => undefined,
     claim: async () => true,
     revoked,
   });

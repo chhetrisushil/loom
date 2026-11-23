@@ -123,18 +123,16 @@ describe("InMemoryGrantBroker renew", () => {
     await ok.mint(child("c1", 8));
     expect(granted(await ok.renew(renewal()))).toBe(true);
   });
-  it("a child renews up to exactly its parent's headroom, not beyond", async () => {
-    const at = mk(setTo(6));
-    await at.mint(root());
-    await at.mint(child("c1", 4));
-    await at.mint(child("c2", 4));
-    expect(granted(await at.renew(renewal(0, { taskId: "c1" })))).toBe(true);
-    const over = mk(setTo(7));
+  it("a child renews down or level, never above its minted (reserved) ceiling (R25)", async () => {
+    const down = mk(setTo(3));
+    await down.mint(root());
+    await down.mint(child("c1", 4));
+    expect(granted(await down.renew(renewal(0, { taskId: "c1" })))).toBe(true);
+    const over = mk(setTo(5)); // there is parent headroom (6), but 5 was never reserved for c1
     await over.mint(root());
     await over.mint(child("c1", 4));
-    await over.mint(child("c2", 4));
     const v = await over.renew(renewal(0, { taskId: "c1" }));
-    expect(!v.granted && v.reason).toMatch(/headroom/);
+    expect(!v.granted && v.reason).toMatch(/minted/);
   });
   it("clamps a child's renewed exp to the parent's; an expired grant still renews", async () => {
     const clock = { t: NOW };
@@ -225,13 +223,13 @@ describe("InMemoryGrantBroker renew", () => {
     await up.renew(renewal(0, { taskId: "c1" }));
     expect(granted(await up.renew(renewal(1, { taskId: "c1" })))).toBe(true);
   });
-  it("an up-renewing child raises its reservation", async () => {
-    const b = mk(setTo(6));
+  it("a renewal down releases nothing: the child's reservation stays its minted ceiling", async () => {
+    const b = mk(setTo(1));
     await b.mint(root());
-    await b.mint(child("c1", 2));
+    await b.mint(child("c1", 4));
     await b.renew(renewal(0, { taskId: "c1" }));
-    await expect(b.mint(child("c2", 5))).rejects.toThrow(/headroom/);
-    await b.mint(child("c3", 4));
+    await expect(b.mint(child("c2", 7))).rejects.toThrow(/headroom/);
+    await b.mint(child("c3", 2));
   });
   it("denies a child's renewal under an expired parent; the root's own expired renewal works", async () => {
     const clock = { t: NOW };

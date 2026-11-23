@@ -4,6 +4,7 @@ import * as api from "./index";
 describe("@loomwork/task-authority public surface", () => {
   it("exports the version marker and the grant token API and the authorizer", () => {
     expect(Object.keys(api).sort()).toEqual([
+      "CHILD_LEASE_TOOL",
       "GrantBrokerError",
       "GrantRevokedError",
       "InMemoryGrantBroker",
@@ -24,9 +25,12 @@ describe("@loomwork/task-authority public surface", () => {
       "TaskGrantAuthorizer",
       "TaskGrantShapeError",
       "answerRenewal",
+      "childGrantMinter",
+      "childLeaseEffect",
       "installTaskAuthority",
       "isRenewable",
       "renewalResumeSchema",
+      "reserveChildLease",
       "signTaskGrant",
       "taskAuthorityPrincipalCodec",
       "taskGrantDigest",

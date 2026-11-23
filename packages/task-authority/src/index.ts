@@ -39,3 +39,10 @@ export {
   renewalResumeSchema,
   withRenewal,
 } from "./renewal";
+export type { ChildGrantMinter, ChildLeaseContext } from "./childLease";
+export {
+  CHILD_LEASE_TOOL,
+  childGrantMinter,
+  childLeaseEffect,
+  reserveChildLease,
+} from "./childLease";

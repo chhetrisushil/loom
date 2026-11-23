@@ -1,5 +1,6 @@
 import type { EffectContext, EffectMiddleware } from "@loomwork/effect-runtime";
 import type { GrantSource } from "./broker";
+import { CHILD_LEASE_TOOL } from "./childLease";
 import {
   GrantRevokedError,
   LeaseDimensionDroppedError,
@@ -97,6 +98,12 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
     const grant = verifyTaskGrant(opts.secret, claimed);
     if (grant === undefined) throw new LeaseGrantInvalidError();
     const toolId = ctx.toolId ?? "";
+    const digest = taskGrantDigest(grant);
+    if (toolId === CHILD_LEASE_TOOL) {
+      // D6 bookkeeping, not a leased side effect: uncounted, but a revoked task still cannot meter
+      if (await isRevoked(digest)) throw new GrantRevokedError(grant.taskId);
+      return next();
+    }
     const lease = Object.keys(grant.leases).find((n) => grant.leases[n]?.effects.includes(toolId));
     if (lease === undefined) {
       if (strict) throw new LeaseUnmappedError(toolId);
@@ -105,14 +112,15 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
     if (ctx.flush === undefined || ctx.readResources === undefined) {
       throw new LeaseDurabilityError(toolId);
     }
-    const digest = taskGrantDigest(grant);
     if (await isRevoked(digest))
       throw new GrantRevokedError(grant.taskId, grant.taskId, grant.epoch);
 
     // ONE synchronous block: no await between reading the live spend and the meter that raises it.
     const ceiling = (grant.leases[lease] as { ceiling: number }).ceiling;
     const dim = `lease.${lease}`;
-    const spent = spentOf(ctx, dim);
+    // D6: what the parent has handed to children still counts against it, until they return it.
+    const own = spentOf(ctx, dim);
+    const spent = own + spentOf(ctx, `${dim}.reserved`) - spentOf(ctx, `${dim}.returned`);
     if (spent >= ceiling) {
       const err = new LeaseExhaustedError(lease, ceiling, spent, grant.epoch, grant.taskId);
       ctx.emit("QUOTA_EXCEEDED", { stepId: ctx.stepId, level: "lease", reason: err.message });
@@ -127,7 +135,7 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
       addCapped(decided, key);
     }
     ctx.emit("RESOURCE_METERED", { custom: { [dim]: 1 } });
-    if (spentOf(ctx, dim) !== spent + 1) throw new LeaseDimensionDroppedError(lease);
+    if (spentOf(ctx, dim) !== own + 1) throw new LeaseDimensionDroppedError(lease);
     await ctx.flush();
     return next();
   };

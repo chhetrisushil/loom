@@ -15,6 +15,12 @@ export interface MintRequest {
   leases: Record<string, LeaseSpec>;
   ttlMs: number;
   parent?: { taskId: string };
+  /**
+   * D6: per lease, the `lease.<n>.reserved` total in the PARENT's own fold (read by the supervisor). When
+   * given with `parent`, the broker refuses unless the sum of the parent's children's high-water ceilings,
+   * this one included, stays within it. Both sides only grow, so the check is sound whenever it runs.
+   */
+  parentReserved?: Record<string, number>;
 }
 export interface RenewalRequest {
   taskId: string;
@@ -43,11 +49,24 @@ export interface GrantSource {
    * non-atomic implementation (read, then write) lets two executions both claim the same task.
    */
   claim(taskId: string, executionId: string): Promise<boolean>;
+  /** The execution that holds `taskId` (see `claim`), or undefined. Side-effect free: authorization checks use this, never `claim`. */
+  holder(taskId: string): Promise<string | undefined>;
 }
 export interface GrantBroker extends GrantSource {
   mint(r: MintRequest): Promise<TaskGrant>;
   renew(r: RenewalRequest): Promise<RenewalVerdict>;
   revoke(taskId: string, reason: string): Promise<void>;
+  /**
+   * D6: record, once, what a COMPLETED child left unused (`high-water ceiling - spend[n]`; `spend` is its net
+   * `lease.<n> + reserved - returned`). Called by the supervisor only; a revoked or parentless task records
+   * nothing (R7), and a second call changes nothing.
+   */
+  settleChild(taskId: string, spend: Record<string, number>): Promise<void>;
+  /**
+   * D6: the ONE-TIME take of what `settleChild` recorded for `taskId`, if it is a child of `parentTaskId`
+   * (else, or when nothing is recorded yet, or already taken: `{}`). MUST be an atomic compare-and-set.
+   */
+  takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>>;
 }
 
 /** A request was refused (parent missing/expired/revoked, scope widened, ceiling over headroom, duplicate, bad ttl, unserializable). */
@@ -69,6 +88,9 @@ export interface Rec {
   spent: Record<string, number>;
   justifications: TaintedValue<string>[];
   revoked?: string;
+  /** D6: unused amounts recorded by `settleChild`; `taken` once `takeReturn` handed them out. */
+  settled?: Record<string, number>;
+  taken?: boolean;
 }
 
 /** Clone a caller request FIRST (getters, toJSON resolved once), capped in size; callers validate the CLONE. */
@@ -105,6 +127,22 @@ export class InMemoryGrantLedger {
   async current(taskId: string): Promise<TaskGrant | undefined> {
     const r = this.tasks.get(taskId);
     return r && !r.revoked ? cloneRequest(r.grant) : undefined;
+  }
+  async holder(taskId: string): Promise<string | undefined> {
+    return this.claims.get(taskId);
+  }
+  async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
+    const r = this.tasks.get(taskId);
+    if (!r || r.revoked || r.parent === undefined || r.settled !== undefined) return;
+    r.settled = Object.fromEntries(
+      Object.entries(r.high).map(([n, h]) => [n, Math.max(0, h - (Number(spend[n]) || 0))])
+    );
+  }
+  async takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>> {
+    const r = this.tasks.get(taskId);
+    if (!r || r.parent !== parentTaskId || r.settled === undefined || r.taken) return {};
+    r.taken = true;
+    return { ...r.settled };
   }
   async revoked(digest: string): Promise<boolean> {
     return this.revokedDigests.has(digest);
@@ -166,6 +204,11 @@ export class InMemoryGrantLedger {
           throw new GrantBrokerError(`parent has no lease ${name}`);
         if (spec.ceiling > this.headroom(parent, name))
           throw new GrantBrokerError(`lease ${name} ceiling exceeds the parent's headroom`);
+        if (
+          req.parentReserved !== undefined &&
+          this.reserved(parent, name) + spec.ceiling > (Number(req.parentReserved[name]) || 0)
+        )
+          throw new GrantBrokerError(`lease ${name} exceeds what the parent reserved in its fold`);
       }
     }
     const grant = signTaskGrant(this.secret, unsigned);
