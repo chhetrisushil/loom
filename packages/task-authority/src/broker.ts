@@ -135,7 +135,10 @@ export class InMemoryGrantLedger {
     const r = this.tasks.get(taskId);
     if (!r || r.revoked || r.parent === undefined || r.settled !== undefined) return;
     r.settled = Object.fromEntries(
-      Object.entries(r.high).map(([n, h]) => [n, Math.max(0, h - (Number(spend[n]) || 0))])
+      Object.entries(r.high).map(([n, h]) => [
+        n,
+        Math.min(h, Math.max(0, h - (Number(spend[n]) || 0))),
+      ])
     );
   }
   async takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>> {

@@ -201,6 +201,16 @@ available is refused before anything durable happens (the existing child-start g
 parks the parent for renewal instead. Children can therefore never exceed the parent in total, and only the root
 grant needs an estimate.
 
+**As built (T8, R25/R26).** The bound is structural, not left to flow code. The reserve is one recorded step keyed
+by the child; the minter refuses a spawn unless the parent's live fold shows `reserved` at least the sum of its
+children's high-water ceilings (this child included). The `returned` amount is not passed by the flow: the
+supervisor records a COMPLETED child's unused amount at the broker (`settleChild`) and the parent's return step
+takes it once (`takeReturn`); failed and cancelled children return nothing. A child's renewal never exceeds its
+minted ceiling. `installTaskAuthority` reserves the `lease.` meter prefix (ADR 0151 D7), so only effects and
+middleware write these counters. In-doubt outcomes: a crash inside the reserve step parks it in doubt and the
+operator adopts with output `{ taskId, lease }` (a wrong value changes the spawn ceiling, still checked against
+the fold); an in-doubt return step is lost, never doubled.
+
 ### D7 — Instruction provenance across lineages (Loom's addition to the paper)
 
 Content that crosses a lineage boundary through a channel Loom owns is tainted with origin
