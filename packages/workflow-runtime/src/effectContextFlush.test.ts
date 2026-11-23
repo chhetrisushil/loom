@@ -9,6 +9,7 @@ import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { recoverAbandoned } from "./recoverAbandoned";
 import type { FlowRunner } from "./types";
+import { guardUserspaceEmit } from "./userspaceEmit";
 
 // ── ADR 0151: EffectContext.flush() — a durable barrier for middleware ─────────────────────────
 //
@@ -502,5 +503,92 @@ describe("ADR 0151 D7: reserveEffectDimensions", () => {
     const log = await types(t.store, "rs-5");
     expect(log).toContain("EXECUTION_COMPLETED");
     expect(log.filter((e) => e === "RESOURCE_METERED")).toHaveLength(1);
+  });
+
+  it("(M2) a suspended flow that already emitted a now-reserved dimension fails on resume", async () => {
+    const t = bootReserve({
+      suspend: true,
+      flowEmit: (c) => c.emit("RESOURCE_METERED", meter("x.a")),
+    });
+    await t.first.runtime.start(t.first.flow, {}, { executionId: "rs-6" });
+    const deadline = Date.now() + 5_000;
+    while (!(await types(t.store, "rs-6")).includes("EXECUTION_SUSPENDED")) {
+      if (Date.now() > deadline) throw new Error("timed out waiting for EXECUTION_SUSPENDED");
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const second = t.mk();
+    second.runtime.reserveEffectDimensions("x.");
+    const err = await second.runtime
+      .resume("rs-6", { eventType: "Approval", payload: {} })
+      .then((h) => h.waitForCompletion())
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+    expect(String(err)).toMatch(/reserved \(prefix "x\."\)/);
+  });
+});
+
+describe("ADR 0151 R28: guardUserspaceEmit snapshots custom once", () => {
+  const flow = { kind: "flow" as const, conflicts: () => false };
+  const reserved = new Set(["x."]);
+
+  it("a Proxy whose keys change after the checks cannot smuggle a reserved name into the fold", () => {
+    let reads = 0;
+    const target = { ok: 1, "x.a": 1 };
+    const proxy = new Proxy(target, {
+      ownKeys: () => (++reads <= 2 ? ["ok"] : ["ok", "x.a"]),
+      getOwnPropertyDescriptor: (t, k) =>
+        Reflect.getOwnPropertyDescriptor(t, k) && {
+          ...Reflect.getOwnPropertyDescriptor(t, k),
+          enumerable: true,
+          configurable: true,
+        },
+    });
+    let out: { custom: Record<string, number> } | undefined;
+    try {
+      out = guardUserspaceEmit(
+        "RESOURCE_METERED",
+        { custom: proxy },
+        flow,
+        undefined,
+        reserved
+      ) as {
+        custom: Record<string, number>;
+      };
+    } catch {
+      return; // refused: acceptable
+    }
+    expect(Object.keys(out.custom)).not.toContain("x.a");
+    // The committed object is a plain copy: re-reading it never consults the proxy again.
+    expect(Object.keys(out.custom)).toEqual(Object.keys(out.custom));
+    expect(out.custom).not.toBe(proxy);
+  });
+
+  it("an undefined scope is guarded like a flow", () => {
+    expect(() =>
+      guardUserspaceEmit(
+        "RESOURCE_METERED",
+        { custom: { "x.a": 1 } },
+        undefined,
+        undefined,
+        reserved
+      )
+    ).toThrow(/reserved/);
+  });
+
+  it("an effect scope is not guarded", () => {
+    const eff = { kind: "effect" as const, stepId: "a", attempt: 1, conflicts: () => false };
+    expect(() =>
+      guardUserspaceEmit("RESOURCE_METERED", { custom: { "x.a": 1 } }, eff, undefined, reserved)
+    ).not.toThrow();
+  });
+
+  it("prefix edges with `x.`: `x` and `xy.a` pass, `x.a.b` is refused", () => {
+    const g = (name: string) =>
+      guardUserspaceEmit("RESOURCE_METERED", { custom: { [name]: 1 } }, flow, undefined, reserved);
+    expect(() => g("x")).not.toThrow();
+    expect(() => g("xy.a")).not.toThrow();
+    expect(() => g("x.a.b")).toThrow(/reserved/);
   });
 });

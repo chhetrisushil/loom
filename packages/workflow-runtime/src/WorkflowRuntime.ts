@@ -1403,7 +1403,8 @@ export class WorkflowRuntime {
    * ADR 0151 D7 — a composition-time contributor: reserve a custom metering-dimension prefix for the
    * app's registered effects and middleware. FLOW code (`ctx.emit`) can no longer emit a
    * `RESOURCE_METERED` whose `custom` names a dimension under it; effect-scope emits are unaffected.
-   * Idempotent. The kernel knows no vocabulary: the contributor names the prefix. Applies to new
+   * Include the delimiter in the prefix (`lease.`, not `lease`, which would also reserve `leaseholder`).
+   * Reservation is per `WorkflowRuntime` instance. Idempotent. The kernel knows no vocabulary: the contributor names the prefix. Applies to new
    * appends only (a recorded event is never re-guarded).
    */
   reserveEffectDimensions(prefix: string): void {

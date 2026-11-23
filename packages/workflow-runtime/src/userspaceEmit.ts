@@ -264,9 +264,26 @@ export function guardUserspaceEmit(
         }
       }
       if ("custom" in plain) {
+        // ADR 0151 R28 — snapshot `custom` ONCE, before any check, so what is checked is what is
+        // folded: a caller's Proxy / getter object is read exactly once (own keys + each value) and
+        // only the fresh plain copy is validated and committed. `defineProperty`, never assignment,
+        // so a `__proto__` name stays an own key for the checks below to refuse.
+        const raw = plain.custom;
+        if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+          const snap: Record<string, unknown> = {};
+          for (const [name, v] of Object.entries(raw)) {
+            Object.defineProperty(snap, name, {
+              value: v,
+              enumerable: true,
+              writable: true,
+              configurable: true,
+            });
+          }
+          plain.custom = snap;
+        }
         assertCustomDimensions(eventType, plain.custom, ceilings);
-        // ADR 0151 D7 — FLOW code never meters a dimension an app reserved for its effects/middleware.
-        if (scope?.kind === "flow" && reserved !== undefined && reserved.size > 0) {
+        // ADR 0151 D7 — every scope but an EFFECT's (flow, or none given) is refused a reserved name.
+        if (scope?.kind !== "effect" && reserved !== undefined && reserved.size > 0) {
           for (const name of Object.keys(plain.custom as object)) {
             for (const prefix of reserved) {
               if (name.startsWith(prefix)) {
