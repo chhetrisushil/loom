@@ -132,3 +132,25 @@ export class CrossLineageParkError extends Error {
     this.name = "CrossLineageParkError";
   }
 }
+
+/** The one-off schedule approval run was refused or answered with a malformed verdict (ADR 0150 D12). */
+export class ScheduleDeniedError extends Error {
+  readonly renewable = false;
+  readonly retryable = false;
+  constructor(reason: string) {
+    super(`schedule approval denied: ${reason}`);
+    this.name = "ScheduleDeniedError";
+  }
+}
+
+/** A scheduled occurrence cannot get its child grant (ADR 0150 D12): no, expired, revoked or exhausted schedule grant, or an aborted hook. The occurrence is skipped. */
+export class ScheduleGrantError extends Error {
+  constructor(
+    readonly scheduleId: string,
+    reason: string,
+    override readonly cause?: unknown
+  ) {
+    super(`schedule "${scheduleId}": ${reason}`);
+    this.name = "ScheduleGrantError";
+  }
+}

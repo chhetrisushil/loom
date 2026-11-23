@@ -1,7 +1,12 @@
 /** Slice-1 marker for `@loomwork/task-authority` (ADR 0150). */
 export const TASK_AUTHORITY_VERSION = "0.0.0-slice1";
 
-export { TaskAuthorityPrincipalError, TaskGrantShapeError } from "./errors";
+export {
+  ScheduleDeniedError,
+  ScheduleGrantError,
+  TaskAuthorityPrincipalError,
+  TaskGrantShapeError,
+} from "./errors";
 export type { GrantKeys, LeaseSpec, TaskGrant, UnsignedTaskGrant } from "./grant";
 /**
  * `globCovers` and `widensReadsOrSandbox` are the REFERENCE subset check for a child grant's `reads` / `sandbox`
@@ -80,3 +85,16 @@ export type { CrossLineageAction, DirectedByOptions } from "./directedBy";
 export { UNTRACKED_ORIGIN, directedBy, foreignSetHash } from "./directedBy";
 export type { SandboxRequirementOptions } from "./sandboxRequirement";
 export { sandboxRequirement } from "./sandboxRequirement";
+export type {
+  ScheduleApprovalContext,
+  ScheduleApprovalRuntime,
+  ScheduleGrantSpec,
+} from "./scheduleGrant";
+export {
+  SCHEDULE_GATE,
+  answerScheduleApproval,
+  mintScheduleGrant,
+  requestScheduleApproval,
+  scheduleResumeSchema,
+  scheduleViewDigest,
+} from "./scheduleGrant";
