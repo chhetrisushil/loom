@@ -1830,7 +1830,7 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 
 ** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
 
-Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). T4 adds the broker SPI and =InMemoryGrantLedger= (D13); renewal follows in T4b. Leases arrive in a later task.
+Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). T4 adds the broker SPI and =InMemoryGrantLedger= (D13); T4b adds =InMemoryGrantBroker= (renewal). Leases arrive in a later task.
 
 #+begin_src typescript
 const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
@@ -1865,6 +1865,17 @@ class InMemoryGrantLedger {                       // mint / current / revoked / 
 //   subset of parent's; each lease must exist on the parent; ceiling <= parent ceiling minus the ceilings of ALL children ever
 //   minted (revoked or not), each at its HIGH-WATER ceiling (renewing down releases nothing). The broker never releases a reservation (returning unused amounts is the parent fold's job, T8).
 //   Child exp = min(now + ttl, parent exp). Duplicate taskId refused.
+type RenewalPolicy = (req, history: { renewals; spentSoFar }) => false | { leases?: Record<string, number> }   // MUST be synchronous
+class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBroker {
+  constructor(o: { secret: string; now?: () => number; policy?: RenewalPolicy })
+}
+// renew: the request is cloned (size-capped) then bounds-checked; unknown/revoked/stale-epoch/unserializable => { granted: false, reason }.
+//   No await between the epoch check and the commit, so concurrent renewals at one epoch grant exactly once. The policy may only RESET
+//   ceilings of EXISTING leases (adding effects/leases is refused, not dropped); a non-false, non-object result (Promise, null) denies.
+//   A ceiling below the sum of ALL the task's children's ceilings is refused; a child is bounded by parent headroom. Default policy:
+//   8 renewals (broker-counted). Grant => epoch+1, exp = min(now + original ttl, parent exp); an EXPIRED grant may still renew (D5).
+//   Bounds: justification <= 4096 code units (untainted => wrapped task-authority:renewal; last 16 kept per task), spent <= 10 finite
+//   non-negative keys (last value kept), effectClassesCaused <= 32 entries of <= 64 chars. A policy that always grants makes the digest list grow.
 // revoke: synchronous iterative cascade; current() undefined, revoked(d) true for every digest of the task and its descendants; idempotent.
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.

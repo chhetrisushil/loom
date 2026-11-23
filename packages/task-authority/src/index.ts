@@ -14,3 +14,5 @@ export type {
   RenewalVerdict,
 } from "./broker";
 export { GrantBrokerError, InMemoryGrantLedger } from "./broker";
+export type { RenewalPolicy } from "./renew";
+export { InMemoryGrantBroker, MAX_JUSTIFICATION, MAX_JUSTIFICATIONS_KEPT } from "./renew";
