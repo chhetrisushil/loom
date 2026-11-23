@@ -182,18 +182,49 @@ describe("agentLoop$ authority.onDenied (ADR 0150 D11)", () => {
   });
 
   // kills: a sanitizer that copies the reason detail (task id, actor, base text, foreign lineage)
-  it('"reason": the label and a fixed sentence; no task id, actor, base text or lineage', async () => {
+  it('"reason": the label and a fixed sentence; no task id, actor or lineage; EFFECT_DENIED still logged', async () => {
     const scope = boot({ authority: { onDenied: "reason" } }, SCOPE_THEN_OK);
-    await (await scope.start()).waitForCompletion();
+    const h = await scope.start();
+    await h.waitForCompletion();
     expect(scope.w.seen[0]).toContain(
       `${OPAQUE_DENIAL} (task-grant:scope: the effect is outside the task grant)`
     );
-    const base = boot({ authority: { onDenied: "reason" } }, [[call("z")], [call("x")]]);
-    await (await base.start()).waitForCompletion();
-    expect(base.w.seen[0]).toContain("task-grant:base: the callee lacks the capability");
-    for (const seen of [...scope.w.seen, ...base.w.seen])
-      for (const leak of [TASK, ACTOR, "base-detail", "FOREIGN-B", "lineage:", "epoch", "sig"])
-        expect(seen).not.toContain(leak);
+    for (const leak of [TASK, ACTOR, "base-detail", "FOREIGN-B", "lineage:", "epoch", "sig"])
+      expect(scope.w.seen.join()).not.toContain(leak);
+    // kills: a conversion that skips the durable denial fact (auditable after the fact)
+    const types = (await scope.stores.e.read(h.executionId)).map((e) => e.eventType);
+    expect(types).toContain("EFFECT_DENIED");
+  });
+
+  // kills: converting a base-authorizer denial (R27, prefixed or not), which stays a terminal stop
+  it("a task-grant:base denial (the callee itself lacks the tool) stays terminal in every mode", async () => {
+    for (const onDenied of ["opaque", "reason"] as const) {
+      const { w, start } = boot({ authority: { onDenied } }, [[call("z")], [call("x")]]);
+      await expect((await start()).waitForCompletion()).rejects.toMatchObject({
+        reason: expect.stringMatching(/^task-grant:base/),
+      });
+      expect(w.seen).toEqual([]);
+      expect(w.ran).toEqual([]);
+    }
+  });
+
+  // kills: converting a blocked principal (a shredded or unrestorable one is a kernel stop)
+  it("a task-grant:blocked denial is never converted, in any mode", () => {
+    const d = new CapabilityDeniedError("t", "task-grant:blocked: principal shredded");
+    for (const mode of ["opaque", "reason"] as const)
+      expect(taskGrantDenialText(d, mode)).toBeUndefined();
+  });
+
+  // kills: a label lookup that reads the prototype chain (`constructor` would print a native function)
+  it("a label that names an Object.prototype member gets the generic text, never a native function", () => {
+    for (const label of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      const text = taskGrantDenialText(
+        new CapabilityDeniedError("t", `task-grant:${label}: x`),
+        "reason"
+      );
+      expect(text === undefined || text === `${OPAQUE_DENIAL} (task-grant:denied)`).toBe(true);
+      expect(text ?? "").not.toContain("function");
+    }
   });
 
   // kills: a sanitizer trusting the reason text after the label (an injected/unknown one)
