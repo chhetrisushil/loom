@@ -5,8 +5,12 @@ describe("@loomwork/task-authority public surface", () => {
   it("exports the version marker and the grant token API and the authorizer", () => {
     expect(Object.keys(api).sort()).toEqual([
       "GrantBrokerError",
+      "GrantRevokedError",
       "InMemoryGrantBroker",
       "InMemoryGrantLedger",
+      "LeaseDurabilityError",
+      "LeaseExhaustedError",
+      "LeaseUnmappedError",
       "MAX_JUSTIFICATION",
       "MAX_JUSTIFICATIONS_KEPT",
       "TASK_AUTHORITY_VERSION",
@@ -19,6 +23,7 @@ describe("@loomwork/task-authority public surface", () => {
       "signTaskGrant",
       "taskAuthorityPrincipalCodec",
       "taskGrantDigest",
+      "taskLeaseMiddleware",
       "validateGrantShape",
       "verifyTaskGrant",
     ]);
