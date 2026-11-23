@@ -1,12 +1,12 @@
-import { isTainted, taintOf, tainted } from "@loomwork/classify";
 import { describe, expect, it } from "vitest";
-import { InMemoryGrantBroker, type MintRequest, type RenewalRequest } from "./broker";
+import { GrantBrokerError, InMemoryGrantLedger, type MintRequest } from "./broker";
+import { TaskGrantShapeError } from "./errors";
 import { taskGrantDigest, verifyTaskGrant } from "./grant";
 
 const SECRET = "s3cret";
 const NOW = 1_000_000;
-const mk = (policy?: ConstructorParameters<typeof InMemoryGrantBroker>[0]["policy"]) =>
-  new InMemoryGrantBroker({ secret: SECRET, now: () => NOW, policy });
+const mk = (clock: { t: number } = { t: NOW }) =>
+  new InMemoryGrantLedger({ secret: SECRET, now: () => clock.t });
 const root = (over: Partial<MintRequest> = {}): MintRequest => ({
   taskId: "root",
   issuedTo: "agent",
@@ -15,31 +15,29 @@ const root = (over: Partial<MintRequest> = {}): MintRequest => ({
   ttlMs: 1000,
   ...over,
 });
-const child = (taskId: string, ceiling: number, over: Partial<MintRequest> = {}): MintRequest => ({
+const child = (
+  taskId: string,
+  ceiling: number,
+  over: Partial<MintRequest> = {},
+  parent = "root"
+): MintRequest => ({
   taskId,
   issuedTo: "agent",
   effects: ["db.write"],
   leases: { w: { ceiling, effects: ["db.write"] } },
   ttlMs: 1000,
-  parent: { taskId: "root" },
-  ...over,
-});
-const renewal = (epoch = 0, over: Partial<RenewalRequest> = {}): RenewalRequest => ({
-  taskId: "root",
-  epoch,
-  spent: { w: 3 },
-  renewals: 0,
+  parent: { taskId: parent },
   ...over,
 });
 
-describe("InMemoryGrantBroker mint", () => {
+describe("InMemoryGrantLedger mint", () => {
   it("mints a verifiable root", async () => {
     const g = await mk().mint(root());
     expect(g).toMatchObject({ taskId: "root", rootId: "root", epoch: 0, exp: NOW + 1000 });
     expect(g.parentId).toBeUndefined();
     expect(verifyTaskGrant(SECRET, g)).toBeDefined();
   });
-  it("mints a child inheriting rootId", async () => {
+  it("mints a child inheriting rootId and parentId", async () => {
     const b = mk();
     await b.mint(root());
     const c = await b.mint(child("c1", 4));
@@ -63,7 +61,7 @@ describe("InMemoryGrantBroker mint", () => {
     await b.revoke("root", "x");
     await expect(b.mint(child("c1", 1))).rejects.toThrow(/parent/);
   });
-  it("refuses a ceiling over the parent's headroom, including two children together", async () => {
+  it("refuses a ceiling over headroom, including two children together", async () => {
     const b = mk();
     await b.mint(root());
     await expect(b.mint(child("c0", 11))).rejects.toThrow(/headroom/);
@@ -71,13 +69,77 @@ describe("InMemoryGrantBroker mint", () => {
     await expect(b.mint(child("c2", 5))).rejects.toThrow(/headroom/);
     await b.mint(child("c3", 4));
   });
-  it("refuses a duplicate taskId and a bad ttl", async () => {
+  it("never releases a reservation: revoking c1 (10 of 10) does not free it", async () => {
+    const b = mk();
+    await b.mint(root());
+    await b.mint(child("c1", 10));
+    await b.revoke("c1", "x");
+    await expect(b.mint(child("c2", 10))).rejects.toThrow(/headroom/);
+  });
+  it("accounts headroom per lease", async () => {
+    const b = mk();
+    const two = {
+      leases: {
+        w: { ceiling: 10, effects: ["db.write"] },
+        r: { ceiling: 5, effects: ["db.read"] },
+      },
+    };
+    await b.mint(root(two));
+    const ask = (id: string, w: number, r: number) =>
+      child(id, w, {
+        effects: ["db.read", "db.write"],
+        leases: {
+          w: { ceiling: w, effects: ["db.write"] },
+          r: { ceiling: r, effects: ["db.read"] },
+        },
+      });
+    await b.mint(ask("c1", 10, 1));
+    await expect(b.mint(ask("c2", 1, 1))).rejects.toThrow(/lease w/);
+    await b.mint(
+      child("c3", 1, { effects: ["db.read"], leases: { r: { ceiling: 4, effects: ["db.read"] } } })
+    );
+    await expect(
+      b.mint(
+        child("c4", 1, {
+          effects: ["db.read"],
+          leases: { r: { ceiling: 1, effects: ["db.read"] } },
+        })
+      )
+    ).rejects.toThrow(/lease r/);
+  });
+  it("refuses a duplicate taskId", async () => {
     const b = mk();
     await b.mint(root());
     await expect(b.mint(root())).rejects.toThrow(/duplicate/);
-    await expect(b.mint(root({ taskId: "r2", ttlMs: 0 }))).rejects.toThrow(/ttlMs/);
   });
-  it("copies the request: later mutation does not change the stored grant", async () => {
+  it("refuses bad ttlMs values", async () => {
+    const b = mk();
+    for (const ttlMs of [
+      -1,
+      0,
+      0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ])
+      await expect(b.mint(root({ taskId: `r${ttlMs}`, ttlMs }))).rejects.toThrow(GrantBrokerError);
+    await expect(b.mint(root({ taskId: "big", ttlMs: Number.MAX_SAFE_INTEGER }))).rejects.toThrow(
+      GrantBrokerError
+    );
+  });
+  it("clamps a child's exp to the parent's and refuses a mint under an expired parent", async () => {
+    const clock = { t: NOW };
+    const b = mk(clock);
+    const p = await b.mint(root());
+    clock.t = NOW + 500;
+    const c = await b.mint(child("c1", 1, { ttlMs: 10_000 }));
+    expect(c.exp).toBe(p.exp);
+    const short = await b.mint(child("c2", 1, { ttlMs: 100 }));
+    expect(short.exp).toBe(NOW + 600);
+    clock.t = NOW + 1000;
+    await expect(b.mint(child("c3", 1))).rejects.toThrow(/expired/);
+  });
+  it("copies the request and the returned grant", async () => {
     const b = mk();
     const req = root();
     await b.mint(req);
@@ -87,122 +149,55 @@ describe("InMemoryGrantBroker mint", () => {
     expect(g?.effects).toEqual(["db.read", "db.write"]);
     expect(g?.leases.w?.ceiling).toBe(10);
     (g as { effects: string[] }).effects.push("zzz");
-    expect((await b.current("root"))?.effects).toHaveLength(2);
+    (g as unknown as { leases: { w: { ceiling: number } } }).leases.w.ceiling = 1;
+    const again = await b.current("root");
+    expect(again?.effects).toHaveLength(2);
+    expect(again?.leases.w?.ceiling).toBe(10);
   });
-});
-
-describe("InMemoryGrantBroker renew", () => {
-  it("increments the epoch, changes the digest, keeps the old digest unrevoked", async () => {
-    const b = mk();
-    const g0 = await b.mint(root());
-    const v = await b.renew(renewal());
-    expect(v).toMatchObject({ granted: true, epoch: 1 });
-    const g1 = await b.current("root");
-    expect(g1?.epoch).toBe(1);
-    expect(verifyTaskGrant(SECRET, g1 as never)).toBeDefined();
-    expect(v.digest).toBe(taskGrantDigest(g1 as never));
-    expect(v.digest).not.toBe(taskGrantDigest(g0));
-    expect(await b.revoked(taskGrantDigest(g0))).toBe(false);
-    expect(g1?.effects).toEqual(g0.effects);
-  });
-  it("refuses a stale epoch and an unknown task", async () => {
+  it("surfaces bad input as a typed error, never a TypeError", async () => {
     const b = mk();
     await b.mint(root());
-    await b.renew(renewal(0));
-    expect((await b.renew(renewal(0))).granted).toBe(false);
-    expect((await b.renew(renewal(1, { taskId: "nope" }))).granted).toBe(false);
-  });
-  it("default policy allows 8 renewals, then denies", async () => {
-    const b = mk();
-    await b.mint(root());
-    for (let i = 0; i < 8; i++) expect((await b.renew(renewal(i))).granted).toBe(true);
-    expect((await b.renew(renewal(8))).granted).toBe(false);
-  });
-  it("a policy returning false denies", async () => {
-    const b = mk(() => false);
-    await b.mint(root());
-    const v = await b.renew(renewal());
-    expect(v.granted).toBe(false);
-    expect((await b.current("root"))?.epoch).toBe(0);
-  });
-  it("a policy can set new ceilings but not add a lease", async () => {
-    const b = mk((_r, _h) => ({ leases: { w: 20 } }));
-    await b.mint(root());
-    expect((await b.renew(renewal())).granted).toBe(true);
-    expect((await b.current("root"))?.leases.w?.ceiling).toBe(20);
-    const b2 = mk(() => ({ leases: { extra: 5 } }));
-    await b2.mint(root());
-    const v = await b2.renew(renewal());
-    expect(v.granted).toBe(false);
-    expect(v.reason).toMatch(/extra/);
-    expect((await b2.current("root"))?.epoch).toBe(0);
-  });
-  it("a child's new ceiling is bounded by the parent's headroom", async () => {
-    const b = mk(() => ({ leases: { w: 9 } }));
-    await b.mint(root());
-    await b.mint(child("c1", 4));
-    await b.mint(child("c2", 4));
-    const v = await b.renew(renewal(0, { taskId: "c1" }));
-    expect(v.granted).toBe(false);
-    expect(v.reason).toMatch(/headroom/);
-  });
-  it("passes the policy the broker's own renewal count and the spend", async () => {
-    const seen: unknown[] = [];
-    const b = mk((_r, h) => {
-      seen.push(h);
-      return {};
-    });
-    await b.mint(root());
-    await b.renew(renewal(0, { renewals: 99 }));
-    expect(seen).toEqual([{ renewals: 0, spentSoFar: { w: 3 } }]);
-  });
-  it("wraps an untainted justification and keeps a tainted one's origin", async () => {
-    let got: unknown;
-    const b = mk((r) => {
-      got = r.justification;
-      return {};
-    });
-    await b.mint(root());
-    await b.renew(renewal(0, { justification: "need more" }));
-    expect(isTainted(got)).toBe(false); // the policy sees the request as given, never an unwrapped decision
-    expect(got).toBe("need more");
-    const kept = (b as unknown as { tasks: Map<string, { justifications: unknown[] }> }).tasks.get(
-      "root"
-    )!.justifications;
-    expect(taintOf(kept[0])?.origin).toBe("task-authority:renewal");
-    await b.renew(renewal(1, { justification: tainted("x", "mcp:srv") }));
-    expect(taintOf(kept[1])?.origin).toBe("mcp:srv");
-  });
-  it("refuses oversize or non-string justification and other out-of-bounds input", async () => {
-    const b = mk();
-    await b.mint(root());
-    const bad: Partial<RenewalRequest>[] = [
-      { justification: "x".repeat(4097) },
-      { justification: 5 as never },
-      { justification: tainted("x".repeat(4097), "o") },
-      { spent: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`k${i}`, 1])) },
-      { spent: { w: -1 } },
-      { spent: { w: Number.NaN } },
-      { effectClassesCaused: Array.from({ length: 33 }, () => "a") },
-      { effectClassesCaused: ["a".repeat(65)] },
+    const bad = [
+      root({ taskId: "a", leases: { w: null } as never }),
+      root({ taskId: "b", effects: "db.read" as never }),
+      child("c", 1, { leases: { w: null } as never }),
+      child("d", 1, { effects: 5 as never }),
+      null as never,
     ];
-    for (const o of bad) expect((await b.renew(renewal(0, o))).granted).toBe(false);
-    expect((await b.current("root"))?.epoch).toBe(0);
+    for (const r of bad)
+      await expect(b.mint(r)).rejects.toSatisfy(
+        (e) => e instanceof TaskGrantShapeError || e instanceof GrantBrokerError
+      );
+    const cyc: Record<string, unknown> = { ...root({ taskId: "cy" }) };
+    cyc.self = cyc;
+    await expect(b.mint(cyc as never)).rejects.toThrow(GrantBrokerError);
+    await expect(b.mint({ ...root({ taskId: "bi" }), x: 1n } as never)).rejects.toThrow(
+      GrantBrokerError
+    );
+    await expect(
+      b.mint({ ...root({ taskId: "hu" }), x: "y".repeat(70_000) } as never)
+    ).rejects.toThrow(/too large/);
   });
 });
 
-describe("InMemoryGrantBroker revoke", () => {
-  it("hides current, revokes every past digest, cascades, and is idempotent", async () => {
+describe("InMemoryGrantLedger revoke", () => {
+  it("hides current, revokes the digest, cascades through three levels, is idempotent", async () => {
     const b = mk();
-    const g0 = await b.mint(root());
-    const c = await b.mint(child("c1", 4));
-    await b.renew(renewal());
-    const g1 = (await b.current("root")) as never;
+    const g = await b.mint(root());
+    const c = await b.mint(child("c1", 6));
+    const gc = await b.mint(child("g1", 3, {}, "c1"));
     await b.revoke("root", "bye");
     await b.revoke("root", "bye");
-    expect(await b.current("root")).toBeUndefined();
-    expect(await b.current("c1")).toBeUndefined();
-    for (const g of [g0, g1, c]) expect(await b.revoked(taskGrantDigest(g))).toBe(true);
-    expect((await b.renew(renewal(1))).granted).toBe(false);
+    for (const id of ["root", "c1", "g1"]) expect(await b.current(id)).toBeUndefined();
+    for (const x of [g, c, gc]) expect(await b.revoked(taskGrantDigest(x))).toBe(true);
+  });
+  it("revoking a child leaves the parent live", async () => {
+    const b = mk();
+    await b.mint(root());
+    const c = await b.mint(child("c1", 6));
+    await b.revoke("c1", "x");
+    expect(await b.current("root")).toBeDefined();
+    expect(await b.revoked(taskGrantDigest(c))).toBe(true);
+    await b.revoke("nope", "x");
   });
 });

@@ -1830,7 +1830,7 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 
 ** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
 
-Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). T4 adds the broker SPI and =InMemoryGrantBroker= (D13). Leases arrive in a later task.
+Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). T4 adds the broker SPI and =InMemoryGrantLedger= (D13); renewal follows in T4b. Leases arrive in a later task.
 
 #+begin_src typescript
 const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
@@ -1852,20 +1852,20 @@ class TaskGrantAuthorizer implements CapabilityAuthorizer {
 }
 interface MintRequest { taskId; issuedTo; effects: string[]; leases: Record<string, LeaseSpec>; ttlMs; parent?: { taskId } }
 interface RenewalRequest { taskId; epoch; spent: Record<string, number>; renewals; effectClassesCaused?: string[]; justification?: TaintedValue<string> | string }
-interface RenewalVerdict { granted: boolean; epoch?: number; digest?: string; reason?: string }
+type RenewalVerdict = { granted: true; epoch: number; digest: string } | { granted: false; reason: string }
 interface GrantSource { current(taskId): Promise<TaskGrant | undefined>; revoked?(digest): Promise<boolean> }
 interface GrantBroker extends GrantSource { mint(r): Promise<TaskGrant>; renew(r): Promise<RenewalVerdict>; revoke(taskId, reason): Promise<void> }
-type RenewalPolicy = (req, history: { renewals; spentSoFar }) => false | { leases?: Record<string, number> }
-class InMemoryGrantBroker implements GrantBroker {
-  constructor(o: { secret: string; now?: () => number; policy?: RenewalPolicy | undefined })
+class GrantBrokerError extends Error {}
+class InMemoryGrantLedger {                       // mint / current / revoked / revoke (renewal arrives in T4b)
+  constructor(o: { secret: string; now?: () => number })
 }
-// mint: root => rootId = taskId, epoch 0, exp = now + ttlMs. With parent: parent must be live; effects subset of parent's; each lease
-//   must exist on the parent and its ceiling <= parent ceiling minus live siblings' ceilings (else GrantBrokerError). Duplicate taskId refused.
-// renew: unknown/revoked/stale-epoch => { granted: false }. The policy may only RESET ceilings of EXISTING leases (adding effects or
-//   leases is refused, not dropped); a child is bounded by parent headroom. Default policy: 8 renewals (broker-counted), then deny.
-//   Grant => epoch+1, exp = now + original ttl. Bounds: justification <= 4096 code units (untainted => wrapped task-authority:renewal),
-//   spent <= 10 finite non-negative keys, effectClassesCaused <= 32 entries of <= 64 chars. Requests are copied, never stored.
-// revoke: current() undefined, revoked(d) true for EVERY digest of the task and its descendants; idempotent.
+// mint: the request is cloned FIRST (size-capped at 64 KiB; BigInt/cycles => GrantBrokerError), then validated. Bad input is a
+//   GrantBrokerError (broker rule) or TaskGrantShapeError (grant shape), never a TypeError. Root => rootId = taskId, epoch 0,
+//   exp = now + ttlMs (ttlMs a positive safe integer, now + ttlMs safe). With parent: parent must be live and unexpired; effects
+//   subset of parent's; each lease must exist on the parent; ceiling <= parent ceiling minus the ceilings of ALL children ever
+//   minted (revoked or not). The broker never releases a reservation (returning unused amounts is the parent fold's job, T8).
+//   Child exp = min(now + ttl, parent exp). Duplicate taskId refused.
+// revoke: synchronous iterative cascade; current() undefined, revoked(d) true for every digest of the task and its descendants; idempotent.
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
 #+end_src
