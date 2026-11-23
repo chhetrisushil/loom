@@ -13,7 +13,7 @@ import {
   iterateExecutionIds,
   readRangeOf,
 } from "@loomwork/event-runtime";
-import { seenOriginsList } from "@loomwork/replay-vm";
+import { SEEN_ORIGINS_OVERFLOW, seenOriginsList } from "@loomwork/replay-vm";
 import { declareReach } from "@loomwork/verify";
 import {
   ChainHopLimitError,
@@ -1494,15 +1494,25 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   };
   // ADR 0150 D7 / S-R9 - a child's seen origins reach the parent on the CHILD_DONE body, one taint wrapper per
   // origin under `childOrigins` (the kernel's commit scan finds them, so the parent's own `seenOrigins` grows).
-  // An UNTRACKED child (no key) adds nothing: the seen-origins gate is fleet-wide, so a mixed fleet is the gap.
-  const childOriginsOf = async (payload: unknown, key: string): Promise<unknown[]> => {
+  // The HEAD generation is read (a continued child's origins live on its newest generation). When the PARENT is
+  // tracked and a child's set cannot be had (unreadable, reclaimed, or untracked/keyless) the overflow marker is
+  // added: an unprovable child must not read as clean (fail closed). An untracked parent adds nothing.
+  const childOriginsOf = async (
+    parentId: string,
+    payload: unknown,
+    key: string
+  ): Promise<unknown[]> => {
+    const sys = deps.runtime.systemOptions();
+    const parent = await deps.runtime.loadState(parentId, sys).catch(() => null);
+    if (parent === null || parent === undefined || seenOriginsList(parent) === undefined) return [];
     const p = payload as { settled?: unknown[] };
     const ids = Array.isArray(p.settled) ? p.settled.map((_, i) => `${key}#${i}`) : [key];
     const found = new Set<string>();
     for (const id of ids) {
-      const st = await deps.runtime.loadState(id, deps.runtime.systemOptions()).catch(() => null);
-      for (const o of (st === null || st === undefined ? undefined : seenOriginsList(st)) ?? [])
-        found.add(o);
+      const head = await deps.runtime.followToHead(id, sys).catch(() => null);
+      const list = head === null || head === undefined ? undefined : seenOriginsList(head.state);
+      if (list === undefined) found.add(SEEN_ORIGINS_OVERFLOW);
+      else for (const o of list) found.add(o);
     }
     return [...found].sort().map((origin) => ({ __loomTainted: { origin }, value: null }));
   };
@@ -1514,7 +1524,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const key = opts.key;
     if (deps.taskAuthority !== undefined && key !== undefined) await settleCompleted(payload, key);
     const sys = deps.runtime.systemOptions();
-    const childOrigins = key !== undefined ? await childOriginsOf(payload, key) : [];
+    const childOrigins = key !== undefined ? await childOriginsOf(parentId, payload, key) : [];
     const body =
       key !== undefined
         ? {

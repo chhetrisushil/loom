@@ -3,10 +3,13 @@ import { type GrantKeys, type TaskGrant, sealKeys, verifyTaskGrant } from "./gra
 
 /** ADR 0150 D7: the taint origin of content a grant-holder wrote is `lineage:<rootId>`. */
 export const LINEAGE_ORIGIN_PREFIX = "lineage:";
+/** The kernel truncates an origin label past 256 chars (`unknown:truncated:...`): a longer lineage origin cannot be compared. */
+export const LINEAGE_ORIGIN_MAX = 256;
 
 /** The slice of a principal a writer's lineage is read from (structural: no kernel dependency). */
 export interface LineagePrincipal {
   actor?: string;
+  tenant?: string;
   taskGrant?: unknown;
 }
 
@@ -14,6 +17,9 @@ export interface LineagePrincipal {
  * ADR 0150 D7 / S-R1. Returns `principal => "lineage:<rootId>" | undefined`. The rootId comes ONLY from a grant
  * whose signature verifies under `secret` and whose `issuedTo` is the presenting actor: never from a value the
  * caller supplied. No verified grant => `undefined` (the writer is simply not tagged; a tag is never invented).
+ * The grant's tenant must equal the principal's (absent = absent), as the authorizer requires. A rootId whose origin would
+ * exceed {@link LINEAGE_ORIGIN_MAX} is never tagged (the kernel would truncate it into a label nobody can compare).
+ * Pass the AUTHENTICATED principal only (the one the transport or effect context resolved), never one the caller built.
  * Expiry is not checked: provenance of what was written stays true after the grant lapses.
  */
 export function lineageOrigin(
@@ -26,7 +32,9 @@ export function lineageOrigin(
       if (claimed === undefined) return undefined;
       const g = verifyTaskGrant(sealed, claimed);
       if (g === undefined || g.issuedTo !== principal?.actor) return undefined;
-      return `${LINEAGE_ORIGIN_PREFIX}${g.rootId}`;
+      if (g.tenant !== principal?.tenant) return undefined;
+      const origin = `${LINEAGE_ORIGIN_PREFIX}${g.rootId}`;
+      return origin.length > LINEAGE_ORIGIN_MAX ? undefined : origin;
     } catch {
       return undefined;
     }
