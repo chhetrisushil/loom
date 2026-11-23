@@ -3,7 +3,13 @@ import { join } from "node:path";
 import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import { describe, expect, it } from "vitest";
 import { foldEvents, normalizeSnapshotState } from "./foldEvents";
-import { SEEN_ORIGINS_KEY, carrySeenOrigins } from "./seenOrigins";
+import {
+  SEEN_ORIGINS_KEY,
+  SEEN_ORIGINS_OVERFLOW,
+  carrySeenOrigins,
+  hasSeenOrigins,
+  seenOriginsList,
+} from "./seenOrigins";
 
 // ADR 0152 D1 (R11), the FOLD side: the fold unions the origins the journal RECORDED on an event's metadata,
 // advances `through`, never opens a payload. Records are written by hand here; the writer is seenOriginsRecord.test.ts.
@@ -350,5 +356,25 @@ describe("staleness inside normalizeSnapshotState", () => {
   it("a malformed key fails closed", () => {
     const bad = { ...healthy, variables: { ...healthy.variables, [SEEN_ORIGINS_KEY]: "junk" } };
     expect(keyOf(normalizeSnapshotState(bad))?.overflow).toBe(true);
+  });
+});
+
+describe("seenOriginsList / hasSeenOrigins (EffectContext.seenOrigins source)", () => {
+  const key = { v: 1, limits: { maxOrigins: 4, maxScanNodes: 100 }, origins: ["a"] };
+  const st = (k: unknown, sequence: number) =>
+    ({
+      sequence,
+      variables: k === undefined ? {} : { [SEEN_ORIGINS_KEY]: k },
+    }) as unknown as ExecutionState;
+
+  it("absent for an untracked run, the list for a proven key, the marker for a stale or unproven key", () => {
+    expect(hasSeenOrigins(st(undefined, 5))).toBe(false);
+    expect(seenOriginsList(st(undefined, 5))).toBeUndefined();
+    expect(seenOriginsList(st({ ...key, through: 5 }, 5))).toEqual(["a"]);
+    expect(seenOriginsList(st({ ...key, through: 4 }, 5))).toEqual(["a", SEEN_ORIGINS_OVERFLOW]);
+    expect(seenOriginsList(st({ ...key }, 5))).toEqual(["a", SEEN_ORIGINS_OVERFLOW]);
+    expect(hasSeenOrigins(st({ ...key, through: 4 }, 5))).toBe(true);
+    expect(seenOriginsList(st({ junk: 1 }, 5))).toEqual([SEEN_ORIGINS_OVERFLOW]); // malformed: fail closed
+    expect(hasSeenOrigins(st({ junk: 1 }, 5))).toBe(false); // ...but the context is not built from it
   });
 });

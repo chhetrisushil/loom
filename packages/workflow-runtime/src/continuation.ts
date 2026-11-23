@@ -194,10 +194,15 @@ export interface CarriedState {
   chainDeadline?: number;
 }
 
-export function carriedOf(state: ExecutionState, chainDeadline: number | undefined): CarriedState {
+export function carriedOf(
+  state: ExecutionState,
+  chainDeadline: number | undefined,
+  /** ADR 0152 S2b: the set is carried ONLY when the fleet gate is on (off = byte-identical to 1.26). */
+  withSeenOrigins = false
+): CarriedState {
   const resources = state.variables._resources;
   const inbox = state.variables._inbox as { cursors?: unknown; dedupe?: unknown } | undefined;
-  const seenOrigins = carrySeenOrigins(state);
+  const seenOrigins = withSeenOrigins ? carrySeenOrigins(state) : undefined;
   return {
     ...(resources !== undefined && resources !== null && { resources }),
     ...(inbox !== undefined && {

@@ -71,6 +71,10 @@ export function resolveSeenOriginsLimits(raw?: Partial<SeenOriginsLimits>): Seen
  * The list `EffectContext.seenOrigins` returns: a copy of the key's origins, ending with SEEN_ORIGINS_OVERFLOW when the set
  * overflowed or is unproven. `undefined` when the run has no (valid) key, i.e. is untracked.
  */
+export function hasSeenOrigins(state: Partial<ExecutionState>): boolean {
+  return validKey(state.variables?.[SEEN_ORIGINS_KEY]);
+}
+
 export function seenOriginsList(state: Partial<ExecutionState>): string[] | undefined {
   const key = staleSeenOrigins(state).variables?.[SEEN_ORIGINS_KEY];
   if (!validKey(key)) return undefined;

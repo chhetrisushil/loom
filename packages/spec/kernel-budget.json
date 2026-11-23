@@ -18,7 +18,7 @@
       "adr": "0039"
     },
     "WorkflowContext.ts": {
-      "codeLines": 1838,
+      "codeLines": 1844,
       "adr": "0152"
     },
     "WorkflowRuntime.ts": {
@@ -66,7 +66,7 @@
       "adr": "baseline"
     },
     "continuation.ts": {
-      "codeLines": 297,
+      "codeLines": 301,
       "adr": "0152"
     },
     "cron.ts": {

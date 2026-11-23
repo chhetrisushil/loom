@@ -391,7 +391,7 @@ export interface WorkflowRuntimeDeps {
    * `EffectContext.seenOrigins` is absent. Set by `defineConfig({ kernel: { features: { seenOrigins: true } } })`.
    */
   seenOriginsEnabled?: boolean;
-  /** ADR 0152 - limits stamped on new runs (`maxOrigins` 1..1024, default 64; `maxScanNodes` 100..100000, default 10000); out of range is refused. */
+  /** ADR 0152 - limits stamped on new runs (`maxOrigins` 1..1024, default 64; `maxScanNodes` 100..100000, default 10000). Validated at construction even when the gate is off (like `maxCarryBytes`); out of range is refused. */
   seenOriginsLimits?: { maxOrigins?: number; maxScanNodes?: number };
   /**
    * ADR 0113 D3 — the replay-divergence detector. A re-run that is about to make a LIVE journal
@@ -8744,7 +8744,7 @@ export class WorkflowRuntime {
         generation,
         continuedFrom: {
           executionId: predecessorId,
-          carried: carriedOf(state, chainDeadline),
+          carried: carriedOf(state, chainDeadline, this.seenOriginsEnabled),
         },
         ...(this.seenOriginsEnabled && { seenOriginsLimits: this.seenOriginsLimits }),
       },

@@ -24,6 +24,7 @@ export {
   carrySeenOrigins,
   resolveSeenOriginsLimits,
   seenOriginsList,
+  hasSeenOrigins,
 } from "./seenOrigins";
 export type { SeenOriginsKey, SeenOriginsLimits } from "./seenOrigins";
 export {
