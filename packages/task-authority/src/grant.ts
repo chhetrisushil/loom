@@ -34,6 +34,12 @@ export interface TaskGrant {
   leases: Record<string, LeaseSpec>;
   exp: number;
   epoch: number;
+  /**
+   * ADR 0150 D7 approval evidence (slice 2): the full sha256 hex hashes of the cross-lineage foreign sets a renewal
+   * approved (`directedBy` `park`). Signed, encoded ONLY when present (a grant without it is byte-identical to before),
+   * written only by a broker that granted a renewal request naming the set, kept across unrelated renewals.
+   */
+  approvedLineages?: string[];
   sig: string;
 }
 export type UnsignedTaskGrant = Omit<TaskGrant, "sig">;
@@ -52,6 +58,8 @@ export const READS_MAX_STARS = 4;
 export const READS_MAX_TOTAL = 16 * 1024;
 // C1 controls, line/paragraph separators and bidi controls: invisible in a log line or an operator UI.
 const READS_HIDDEN = /[\u0080-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+/** Most approved foreign sets a grant carries (the broker drops the oldest past it). */
+export const MAX_APPROVALS = 16;
 const MAX_SERIALIZED = 64 * 1024;
 // No dots: lease `a` owns dimensions `lease.a`, `.reserved`, `.returned`; a name "a.reserved" must not collide.
 const LEASE_NAME = /^[a-z][a-z0-9_-]{0,48}$/;
@@ -68,6 +76,7 @@ const GRANT_KEYS = [
   "leases",
   "exp",
   "epoch",
+  "approvedLineages",
 ];
 const LEASE_KEYS = ["ceiling", "effects"];
 // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting control characters is the point
@@ -181,6 +190,18 @@ function checkShape(g: unknown, signed: boolean): void {
   }
   if (!isNonNegInt(own(g, "exp"))) fail("exp must be a non-negative integer");
   if (!isNonNegInt(own(g, "epoch"))) fail("epoch must be a non-negative integer");
+  const ap = own(g, "approvedLineages");
+  if (
+    ap !== undefined &&
+    !(
+      Array.isArray(ap) &&
+      ap.length >= 1 &&
+      ap.length <= MAX_APPROVALS &&
+      ap.every((h) => typeof h === "string" && /^[0-9a-f]{64}$/.test(h)) &&
+      new Set(ap).size === ap.length
+    )
+  )
+    fail(`approvedLineages must be 1..${MAX_APPROVALS} distinct sha256 hex strings`);
 }
 
 // Deterministic encoding: fixed field order, sorted string arrays, sorted lease names. Built only
@@ -204,6 +225,8 @@ function canonicalBody(g: UnsignedTaskGrant): string {
   const reads = own(src, "reads");
   if (reads !== undefined) optional.reads = [...(reads as string[])].sort();
   if (own(src, "sandbox") !== undefined) optional.sandbox = "isolated";
+  const approved = own(src, "approvedLineages"); // ADR 0150 D7 approval evidence, likewise only when present
+  if (approved !== undefined) optional.approvedLineages = [...(approved as string[])].sort();
   return JSON.stringify({
     ...identity,
     ...optional,

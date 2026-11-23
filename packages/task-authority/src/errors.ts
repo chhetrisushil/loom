@@ -122,7 +122,9 @@ export class CrossLineageParkError extends Error {
   constructor(
     readonly taskId: string,
     readonly epoch: number,
-    readonly lineages: readonly string[]
+    readonly lineages: readonly string[],
+    /** `foreignSetHash(lineages)`: what a renewal must name, and the grant must carry, to approve this set. */
+    readonly hash: string
   ) {
     super(
       `task "${taskId}": a step directed by a foreign lineage (${lineages.slice(0, 3).join(", ").slice(0, 200)}) needs approval (epoch ${epoch})`

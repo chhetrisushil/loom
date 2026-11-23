@@ -375,3 +375,35 @@ describe("task grant token", () => {
     expect(CUSTOM_DIMENSION_MAX).toBe(32);
   });
 });
+
+describe("approvedLineages (ADR 0150 D7 approval evidence)", () => {
+  const H = "a".repeat(64);
+  // kills: a field that changes the encoding (and so every signature) of grants that do not carry it
+  it("is encoded only when present: a grant without it is byte-identical, one with it is signed", () => {
+    const plain = signTaskGrant(S, base());
+    const withIt = signTaskGrant(S, { ...base(), approvedLineages: [H] });
+    expect(withIt.sig).not.toBe(plain.sig);
+    expect(verifyTaskGrant(S, withIt)?.approvedLineages).toEqual([H]);
+    expect(verifyTaskGrant(S, plain)).toBeDefined();
+  });
+
+  // kills: an approval a holder can add to its own signed grant
+  it("adding or editing it on a signed grant breaks the signature", () => {
+    const plain = signTaskGrant(S, base());
+    expect(verifyTaskGrant(S, { ...plain, approvedLineages: [H] })).toBeUndefined();
+  });
+
+  it("rejects malformed values", () => {
+    for (const bad of [
+      [],
+      ["x"],
+      [H, H],
+      "h",
+      [H.toUpperCase()],
+      Array.from({ length: 17 }, (_, i) => String(i).padStart(64, "0")),
+    ])
+      expect(() => signTaskGrant(S, { ...base(), approvedLineages: bad as never })).toThrow(
+        TaskGrantShapeError
+      );
+  });
+});

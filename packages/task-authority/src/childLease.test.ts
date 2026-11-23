@@ -626,7 +626,7 @@ describe("child lease reservation (ADR 0150 D6)", () => {
       { ...bare, reserveEffectDimensions: (p: string) => reserved.push(p) },
       opts
     );
-    expect(reserved).toEqual(["lease.", "directed."]);
+    expect(reserved).toEqual(["lease."]);
   });
 
   it("(e) a failed child returns nothing", async () => {

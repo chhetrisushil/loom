@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import {
   CapabilityDeniedError,
-  type EffectContext,
   type EffectMiddleware,
   SEEN_ORIGINS_OVERFLOW,
 } from "@loomwork/effect-runtime";
@@ -29,19 +28,24 @@ export interface DirectedByOptions {
    * `a2a-inbound:`...), which is also the setting that does not trust a `lineage:<own>` label a writer without a grant could forge.
    */
   foreign?: "lineage" | "any-untrusted";
+  /**
+   * Origin prefixes the app declares foreign (in addition to other lineages). Default `["a2a-inbound:"]`: an A2A peer is always
+   * another principal. `inbox:` and `mcp:` stay NON-foreign (S-R3) unless listed here (`["a2a-inbound:", "inbox:"]`) or
+   * `foreign: "any-untrusted"` is set. Passing an array REPLACES the default (`[]` turns even `a2a-inbound:` off).
+   */
+  foreignPrefixes?: readonly string[];
 }
 
-/** The hash a park approval is bound to: the exact foreign set, so a NEW foreign origin parks again. */
-const setHash = (foreign: readonly string[]): string =>
+/**
+ * The full sha256 hex of a foreign set (JSON of the sorted, de-duplicated list, so no separator ambiguity). A park names it
+ * in its renewal request, and a renewed grant carries it in `approvedLineages` to approve exactly that set.
+ */
+export const foreignSetHash = (foreign: readonly string[]): string =>
   createHash("sha256")
-    .update([...foreign].sort().join("\n"))
-    .digest("hex")
-    .slice(0, 12);
-const dimOf = (epoch: number, hash: string): string => `directed.e${epoch}.${hash}`;
-const approvedAt = (ctx: EffectContext, epoch: number, hash: string): boolean => {
-  const custom = ctx.readResources?.().custom;
-  return epoch > 0 && ((custom?.[dimOf(epoch - 1, hash)] as number | undefined) ?? 0) > 0;
-};
+    .update(JSON.stringify([...new Set(foreign)].sort()))
+    .digest("hex");
+/** What an UNTRACKED run's park names as its "foreign set", so approving it is an explicit act (never the empty set). */
+export const UNTRACKED_ORIGIN = "unknown:seen-origins-untracked";
 const show = (foreign: readonly string[]): string =>
   `${foreign.slice(0, 3).join(", ").slice(0, 200)}${foreign.length > 3 ? ` (+${foreign.length - 3})` : ""}`;
 
@@ -50,15 +54,20 @@ const show = (foreign: readonly string[]): string =>
  * overflowed / unprovable set) directed it. A grant covering the step is not enough: the paper's laundering case.
  * - `attribute`: emit `DECISION_RECORDED { decisionId: "task-authority:directed-by", choice: { lineages } }`, then run.
  * - `deny`: `CapabilityDeniedError`, reason `task-grant:cross-lineage: ...` (terminal, like any capability denial).
- * - `park`: throw a RENEWABLE `CrossLineageParkError`; `withRenewal` (or the agent loop's authority renewal) parks on the
- *   renewal gate and a granted renewal is the approval. It is remembered as a `directed.e<epoch>.<hash>` meter written
- *   before the throw (reserved by `installTaskAuthority`): the retry, under epoch+1, runs only for the SAME foreign set.
+ * - `park`: throw a RENEWABLE `CrossLineageParkError` carrying `{ lineages, hash }`; `withRenewal` (or the agent loop's authority
+ *   renewal) puts them in the renewal request the approver sees. The approval is a SIGNED field of the renewed grant
+ *   (`approvedLineages`, written by a broker that granted a request naming this hash): the retry runs only when the acting
+ *   grant lists the hash of the SAME foreign set, so an unrelated renewal approves nothing, and the approval survives later renewals.
  * - UNTRACKED (`ctx.seenOrigins` absent: the `kernel.features.seenOrigins` gate is off, or the run predates it) FAILS
- *   CLOSED: `park` parks (with an empty set), every other action DENIES (`task-grant:untracked`). There is no way to
- *   attribute what is not tracked, so `attribute` cannot honestly let it run.
- * - Overflow counts as foreign. A principal with NO task grant is not governed here (the grant authorizer decides).
+ *   CLOSED: `park` parks on the explicit set `[UNTRACKED_ORIGIN]` (so only a request naming that exact set approves it, never
+ *   "empty"), every other action DENIES (`task-grant:untracked`). `attribute` cannot honestly let an untracked run through.
+ * - Overflow counts as foreign, and it is STICKY for the run (the set never shrinks). So is every `unknown:` label.
+ * - A principal with NO task grant is not governed here (the grant authorizer decides).
+ * - A denied or parked call has already burned one lease unit (this runs after `taskLeaseMiddleware`); to avoid that, place
+ *   `directedBy` BEFORE the lease middleware (it verifies the grant itself).
+ * - `appliesTo` defaults to LEASED effects only; an effect no lease counts is not governed unless the app lists it.
  * Place it AFTER `taskLeaseMiddleware`. Residual (needs an attested sender, deferred): content a writer WITHOUT a grant
- * labels `lineage:<your own root>` reads as yours; `foreign: "any-untrusted"` closes it.
+ * labels `lineage:<your own root>` reads as yours (so can a grant-holder on a raw path); `foreign: "any-untrusted"` closes it.
  */
 export function directedBy(opts: DirectedByOptions): EffectMiddleware {
   const secret = sealKeys(opts.secret);
@@ -66,6 +75,7 @@ export function directedBy(opts: DirectedByOptions): EffectMiddleware {
   const mode = opts.foreign ?? "lineage";
   const list = Array.isArray(opts.appliesTo) ? new Set<string>(opts.appliesTo) : undefined;
   const pred = typeof opts.appliesTo === "function" ? opts.appliesTo : undefined;
+  const prefixes = opts.foreignPrefixes ?? ["a2a-inbound:"];
   const decided = new Set<string>();
 
   return async (ctx, _input, next) => {
@@ -84,19 +94,19 @@ export function directedBy(opts: DirectedByOptions): EffectMiddleware {
 
     const origins = ctx.seenOrigins?.();
     const own = `${LINEAGE_ORIGIN_PREFIX}${grant.rootId}`;
-    const foreign =
-      origins === undefined
-        ? []
-        : origins.filter(
-            (o) =>
-              o === SEEN_ORIGINS_OVERFLOW ||
-              (mode === "any-untrusted"
-                ? o !== own
-                : o.startsWith(LINEAGE_ORIGIN_PREFIX) && o !== own)
-          );
+    // Lineage mode: another lineage, the overflow marker, ANY `unknown:` label (the kernel's truncation and scan-bound
+    // labels, whose lineage cannot be compared), and the app's `foreignPrefixes`. Not foreign: `mcp:`, `inbox:`, own lineage.
+    const isForeign = (o: string): boolean =>
+      mode === "any-untrusted"
+        ? o !== own
+        : o === SEEN_ORIGINS_OVERFLOW ||
+          o.startsWith("unknown:") ||
+          (o.startsWith(LINEAGE_ORIGIN_PREFIX) && o !== own) ||
+          prefixes.some((p) => o.startsWith(p));
+    const foreign = origins === undefined ? [UNTRACKED_ORIGIN] : origins.filter(isForeign);
     if (origins !== undefined && foreign.length === 0) return next();
 
-    const hash = setHash(foreign);
+    const hash = foreignSetHash(foreign);
     if (origins === undefined && action !== "park")
       throw new CapabilityDeniedError(
         toolId,
@@ -107,17 +117,16 @@ export function directedBy(opts: DirectedByOptions): EffectMiddleware {
         toolId,
         `${TASK_GRANT_DENIAL.crossLineage}: cross-lineage direction (${show(foreign)})`
       );
-    if (action === "park" && !approvedAt(ctx, grant.epoch, hash)) {
-      ctx.emit("RESOURCE_METERED", { custom: { [dimOf(grant.epoch, hash)]: 1 } });
-      await ctx.flush?.();
-      throw new CrossLineageParkError(grant.taskId, grant.epoch, foreign);
-    }
+    // The approval is evidence ON THE SIGNED GRANT (a broker granted a renewal naming exactly this set), nothing else.
+    if (action === "park" && grant.approvedLineages?.includes(hash) !== true)
+      throw new CrossLineageParkError(grant.taskId, grant.epoch, foreign, hash);
     const key = `${ctx.executionId}|${ctx.stepId}|${ctx.attempt}|${grant.epoch}`;
     if (!decided.has(key)) {
       ctx.emit("DECISION_RECORDED", {
         decisionId: "task-authority:directed-by",
         choice: { lineages: foreign, toolId, rootId: grant.rootId, epoch: grant.epoch },
       });
+      await ctx.flush?.(); // durable BEFORE the effect: the record is never lost to a crash between the two
       if (decided.size >= 4096) decided.delete(decided.values().next().value as string);
       decided.add(key);
     }

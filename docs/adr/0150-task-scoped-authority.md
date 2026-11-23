@@ -213,8 +213,8 @@ the fold); an in-doubt return step is lost, never doubled.
 
 ### D7 — Instruction provenance across lineages (Loom's addition to the paper)
 
-Content that crosses a lineage boundary through a channel Loom owns is tainted with origin
-`lineage:<rootId>`. That covers memory recall of an entry written by another lineage, an inbox send, an A2A
+Content that crosses a lineage boundary through the channels Loom TAGS is tainted with origin
+`lineage:<rootId>` *(as built, slice 2: only `lineageSend`, `memoryWriteBackEffect({ originOf })`, A2A `taintInbound` and `CHILD_DONE` tag; a raw `runtime.send`, other memory writes, durable state and conversations are untagged and read as clean, and a grant-holder on a raw path can label content with any lineage; the kernel-attested inbox sender, S-R9, is the queued fix; see the user guide for the list)*. That covers memory recall of an entry written by another lineage, an inbox send, an A2A
 inbound message and a shared conversation turn. Each of these seams already taints third-party content (ADR 0085).
 D7 only sets the origin label.
 
@@ -586,6 +586,7 @@ Slice 2 (D7–D12) was designed against the code at main 7409550f. The kernel se
 
 - **S-R8 (D7): the seen-origins bounds are configurable and recorded per run.** `maxOrigins` and `maxScanNodes` are set through runtime options and stamped on `EXECUTION_STARTED`, so replay uses the recorded limits and never the current config; a run started before EVENT_SCHEMA 1.27.0 uses the defaults. A pre-1.27 snapshot is rescanned once at upgrade (ADR 0152 D1).
 
+- **S5 review (R21):** park approval is a signed grant field `approvedLineages` (sha256 of the foreign set) written by a broker that grants a request naming it, never a meter; the untracked park names the explicit set `unknown:seen-origins-untracked`; every `unknown:` origin is foreign in lineage mode and a root id whose origin would exceed 256 chars is refused at mint; `a2a-inbound:` is foreign by default (`directedBy({ foreignPrefixes })`).
 - **S-R9 (D7): review fixes to the seen-origins design (ADR 0152 "Revision").** The set is tracked only behind a fleet gate, `kernel.features.seenOrigins` (the ADR 0109 D8 pattern); `EffectContext.seenOrigins` is ABSENT when untracked and consumers (`directedBy`) fail closed on absent. The key is always written at start, every listed channel is scanned, continueAsNew and fork carry the set, and a child's set reaches the parent through the 1P supervisor tainting the `CHILD_DONE` body (S5). The staleness check lives in `normalizeSnapshotState` and the rescan runs after the driver lease (R10). An attested inbox-sender origin is deferred (it would reopen S-R1/S-R3). For D12, `principalFor` must be idempotent and the tick grant is minted inside the run after `start` wins, with the deterministic task id `<schedule>@<occurrence>`.
 
 ### Corrected premises

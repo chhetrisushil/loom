@@ -85,7 +85,14 @@ function requestOf(err: unknown, n: number, fallbackTaskId?: string): RenewalReq
     throw new RenewalDeniedError("the error names no task or epoch and none was given");
   const spent =
     typeof e.lease === "string" && typeof e.spent === "number" ? { [e.lease]: e.spent } : {};
-  return { taskId, epoch, spent, renewals: n };
+  // D7: a cross-lineage park names the foreign set it needs approved (covered by the view digest).
+  const cross =
+    e.reason === "task-grant:cross-lineage" &&
+    typeof e.hash === "string" &&
+    Array.isArray(e.lineages)
+      ? { reason: "cross-lineage" as const, lineages: e.lineages as string[], hash: e.hash }
+      : {};
+  return { taskId, epoch, spent, renewals: n, ...cross };
 }
 
 /** The flow-context slice `withRenewal` needs (structural: no kernel dependency). */
