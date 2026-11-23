@@ -10,6 +10,7 @@ import {
   validateGrantShape,
   widensReadsOrSandbox,
 } from "./grant";
+import { LINEAGE_ORIGIN_MAX, LINEAGE_ORIGIN_PREFIX } from "./lineage";
 
 export interface MintRequest {
   taskId: string;
@@ -271,6 +272,14 @@ export class InMemoryGrantLedger {
     if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0 || !Number.isSafeInteger(now + ttlMs))
       throw new GrantBrokerError("ttlMs must be a positive safe integer");
     if (this.tasks.has(taskId)) throw new GrantBrokerError(`duplicate taskId ${taskId}`);
+    // ADR 0150 D7: a ROOT id becomes the `lineage:<rootId>` origin, which the kernel truncates past 256 chars.
+    if (
+      req.parent === undefined &&
+      LINEAGE_ORIGIN_PREFIX.length + String(taskId).length > LINEAGE_ORIGIN_MAX
+    )
+      throw new GrantBrokerError(
+        `a root taskId longer than ${LINEAGE_ORIGIN_MAX - LINEAGE_ORIGIN_PREFIX.length} chars cannot be a lineage origin`
+      );
     const unsigned: UnsignedTaskGrant = {
       taskId,
       rootId: taskId,

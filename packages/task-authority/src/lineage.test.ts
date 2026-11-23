@@ -41,6 +41,38 @@ describe("lineageOrigin: the rootId comes from a verified grant, never from the 
   });
 });
 
+describe("lineageOrigin: bounds and tenant", () => {
+  const signed = (taskId: string, extra: Record<string, unknown> = {}) =>
+    signTaskGrant(SECRET, {
+      taskId,
+      rootId: taskId,
+      issuedTo: "x",
+      effects: ["act"],
+      leases: {},
+      exp: 9e9,
+      epoch: 0,
+      ...extra,
+    } as never);
+
+  // kills: tagging a rootId the kernel truncates into `unknown:truncated:...` (which is not a comparable lineage)
+  it("refuses to tag a rootId whose origin would exceed 256 chars, and the broker refuses to mint one", async () => {
+    const long = "A".repeat(250);
+    expect(lineageOrigin(SECRET)({ actor: "x", taskGrant: signed(long) })).toBeUndefined();
+    expect(lineageOrigin(SECRET)({ actor: "x", taskGrant: signed("A".repeat(248)) })).toBe(
+      `lineage:${"A".repeat(248)}`
+    );
+    await expect(world().grant(long)).rejects.toThrow(/lineage origin/);
+  });
+
+  // kills: a tenant-blind lineageOrigin (a grant presented under another tenant)
+  it("a grant of tenant t1 presented by a principal of another tenant yields no origin", () => {
+    const g = signed("T", { tenant: "t1" });
+    expect(lineageOrigin(SECRET)({ actor: "x", tenant: "t1", taskGrant: g })).toBe("lineage:T");
+    expect(lineageOrigin(SECRET)({ actor: "x", tenant: "t2", taskGrant: g })).toBeUndefined();
+    expect(lineageOrigin(SECRET)({ actor: "x", taskGrant: g })).toBeUndefined();
+  });
+});
+
 describe("wrapLineage / lineageTainter", () => {
   // kills: tainted(), which keeps ONLY the original origin and so drops the lineage of already-tainted content
   it("keeps an inner taint INSIDE the lineage wrapper", () => {

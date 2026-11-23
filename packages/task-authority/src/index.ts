@@ -67,6 +67,7 @@ export {
 } from "./childLease";
 export type { LineagePrincipal } from "./lineage";
 export {
+  LINEAGE_ORIGIN_MAX,
   LINEAGE_ORIGIN_PREFIX,
   lineageOrigin,
   lineageSend,

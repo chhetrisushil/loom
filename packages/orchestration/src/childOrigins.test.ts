@@ -1,6 +1,7 @@
 import type { FlowDefinition } from "@loomwork/core";
 import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { SEEN_ORIGINS_OVERFLOW } from "@loomwork/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
@@ -25,7 +26,11 @@ const taintTask = { _tag: "TaskDefinition", kind: "tool", id: "t", toolId: "tain
 
 // The child is shown the origin by an EFFECT result (its input is clean: a spawn input would reach the parent
 // anyway, through the parent's own recorded spawn decision).
-function boot(gate: boolean, childOrigin: string | undefined) {
+function boot(
+  gate: boolean,
+  childOrigin: string | undefined,
+  o: { continued?: boolean; hideChild?: boolean } = {}
+) {
   const seen: { list: readonly string[] | undefined }[] = [];
   const effects = new EffectRuntime();
   effects.register(
@@ -46,10 +51,19 @@ function boot(gate: boolean, childOrigin: string | undefined) {
     eventStore: store,
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     ...(gate && { seenOriginsEnabled: true }),
+    ...(o.continued === true && { continueAsNewEnabled: true }),
     onWarn: () => {},
     onEvent: (e) => holder.sup?.onEvent(e),
   });
-  const child: FlowRunner<unknown, unknown> = async (ctx) => {
+  if (o.hideChild === true) {
+    // the child's state cannot be read when the parent is resumed (reclaimed / unreachable)
+    const real = runtime.followToHead.bind(runtime);
+    runtime.followToHead = (async (id: string, opts?: unknown) =>
+      id.includes("::") ? null : real(id, opts as never)) as never;
+  }
+  const child: FlowRunner<unknown, unknown> = async (ctx, input) => {
+    if (o.continued === true && (input as { gen?: number } | undefined)?.gen === undefined)
+      return (ctx as unknown as { continueAsNew(i: unknown): never }).continueAsNew({ gen: 1 });
     await ctx.run(taintTask, {});
     return "ok";
   };
@@ -100,5 +114,21 @@ describe("CHILD_DONE carries the child's seen origins", () => {
     expect(h.seen[0]?.list).toBeUndefined();
     const done = (await h.store.read("P")).find((e) => e.eventType === "EXECUTION_RESUMED");
     expect(JSON.stringify(done?.payload)).not.toContain("childOrigins");
+  });
+
+  // kills: reading the ORIGINAL child id (a continued child's origins live on its later generation)
+  it("a continued child's later-generation origins reach the parent (head generation read)", async () => {
+    const h = boot(true, "lineage:A", { continued: true });
+    await h.run();
+    await until(() => h.seen.length === 1);
+    expect(h.seen[0]?.list).toContain("lineage:A");
+  });
+
+  // kills: an unreadable child reading as clean for a TRACKED parent
+  it("a tracked parent whose child state is unreadable gets the overflow marker", async () => {
+    const h = boot(true, undefined, { hideChild: true });
+    await h.run();
+    await until(() => h.seen.length === 1);
+    expect(h.seen[0]?.list).toContain(SEEN_ORIGINS_OVERFLOW);
   });
 });
