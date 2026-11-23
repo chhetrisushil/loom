@@ -161,7 +161,7 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
       { effects: ["act", "more"] },
     ])
       await expect(
-        mintScheduleGrant(app.broker, { ...base, ...diff }, NOWOPT)
+        mintScheduleGrant(app.broker, { ...base, ...diff } as ScheduleGrantSpec, NOWOPT)
       ).rejects.toBeInstanceOf(GrantBrokerError);
     await expect(
       mintScheduleGrant(app.broker, base, { now: () => NOW + spec.ttlMs + 1 })
