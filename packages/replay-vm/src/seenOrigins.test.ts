@@ -69,7 +69,9 @@ describe("R13: no record on a channel event of a tracked run is overflow (fail c
     );
   });
   it("a start with the stamp but no record also fails closed; a non-channel event never needs one", () => {
-    expect(keyOf(fold([{ ...start(), metadata: undefined }]))?.overflow).toBe(true);
+    expect(
+      keyOf(fold([{ eventType: "EXECUTION_STARTED", payload: start().payload }]))?.overflow
+    ).toBe(true);
     expect(
       keyOf(fold([start(), { eventType: "STEP_STARTED", payload: { stepId: "a" } }]))?.overflow
     ).toBeUndefined();
