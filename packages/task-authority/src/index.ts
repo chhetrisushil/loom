@@ -10,12 +10,7 @@ export type {
   GrantBroker,
   GrantSource,
   MintRequest,
-  RenewalPolicy,
   RenewalRequest,
   RenewalVerdict,
 } from "./broker";
-export {
-  GrantBrokerError,
-  InMemoryGrantBroker,
-  MAX_JUSTIFICATION,
-} from "./broker";
+export { GrantBrokerError, InMemoryGrantLedger } from "./broker";
