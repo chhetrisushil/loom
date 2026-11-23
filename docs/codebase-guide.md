@@ -24,11 +24,11 @@ The one idea to hold while reading either repo: **the log is the source of truth
 | --- | --- | --- |
 | Path | `~/workspace/loom` | `~/workspace/loom-ui` |
 | What it is | Kernel + first-party packages, plugins, dev tools | Experience Model, compiler to Blueprint, hydration, planner, renderers |
-| Size | ~76 workspace packages, ~1,450 source files | 9 packages, ~500 source files |
+| Size | ~77 workspace packages, ~1,450 source files | 9 packages, ~500 source files |
 | Package scopes | `@loomwork/*` (`packages/`, `plugins/`, `tools/`, `apps/`) | `@loomwork/ui-*` (`packages/`) |
 | Build | pnpm 9.14.4 + turbo, TypeScript, CommonJS | pnpm 9.14.4, `pnpm -r`, CommonJS (renderer-lit is ESM) |
 | Lint / test | biome, vitest | biome, vitest (renderer-lit under happy-dom) |
-| Orientation files | `AGENTS.md`, `README.org`, `docs/architecture.md`, `docs/adr/` (147 ADRs) | `AGENTS.md`, `README.md`, `docs/guides/`, `docs/reference/` |
+| Orientation files | `AGENTS.md`, `README.org`, `docs/architecture.md`, `docs/adr/` (151 ADRs) | `AGENTS.md`, `README.md`, `docs/guides/`, `docs/reference/` |
 
 ### How the repos relate
 
@@ -90,7 +90,7 @@ Line numbers below are approximate (as of loom `29890224`); search for the symbo
 | `plugins/` | First-party adapters for a specific external system, published as `@loomwork/plugin-*` (SQLite, Postgres, MCP, A2A, renderers, crypto, workers). A CI layering guard forbids any kernel package from depending on a plugin. |
 | `tools/` | Dev-time leaf packages: `cli`, `compiler`, `appgen`, `eval`, `testing`, `dst`, `deploy-sim`, `scaffold`, `create-loom-app`. Never imported by runtime code. |
 | `apps/playground` | A development playground. |
-| `docs/` | `architecture.md` (start here), `adr/` (147 ADRs), `api-reference.org`, `loom-2.0/`, `requirements/` (design docs, including loom-ui's), `user-guide/`. |
+| `docs/` | `architecture.md` (start here), `adr/` (151 ADRs), `api-reference.org`, `loom-2.0/`, `requirements/` (design docs, including loom-ui's), `user-guide/`. |
 | `evals/` | loom's own eval suite with baselines (`pnpm eval`). |
 | Root config | `turbo.json`, `tsconfig.base.json`, `vitest.shared.ts` (the one vitest config), `biome.json`, `pnpm-workspace.yaml`. |
 
@@ -99,8 +99,8 @@ Line numbers below are approximate (as of loom `29890224`); search for the symbo
 | Package | Read first | Role |
 | --- | --- | --- |
 | `@loomwork/core` | `src/builders/*.ts`, `src/types/definitions.ts`, `src/types/execution.ts` | Authoring builders (`step$`, `flow$`, `tool$`, `agent$`, `projection$`, `schedule$`, `policy$`, `skill$`, `memory$`) and shared types. Pure declarations, no runtime. Also `flowHash.ts` (the `flowContentHash` that pins in-flight executions to code). |
-| `@loomwork/workflow-runtime` | `src/WorkflowRuntime.ts` (`start` ~L3620, `resume` ~L3908, `resumeAs` ~L7244, `loadState` ~L7532, `fork` ~L7812, private `execute` ~L8873) | Drives executions: bootstraps, authorizes, builds the journal and context, runs the flow, handles suspend, cancel, deadlines, leases, inbox and continue-as-new. 9,750 lines; read by method, not top to bottom. |
-| | `src/WorkflowContext.ts` (`execute` L754, `run` L1134, `decide` L1142, `parallel` L1324, `suspend` L1763, `continueAsNew` L1806, `receive`/`select` L1869, `sleep` L2404; also `sleepUntil`, `emit`, `stream`, `ui`, `negotiateBudget`) | The syscall surface a flow sees as `ctx`. Each call is either served from the log or executed live and journaled. |
+| `@loomwork/workflow-runtime` | `src/WorkflowRuntime.ts` (`start` ~L3658, `resume` ~L3946, `resumeAs` ~L7282, `loadState` ~L7570, `fork` ~L7850, private `execute` ~L8911) | Drives executions: bootstraps, authorizes, builds the journal and context, runs the flow, handles suspend, cancel, deadlines, leases, inbox and continue-as-new. 9,790 lines; read by method, not top to bottom. |
+| | `src/WorkflowContext.ts` (`execute` L758, `run` L1160, `decide` L1168, `parallel` L1356, `suspend` L1795, `continueAsNew` L1838, `receive`/`select` L1901/L1905, `sleep` L2436; also `sleepUntil`, `emit`, `stream`, `ui`, `negotiateBudget`) | The syscall surface a flow sees as `ctx`. Each call is either served from the log or executed live and journaled. |
 | | `src/ExecutionJournal.ts` | The single sequence allocator and the only caller of `eventStore.append`. Folds synchronously, writes asynchronously on a FIFO tail. |
 | | `src/abi.ts`, `src/types.ts` | `KERNEL_ABI` (the versioned syscall ABI, K1) and the runtime's public types (`RegisteredFlow`, `FlowRunner`, `RunOptions`, `ExecutionHandle`). |
 | | `TimerService.ts`, `inbox.ts`, `leaseKeeper.ts`, `driverLease.ts`, `LogLifecycle.ts`, `recoverAbandoned.ts` | Durable timers (T1), inbox messaging, driver leases and fencing (K9), retention and shredding (K10), crash recovery. |
@@ -109,7 +109,7 @@ Line numbers below are approximate (as of loom `29890224`); search for the symbo
 | `@loomwork/snapshot-runtime` | `src/` | `SnapshotStore` SPI: checkpoints so a resume folds only the tail. |
 | `@loomwork/effect-runtime` | `src/EffectRuntime.ts` (`execute` L60), `authz.ts`, `policy.ts`, `effects/*` | The side-effect boundary keyed by `toolId`. Authorizer first (K2, `EFFECT_DENIED`), then the middleware chain (`middleware[0]` outermost), then the effect (`ToolEffect`, `LlmEffect`, `HumanEffect`, `LazyEffect`). |
 | `@loomwork/middleware` | `src/` | Reference middleware: retry, metering (K3), safety (K6), redaction (K10), claim-check (large results stored by reference). |
-| `@loomwork/app` | `src/defineConfig.ts` (`LoomConfig` L1104, `LoomApp` L1456, `defineConfig` L1914) | The composition root. Turns one static config into a wired `WorkflowRuntime`, `EffectRuntime`, `ProjectionRuntime`, stores, A2A bus, timers, memory and schedules. |
+| `@loomwork/app` | `src/defineConfig.ts` (`LoomConfig` L1117, `LoomApp` L1469, `defineConfig` L1927) | The composition root. Turns one static config into a wired `WorkflowRuntime`, `EffectRuntime`, `ProjectionRuntime`, stores, A2A bus, timers, memory and schedules. |
 | `@loomwork/sdk` | `src/index.ts` | The public re-export barrel. |
 
 ### Around the kernel
@@ -193,29 +193,29 @@ In loom, control flows down from your flow function through `ctx` into the journ
 
 ![A step already in the log is served, never re-run](media/codebase-guide/ctx-run-flow.png)
 
-The same code path handles a first run, a resume and a crash recovery; only what is already in the log differs. The check order is in `WorkflowContext.executeIn` (`WorkflowContext.ts` ~L762): `vm.hasCompleted(id)` serves, `vm.getTypedFailure(id)` rethrows, otherwise the step runs live through `executeLive`.
+The same code path handles a first run, a resume and a crash recovery; only what is already in the log differs. The check order is in `WorkflowContext.executeIn` (`WorkflowContext.ts` ~L766): `vm.hasCompleted(id)` serves, `vm.getTypedFailure(id)` rethrows, otherwise the step runs live through `executeLive`.
 
 ### Walkthrough 1: starting an execution
 
-1. Your code calls `app.runtime.start(flow, input, { principal })` (`WorkflowRuntime.start`, ~L3620).
+1. Your code calls `app.runtime.start(flow, input, { principal })` (`WorkflowRuntime.start`, ~L3658).
 2. `startCore` validates the budget, mints a ULID execution id, resolves the flow to its definition and runner, and runs the execution authorizer (a denial is logged as `EXECUTION_DENIED`).
 3. A `ReplayVM` is seeded and an `ExecutionJournal` is created for this execution; the journal commits `EXECUTION_STARTED`.
-4. The private `execute` (~L8873) builds a `WorkflowContextImpl` and calls your runner `(ctx, input)`; it also arms the deadline (K8) and cancellation.
+4. The private `execute` (~L8911) builds a `WorkflowContextImpl` and calls your runner `(ctx, input)`; it also arms the deadline (K8) and cancellation.
 5. Each `ctx.run(step, input)` follows the diagram above. The effect runs through `EffectRuntime.execute` (`effect-runtime/src/EffectRuntime.ts` L60): authorizer first, then middleware with `middleware[0]` outermost, then the registered effect.
 6. When the runner returns, the journal commits `EXECUTION_COMPLETED`, drains its async write tail (a durability barrier) and the `ExecutionHandle` resolves `waitForCompletion()` with the folded state; the flow's result is at `state.variables._output`.
 7. Throughout, every committed envelope is also delivered to `onEvent` subscribers in sequence order, which is how `ProjectionRuntime.handleEvent` keeps read models and surfaces current. Delivery usually happens before the durable write, so after a crash or a failed write `onEvent` can have reported an event the log does not hold. `onDurableEvent` fires after the write instead ([ADR 0147](adr/0147-on-durable-event.md)).
 
 ### Walkthrough 2: suspend and resume
 
-1. The flow calls `ctx.suspend({ on, correlationKey, timeout })` (`WorkflowContext.ts` L1763). The journal commits `EXECUTION_SUSPENDED`, a snapshot is written, and control returns to the caller. The execution now lives only in storage.
-2. Later, possibly in another process, a caller invokes `runtime.resume(executionId, { eventType, payload })` (~L3908). The runtime loads the latest snapshot plus the event tail after it into a fresh `ReplayVM` (~L4045), checks the resume authenticator and records `EXECUTION_RESUMED`.
+1. The flow calls `ctx.suspend({ on, correlationKey, timeout })` (`WorkflowContext.ts` L1795). The journal commits `EXECUTION_SUSPENDED`, a snapshot is written, and control returns to the caller. The execution now lives only in storage.
+2. Later, possibly in another process, a caller invokes `runtime.resume(executionId, { eventType, payload })` (~L3946). The runtime loads the latest snapshot plus the event tail after it into a fresh `ReplayVM` (~L4078), checks the resume authenticator and records `EXECUTION_RESUMED`.
 3. The runner re-runs **from the top**. Every completed step is served from the log, so no effect repeats; the payload becomes the return value of the original `suspend()` call, and execution continues live from there.
 4. Crash recovery is the same mechanism: a redispatched execution folds its log and resumes if still `running`.
 
 ### Walkthrough 3: fork, decide and other lenses
 
-- **Fork** (`WorkflowRuntime.fork`, ~L7812) copies the event prefix `[0..k]` into a new execution id and resumes it differently; promotion is a pointer move in the `BranchRegistry`.
-- **Decide** (`ctx.decide`, L1142) runs a non-deterministic choice once, records `DECISION_RECORDED`, and serves it on replay. This is how model routing and loom-ui's planner stay replayable.
+- **Fork** (`WorkflowRuntime.fork`, ~L7850) copies the event prefix `[0..k]` into a new execution id and resumes it differently; promotion is a pointer move in the `BranchRegistry`.
+- **Decide** (`ctx.decide`, L1168) runs a non-deterministic choice once, records `DECISION_RECORDED`, and serves it on replay. This is how model routing and loom-ui's planner stay replayable.
 - **Read-only lenses** (`replay-inspector`, `eval`, `deploy-sim`, `cli debug`) all fold the same log with `foldEvents`; none of them append.
 
 ### loom-ui: from intent to pixels
@@ -229,7 +229,7 @@ Only the top row writes anything durable. Hydration never touches the event log:
 1. **Start a lineage.** `genesis({ experienceId, intent, meta })` (`core/src/experience.ts` L202) returns an empty Experience whose root is a 12-column grid.
 2. **Plan.** A planner's `compose(input, ctx)` (`planner/src/spi.ts`, reference impl in `reference.ts`) calls the model through `PlannerModel.complete` inside `ctx.decide`, parses the reply and materializes it (`materialize.ts`) into a list of `Operation`s. A human or app can produce the same operations by hand.
 3. **Apply.** `apply(exp, op)` / `replay(exp, ops)` (`core/src/operations.ts` L433 / L937) validate each op against the schema, the tree and the catalogue, returning `{ ok: false, finding }` on refusal. Provider ops (`remapProvider`, `bindProvider`) attach data handles and fold sticky confidentiality classes.
-4. **Seal.** `seal(exp)` (`core/src/log.ts` L56) mints `versionHash`, the content address. With `@loomwork/ui-lineage`, `Lineage.advance` (`lineage.ts` ~L711) moves the head by compare-and-set and refuses a version whose ops do not replay to its hash.
+4. **Seal.** `seal(exp)` (`core/src/log.ts` L57) mints `versionHash`, the content address. With `@loomwork/ui-lineage`, `Lineage.advance` (`lineage.ts` ~L975) moves the head by compare-and-set and refuses a version whose ops do not replay to its hash.
 5. **Compile.** `compile(exp, { surface, catalog, viewer, audience, hydrationProjectionId, ... })` (`core/src/compile.ts` L244) resolves each semantic node to a widget kind for the surface, redacts what the viewer may not see (opaque placeholder ids), resolves labels, and emits a `Blueprint` whose widgets bind to `values.<handle>` and `status.<handle>` in the hydration projection. Results are memoized by a key that includes the audience.
 6. **Hydrate.** `new HydrationController({ invoker, store, reshapers, ... }).load(exp)` (`hydration/src/controller.ts` L352) schedules handles by priority (P0 now, P1 batched, P2 on `markVisible`), runs each provider's step graph via `invokeTransient`, reshapes and contract-checks the output, and writes `setValue` / `setStatus` into the `HydrationStore` (`projection.ts` L138), which is a loom projection keyed by experience (and principal, and audience).
 7. **Render.** A renderer reads the Blueprint plus the projection: `watch(blueprint, store, onFrame)` in the terminal, `renderBlueprintDom(host, blueprint, { projectionRuntime, executionId, registry })` on the web (`renderer-lit/src/dom/renderBlueprintDom.ts` L152), or loom's React `BlueprintRenderer`.
@@ -292,8 +292,8 @@ Read in four passes; each takes an afternoon and leaves you able to change the l
 2. `tools/scaffold/src/templates.ts`: a whole minimal app in one file.
 3. `packages/replay-vm/src/foldEvents.ts`, then skim `eventHandlers.ts` for the event types you meet.
 4. `packages/workflow-runtime/src/ExecutionJournal.ts` (the whole file, ~380 lines).
-5. `WorkflowContext.ts`: `execute` / `executeIn` (L754), `suspend` (L1763), `decide` (L1142).
-6. `WorkflowRuntime.ts`: `start` (L3620) and `resume` (L3908), following calls into the private `execute` (L8873).
+5. `WorkflowContext.ts`: `execute` / `executeIn` (L758), `suspend` (L1795), `decide` (L1168).
+6. `WorkflowRuntime.ts`: `start` (L3658) and `resume` (L3946), following calls into the private `execute` (L8911).
 7. `packages/effect-runtime/src/EffectRuntime.ts`: `execute` (L60) for the authorizer and middleware chain.
 8. `packages/app/src/defineConfig.ts`: `LoomConfig`, `LoomApp`, `defineConfig`.
 

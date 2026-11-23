@@ -313,9 +313,10 @@ describe("approve flow", () => {
 The in-memory default forgets everything on restart. For a durable, multi-node deployment swap the
 storage preset; the flows do not change:
 
-First add `@loomwork/plugin-postgres` to the app's `package.json` dependencies (`"@loomwork/plugin-postgres": "workspace:*"`)
-and run `pnpm install`; the scaffold's dependencies are `@loomwork/app`, `core`, `effect-runtime`, `middleware`,
-`workflow-runtime`, `agent-surface` (and `@loomwork/cli` as a dev dependency), which do not include it.
+First add `@loomwork/plugin-postgres` to the app: `pnpm add @loomwork/plugin-postgres` (the same release as the app's other
+`@loomwork/*` packages). In an app created with `--loom-path` the app's overrides already map it, so use `"*"`; inside the Loom
+checkout use `"workspace:*"`. The scaffold's dependencies are `@loomwork/app`, `core`, `effect-runtime`, `middleware`,
+`workflow-runtime`, `agent-surface` (and `@loomwork/cli` and `@loomwork/testing` as dev dependencies), which do not include it.
 
 ```ts
 import { postgresStorage } from "@loomwork/plugin-postgres";
