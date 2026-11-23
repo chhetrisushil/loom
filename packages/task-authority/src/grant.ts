@@ -22,8 +22,9 @@ export interface TaskGrant {
   onBehalfOf?: string;
   effects: string[];
   /**
-   * ADR 0150 S-R4 (D8): globs over `<toolId>:<resource>` read capabilities this task may use across lineages.
-   * Signed, and encoded only when present. Absent = no cross-lineage reads. Enforced from S6; today it is only carried.
+   * ADR 0150 S-R4 (D8): globs over `<toolId>:<resource>` read capabilities this task may use. Governs EVERY effect that declares `capabilities.read`
+   * (own-lineage reads are not exempt). Signed, and encoded only when present. Absent = no reads at all, for a read effect.
+   * Enforced by `TaskGrantAuthorizer` (S6); a run with no task grant has no `reads` check.
    */
   reads?: string[];
   /**

@@ -306,4 +306,17 @@ describe("agentLoop$ recall.toolId (ADR 0150 D8)", () => {
       await run({ memory: mem, recall: { toolId: "memrecall" }, requireEffectRing: true })
     ).not.toMatch(/recall\.toolId/);
   });
+
+  // kills: a distill existing-facts read outside the ring: user/2 is not in reads, so it must be denied and the distiller never runs
+  it("distill with writeBack.scope outside reads: the existing-facts read is denied and nothing reaches the distiller", async () => {
+    const b = boot({ recall: true, reads: ["memrecall:user/1"], distillScope: "user/2" });
+    await seed(b.memory, "user/2");
+    const { h } = await b.start();
+    await h.waitForCompletion().catch(() => undefined);
+    const denied = (await b.eventStore.read("e1")).filter((e) => e.eventType === "EFFECT_DENIED");
+    expect(denied).toHaveLength(1);
+    expect(JSON.stringify(denied[0]?.payload)).toContain("task-grant:read-scope");
+    expect(JSON.stringify(denied[0]?.payload)).toContain("memrecall:user/2");
+    expect(b.distillCalls).toHaveLength(0);
+  });
 });
