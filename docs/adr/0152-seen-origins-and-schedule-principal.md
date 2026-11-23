@@ -31,10 +31,11 @@
   - `EffectContext.seenOrigins` is optional and additive; it is ABSENT until the gate is on and the run is tracked.
   - D2 is additive and opt-in: absent hook, byte-identical behaviour, no schema change. No KERNEL_ABI change.
   - Kernel budget (`packages/spec/kernel-budget.json` budgets only `packages/workflow-runtime/src`): `WorkflowRuntime.ts`,
-    `LogLifecycle.ts`, `WorkflowContext.ts` and `TimerService.ts` grow and need `LOOM_KERNEL_BUDGET_ADR=0152`. The fold
-    code lands in `packages/replay-vm`, which has NO budget guard today (the growth there is not enforced; it is stated
-    here so a reviewer sees it). Realistic growth: about 100-150 code lines across the budgeted files, and a new
-    `replay-vm` module of similar size.
+    `LogLifecycle.ts`, `WorkflowContext.ts`, `continuation.ts`, `blankStream.ts` and `TimerService.ts` grow, and the new
+    `seenOriginsSeed.ts` is a new kernel file that needs its own budget entry; all need `LOOM_KERNEL_BUDGET_ADR=0152`. The
+    fold code lands in `packages/replay-vm`, which has NO budget guard today (stated so a reviewer sees it). Honest growth:
+    about 250-350 code lines across the budgeted `workflow-runtime` files (the seeding helper with the rescan and error
+    classification is the bulk, 150+), plus a `replay-vm` module of 150-200 lines.
 
 ## Context
 
@@ -83,10 +84,10 @@ The fold variable is `variables._seenOrigins`:
   limits: { maxOrigins: number; maxScanNodes: number },   // recorded at start, read from state ever after
   origins: string[],                                      // first-seen order, at most limits.maxOrigins
   overflow?: true,                                        // sticky
-  through: number }                                       // the sequence of the last event this key was folded through
+  through?: number }                                      // state.sequence after the last fold step; absent = unproven (see below)
 ```
 
-- **A present key means "folded by a 1.27 kernel from sequence 0".** When the payload of `EXECUTION_STARTED` carries a valid
+- **A present key with a `through` means "folded by a 1.27 kernel from sequence 0, up to `through`".** When the payload of `EXECUTION_STARTED` carries a valid
   `seenOriginsLimits`, the fold writes `_seenOrigins { limits, origins: [], through: 0 }` immediately, so a clean run that
   has seen no taint is distinguishable from a run that was never tracked. A run without that payload field folds no key
   and is UNTRACKED (see "Adoption" for how a tracked key is created for it).
@@ -110,7 +111,8 @@ rolling-deploy hazard ADR 0109 D8 gates for `continueAsNew`, and the remedy is t
 
 - `WorkflowRuntimeDeps.seenOriginsEnabled?: boolean` (default `false`), set by `defineConfig({ kernel: { features: { seenOrigins: true } } })`,
   mirroring `continueAsNewEnabled` (`WorkflowRuntime.ts:384`, `:1220`).
-- **Off (default):** nothing is stamped (`seenOriginsLimits` is not written), the fold writes no key, `EffectContext.seenOrigins` is
+- **Off (default):** nothing is stamped (`seenOriginsLimits` is not written), so a run with no stamp and no carried set folds no key
+  (the fold keys on the RECORDED stamp or carry, never on the runtime gate), `EffectContext.seenOrigins` is
   ABSENT, the helper of "Seeding sites" is a no-op. Behaviour is byte-identical to 1.26.0. Consumers treat absent as
   "untracked".
 - **On:** `start` and the continuation start stamp the limits; the driver paths adopt untracked runs (see "Adoption");
@@ -119,12 +121,23 @@ rolling-deploy hazard ADR 0109 D8 gates for `continueAsNew`, and the remedy is t
   safe: every node reports `EVENT_SCHEMA_VERSION >= "1.27.0"` (the version string a node exposes through the existing version
   surface) and `knownEventTypes()` is unchanged; the docs for the flag say so next to `continueAsNew`'s.
 - **If the gate is enabled while a 1.26 node still folds these runs** the runtime cannot see that node, but the key detects the
-  damage: `through` is advanced by every 1.27 fold step and a 1.26 node leaves it stale. A 1.27 node that loads a snapshot
-  whose `through !== snapshot.sequence` treats the key as untrustworthy: a driver site rebuilds it by rescan from sequence 0
-  (D1 "Rescan"), and a read-only site reports overflow. A 1.26 node's own effects have no `seenOrigins` (the field does not
-  exist there), so a consumer sees absent = untracked on that node and fails closed. The residual is a 1.26 node writing a
-  snapshot at exactly the sequence of a stale key; that cannot happen, because it advances `snapshot.sequence` past `through`
-  with every event it folds.
+  damage. Every 1.27 fold step sets `through = state.sequence`, and a 1.26 node leaves it stale while still advancing
+  `state.sequence`. The test is `through !== snapshot.state.sequence` (NOT `snapshot.sequence`: `commitAtomic` folds a whole
+  batch before `maybeSnapshot` saves `vm.getState()`, so a healthy snapshot's `sequence` can be below its state's, while
+  `state.sequence` and `through` are advanced together by the same fold; `ExecutionJournal.commitAtomic` ~262-307,
+  `WorkflowRuntime.ts:9015-9026`). The test lives INSIDE `normalizeSnapshotState` (below), so every reader inherits it. A 1.26
+  node's own effects have no `seenOrigins` (the field does not exist there), so a consumer sees absent = untracked and fails closed.
+
+#### Staleness is checked in `normalizeSnapshotState` (O(1), every caller inherits it)
+
+`normalizeSnapshotState` (`replay-vm/src/foldEvents.ts`) gains one O(1) step: a `_seenOrigins` whose `through` is not
+`state.sequence` becomes `{ v, limits, origins, overflow: true }` with `through` DROPPED. A dropped `through` is the "unproven" marker:
+the key reads as overflow (fail closed) to every reader, and a driver site can tell it from a sticky overflow (which keeps its `through`) and rebuild it.
+Because the check is in the one function every snapshot reader already calls, the callers that cannot import
+`workflow-runtime` are covered without change: `packages/compliance/src/eraseSubject.ts:1731`,
+`packages/replay-inspector/src/reconstruct.ts:173`, `foldFromCompleteLog` and `blankStream.ts`. The async helper below then only
+does the DRIVER rescan and adoption. The fold step advancing `through` must not re-validate a key without `through`: a key
+that lacks it stays overflow until a rescan replaces it.
 
 #### What feeds it (the channels)
 
@@ -142,8 +155,8 @@ so all channels share one scan, one bound and one set of rules, and the handlers
 | `PARALLEL_COMPLETED.errorPayload` | **scan** | The same typed-failure data on a parallel scope. |
 | `EXECUTION_MIGRATED.migratedInput` | **scan** | The migrated input replaces `_input`. |
 | `EXECUTION_STARTED.input` | **scan** | The flow input. |
-| continueAsNew carry | **carry the set**: add `carried.seenOrigins` to `carriedOf` (`continuation.ts:194`, as `resources`) and seed the successor from it, validated like `seedResources`; the carry itself is also the successor's `input`, so it is scanned too | Without it, rotating through `continueAsNew` launders every origin seen so far. If the predecessor had no key the successor starts with `overflow` (it cannot prove a clean past). |
-| fork | **follows `forkResources`** (`eventHandlers.ts` ~514-540): a fork of a chain member keeps `carried.seenOrigins`; an ordinary fork copies its prefix, key included | A fork must not shed what its parent was shown. |
+| continueAsNew carry | **carry the set**: add `carried.seenOrigins` to `carriedOf` (`continuation.ts:194`, as `resources`) and seed the successor from it, validated like `seedResources`; the carry itself is also the successor's `input`, so it is scanned too | Without it, rotating through `continueAsNew` launders every origin seen so far. `carriedOf` carries the overflow marker too. The rule, applied wherever a key is seeded (the fold at `EXECUTION_STARTED` and adoption, not only the successor stamp): **a stamp is present AND `continuedFrom` is present AND no carried set was supplied gives `overflow`** (a successor of a keyless predecessor cannot prove a clean past). The carried set is bounded by `maxOrigins x 256` bytes (default 16 KB, at most 256 KB) and is NOT counted by `maxCarryBytes`. |
+| fork | **follows `forkResources`** (`eventHandlers.ts` ~514-540): a fork of a chain member keeps `carried.seenOrigins`, and the same rule applies (stamp and `continuedFrom` and no carried set gives overflow); an ordinary fork copies its prefix, key included | A fork must not shed what its parent was shown. |
 | child results | **not propagated by the kernel** | Reading another execution's fold from inside this one would couple two logs and add an unbounded cross-execution read. The 1P orchestration supervisor taints the `CHILD_DONE` body with the child's seen origins (task-authority slice 2, S5), so the ordinary `STEP_COMPLETED` or inbox scan recovers them; the kernel carries opaque strings and stays out. |
 | the decide scope's `invokeTransient` and other transient calls | **absent** | They emit nothing and have no fold; `seenOrigins` is undefined there (M8), and a consumer fails closed. |
 
@@ -185,45 +198,53 @@ keys, so the scan must be a pure function of the JSON VALUE, not of object ident
 also runs on replay. `maxScanNodes` bounds the walk's NODE count, NOT the CPU below payload size: a payload of a few nodes
 with megabyte strings costs its serialization anyway, and `toJSON` normalisation touches every property. Only the fields in
 the table are scanned; primitives and `null` return immediately; a snapshot carries the set so a resume scans only the
-tail. A `*.perf.test.ts` is a REQUIREMENT of task S2, measured BEFORE the fold scan is committed (see "Implementation notes").
+tail. A `*.perf.test.ts` is a REQUIREMENT of task S2, measured BEFORE the fold scan is committed (see "Implementation notes"). It must also measure the copy-on-write cost of advancing `through` on EVERY event of a tracked run (a fresh `_seenOrigins` object and a fresh `variables` spread per event), not only the scan.
 
-#### Seeding sites: one async snapshot-to-state helper
+#### Seeding sites: staleness in `normalizeSnapshotState`, rescan in one async helper
 
-Every site that turns a loaded snapshot into a `ReplayVM` seed today calls the synchronous `normalizeSnapshotState`,
-alone or through `WorkflowRuntime.seedOf`. A snapshot written by a pre-1.27 fold, or by one that never tracked, has no key (or a
-stale one). The design is ONE async helper, `seedFromSnapshot(snapshot, { identity, retarget?, rescan })` (module
-`packages/workflow-runtime/src/seenOriginsSeed.ts`), that every site below calls instead of `seedOf` /
-`normalizeSnapshotState`. `normalizeSnapshotState` itself stays synchronous and pure.
+Every site that turns a loaded snapshot into a `ReplayVM` seed calls the synchronous `normalizeSnapshotState`, alone or through
+`WorkflowRuntime.seedOf`. Two layers cover them:
 
-- With the gate off it returns `normalizeSnapshotState(snapshot.state)` unchanged.
-- With the gate on and the key present and `through === snapshot.sequence` it returns the state unchanged (trusted).
-- Otherwise (key absent, or `through` stale):
-  - `rescan: true` (a DRIVER site: it will write) rebuilds the key by the rescan below, once;
-  - `rescan: false` (a READ-ONLY site) returns the state with `_seenOrigins` set to `{ limits, origins: [], overflow: true, through }`:
-    **incomplete, never a tail-only set**. Such a state is never persisted (read-only folds are not saved).
+1. **Read-only safety, inherited by every caller** (S2a): `normalizeSnapshotState` marks a stale key as unproven overflow (above).
+   An ABSENT key stays absent: a read-only site reports an untracked run as **absent** (`seenOrigins` undefined, the same answer the
+   effect context gives), never as a tail-only set. This is consistent with D1 ("absent means untracked") and S2b.
+2. **Driver rescan and adoption**, one async helper `rescanSeenOrigins(...)` (module `packages/workflow-runtime/src/seenOriginsSeed.ts`),
+   used only by the driver sites. With the gate off it is a no-op. With the gate on it acts when the state's key is absent (adoption) or
+   has no `through` (unproven), and does nothing for a trusted key or a sticky overflow.
 
-Sites (all `packages/workflow-runtime/src` unless noted; line numbers are at main 7409550f):
+**Ordering: the rescan runs AFTER the driver lease, never before.** The resume vm is built early (`WorkflowRuntime.ts:4083`), before
+`takeDriverLease` (`:4243`) and before the refusals and stand-down, and a rescan there would read a whole history for a call that then stands
+down. So at `:4083` the seed is read-only (layer 1). Immediately after `takeDriverLease` and before the fence, the driver calls the helper, which rescans
+`[0 .. vm.state.sequence]` (the tip the vm already folded) and **replaces the key wholesale** on the vm state. Replacing, not merging, avoids
+double counting; and because the origin union is idempotent, a rescan that overlaps tail events the vm already folded changes nothing. The key's `through` is set to
+`state.sequence`. The same ordering applies to flow migration (`takeDriverLease` ~`:7490`) and `restoreFromState` (`:3550`), and a fork rescans before it writes. **Compaction rescans BEFORE
+`archiveRemoved` and the truncate** (`LogLifecycle.ts` ~1146-1194): once the prefix is archived and truncated it is only reachable through the archive, and a
+crash between the two must never leave a saved checkpoint with an unproven key.
 
-| Site | Today | Mode |
+Sites (line numbers at main 7409550f; `W` = `packages/workflow-runtime/src/WorkflowRuntime.ts`, `L` = `LogLifecycle.ts`):
+
+| Site | Today | Treatment |
 |---|---|---|
-| `WorkflowRuntime.ts:4016/4083` resume | `loadLatest` then `seedOf` | rescan |
-| `WorkflowRuntime.ts:7357/7361` (flow migration) | `loadLatest` then `seedOf` | rescan |
-| `WorkflowRuntime.ts:7692-7728` `foldState` | `loadLatest` then `seedOf` | read-only by default; its ~25 callers (`:1978, :3068, :3406, :3439, :3556, :4493, :4795, :4961, :5029, :5115, :5350, :5432, :5543, :5570, :5929, :5991, :6069, :6406, :6975, :6991, :7605, :8454, :8463, :8482, :8628`) that feed a write (the continuation predecessor at `:8628`, recovery re-drive at `:4493`) pass `rescan` |
-| `WorkflowRuntime.ts:3451-3520` `restoreFromState` | a caller-supplied state | the caller's `_seenOrigins` is UNTRUSTED (M10): it is dropped and rebuilt from the log by `rescan`, never taken from the argument |
-| `WorkflowRuntime.ts:8059/8890-8903` fork (`materializeStateAt`) | `seedOf(base, …, retarget)` over a `loadAt` base | rescan (a fork writes) |
-| `LogLifecycle.ts:685-690` | `ReplayVM(suffix, normalizeSnapshotState(...))` | read-only |
-| `LogLifecycle.ts:1163-1167` and `:1896-1897` (compact / fork-at, state at a sequence) | `normalizeSnapshotState(base.state)` plus identity | rescan: the state it saves or forks must carry a trustworthy key |
-| `blankStream.ts:153, :228, :240, :527` | `normalizeSnapshotState` over stored snapshots | read-only (these compare or rewrite identity-free state; they never drive) |
-| recovery (`recoverAbandoned.ts`, `redriveAbandoned.ts`) | through `resume` / `foldState` | via those rows |
-| `loadState` (public) | `foldState` | read-only: reports incomplete, never tail-only |
+| `W:4016/4083` resume | `loadLatest` then `seedOf` | seed read-only; rescan after `takeDriverLease` (`:4243`) |
+| `W:7357/7361` flow migration | `loadLatest` then `seedOf` | read-only seed; rescan after `takeDriverLease` (`:7490`) |
+| `W:7692-7728` `foldState` and its ~25 callers (`:1978, :3068, :3406, :3439, :3556, :4493, :4795, :4961, :5029, :5115, :5350, :5432, :5543, :5570, :5929, :5991, :6069, :6406, :6975, :6991, :7605, :8454, :8463, :8482, :8628`) | `loadLatest` then `seedOf` | read-only; a caller that feeds a write (the continuation predecessor `:8628`, recovery re-drive `:4493`) rescans after its own lease |
+| `W:3451-3520` `restoreFromState` | a caller-supplied state | the caller's `_seenOrigins` is UNTRUSTED (M10): dropped, then rebuilt by the post-lease rescan. **The drop lands in S2b**, so no PR trusts a forged key |
+| `W:8059/8890-8903` fork (`materializeStateAt`) | `seedOf(base, …, retarget)` over a `loadAt` base | read-only seed; rescan before the fork writes |
+| `L:685-690` | `ReplayVM(suffix, normalizeSnapshotState(...))` | read-only (layer 1) |
+| `L:1163-1167` and `:1896-1897` (compact, fork-at) | `normalizeSnapshotState(base.state)` | compaction: rescan before `archiveRemoved`; fork-at: before it writes |
+| `blankStream.ts:153, :228, :240, :527` | `normalizeSnapshotState` | read-only (layer 1); identity-free comparison, never drives |
+| `compliance/src/eraseSubject.ts:1731` | `normalizeSnapshotState(snapshot.state)` | read-only (layer 1) |
+| `replay-inspector/src/reconstruct.ts:173` | `normalizeSnapshotState(snapshot.state)` | read-only (layer 1); cannot import `workflow-runtime` |
+| `foldFromCompleteLog` (`W`) | folds the log under the quarantine view | read-only (layer 1); folds from sequence 0, so a stamped run is complete |
+| recovery (`recoverAbandoned.ts`, `redriveAbandoned.ts`) and public `loadState` | through `resume` / `foldState` | via those rows |
 
 (The review named a `loadLatestBefore`; the code has no such method. Fork's base is `snapshotStore.loadAt` at
-`LogLifecycle.ts:1772` and `plugins/content/src/gc.ts:932`, both covered by the rows above; `gc.ts` only reads and is read-only.)
+`LogLifecycle.ts:1772` and `plugins/content/src/gc.ts:932`, both covered above; `gc.ts` only reads.)
 
 #### Adoption of an untracked run
 
 With the gate on, a driver site that finds a run with no key (started before the gate or before 1.27) ADOPTS it: it seeds
-`_seenOrigins { limits: <current configured limits>, origins: [], through: -1 }` and folds the run from sequence 0. For a run with no snapshot
+`_seenOrigins { limits: <current configured limits>, origins: [] }` (no `through`: unproven) and folds the run from sequence 0, ending with `through = state.sequence`. For a run with no snapshot
 this is just the ordinary full fold with a seeded key (no extra reads). For a run with a snapshot it is the rescan below.
 The limits chosen at adoption are written into the key and persist with it; because a run adopted this way has no
 `seenOriginsLimits` on its `EXECUTION_STARTED`, replay of that log WITHOUT a snapshot would fold untracked. That is
@@ -232,8 +253,8 @@ wrong "clean".
 
 #### Rescan (owner ruling 2: rescan, do not fail closed)
 
-When a driver site must rebuild the key, the helper folds the history `[0 .. snapshot.sequence]` with the scan rules and seeds
-the result into the snapshot state; the tail then folds on top as usual (`fold(snapshot, tail) == fold(events)`).
+When a driver site must rebuild the key (after its lease, see "Ordering"), the helper folds the history `[0 .. state.sequence]` of the state the vm holds with the scan rules
+and replaces the key with the result, `through = state.sequence`; events appended later fold on top as usual.
 
 - **A new runtime dependency, `WorkflowRuntimeDeps.compactionArchive?: ArchiveStore`.** Today the runtime holds only `inboxArchive`
   (wired in `defineConfig` only under `kernel.features.inbox`); the compaction archive reaches `LogLifecycle`, not the
@@ -249,7 +270,9 @@ the result into the snapshot state; the tail then folds on top as usual (`fold(s
 - **Error classes.** Permanent errors produce a STICKY overflow (`{ overflow: true }`, persisted by the next snapshot; the run
   continues, it is not failed): `ArchiveIncompleteError`, `ArchiveGapError`, `ArchiveDigestError`, `ArchiveIncarnationError`,
   `ArchiveLogMismatchError`, `ArchiveUnserializableError`, `ArchiveTenantMismatchError`, `PlaintextArchiveError`,
-  `PayloadShreddedError`, `SealedStreamUnreadableError`, and "the log is compacted and no archive is configured". The write-side
+  `SealedStreamUnreadableError` and `SealedPayloadUnreadableError` (the sealed-refusal classes, `isSealedUnreadable`; `QuarantineHeldError` is a subclass), any error
+  for which `isPayloadShredded(err)` holds (a shredded subject is a BRAND on the thrown error, `event-runtime/src/payloadShredded.ts`, not a class: there is no
+  `PayloadShreddedError`), and "the log is compacted and no archive is configured". Everything else that a read throws and is not in this list is treated as transient. The write-side
   conflicts and construction errors (`ArchiveConflictError`, `CompactionArchiveRequiredError`,
   `ReservedStreamArchiveRequiredError`, `InboxArchiveRequiredError`) cannot occur on a read and are not caught.
   Transient errors (a timeout, a connection error, a store that is unavailable: anything else an archive or event-store read throws)
@@ -379,25 +402,26 @@ An Opus design review of the first draft (1b191649) found seven Important flaws 
 - **I7 and D2 minors.** `principalFor` must be idempotent and side-effect free; S10 mints inside the run; the hook has its own `try` (M1) and a timeout (M2); skipping is per node (M3).
 - **M7 document fixes.** The header no longer says "no payload change"; the stamp sites are named; the budget paragraph names the files and the unguarded `replay-vm`; a realistic growth estimate; the S2 split below.
 - **M11 deferred.** An attested inbox-sender origin (so a sender cannot choose the origin label of its own message) is a follow-up: it reopens ADR 0150 S-R1/S-R3 (writer tagging is content-level, foreign = a `lineage:` origin) and needs the owner's decision first.
-- **Added by the revision, for owner review:** `through` as a staleness detector (the review asked for the gate; `through` is what makes a gate mistake detectable rather than silent).
+- **Re-review fixes (R10, Sonnet @285eed05).** (I-1) `through` is compared to `snapshot.state.sequence`, not `snapshot.sequence`, which a batch commit can leave behind on a healthy fleet. (I-2) The O(1) staleness check moves into `normalizeSnapshotState`, so every existing caller (compliance, replay-inspector, `foldFromCompleteLog`, `blankStream`) inherits read-only safety; the helper only rescans and adopts. (I-3) The rescan runs after `takeDriverLease` (resume, flow migration, `restoreFromState`) and before the fence, and compaction rescans before `archiveRemoved` and the truncate; the early seed is read-only. The continueAsNew / fork rule (stamp and `continuedFrom` and no carried set gives overflow) is stated for every seeding point and `carriedOf` carries the marker. Minors: the `restoreFromState` key drop moves to S2b (M-a); the budget paragraph, file list and growth estimate now agree and include `seenOriginsSeed.ts` (M-b); "off" now says a run with no stamp and no carried set folds no key (M-c); the shred error is a brand (`isPayloadShredded`), not a class, and the sealed classes are named (M-d); the carry size is noted (M-e); a read-only site reports an absent key as absent (M-f); the perf requirement covers the copy-on-write cost of `through`.
+- **Added by the first revision, for owner review:** `through` as a staleness detector (the review asked for the gate; `through` is what makes a gate mistake detectable rather than silent).
 
 ## Implementation notes for S2
 
 S2 is probably THREE PRs, each under the 200-line target for its budgeted files, split so each is safe to merge alone (the gate is off until the end):
 
-1. **S2a, the fold.** `replay-vm`: `seenOrigins.ts` (vendored scan, channels, bounds, truncation, carry/fork seed), the hook in the fold loop and the `EXECUTION_STARTED` seeding, `EVENT_SCHEMA_VERSION` 1.27.0 and its history comment, `carriedOf` / `seedSeenOrigins`. Inert: nothing stamps `seenOriginsLimits` yet. The perf measurement and the determinism test land here.
-2. **S2b, the gate and the context.** `kernel.features.seenOrigins` (`defineConfig`, `WorkflowRuntimeDeps.seenOriginsEnabled`), `seenOriginsLimits` option with range validation, the stamps at `WorkflowRuntime.ts:~3757` and `~8708`, `EffectContext.seenOrigins` in `WorkflowContext.ts` and `effect-runtime/src/types.ts`, kernel budget, docs. Untracked snapshots stay absent here (safe).
-3. **S2c, adoption and rescan.** `seenOriginsSeed.ts`, every seeding site above, `compactionArchive` dependency, the error classification, paging, memo, lease handling, and the rescan tests.
+1. **S2a, the fold and read-only safety.** `replay-vm`: `seenOrigins.ts` (vendored scan, channels, bounds, truncation, carry/fork seed and the overflow rule), the hook in the fold loop and the `EXECUTION_STARTED` seeding, the staleness check in `normalizeSnapshotState`, `EVENT_SCHEMA_VERSION` 1.27.0 and its history comment, `carriedOf` carrying the set and the marker. Inert: nothing stamps `seenOriginsLimits` yet. The perf measurement and the determinism test land here.
+2. **S2b, the gate and the context.** `kernel.features.seenOrigins` (`defineConfig`, `WorkflowRuntimeDeps.seenOriginsEnabled`), the `seenOriginsLimits` option with range validation, the stamps at `WorkflowRuntime.ts:~3757` and `~8708`, `EffectContext.seenOrigins` in `WorkflowContext.ts` and `effect-runtime/src/types.ts`, **the `restoreFromState` caller-key drop (M10)**, kernel budget, docs. Untracked snapshots stay absent here (safe).
+3. **S2c, adoption and rescan.** `seenOriginsSeed.ts` (with its kernel-budget entry), the post-lease call at each driver site, the compaction ordering, the `compactionArchive` dependency, the error classification, paging, memo, and the rescan tests.
 
-Files: `packages/replay-vm/src/{eventHandlers.ts,foldEvents.ts,seenOrigins.ts}`; `packages/core` (state type, if exported); `packages/workflow-runtime/src/{WorkflowContext.ts,WorkflowRuntime.ts,LogLifecycle.ts,continuation.ts,blankStream.ts,seenOriginsSeed.ts,TimerService.ts (S3)}`; `packages/effect-runtime/src/types.ts`; `packages/app/src/defineConfig.ts` plus its config docs and `configGroups` test; `packages/spec/kernel-budget.json`; the EVENT_SCHEMA tables and event docs the spec guards read.
+Files: `packages/replay-vm/src/{eventHandlers.ts,foldEvents.ts,seenOrigins.ts}`; `packages/core` (state type, if exported); `packages/workflow-runtime/src/{WorkflowContext.ts,WorkflowRuntime.ts,LogLifecycle.ts,continuation.ts,blankStream.ts,seenOriginsSeed.ts,TimerService.ts (S3)}`; `packages/compliance/src/eraseSubject.ts` and `packages/replay-inspector/src/reconstruct.ts` (no change expected: they inherit the staleness check; tests only); `packages/effect-runtime/src/types.ts`; `packages/app/src/defineConfig.ts` plus its config docs and `configGroups` test; `packages/spec/kernel-budget.json`; the EVENT_SCHEMA tables and event docs the spec guards read.
 
 Tests required:
 - Determinism (above): live, replay, snapshot plus tail, key-reordering store, and Postgres JSONB when the PG suite runs.
 - Every channel row, including a non-kernel `MESSAGE_CONSUMED` and a duplicate (both ignored), both resume shapes, and carry / fork / continueAsNew rotation not laundering.
 - Presence: a clean run has the key with `origins: []`; a run without `seenOriginsLimits` is untracked and `seenOrigins` is absent; with the gate off nothing is stamped and the folded state equals 1.26.0.
 - Bounds: cap overflow, sticky flag, exceeded scan drops partial origins, truncation to `unknown:truncated:<digest>`, recorded limits survive a config change and a snapshot, invalid recorded limits ignored, construction refusals at each range edge; the vendored scan recognises every `tainted()` shape.
-- Rolling deploy: a key left stale by a fold that does not advance `through` is detected (driver rebuilds, read-only reports overflow).
-- Seeding: each site in the table uses the helper; a read-only site never returns a tail-only set; `restoreFromState` ignores a forged `_seenOrigins`.
+- Rolling deploy: a key left stale by a fold that does not advance `through` is detected by `normalizeSnapshotState` (driver rebuilds, read-only reports overflow); a healthy batch-committed snapshot whose `sequence` is below its `state.sequence` is NOT flagged stale.
+- Seeding: every site in the table; a read-only site never returns a tail-only set and reports an absent key as absent; the rescan runs after the lease and a stand-down reads nothing; compaction rescans before `archiveRemoved`; `restoreFromState` ignores a forged `_seenOrigins` (S2b); continueAsNew and fork of a keyless predecessor read as overflow.
 - Rescan: from retained events; from a compacted log plus archive; each permanent error gives sticky overflow; a simulated timeout gives a retryable failure that persists and memoizes nothing; paged (peak events held is O(page)); the lease is held; the LRU memo.
 - **A `*.perf.test.ts` (REQUIREMENT, measured before the fold scan is committed):** fold time with and without the scan on (a) a taint-free log with large outputs, (b) a log of many small tainted outputs, plus a rescan of a long history. Report numbers in the PR; a material regression on (a) switches the design to the producer-side stamp. Deterministic evidence (nodes visited) goes in a normal `*.test.ts`, never a timing ratio.
 - D2 (task S3): hook absent is byte-identical; principal recorded; throw, reject and timeout each skip with `onError` and do not mis-classify as already-started or retry; `ticking` does not stick; two racing nodes; recovery resumes as the recorded principal; the hook is not called on a resume.
