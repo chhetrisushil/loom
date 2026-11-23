@@ -11,6 +11,7 @@ describe("@loomwork/task-authority public surface", () => {
       "InMemoryGrantLedger",
       "LINEAGE_ORIGIN_MAX",
       "LINEAGE_ORIGIN_PREFIX",
+      "LINEAGE_TOO_LONG",
       "LeaseChildEffectUnbrandedError",
       "LeaseDimensionDroppedError",
       "LeaseDurabilityError",

@@ -1497,6 +1497,10 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // The HEAD generation is read (a continued child's origins live on its newest generation). When the PARENT is
   // tracked and a child's set cannot be had (unreadable, reclaimed, or untracked/keyless) the overflow marker is
   // added: an unprovable child must not read as clean (fail closed). An untracked parent adds nothing.
+  // Children that were refused or never started (envelope breach, refused mint): they never ran, so they have no
+  // state and must not read as "unprovable". Not durable: after a supervisor restart a refused child reads as
+  // missing and a tracked parent gets the overflow marker (fail closed).
+  const neverRan = new Set<string>();
   const childOriginsOf = async (
     parentId: string,
     payload: unknown,
@@ -1509,6 +1513,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const ids = Array.isArray(p.settled) ? p.settled.map((_, i) => `${key}#${i}`) : [key];
     const found = new Set<string>();
     for (const id of ids) {
+      if (neverRan.delete(id)) continue;
       const head = await deps.runtime.followToHead(id, sys).catch(() => null);
       const list = head === null || head === undefined ? undefined : seenOriginsList(head.state);
       if (list === undefined) found.add(SEEN_ORIGINS_OVERFLOW);
@@ -1727,6 +1732,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       );
       if (breach !== undefined) {
         for (const m of group.members) memberOf.delete(m.childId);
+        for (const m of group.members) neverRan.add(m.childId);
         groups.delete(correlationKey);
         fail(breach);
         const refused: ChildResult = {
@@ -1778,6 +1784,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           } catch (err) {
             fail(err); // a refused mint starts NO member: the group settles failed.
             for (const m of group.members) memberOf.delete(m.childId);
+            for (const m of durable.members) if (!started.has(m.childId)) neverRan.add(m.childId);
             groups.delete(correlationKey);
             // R33: members already RUNNING (recovery) are cancelled through the cascade, so no orphan keeps
             // spending; every other member never starts and returns its whole reservation.
@@ -1830,6 +1837,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const breach = limitBreach(deps.limits, depthOf(childId), 1, childId);
     if (breach !== undefined) {
       specs.delete(childId);
+      neverRan.add(childId);
       fail(breach);
       const parentOfRefused = parentOf(childId);
       if (parentOfRefused !== undefined) {
@@ -1867,6 +1875,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         } catch (err) {
           fail(err); // never start an unbounded child: the parent sees childFailed.
           specs.delete(childId);
+          neverRan.add(childId);
           await settleUnstarted(childId, durable);
           if (parentId !== undefined) {
             await resumeParent(parentId, { __childFailed: refusal(err) }, { key: childId });

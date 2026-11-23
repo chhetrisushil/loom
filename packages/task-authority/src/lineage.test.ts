@@ -2,7 +2,13 @@ import { isTainted, tainted } from "@loomwork/classify";
 import { describe, expect, it } from "vitest";
 import { SECRET, chainOf, until, world } from "./__tests__/lineageHarness";
 import { type TaskGrant, signTaskGrant } from "./grant";
-import { lineageOrigin, lineageSend, lineageTainter, wrapLineage } from "./lineage";
+import {
+  LINEAGE_TOO_LONG,
+  lineageOrigin,
+  lineageSend,
+  lineageTainter,
+  wrapLineage,
+} from "./lineage";
 
 // ADR 0150 D7 / S-R1, slice-2 S5a: the writer's lineage, from a VERIFIED grant only.
 describe("lineageOrigin: the rootId comes from a verified grant, never from the caller", () => {
@@ -55,9 +61,14 @@ describe("lineageOrigin: bounds and tenant", () => {
     } as never);
 
   // kills: tagging a rootId the kernel truncates into `unknown:truncated:...` (which is not a comparable lineage)
-  it("refuses to tag a rootId whose origin would exceed 256 chars, and the broker refuses to mint one", async () => {
+  it("a rootId whose origin would exceed 256 chars yields the foreign unknown: label, and the broker refuses to mint one", async () => {
     const long = "A".repeat(250);
-    expect(lineageOrigin(SECRET)({ actor: "x", taskGrant: signed(long) })).toBeUndefined();
+    expect(lineageOrigin(SECRET)({ actor: "x", taskGrant: signed(long) })).toBe(LINEAGE_TOO_LONG);
+    // a writer that gets it tags with it, so the content is marked rather than untagged
+    const tagged = lineageTainter(SECRET)({ actor: "x", taskGrant: signed(long) }, "hi") as {
+      __loomTainted: { origin: string };
+    };
+    expect(tagged.__loomTainted.origin).toBe(LINEAGE_TOO_LONG);
     expect(lineageOrigin(SECRET)({ actor: "x", taskGrant: signed("A".repeat(248)) })).toBe(
       `lineage:${"A".repeat(248)}`
     );

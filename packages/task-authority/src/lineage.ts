@@ -5,6 +5,11 @@ import { type GrantKeys, type TaskGrant, sealKeys, verifyTaskGrant } from "./gra
 export const LINEAGE_ORIGIN_PREFIX = "lineage:";
 /** The kernel truncates an origin label past 256 chars (`unknown:truncated:...`): a longer lineage origin cannot be compared. */
 export const LINEAGE_ORIGIN_MAX = 256;
+/**
+ * What `lineageOrigin` returns for a verified grant whose `lineage:<rootId>` would exceed {@link LINEAGE_ORIGIN_MAX}: an
+ * `unknown:` label, which `directedBy` treats as FOREIGN, so the content is still marked (fail closed) rather than untagged.
+ */
+export const LINEAGE_TOO_LONG = "unknown:lineage-too-long";
 
 /** The slice of a principal a writer's lineage is read from (structural: no kernel dependency). */
 export interface LineagePrincipal {
@@ -18,7 +23,7 @@ export interface LineagePrincipal {
  * whose signature verifies under `secret` and whose `issuedTo` is the presenting actor: never from a value the
  * caller supplied. No verified grant => `undefined` (the writer is simply not tagged; a tag is never invented).
  * The grant's tenant must equal the principal's (absent = absent), as the authorizer requires. A rootId whose origin would
- * exceed {@link LINEAGE_ORIGIN_MAX} is never tagged (the kernel would truncate it into a label nobody can compare).
+ * exceed {@link LINEAGE_ORIGIN_MAX} yields {@link LINEAGE_TOO_LONG} (foreign), never a label the kernel would truncate.
  * Pass the AUTHENTICATED principal only (the one the transport or effect context resolved), never one the caller built.
  * Expiry is not checked: provenance of what was written stays true after the grant lapses.
  */
@@ -34,7 +39,7 @@ export function lineageOrigin(
       if (g === undefined || g.issuedTo !== principal?.actor) return undefined;
       if (g.tenant !== principal?.tenant) return undefined;
       const origin = `${LINEAGE_ORIGIN_PREFIX}${g.rootId}`;
-      return origin.length > LINEAGE_ORIGIN_MAX ? undefined : origin;
+      return origin.length > LINEAGE_ORIGIN_MAX ? LINEAGE_TOO_LONG : origin;
     } catch {
       return undefined;
     }
