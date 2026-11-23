@@ -29,6 +29,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.renew-born-expired",
   "broker.reservation-never-released",
   "broker.identity-fixed",
+  "broker.reads-sandbox",
   "broker.signs-current-key",
   "carve.child-renew-ceiling",
   "carve.total-spend",
@@ -217,6 +218,35 @@ const CHECKS: Record<string, Check> = {
     must(
       now?.tenant === id.tenant && now?.onBehalfOf === id.onBehalfOf,
       "a renewal dropped or changed tenant/onBehalfOf (R30)"
+    );
+  },
+  "broker.reads-sandbox": async (s) => {
+    // ADR 0150 S-R4: `reads` and `sandbox` are carried by a child and a renewal, and a child never widens them.
+    const b = mk(s, () => ({}));
+    await b.mint({ ...mintReq("p", 4), reads: ["mem:*"], sandbox: "isolated" });
+    const kid = await b.mint({ ...mintReq("c", 2, "p"), reads: ["mem:a"], sandbox: "isolated" });
+    must(
+      kid.reads?.join() === "mem:a" && kid.sandbox === "isolated",
+      "a child did not carry its reads / sandbox"
+    );
+    await mustRefuse(
+      b.mint({ ...mintReq("x1", 1, "p"), reads: ["other:a"], sandbox: "isolated" }),
+      "a child was minted with a read the parent lacks"
+    );
+    await mustRefuse(
+      b.mint({ ...mintReq("x2", 1, "p"), reads: ["mem:a"] }),
+      "a non-isolated child of an isolated parent was minted"
+    );
+    await b.mint(mintReq("free", 4));
+    await mustRefuse(
+      b.mint({ ...mintReq("x3", 1, "free"), reads: ["mem:a"] }),
+      "a child of a parent with no reads was minted with a read"
+    );
+    must((await b.renew(req("p", 0, 0))).granted, "setup: renewal denied");
+    const now = await b.current("p");
+    must(
+      now?.reads?.join() === "mem:*" && now?.sandbox === "isolated",
+      "a renewal dropped or changed reads / sandbox"
     );
   },
   "broker.signs-current-key": async (s) => {

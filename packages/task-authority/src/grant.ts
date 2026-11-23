@@ -21,6 +21,16 @@ export interface TaskGrant {
   /** R30: the end user the task acts for (opaque pseudonymous id). The broker holds it; the app owns its erasure there. */
   onBehalfOf?: string;
   effects: string[];
+  /**
+   * ADR 0150 S-R4 (D8): globs over `<toolId>:<resource>` read capabilities this task may use across lineages.
+   * Signed, and encoded only when present. Absent = no cross-lineage reads. Enforced from S6; today it is only carried.
+   */
+  reads?: string[];
+  /**
+   * ADR 0150 S-R4 (D10): `"isolated"` refuses a sandbox effect that is not network-less and fresh per run.
+   * Signed, and encoded only when present. A child of an isolated task is isolated. Enforced from S8.
+   */
+  sandbox?: "isolated";
   leases: Record<string, LeaseSpec>;
   exp: number;
   epoch: number;
@@ -47,6 +57,8 @@ const GRANT_KEYS = [
   "tenant",
   "onBehalfOf",
   "effects",
+  "reads",
+  "sandbox",
   "leases",
   "exp",
   "epoch",
@@ -106,6 +118,14 @@ function checkShape(g: unknown, signed: boolean): void {
     if (rootId === taskId) fail("a child (parentId) must have a rootId different from taskId");
   } else if (rootId !== taskId) fail("a root grant must have rootId === taskId");
   const effects = effectList(own(g, "effects"), "effects", MAX_EFFECTS);
+  const reads = own(g, "reads");
+  if (reads !== undefined) {
+    effectList(reads, "reads", MAX_EFFECTS);
+    for (const r of reads as string[])
+      if (CONTROL.test(r)) fail("reads entries must not contain control characters");
+  }
+  const sandbox = own(g, "sandbox");
+  if (sandbox !== undefined && sandbox !== "isolated") fail('sandbox must be "isolated"');
   const leases = own(g, "leases");
   if (!isObj(leases)) fail("leases must be an object");
   let count = 0;
@@ -162,8 +182,14 @@ function canonicalBody(g: UnsignedTaskGrant): string {
     const v = own(src, k);
     if (v !== undefined) identity[k] = v as string;
   }
+  // S-R4: `reads` (sorted) and `sandbox` are likewise appended ONLY when present.
+  const optional: Record<string, unknown> = {};
+  const reads = own(src, "reads");
+  if (reads !== undefined) optional.reads = [...(reads as string[])].sort();
+  if (own(src, "sandbox") !== undefined) optional.sandbox = "isolated";
   return JSON.stringify({
     ...identity,
+    ...optional,
     effects: [...g.effects].sort(),
     epoch: g.epoch,
     exp: g.exp,
@@ -174,6 +200,45 @@ function canonicalBody(g: UnsignedTaskGrant): string {
     taskId: g.taskId,
   });
 }
+/**
+ * S-R4: is the glob `child` covered by the glob `parent`? `*` matches any run of characters (including
+ * `:`); every other character is literal. `child` is matched as a LITERAL string, so its own `*` must be
+ * absorbed by a `*` in `parent`: sound (every string `child` matches, `parent` matches) and conservative.
+ */
+export function globCovers(parent: string, child: string): boolean {
+  // Linear-space two-pointer wildcard match (no regex: a hostile pattern cannot backtrack).
+  let p = 0;
+  let c = 0;
+  let star = -1;
+  let mark = 0;
+  while (c < child.length) {
+    if (parent[p] === "*") {
+      star = p++;
+      mark = c;
+    } else if (p < parent.length && parent[p] === child[c]) {
+      p++;
+      c++;
+    } else if (star >= 0) {
+      p = star + 1;
+      mark++;
+      c = mark;
+    } else return false;
+  }
+  while (parent[p] === "*") p++;
+  return p === parent.length;
+}
+/** S-R4: the first reason `child` is not a subset of `parent`'s `reads` / `sandbox`, or `undefined`. */
+export function widensReadsOrSandbox(
+  parent: Pick<UnsignedTaskGrant, "reads" | "sandbox">,
+  child: Pick<UnsignedTaskGrant, "reads" | "sandbox">
+): string | undefined {
+  const bad = (child.reads ?? []).find((r) => !(parent.reads ?? []).some((p) => globCovers(p, r)));
+  if (bad !== undefined) return `child reads "${bad}" exceeds the parent's reads`;
+  if (parent.sandbox === "isolated" && child.sandbox !== "isolated")
+    return "a child of an isolated task must be isolated";
+  return undefined;
+}
+
 /**
  * One secret, or a rotation ring: sign/MAC with `current`; verify grants against `current` then
  * `previous`; `refOnly` keys verify a recorded REF MAC (`fromRef`) and are NEVER accepted for a grant

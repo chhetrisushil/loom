@@ -217,6 +217,9 @@ export function childGrantMinter(
         leases,
         ttlMs,
         parent: { taskId: pid },
+        // S-R4: a child inherits the parent's read scope and isolation (the broker refuses a widening)
+        ...(pg.reads !== undefined && { reads: pg.reads }),
+        ...(pg.sandbox !== undefined && { sandbox: pg.sandbox }),
         parentReserved: Object.fromEntries(
           Object.keys(leases).map((n) => [n, parent.resources[`lease.${n}.reserved`] ?? 0])
         ),
