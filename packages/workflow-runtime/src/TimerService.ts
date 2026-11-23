@@ -169,8 +169,9 @@ export interface TimerServiceOptions {
    * `"invalid"`) skips THIS occurrence (per node). A skip goes to `onError`, else to the runtime's warn path.
    *
    * Authorization: the start itself still rides the system grant. With the runtime's
-   * `requirePrincipal`, the hook's principal is NOT authorized for `start` and `committed()` withholds it
-   * (as for supervised children). Without `requirePrincipal` but with an execution authorizer, the
+   * `requirePrincipal`, the hook's principal is NOT authorized for `start`, but `committed()` RECEIVES it
+   * (a parent-less system start: ADR 0150 D12, slice-2 S10a; a supervised child's principal is still
+   * withheld), so an ownership policy learns whose run it is. Without `requirePrincipal` but with an execution authorizer, the
    * principal IS authorized, and a denial is reported through `onError` and the occurrence skipped.
    *
    * Hooks run serially inside a tick, so a slow or timing-out hook delays this node's other timer wakes

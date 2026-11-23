@@ -87,11 +87,14 @@ export type { SandboxRequirementOptions } from "./sandboxRequirement";
 export { sandboxRequirement } from "./sandboxRequirement";
 export type {
   ScheduleApprovalContext,
+  AnswerScheduleOptions,
   ScheduleApprovalRuntime,
+  ScheduleExpect,
   ScheduleGrantSpec,
 } from "./scheduleGrant";
 export {
   SCHEDULE_GATE,
+  SCHEDULE_RECOVERY_MS,
   answerScheduleApproval,
   mintScheduleGrant,
   requestScheduleApproval,
@@ -99,4 +102,9 @@ export {
   scheduleViewDigest,
 } from "./scheduleGrant";
 export type { SchedulePrincipalOptions, TickRuntime } from "./schedulePrincipal";
-export { schedulePrincipalFor, settleScheduledTick } from "./schedulePrincipal";
+export {
+  RECLAIM_MARGIN_MS,
+  reclaimScheduledTick,
+  schedulePrincipalFor,
+  settleScheduledTick,
+} from "./schedulePrincipal";

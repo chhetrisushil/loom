@@ -1977,6 +1977,10 @@ function schedulePrincipalFor(broker, o: { lease: Record<string, number>; ttlMs?
 //   returns the minted grant; a lost mint race takes the winner's). No/expired/revoked/exhausted schedule grant or an aborted signal THROWS ScheduleGrantError (the occurrence is skipped as SchedulePrincipalError).
 function settleScheduledTick(runtime, broker: GrantBroker, scheduleId: string, occurrence: number): Promise<boolean>
 //   after a COMPLETED tick settles it at the broker (settleChild): the unused lease is REFUNDED to the schedule grant's headroom once (a parent no execution holds has no fold; takeReturn then yields nothing); a held parent keeps the slice-1 take. A tick that is not completed records nothing.
+function reclaimScheduledTick(broker: Pick<GrantBroker, "current" | "holder" | "settleUnstarted">, scheduleId: string, occurrence: number, o?: { marginMs?: number; now? }): Promise<"reclaimed" | "started" | "pending" | "none">
+//   a tick that MINTED but never started: once its grant is unclaimed and expired by marginMs (RECLAIM_MARGIN_MS = 60 s) it calls settleUnstarted (revokes the grant, frees the headroom); a claimed tick is "started", an unexpired one "pending".
+// answerScheduleApproval(runtime, broker, executionId, decision, resumeOpts?, o?: { expect?: { tenant?, onBehalfOf?, issuedTo? }; now?; onMinted?(grant, approvalExecutionId) }): refuses a spec whose tenant/onBehalfOf are not the approval run's recorded principal's (or expect's) and an issuedTo != expect.issuedTo, BEFORE the resume; an approved COMPLETED run mints from its recorded proposal (crash recovery).
+// mintScheduleGrant(broker, spec, o?: { now?; recoveryMs? }): idempotent only if every signed field and the ttl (minted <= SCHEDULE_RECOVERY_MS = 10 min ago) match; an expired or different grant throws GrantBrokerError.
 // Errors: ScheduleDeniedError (approval refused/malformed), ScheduleGrantError { scheduleId } (a tick cannot get its grant).
 
 ** ~@loomwork/compliance~ — subject export & erasure (T3)

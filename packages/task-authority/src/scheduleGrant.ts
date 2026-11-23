@@ -24,7 +24,8 @@ export type ScheduleGrantSpec = Omit<MintRequest, "taskId" | "parent" | "parentR
   scheduleId: string;
 };
 
-const decisionId = (scheduleId: string) => `task-authority:schedule:${scheduleId}`;
+const DECISION_PREFIX = "task-authority:schedule:";
+const decisionId = (scheduleId: string) => `${DECISION_PREFIX}${scheduleId}`;
 export const scheduleViewDigest = (key: string, spec: ScheduleGrantSpec): string =>
   createHash("sha256")
     .update(JSON.stringify({ gate: SCHEDULE_GATE, key, spec }))
@@ -60,19 +61,56 @@ export async function requestScheduleApproval(
   if (!v.data.approved) throw new ScheduleDeniedError(v.data.reason ?? "not approved");
 }
 
-/** Mint the schedule (root) grant for `spec`. Idempotent: the same spec returns the existing grant, a different one is refused. */
+const sorted = (a?: readonly string[]) => (a === undefined ? null : [...a].sort());
+/** Every signed field of the spec, canonical (sets sorted, absent = null), for an equality check against a minted grant. */
+const specKey = (g: {
+  issuedTo: string;
+  effects: readonly string[];
+  leases: Record<string, { ceiling: number; effects: readonly string[] }>;
+  tenant?: string | undefined;
+  onBehalfOf?: string | undefined;
+  reads?: readonly string[] | undefined;
+  sandbox?: string | undefined;
+}): string =>
+  JSON.stringify([
+    g.issuedTo,
+    sorted(g.effects),
+    Object.keys(g.leases)
+      .sort()
+      .map((n) => [n, g.leases[n]?.ceiling, sorted(g.leases[n]?.effects)]),
+    g.tenant ?? null,
+    g.onBehalfOf ?? null,
+    sorted(g.reads),
+    g.sandbox ?? null,
+  ]);
+
+/** How long after minting an idempotent re-answer (a crash between the resume and the mint) may still find the grant. Default 10 minutes. */
+export const SCHEDULE_RECOVERY_MS = 600_000;
+
+/**
+ * Mint the schedule (root) grant for `spec`. Idempotent: an existing grant is returned only if EVERY signed field
+ * equals the spec's (`issuedTo`, `effects`, `leases`, `tenant`, `onBehalfOf`, `reads`, `sandbox`) and its expiry fits
+ * the spec's `ttlMs` (minted at most `recoveryMs` ago, so a re-approval with another ttl is not served the old grant);
+ * a different or EXPIRED one is refused (re-approve under a new schedule id). `o.now` must be the broker's clock.
+ */
 export async function mintScheduleGrant(
   broker: Pick<GrantBroker, "mint" | "current">,
-  spec: ScheduleGrantSpec
+  spec: ScheduleGrantSpec,
+  o: { now?: () => number; recoveryMs?: number } = {}
 ): Promise<TaskGrant> {
   const { scheduleId: taskId, ...rest } = spec;
-  const same = (g: TaskGrant) =>
-    g.issuedTo === rest.issuedTo &&
-    JSON.stringify([g.effects, g.leases]) === JSON.stringify([rest.effects, rest.leases]);
+  const now = (o.now ?? Date.now)();
+  const fits = (g: TaskGrant) =>
+    g.exp > now &&
+    g.exp <= now + rest.ttlMs &&
+    g.exp - rest.ttlMs >= now - (o.recoveryMs ?? SCHEDULE_RECOVERY_MS);
+  const same = (g: TaskGrant) => specKey(g) === specKey(rest as never) && fits(g);
   const have = await broker.current(taskId);
   if (have !== undefined) {
     if (same(have)) return have;
-    throw new GrantBrokerError(`schedule ${taskId} already has a different grant`);
+    throw new GrantBrokerError(
+      `schedule ${taskId} already has a different, or an expired, grant; approve it under a new schedule id`
+    );
   }
   try {
     return await broker.mint({ taskId, ...rest });
@@ -87,6 +125,7 @@ export async function mintScheduleGrant(
 export interface ScheduleApprovalRuntime {
   loadState(id: string): Promise<
     | {
+        status?: string;
         suspendedOn?: { on: string; correlationKey?: string; viewDigest?: string };
         variables: Record<string, unknown>;
       }
@@ -100,38 +139,89 @@ export interface ScheduleApprovalRuntime {
   ): Promise<unknown>;
 }
 
+/** What the operator vouches the schedule is for (R25 I3): checked against the spec in addition to the approval run's recorded principal. */
+export interface ScheduleExpect {
+  tenant?: string;
+  onBehalfOf?: string;
+  issuedTo?: string;
+}
+export interface AnswerScheduleOptions {
+  expect?: ScheduleExpect;
+  /** The broker's clock (see `mintScheduleGrant`). */
+  now?: () => number;
+  /** Persist the audit link from the schedule grant to the approval run (the grant has no field for it). */
+  onMinted?: (grant: TaskGrant, approvalExecutionId: string) => void | Promise<void>;
+}
+
+/** R25 I3: refuse a spec whose tenant/onBehalfOf are not the approval run's own (or the operator's `expect`). */
+function bindSpec(
+  spec: ScheduleGrantSpec,
+  principal: unknown,
+  expect: ScheduleExpect | undefined
+): void {
+  const rec = principal as
+    | { identity?: { tenant?: string; onBehalfOf?: string }; ref?: string }
+    | undefined;
+  const readable = rec?.ref === undefined; // an anonymous record `{ v: 1 }` has neither identity nor ref // a codec ref hides the identity: `expect` is then required
+  for (const k of ["tenant", "onBehalfOf"] as const) {
+    if (readable && spec[k] !== rec?.identity?.[k])
+      throw new ScheduleDeniedError(`the proposed ${k} is not the approval run's principal's`);
+    if (expect !== undefined ? spec[k] !== expect[k] : !readable && spec[k] !== undefined)
+      throw new ScheduleDeniedError(`the proposed ${k} does not match what the operator expects`);
+  }
+  if (expect?.issuedTo !== undefined && spec.issuedTo !== expect.issuedTo)
+    throw new ScheduleDeniedError("the proposed issuedTo does not match what the operator expects");
+}
+
 /**
- * Operator helper: reads the pending `ScheduleGrantSpec` of the execution parked on `SCHEDULE_GATE`, resumes it
- * with the decision plus the `viewDigest` echo (ADR 0117), and ONLY THEN, if approved, mints the schedule grant.
- * A resume the runtime refuses (an unverified approver under `resumeAuthenticator`, a stale digest) throws before
- * any mint; the recorded `APPROVAL_GRANTED { actor, verifiedBy }` of that run is who answers for every tick.
- * `resumeOpts` (e.g. a principal) pass through. Returns the grant, or `undefined` for a refusal.
+ * Operator helper: reads the pending `ScheduleGrantSpec` of the execution parked on `SCHEDULE_GATE`, refuses it unless
+ * its `tenant` / `onBehalfOf` are the approval run's recorded principal's (or `o.expect`'s) and its `issuedTo` is
+ * `o.expect.issuedTo`'s (R25 I3: a cross-tenant mint is refused BEFORE the resume), resumes it with the decision plus the
+ * `viewDigest` echo (ADR 0117), and ONLY THEN, if approved, mints the schedule grant. A resume the runtime refuses
+ * (an unverified approver under `resumeAuthenticator`, a stale digest) throws before any mint; the recorded
+ * `APPROVAL_GRANTED { actor, verifiedBy }` of that run is who answers for every tick. If the run already COMPLETED
+ * (a crash between the resume and the mint) an approved answer mints from the recorded proposal. `resumeOpts` (e.g. a
+ * principal) pass through. Returns the grant, or `undefined` for a refusal.
  */
 export async function answerScheduleApproval(
   runtime: ScheduleApprovalRuntime,
   broker: Pick<GrantBroker, "mint" | "current">,
   executionId: string,
   decision: { approved: boolean; reason?: string },
-  resumeOpts?: unknown
+  resumeOpts?: unknown,
+  o: AnswerScheduleOptions = {}
 ): Promise<TaskGrant | undefined> {
   const state = await runtime.loadState(executionId);
   const gate = state?.suspendedOn;
   const key = gate?.correlationKey ?? "";
   const head = `${executionId}#schedule:`;
-  if (gate?.on !== SCHEDULE_GATE || !key.startsWith(head))
-    throw new Error(`execution "${executionId}" is not parked on ${SCHEDULE_GATE}`);
   const decisions = (state?.variables._decisions ?? {}) as Record<
     string,
     { choice?: ScheduleGrantSpec }
   >;
+  const mint = async (spec: ScheduleGrantSpec) => {
+    const g = await mintScheduleGrant(broker, spec, o.now === undefined ? {} : { now: o.now });
+    await o.onMinted?.(g, executionId);
+    return g;
+  };
+  if (state?.status === "completed" && decision.approved) {
+    const spec = Object.entries(decisions).find(([k]) => k.startsWith(DECISION_PREFIX))?.[1]
+      ?.choice;
+    if (spec === undefined) throw new Error(`no schedule proposal recorded for "${executionId}"`);
+    bindSpec(spec, state.variables._principal, o.expect);
+    return mint(spec);
+  }
+  if (gate?.on !== SCHEDULE_GATE || !key.startsWith(head))
+    throw new Error(`execution "${executionId}" is not parked on ${SCHEDULE_GATE}`);
   const spec = decisions[decisionId(key.slice(head.length))]?.choice;
   if (spec === undefined) throw new Error(`no schedule proposal recorded for "${key}"`);
   if (gate.viewDigest !== scheduleViewDigest(key, spec))
     throw new Error(`the recorded schedule proposal for "${key}" does not match the parked digest`);
+  if (decision.approved) bindSpec(spec, state?.variables._principal, o.expect);
   await runtime.resume(
     executionId,
     { eventType: SCHEDULE_GATE, payload: { ...decision, viewDigest: gate.viewDigest } },
     resumeOpts
   );
-  return decision.approved ? mintScheduleGrant(broker, spec) : undefined;
+  return decision.approved ? mint(spec) : undefined;
 }

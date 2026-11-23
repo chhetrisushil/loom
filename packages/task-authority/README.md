@@ -82,6 +82,11 @@ A schedule has no human per run, so its root authority is a **schedule grant** a
 2. Give the `TimerService` (or `defineConfig({ timers: { principalFor } })`) `principalFor: schedulePrincipalFor(broker, { lease: { calls: 50 } })`.
    Each occurrence runs under its own child grant `<scheduleId>@<occurrence>`; a missing, expired, revoked or exhausted schedule grant skips that occurrence
    (`SchedulePrincipalError`), never an anonymous run. Under `requirePrincipal`, `committed()` receives that principal.
+   The tick grant inherits the schedule's `reads` and `sandbox`. The hook reserves and mints one grant per occurrence;
+   a tick that minted but never started is released by `reclaimScheduledTick(broker, scheduleId, occurrence)` (grant unclaimed and expired
+   by `RECLAIM_MARGIN_MS`, 60 s), which revokes it and frees the headroom: run it from a periodic sweep over skipped occurrences.
+   `answerScheduleApproval(..., resumeOpts, { expect: { tenant, onBehalfOf, issuedTo }, onMinted })` refuses a spec whose tenant / onBehalfOf are not the
+   approval run's principal's (a codec-encoded principal needs `expect`); a tick cannot `continueAsNew` (R17).
 3. After a completed tick, `settleScheduledTick(runtime, broker, scheduleId, occurrence)` records its unused lease (`broker.takeReturn` takes it once).
    A completed tick's unused lease is REFUNDED to the schedule grant's headroom (a parent no execution holds has no fold; broker contract, ADR 0150 D12), so a ceiling of 100 and 10 per tick runs well past 10 ticks.
 
