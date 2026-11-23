@@ -1863,7 +1863,7 @@ class InMemoryGrantLedger {                       // mint / current / revoked / 
 //   GrantBrokerError (broker rule) or TaskGrantShapeError (grant shape), never a TypeError. Root => rootId = taskId, epoch 0,
 //   exp = now + ttlMs (ttlMs a positive safe integer, now + ttlMs safe). With parent: parent must be live and unexpired; effects
 //   subset of parent's; each lease must exist on the parent; ceiling <= parent ceiling minus the ceilings of ALL children ever
-//   minted (revoked or not). The broker never releases a reservation (returning unused amounts is the parent fold's job, T8).
+//   minted (revoked or not), each at its HIGH-WATER ceiling (renewing down releases nothing). The broker never releases a reservation (returning unused amounts is the parent fold's job, T8).
 //   Child exp = min(now + ttl, parent exp). Duplicate taskId refused.
 // revoke: synchronous iterative cascade; current() undefined, revoked(d) true for every digest of the task and its descendants; idempotent.
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
