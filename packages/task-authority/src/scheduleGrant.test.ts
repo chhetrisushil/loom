@@ -258,24 +258,22 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
     });
     const run = (rt: object) =>
       answerScheduleApproval(rt as never, app.broker, "g-1", { approved: true }, undefined, NOWOPT);
-    await expect(
-      run(
-        via(
-          (s) => (
-            ((
-              s.variables._decisions["task-authority:schedule:nightly"] as never as {
-                choice: object;
-              }
-            ).choice = { ...spec, leases: {} }),
-            s
-          )
-        )
-      )
-    ).rejects.toThrow(/digest/);
-    await expect(run(via((s) => ((s.suspendedOn.on = "OTHER"), s)))).rejects.toThrow(/not parked/);
-    await expect(
-      run(via((s) => ((s.suspendedOn.correlationKey = `other#schedule:nightly`), s)))
-    ).rejects.toThrow(/not parked/);
+    const tamper = (s: typeof st) => {
+      const d = s.variables._decisions["task-authority:schedule:nightly"] as { choice: object };
+      d.choice = { ...spec, leases: {} };
+      return s;
+    };
+    const otherGate = (s: typeof st) => {
+      s.suspendedOn.on = "OTHER";
+      return s;
+    };
+    const foreignHead = (s: typeof st) => {
+      s.suspendedOn.correlationKey = "other#schedule:nightly";
+      return s;
+    };
+    await expect(run(via(tamper))).rejects.toThrow(/digest/);
+    await expect(run(via(otherGate))).rejects.toThrow(/not parked/);
+    await expect(run(via(foreignHead))).rejects.toThrow(/not parked/);
     expect(await app.broker.current("nightly")).toBeUndefined();
     // malformed verdict through the real runtime: the run fails, nothing is minted
     await app.runtime
@@ -290,8 +288,11 @@ describe("schedule grant: the one-off approval run (ADR 0150 D12, S10b)", () => 
     const winner = await mintScheduleGrant(app.broker, spec, NOWOPT);
     let first = true;
     const raced = {
-      current: async (id: string) =>
-        first ? ((first = false), undefined) : app.broker.current(id),
+      current: async (id: string) => {
+        if (!first) return app.broker.current(id);
+        first = false;
+        return undefined;
+      },
       mint: async () => {
         throw new GrantBrokerError("duplicate taskId");
       },
