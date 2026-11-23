@@ -61,6 +61,12 @@ export {
   type VerifyAdapterInputs,
   type VerifyLintInputs,
 } from "./verifyAdapter";
+export {
+  reachOf,
+  agentLoopReach,
+  type ReachOfOptions,
+  type AgentLoopReachConfig,
+} from "./reachOf";
 
 // ADR 0114 — `ctx.ui` is typed by declaration merging owned by `@loomwork/agent-surface`. Re-exporting
 // one of its types makes `app/dist/index.d.ts` pull that module (and its `declare module

@@ -43,6 +43,7 @@ describe("@loomwork/task-authority public surface", () => {
       "answerScheduleApproval",
       "childGrantMinter",
       "childLeaseEffect",
+      "deriveGrant",
       "directedBy",
       "foreignSetHash",
       "globCovers",
