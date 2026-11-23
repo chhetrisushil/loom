@@ -1853,10 +1853,12 @@ class TaskGrantAuthorizer implements CapabilityAuthorizer {
 interface MintRequest { taskId; issuedTo; effects: string[]; leases: Record<string, LeaseSpec>; ttlMs; parent?: { taskId } }
 interface RenewalRequest { taskId; epoch; spent: Record<string, number>; renewals; effectClassesCaused?: string[]; justification?: TaintedValue<string> | string }
 type RenewalVerdict = { granted: true; epoch: number; digest: string } | { granted: false; reason: string }
-interface GrantSource { current(taskId): Promise<TaskGrant | undefined>; revoked?(digest): Promise<boolean> }
+interface GrantSource { current(taskId): Promise<TaskGrant | undefined>; revoked?(digest): Promise<boolean>; claim(taskId, executionId): Promise<boolean> }
+// claim (R16, REQUIRED): first claim wins, a repeat by the same executionId is true, another execution is false; unknown/revoked task is false.
+//   taskIds MUST NOT be reused or reissued to another holder (the ref MAC binds the holder, R15).
 interface GrantBroker extends GrantSource { mint(r): Promise<TaskGrant>; renew(r): Promise<RenewalVerdict>; revoke(taskId, reason): Promise<void> }
 class GrantBrokerError extends Error {}
-class InMemoryGrantLedger {                       // mint / current / revoked / revoke (renewal arrives in T4b)
+class InMemoryGrantLedger {                       // mint / current / revoked / claim / revoke (renewal arrives in T4b)
   constructor(o: { secret: string; now?: () => number })
 }
 // mint: the request is cloned FIRST (size-capped at 64 KiB; BigInt/cycles => GrantBrokerError), then validated. Bad input is a
@@ -1877,14 +1879,21 @@ class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBroker {
 //   Bounds: justification <= 4096 code units (untainted => wrapped task-authority:renewal; last 16 kept per task), spent <= 10 finite
 //   non-negative keys (last value kept), effectClassesCaused <= 32 entries of <= 64 chars. A policy that always grants makes the digest list grow.
 // revoke: synchronous iterative cascade; current() undefined, revoked(d) true for every digest of the task and its descendants; idempotent.
-// codec (D3): the log records { v: 1, ref: "ta1:<taskId>" }, never the token. toRef takes ONLY a chain whose taskGrant verifies under the
-//   secret, actor === issuedTo, no tenant/onBehalfOf/delegation, taskId 1..256 chars with no control characters. fromRef re-verifies what the source returns;
-//   missing, revoked (source.revoked(digest)), unverifiable, wrong-task or throwing => undefined => the kernel denies (ADR 0111 D4); never throws.
+// codec (D3, R13-R16): the log records { v: 1, ref: "ta1:<taskId>.<mac>" }, never the token; mac = base64url(hmac-sha256(secret, "ta1\n" + taskId + "\n" + issuedTo)),
+//   so a ref is bound to its holder (the id is split from the MAC at the LAST "."). toRef: a chain with no taskGrant => undefined (other codecs apply); a chain
+//   that CARRIES one is encoded or REFUSED with TaskAuthorityPrincipalError (the kernel then refuses the start before anything is appended; undefined would let
+//   the default record drop the grant). It encodes only a verified, unexpired (exp > now()) grant, actor === issuedTo, no tenant/onBehalfOf/delegation, taskId
+//   1..256 chars with no control characters. fromRef answers EVERY "ta1:" ref (never undefined, so no older codec or principalResolver can restore a principal
+//   without the grant): bad format/MAC, source miss, revoked, verify failure, taskId or holder mismatch, claim held by another execution, a throwing or
+//   hanging source (timeoutMs per source call) => { principalUnresolved: "task grant <taskId>: <reason>" } (<= 256 chars) => the kernel denies (ADR 0111 D4).
+//   After a revoke the execution's owner is unknown to the execution access policy (ADR 0111 unknownOwner). orchestrationPrincipalCodec.toRef declines a chain with a taskGrant.
 const TASK_REF_PREFIX: "ta1:"
 interface TaskAuthorityPrincipalCodec { toRef(chain): string | undefined; fromRef(ref, ctx: { executionId }): Promise<PrincipalChain | undefined> }  // structural twin of the kernel PrincipalCodec
-function taskAuthorityPrincipalCodec(source: GrantSource, opts: { secret: string }): TaskAuthorityPrincipalCodec
+interface TaskAuthorityCodecOptions { secret: string; now?: () => number /* toRef exp check, default Date.now */; timeoutMs?: number /* per source call, default 5000 */ }
+class TaskAuthorityPrincipalError extends Error {}   // toRef refused a chain carrying a taskGrant it cannot encode
+function taskAuthorityPrincipalCodec(source: GrantSource, opts: TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec
 interface PrincipalCodecHost { composePrincipalCodec(codec): void }   // a WorkflowRuntime; no kernel dependency is added
-function installTaskAuthority(runtime: PrincipalCodecHost, o: { source: GrantSource; secret: string }): TaskAuthorityPrincipalCodec  // composePrincipalCodec: keeps any codec already set
+function installTaskAuthority(runtime: PrincipalCodecHost, o: { source: GrantSource } & TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec  // composePrincipalCodec: keeps any codec already set
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
 #+end_src

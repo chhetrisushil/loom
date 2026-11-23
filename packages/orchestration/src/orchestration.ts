@@ -688,6 +688,9 @@ export function orchestrationPrincipalCodec(secret: string): PrincipalCodec {
   const key = orchRefKey(secret);
   return {
     toRef(chain) {
+      // ADR 0150 R13: a chain carrying a task grant is the task-authority codec's; capturing its
+      // delegation here would drop the grant on restore, so decline and let that codec refuse or encode.
+      if (chain.taskGrant !== undefined) return undefined;
       const token = chain.delegation;
       // Only the supervisor's own shape: a holder-bound token on its own actor, no human identity
       // fields (a ref must stay non-identifying). A token that does not verify is NEVER re-signed
