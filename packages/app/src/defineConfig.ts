@@ -1437,7 +1437,7 @@ export interface LoomConfig {
     principalFor?: TimerServiceOptions["principalFor"];
     /** ADR 0152 D2 — hook timeout, default 5000 ms, 1..60000. */
     principalForTimeoutMs?: number;
-    /** Where a failed fire or a skipped scheduled occurrence is reported. Absent: skips go to `observability.onWarn`. */
+    /** Where a failed fire or a skipped scheduled occurrence is reported. Absent: a skipped scheduled occurrence goes to `observability.onWarn`; other timer errors are not reported. */
     onError?: (executionId: string, err: unknown) => void;
   };
   /**

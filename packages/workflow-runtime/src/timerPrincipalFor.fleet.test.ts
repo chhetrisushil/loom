@@ -175,6 +175,7 @@ describe("ADR 0152 D2 - malformed results, warn fallback, timer hygiene", () => 
     ["a non-string actor", { actor: 42 }],
     ["an unknown shape", { subject: "svc" }],
     ["an array", ["alice"]],
+    ["an empty-string actor", { actor: "" }],
   ])("a hook returning %s is skipped with reason invalid and nothing starts", async (_n, ret) => {
     // Kills: starting the run anonymously on a malformed result, or leaking a bare TypeError.
     const a = boot();
