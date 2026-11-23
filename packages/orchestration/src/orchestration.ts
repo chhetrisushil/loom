@@ -199,6 +199,21 @@ interface SpawnChoice {
   detached?: boolean;
 }
 
+/**
+ * ADR 0150 D8: `reads` narrows a child's GRANT, and only a leased child is minted one. A spawn that names `reads`
+ * without a `lease` would run grantless (unbounded reads), so it is refused rather than silently ignored.
+ */
+function refuseUnleasedReads(
+  spec: { reads?: readonly string[] | undefined; lease?: unknown },
+  who: string
+): void {
+  if (spec.reads !== undefined && spec.lease === undefined) {
+    throw new Error(
+      `orchestration: child "${who}" names \`reads\` but no \`lease\`: reads narrows a leased (granted) child only; reserve a lease (reserveChildLease) or drop reads`
+    );
+  }
+}
+
 function asSpawnChoice(value: unknown): SpawnChoice | undefined {
   const c = value as Partial<SpawnChoice> | null;
   return c !== null &&
@@ -297,6 +312,7 @@ export async function awaitChild<TOut = unknown>(
   }
 ): Promise<TOut> {
   const childId = childIdFor(ctx.executionId, spec.key);
+  refuseUnleasedReads(spec, childId);
   if (spec.maxDepth !== undefined) {
     const depth = depthOf(childId);
     if (depth > spec.maxDepth) {
@@ -374,6 +390,7 @@ export async function awaitChildren<TOut = unknown>(
   }
 ): Promise<ChildResult<TOut>[]> {
   if (group.children.length === 0) return [];
+  group.children.forEach((c, i) => refuseUnleasedReads(c, `${group.key}#${i}`));
   const groupId = childIdFor(ctx.executionId, group.key);
   const members: GroupMember[] = group.children.map((c, i) => ({
     // `#<i>` shares the child-id namespace with `awaitChild` keys; a group `key` must be
@@ -1695,6 +1712,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     childId: string,
     spec: SpawnChoice | GroupMember
   ): Promise<PrincipalChain | undefined> => {
+    refuseUnleasedReads(spec, childId);
     if (spec.lease === undefined) return undefined;
     if (deps.taskAuthority === undefined || parentId === undefined) {
       throw new Error(

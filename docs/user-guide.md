@@ -1292,6 +1292,13 @@ await awaitChild(ctx, { key: "k", flowId: "child", input, ...res.spawn, reads: [
 - Durable-state `load` declares itself a read with the key as the resource (`<loadToolId>:<key>`).
 - **Residual: an app must mark its own read tools** (`new ToolEffect(fn, { resourceOf, capabilities: { read: true } })`). An unmarked
   read is NOT checked, and a read that goes straight to a store (not through an effect) is outside the ring.
+- **Not built / not checked.** Conversation-id reads (named in the D8 text) have no read effect yet. A run with NO task grant
+  (a principal-less `invokeTransient`, an unleased child, an app that never mints) has no `reads` check at all. `reads` on a spawn
+  binds only a LEASED (granted) child: `awaitChild` / `awaitChildren` refuse `reads` without a `lease`. `agentLoop$` with
+  `requireEffectRing: true` refuses `memory` without `recall.toolId`, and the distill existing-facts read follows `recall.toolId`
+  and the write-back scope.
+- The conformance check `reads.read-scope` guards the REFERENCE authorizer and the broker's `reads` at mint; it cannot test a
+  third-party authorizer.
 - Cross-lineage content that does arrive is attributed by `directedBy`; a kernel-attested writer (S-R9) is the future refinement.
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
