@@ -1,4 +1,5 @@
 import type { FlowDefinition } from "@loomwork/core";
+import { SuspendError } from "@loomwork/core";
 import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import { SEEN_ORIGINS_OVERFLOW } from "@loomwork/replay-vm";
@@ -6,7 +7,7 @@ import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { awaitChild, superviseChildren } from "./orchestration";
+import { type SpawnLimits, awaitChild, awaitChildren, superviseChildren } from "./orchestration";
 
 // ADR 0150 D7 / S-R9: a child's seen origins reach the parent on the CHILD_DONE body.
 const def = (id: string): FlowDefinition =>
@@ -29,7 +30,7 @@ const taintTask = { _tag: "TaskDefinition", kind: "tool", id: "t", toolId: "tain
 function boot(
   gate: boolean,
   childOrigin: string | undefined,
-  o: { continued?: boolean; hideChild?: boolean } = {}
+  o: { continued?: boolean; hideChild?: boolean; group?: number; limits?: SpawnLimits } = {}
 ) {
   const seen: { list: readonly string[] | undefined }[] = [];
   const effects = new EffectRuntime();
@@ -68,7 +69,16 @@ function boot(
     return "ok";
   };
   const parent: FlowRunner<unknown, unknown> = async (ctx) => {
-    await awaitChild(ctx, { key: "k", flowId: "child", input: {} });
+    try {
+      if (o.group !== undefined)
+        await awaitChildren(ctx, {
+          key: "k",
+          children: Array.from({ length: o.group }, () => ({ flowId: "child", input: {} })),
+        });
+      else await awaitChild(ctx, { key: "k", flowId: "child", input: {} });
+    } catch (e) {
+      if (e instanceof SuspendError) throw e; // a refused single child throws childFailed into the flow
+    }
     await ctx.run(task, {});
     return "done";
   };
@@ -77,6 +87,7 @@ function boot(
   holder.sup = superviseChildren({
     runtime,
     flows: { child: { definition: def("child"), runner: child } as RegisteredFlow },
+    ...(o.limits !== undefined && { limits: o.limits }),
     onError: () => {},
   });
   const run = () =>
@@ -130,5 +141,20 @@ describe("CHILD_DONE carries the child's seen origins", () => {
     await h.run();
     await until(() => h.seen.length === 1);
     expect(h.seen[0]?.list).toContain(SEEN_ORIGINS_OVERFLOW);
+  });
+
+  // kills: a refused/unstarted member reading as "unprovable" and poisoning a tracked parent with the overflow marker
+  it("a limit-refused group never ran, so it does not poison the parent", async () => {
+    const h = boot(true, "lineage:A", { group: 2, limits: { maxFanOut: 1 } });
+    await h.run();
+    await until(() => h.seen.length === 1);
+    expect(h.seen[0]?.list).toEqual([]);
+  });
+
+  it("a depth-refused single child never ran, so it does not poison the parent", async () => {
+    const h = boot(true, "lineage:A", { limits: { maxDepth: 0 } });
+    await h.run();
+    await until(() => h.seen.length === 1);
+    expect(h.seen[0]?.list).toEqual([]);
   });
 });

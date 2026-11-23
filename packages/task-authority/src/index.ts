@@ -68,6 +68,7 @@ export {
 export type { LineagePrincipal } from "./lineage";
 export {
   LINEAGE_ORIGIN_MAX,
+  LINEAGE_TOO_LONG,
   LINEAGE_ORIGIN_PREFIX,
   lineageOrigin,
   lineageSend,
