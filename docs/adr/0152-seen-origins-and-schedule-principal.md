@@ -1,6 +1,6 @@
 # ADR 0152 — Kernel seams for task-authority slice 2: run-level seen origins on the effect context; a principal hook for scheduled occurrences
 
-- Status: **Proposed** (2026-11-23) — owner answered the four open questions the same day (see "Owner rulings") and an Opus design review was applied (see "Revision"); nothing here is built
+- Status: **Proposed** (2026-11-23) — owner answered the four open questions the same day (see "Owner rulings"), an Opus design review was applied, and ruling R11 moved the scan from the fold to the COMMIT (see "Revision"); nothing here is built
 - Date: 2026-11-23
 - Builds on: [ADR 0150](0150-task-scoped-authority.md) (D7 instruction provenance across lineages, D12 root authority
   for scheduled runs, and the 2026-11-23 slice-2 amendment), [ADR 0151](0151-effect-context-flush.md) (the model for an
@@ -30,12 +30,14 @@
     state differs from 1.26.0 (the key is always written), so there is no "byte-identical with no taint" claim.
   - `EffectContext.seenOrigins` is optional and additive; it is ABSENT until the gate is on and the run is tracked.
   - D2 is additive and opt-in: absent hook, byte-identical behaviour, no schema change. No KERNEL_ABI change.
-  - Kernel budget (`packages/spec/kernel-budget.json` budgets only `packages/workflow-runtime/src`): `WorkflowRuntime.ts`,
-    `LogLifecycle.ts`, `WorkflowContext.ts`, `continuation.ts`, `blankStream.ts` and `TimerService.ts` grow, and the new
-    `seenOriginsSeed.ts` is a new kernel file that needs its own budget entry; all need `LOOM_KERNEL_BUDGET_ADR=0152`. The
-    fold code lands in `packages/replay-vm`, which has NO budget guard today (stated so a reviewer sees it). Honest growth:
-    about 250-350 code lines across the budgeted `workflow-runtime` files (the seeding helper with the rescan and error
-    classification is the bulk, 150+), plus a `replay-vm` module of 150-200 lines.
+  - Kernel budget (`packages/spec/kernel-budget.json` budgets only `packages/workflow-runtime/src`): R11 puts the commit-time
+    scan in `ExecutionJournal.ts` (about 30 code lines: one call in `commit`, one in `commitAtomic`, one in the shared
+    `build`, plus the strip of caller-supplied keys). `WorkflowRuntime.ts`, `LogLifecycle.ts`, `WorkflowContext.ts`,
+    `continuation.ts` and `TimerService.ts` still grow, and the new `seenOriginsSeed.ts` is a new kernel file that needs its own budget
+    entry; all need `LOOM_KERNEL_BUDGET_ADR=0152`. The scan, the record and the fold code land in `packages/replay-vm`, which has
+    NO budget guard today (stated so a reviewer sees it). Honest growth: about 250-350 code lines across the budgeted
+    `workflow-runtime` files (the seeding helper with the rescan and error classification is the bulk, 150+), plus a
+    `replay-vm` module of 250-300 lines.
 
 ## Context
 
@@ -139,23 +141,60 @@ Because the check is in the one function every snapshot reader already calls, th
 does the DRIVER rescan and adoption. The fold step advancing `through` must not re-validate a key without `through`: a key
 that lacks it stays overflow until a rescan replaces it.
 
-#### What feeds it (the channels)
+#### What feeds it: scanned ONCE at commit, recorded on the event, unioned by the fold (R11)
 
-One module in `replay-vm` (`seenOrigins.ts`) is called from the fold loop after each handler when the state carries the key,
-so all channels share one scan, one bound and one set of rules, and the handlers themselves do not change. Verdicts:
+**The fold does not scan.** A measurement of the first design (a fold-time scan) showed the fold is O(1) per event today because it
+never looks inside an output: a taint-free log of 2000-node outputs folded about 290x slower with the scan (0.8 ms to 225 ms for
+3000 events, about 37 ns per node, 75 us per event). Owner ruling R11 therefore moves the walk to the one place that sees a value
+exactly once, live: the journal commit. It records what it found; the fold unions recorded lists and replay never rescans.
+
+- **Where it runs.** `ExecutionJournal` (`packages/workflow-runtime/src/ExecutionJournal.ts`) is the single allocator and the
+  only committer for a live run, so the scan lives in its shared envelope builder and is reached from all three entry points:
+  `commit` (every kernel `commit` call and every `WorkflowContext` emit path, including a userspace emit of `DECISION_RECORDED`,
+  which reaches the same `commit`), `commitAtomic` (the notify path's `[MESSAGE_CONSUMED..., EXECUTION_RESUMED]` batch; each
+  envelope is scanned against the state AFTER the earlier ones in the batch were folded, exactly as `applyEvent` sees it), and the
+  static `bootstrapEnvelope` (the sequence-0 start, which has no vm yet). `adopt` takes an envelope that is already durable and
+  scans nothing. The scan function itself, `seenOriginsRecord(before, eventType, payload, metadata)`, is in `replay-vm`
+  (`seenOrigins.ts`), so the upgrade rescan of S2c reuses it.
+- **Where it is recorded: the envelope metadata, not the payload.** `metadata.origins?: string[]` (sorted in code unit order,
+  each at most 256 characters or its `unknown:truncated:<digest>`, deduped, at most `limits.maxOrigins`) and
+  `metadata.originsOverflow?: true`. The first form of R11 named payload fields; metadata is chosen because the positional
+  `EXECUTION_RESUMED` payload is the caller's own value that the flow receives back, and adding a key to it would change the delivered
+  value, a digest and a sealed payload. Metadata already carries the other kernel stamps (`kernel`, `fence`, `forkChain`, `flowEmit`)
+  and changes neither the payload nor what a flow reads. Absent means clean (nothing was found), so a tracked run's events carry
+  no extra bytes unless they hold taint.
+- **How "tracked" is known at commit.** The scan runs only when the vm's state has a valid `_seenOrigins` key that is not already
+  overflowed: its `limits` bound the walk. For the start envelope (no state yet) the payload's `seenOriginsLimits` stamp or a carried
+  set plays that part. **A value committed while the run is untracked records nothing**, and an overflowed key records nothing
+  further (the set is sticky; scanning would only spend time).
+- **The fold** (`replay-vm`, after each handler, for exactly the channels below) unions `metadata.origins` into the key
+  and sets `overflow` for `metadata.originsOverflow`. It never opens a payload. Its cost is O(k) for the recorded list, plus the
+  copy-on-write advance of `through` on every event of a tracked run. Because the recorded list is the source, the live fold and
+  the replay fold read the same bytes: key order and JSONB reordering of an output cannot change the result for a 1.27 event.
+- **Trust model.** `origins` and `originsOverflow` are kernel-written. `ExecutionJournal.build` removes any caller-supplied
+  `origins` / `originsOverflow` from `opts.metadata` BEFORE it writes its own (the same "applied last, the journal's alone" rule as the
+  `kernel` stamp), so no emit path a caller influences can set them: `guardUserspaceEmit` and the payload of every kernel
+  event cannot carry the field because the field is not in the payload at all, and a payload key named `origins` is ordinary
+  data the fold never reads. The fold honours the metadata field only on the channel event types below. A log written by something other
+  than the journal is outside the trust model, as for `kernel` and `fence`.
+- **Pre-1.27 events** carry no record and the fold does not scan them. They are scanned only by the one-time upgrade rescan
+  ("Rescan"), which walks the JSON view and keeps the determinism rules below, because it reads JSON from a store.
+
+The channels (the event type, the field scanned, and the verdict). The rule for "which value" is evaluated at commit against the
+state before the event, exactly as the fold evaluates the handler:
 
 | Channel (event, field) | Verdict | Why |
 |---|---|---|
 | `STEP_COMPLETED.output` | **scan** | Tool, memory, LLM and child results. Human-step answers (`WorkflowContext.ts` ~932) and in-doubt adoptions (~904) commit the same event, so they are covered by this row. |
-| `MESSAGE_CONSUMED` | **scan when `isKernelWritten(event)` and not a duplicate**: origin `inbox:<topic>` plus a scan of `payload` | The fold already ignores a consume that is not kernel-stamped or whose messageId is in the dedupe window; a delivery that never reached the flow did not show it anything. The topic is added with the same origin `deliveredValue` stamps. |
+| `MESSAGE_CONSUMED` | **scan when `isKernelWritten(event)` and not a duplicate**: origin `inbox:<topic>` plus a scan of `payload` | The fold already ignores a consume that is not kernel-stamped or whose messageId is in the dedupe window; a delivery that never reached the flow did not show it anything. The `inbox:<topic>` origin is the kernel's attestation of the CHANNEL (it is the same origin `deliveredValue` stamps), recorded even when the payload is clean, so "this run read topic T" is visible; it is kept and is not a duplicate of the value scan. |
 | `EXECUTION_RESUMED`, positional payload | **scan** `payload` (not when `isStatusOnlyResume`) | A gate resume payload is handed to the flow. |
 | `EXECUTION_RESUMED`, wait-addressed `{ waitId, payload }` | **scan** the unwrapped inner payload, only when the answer is recorded (`addressed.answer`) | The same value enters `_waitAnswers`; an addressed inbox answer also has its `MESSAGE_CONSUMED`. |
 | `DECISION_RECORDED.choice` | **scan** | A decider reads untrusted data through transient calls or memory recall, and `ctx.decide` hands the choice back to the flow. `alternatives`, `context` and `policy` are NOT scanned: they are the decider's inputs recorded for audit and are not returned to the flow. |
-| `STEP_FAILED.payload` (DE-4 typed failure) | **scan** | A typed failure's payload is delivered to the flow's `catch` as data. `STEP_FAILED.error` is not scanned: it is serialized error text, never a wrapper (the agent loop wraps tool errors itself, `tool-error:`, in an OUTPUT). |
+| `STEP_FAILED.payload` (DE-4 typed failure, only with `channel`) | **scan** | A typed failure's payload is delivered to the flow's `catch` as data. `STEP_FAILED.error` is not scanned: it is serialized error text, never a wrapper (the agent loop wraps tool errors itself, `tool-error:`, in an OUTPUT). |
 | `PARALLEL_COMPLETED.errorPayload` | **scan** | The same typed-failure data on a parallel scope. |
 | `EXECUTION_MIGRATED.migratedInput` | **scan** | The migrated input replaces `_input`. |
 | `EXECUTION_STARTED.input` | **scan** | The flow input. |
-| continueAsNew carry | **carry the set**: add `carried.seenOrigins` to `carriedOf` (`continuation.ts:194`, as `resources`) and seed the successor from it, validated like `seedResources`; the carry itself is also the successor's `input`, so it is scanned too | Without it, rotating through `continueAsNew` launders every origin seen so far. `carriedOf` carries the overflow marker too. The rule, applied wherever a key is seeded (the fold at `EXECUTION_STARTED` and adoption, not only the successor stamp): **a stamp is present AND `continuedFrom` is present AND no carried set was supplied gives `overflow`** (a successor of a keyless predecessor cannot prove a clean past). The carried set is bounded by `maxOrigins x 256` bytes (default 16 KB, at most 256 KB) and is NOT counted by `maxCarryBytes`. |
+| continueAsNew carry | **carry the set**: add `carried.seenOrigins` to `carriedOf` (`continuation.ts:194`, as `resources`) and seed the successor from it, validated like `seedResources`; the carry itself is also the successor's `input`, so it is scanned too | Without it, rotating through `continueAsNew` launders every origin seen so far. The **carried-set shape** is `{ origins: string[], overflow?: true }` (each origin re-capped and deduped on seeding, more than `maxOrigins` gives overflow); `carriedOf` carries the overflow marker too. The rule, applied wherever a key is seeded (the fold at `EXECUTION_STARTED` and adoption, not only the successor stamp): **a stamp is present AND `continuedFrom` is present AND no carried set was supplied gives `overflow`** (a successor of a keyless predecessor cannot prove a clean past). The carried set is bounded by `maxOrigins x 256` bytes (default 16 KB, at most 256 KB) and is NOT counted by `maxCarryBytes`. |
 | fork | **follows `forkResources`** (`eventHandlers.ts` ~514-540): a fork of a chain member keeps `carried.seenOrigins`, and the same rule applies (stamp and `continuedFrom` and no carried set gives overflow); an ordinary fork copies its prefix, key included | A fork must not shed what its parent was shown. |
 | child results | **not propagated by the kernel** | Reading another execution's fold from inside this one would couple two logs and add an unbounded cross-execution read. The 1P orchestration supervisor taints the `CHILD_DONE` body with the child's seen origins (task-authority slice 2, S5), so the ordinary `STEP_COMPLETED` or inbox scan recovers them; the kernel carries opaque strings and stays out. |
 | the decide scope's `invokeTransient` and other transient calls | **absent** | They emit nothing and have no fold; `seenOrigins` is undefined there (M8), and a consumer fails closed. |
@@ -167,8 +206,9 @@ the safe direction for a security check.
 
 #### The scan (determinism)
 
-The live fold sees in-memory payloads, replay sees JSON from the store, and a store such as Postgres JSONB reorders object
-keys, so the scan must be a pure function of the JSON VALUE, not of object identity or key order:
+The scan runs live at commit on in-memory values, and in the upgrade rescan on JSON read from a store (a store such as Postgres JSONB
+reorders object keys). So the walk is a pure function of the JSON VALUE, not of object identity or key order, which keeps a commit-time
+record and a rescan of the same event equal:
 
 - **A vendored walk in `replay-vm`** (`replay-vm` has no `classify` dependency, and the kernel must not inherit later
   semantic changes to `scanTaint`): iterative, depth pinned at 64 (M6), over a normalized JSON view: own enumerable string
@@ -180,25 +220,28 @@ keys, so the scan must be a pure function of the JSON VALUE, not of object ident
 - **The wrapper shape** it recognises is classify's: an object whose `__loomTainted` is an object with a string `origin`
   and that has a `value` key. A test (in `replay-vm`, with classify as a dev dependency only) asserts every shape
   `tainted()` produces is recognised, so the two cannot drift silently.
-- **Per-event origins are sorted** (code unit order) before they are unioned into the set, so first-seen order within an
+- **Per-event origins are sorted** (code unit order) before they are recorded and unioned, so first-seen order within an
   event never depends on object key order.
-- **An exceeded scan sets `overflow` ONLY and drops the partial origins it found**, because which origins a bounded walk
+- **An exceeded scan records `originsOverflow` ONLY and drops the partial origins it found**, because which origins a bounded walk
   reaches first depends on traversal order.
 - **Truncation before dedupe and count:** an origin longer than 256 characters is replaced, BEFORE it is deduped or counted, by
-  `unknown:truncated:<fnv1a-64 hex of the full origin>` (M4). A deterministic non-cryptographic digest is enough: a collision
+  `unknown:truncated:<fnv1a-64 hex of the full origin>` (M4). The digest is FNV-1a 64-bit over the UTF-8 bytes of the full origin, as 16
+  lowercase hex digits. A deterministic non-cryptographic digest is enough: a collision
   only merges two labels that were both over-long. The 256 cap therefore bounds both the stored size and a forged flood.
 - **The `maxOrigins + 1`th distinct origin sets `overflow`** and is dropped; overflow is sticky.
-- **The determinism test** (required for S2) folds the same log (a) live, (b) by replay from JSON, (c) from a snapshot plus tail,
-  and (d) through an event-store round trip that REORDERS object keys. (d) always runs against an in-memory decorator that
-  re-emits every payload with reversed key order; and, in the Postgres-gated suite (the per-package test DB the repo already
-  provisions, `reference_local_postgres_for_tests` recipe), against the real JSONB store. All four must produce equal
-  `_seenOrigins`.
+- **The determinism test** (required for S2) asserts: (a) the fold reads the RECORDED list, so folding the same log live, by replay
+  from JSON, and from a snapshot plus tail gives equal `_seenOrigins`; (b) the recorded record is identical when an event is committed from an
+  in-memory value and when the same event is scanned from JSON whose key order is reversed (an in-memory event-store decorator that
+  re-emits every payload with reversed key order, standing in for Postgres JSONB; against the real JSONB store in the Postgres-gated
+  suite); and (c) an old log with no records is scanned only by the rescan, with the same result under reversal.
 
-**Cost.** The scan is O(nodes of the scanned fields, up to `limits.maxScanNodes`) once per event and runs in the fold, which
-also runs on replay. `maxScanNodes` bounds the walk's NODE count, NOT the CPU below payload size: a payload of a few nodes
-with megabyte strings costs its serialization anyway, and `toJSON` normalisation touches every property. Only the fields in
-the table are scanned; primitives and `null` return immediately; a snapshot carries the set so a resume scans only the
-tail. A `*.perf.test.ts` is a REQUIREMENT of task S2, measured BEFORE the fold scan is committed (see "Implementation notes"). It must also measure the copy-on-write cost of advancing `through` on EVERY event of a tracked run (a fresh `_seenOrigins` object and a fresh `variables` spread per event), not only the scan.
+**Cost.** The live scan is O(nodes of the scanned field, up to `limits.maxScanNodes`), once per event, at commit, and only for a tracked
+run: measured at about 37 ns per JSON node (a 2000-node output costs about 75 us once). Replay and the tail fold pay O(k) per event for the
+recorded list (k at most `maxOrigins`) plus the copy-on-write advance of `through`; they never walk a payload. `maxScanNodes` bounds the
+walk's NODE count, NOT the CPU below payload size: a payload of a few nodes with megabyte strings costs its serialization anyway, and `toJSON`
+normalisation touches every property. Only the fields in the table are scanned; primitives and `null` return immediately; a snapshot
+carries the set so a resume reads only the tail. The perf requirement stands, re-aimed (see "Implementation notes"): the FOLD with records on must stay
+near the untracked baseline, and the live commit-scan cost is reported.
 
 #### Seeding sites: staleness in `normalizeSnapshotState`, rescan in one async helper
 
@@ -403,25 +446,26 @@ An Opus design review of the first draft (1b191649) found seven Important flaws 
 - **M7 document fixes.** The header no longer says "no payload change"; the stamp sites are named; the budget paragraph names the files and the unguarded `replay-vm`; a realistic growth estimate; the S2 split below.
 - **M11 deferred.** An attested inbox-sender origin (so a sender cannot choose the origin label of its own message) is a follow-up: it reopens ADR 0150 S-R1/S-R3 (writer tagging is content-level, foreign = a `lineage:` origin) and needs the owner's decision first.
 - **Re-review fixes (R10, Sonnet @285eed05).** (I-1) `through` is compared to `snapshot.state.sequence`, not `snapshot.sequence`, which a batch commit can leave behind on a healthy fleet. (I-2) The O(1) staleness check moves into `normalizeSnapshotState`, so every existing caller (compliance, replay-inspector, `foldFromCompleteLog`, `blankStream`) inherits read-only safety; the helper only rescans and adopts. (I-3) The rescan runs after `takeDriverLease` (resume, flow migration, `restoreFromState`) and before the fence, and compaction rescans before `archiveRemoved` and the truncate; the early seed is read-only. The continueAsNew / fork rule (stamp and `continuedFrom` and no carried set gives overflow) is stated for every seeding point and `carriedOf` carries the marker. Minors: the `restoreFromState` key drop moves to S2b (M-a); the budget paragraph, file list and growth estimate now agree and include `seenOriginsSeed.ts` (M-b); "off" now says a run with no stamp and no carried set folds no key (M-c); the shred error is a brand (`isPayloadShredded`), not a class, and the sealed classes are named (M-d); the carry size is noted (M-e); a read-only site reports an absent key as absent (M-f); the perf requirement covers the copy-on-write cost of `through`.
+- **R11 (owner, 2026-11-23): scan at commit, record it.** The S2a perf gate measured the fold-time scan at about 290x on a taint-free log of 2000-node outputs (0.8 ms to 225 ms for 3000 events; about 37 ns per node), because today's fold never opens an output. D1 is rewritten: `ExecutionJournal` scans a channel value once when it commits the event, for a tracked run only, and records `metadata.origins` / `metadata.originsOverflow` on the envelope; the fold unions recorded lists and never rescans. The live-vs-replay ordering and JSONB divergence (I6) is moot for 1.27 events; pre-1.27 events are scanned only by the upgrade rescan, which keeps the JSON-view rules. Still EVENT_SCHEMA 1.27.0. The record is in metadata rather than the payload (the positional resume payload is the caller's value), the journal strips caller-supplied keys, and the budget estimate now includes `ExecutionJournal.ts`. Clarified at the same time: the truncation digest is FNV-1a 64 over UTF-8 bytes (16 hex digits); the carried-set shape is `{ origins: string[], overflow?: true }`; the `MESSAGE_CONSUMED` `inbox:<topic>` origin is kept as the kernel's attestation of the channel.
 - **Added by the first revision, for owner review:** `through` as a staleness detector (the review asked for the gate; `through` is what makes a gate mistake detectable rather than silent).
 
 ## Implementation notes for S2
 
 S2 is probably THREE PRs, each under the 200-line target for its budgeted files, split so each is safe to merge alone (the gate is off until the end):
 
-1. **S2a, the fold and read-only safety.** `replay-vm`: `seenOrigins.ts` (vendored scan, channels, bounds, truncation, carry/fork seed and the overflow rule), the hook in the fold loop and the `EXECUTION_STARTED` seeding, the staleness check in `normalizeSnapshotState`, `EVENT_SCHEMA_VERSION` 1.27.0 and its history comment, `carriedOf` carrying the set and the marker. Inert: nothing stamps `seenOriginsLimits` yet. The perf measurement and the determinism test land here.
+1. **S2a, the record, the fold and read-only safety.** `replay-vm`: `seenOrigins.ts` (vendored scan, channels, bounds, truncation, the record function, carry/fork seed and the overflow rule), the hook in the fold loop that unions recorded lists and the `EXECUTION_STARTED` seeding, the staleness check in `normalizeSnapshotState`, `EVENT_SCHEMA_VERSION` 1.27.0 and its history comment; `workflow-runtime`: the commit-time record in `ExecutionJournal.ts` (with the strip of caller-supplied keys) and `carriedOf` carrying the set and the marker. Inert: nothing stamps `seenOriginsLimits` yet, so no run is tracked and the commit scan never runs. The perf measurement (fold with records on versus off, and the live commit-scan cost) and the determinism test land here.
 2. **S2b, the gate and the context.** `kernel.features.seenOrigins` (`defineConfig`, `WorkflowRuntimeDeps.seenOriginsEnabled`), the `seenOriginsLimits` option with range validation, the stamps at `WorkflowRuntime.ts:~3757` and `~8708`, `EffectContext.seenOrigins` in `WorkflowContext.ts` and `effect-runtime/src/types.ts`, **the `restoreFromState` caller-key drop (M10)**, kernel budget, docs. Untracked snapshots stay absent here (safe).
 3. **S2c, adoption and rescan.** `seenOriginsSeed.ts` (with its kernel-budget entry), the post-lease call at each driver site, the compaction ordering, the `compactionArchive` dependency, the error classification, paging, memo, and the rescan tests.
 
-Files: `packages/replay-vm/src/{eventHandlers.ts,foldEvents.ts,seenOrigins.ts}`; `packages/core` (state type, if exported); `packages/workflow-runtime/src/{WorkflowContext.ts,WorkflowRuntime.ts,LogLifecycle.ts,continuation.ts,blankStream.ts,seenOriginsSeed.ts,TimerService.ts (S3)}`; `packages/compliance/src/eraseSubject.ts` and `packages/replay-inspector/src/reconstruct.ts` (no change expected: they inherit the staleness check; tests only); `packages/effect-runtime/src/types.ts`; `packages/app/src/defineConfig.ts` plus its config docs and `configGroups` test; `packages/spec/kernel-budget.json`; the EVENT_SCHEMA tables and event docs the spec guards read.
+Files: `packages/replay-vm/src/{eventHandlers.ts,foldEvents.ts,seenOrigins.ts}`; `packages/workflow-runtime/src/ExecutionJournal.ts` (the commit-time record, S2a); `packages/core` (state type, if exported); `packages/workflow-runtime/src/{WorkflowContext.ts,WorkflowRuntime.ts,LogLifecycle.ts,continuation.ts,blankStream.ts,seenOriginsSeed.ts,TimerService.ts (S3)}`; `packages/compliance/src/eraseSubject.ts` and `packages/replay-inspector/src/reconstruct.ts` (no change expected: they inherit the staleness check; tests only); `packages/effect-runtime/src/types.ts`; `packages/app/src/defineConfig.ts` plus its config docs and `configGroups` test; `packages/spec/kernel-budget.json`; the EVENT_SCHEMA tables and event docs the spec guards read.
 
 Tests required:
-- Determinism (above): live, replay, snapshot plus tail, key-reordering store, and Postgres JSONB when the PG suite runs.
+- Determinism (above): the recorded list as the source (live, replay, snapshot plus tail), a commit-time record equal to a rescan of the same event, a key-reordering store for the rescan, and Postgres JSONB when the PG suite runs. A caller-supplied `origins` in metadata or payload never reaches the fold.
 - Every channel row, including a non-kernel `MESSAGE_CONSUMED` and a duplicate (both ignored), both resume shapes, and carry / fork / continueAsNew rotation not laundering.
 - Presence: a clean run has the key with `origins: []`; a run without `seenOriginsLimits` is untracked and `seenOrigins` is absent; with the gate off nothing is stamped and the folded state equals 1.26.0.
 - Bounds: cap overflow, sticky flag, exceeded scan drops partial origins, truncation to `unknown:truncated:<digest>`, recorded limits survive a config change and a snapshot, invalid recorded limits ignored, construction refusals at each range edge; the vendored scan recognises every `tainted()` shape.
 - Rolling deploy: a key left stale by a fold that does not advance `through` is detected by `normalizeSnapshotState` (driver rebuilds, read-only reports overflow); a healthy batch-committed snapshot whose `sequence` is below its `state.sequence` is NOT flagged stale.
 - Seeding: every site in the table; a read-only site never returns a tail-only set and reports an absent key as absent; the rescan runs after the lease and a stand-down reads nothing; compaction rescans before `archiveRemoved`; `restoreFromState` ignores a forged `_seenOrigins` (S2b); continueAsNew and fork of a keyless predecessor read as overflow.
 - Rescan: from retained events; from a compacted log plus archive; each permanent error gives sticky overflow; a simulated timeout gives a retryable failure that persists and memoizes nothing; paged (peak events held is O(page)); the lease is held; the LRU memo.
-- **A `*.perf.test.ts` (REQUIREMENT, measured before the fold scan is committed):** fold time with and without the scan on (a) a taint-free log with large outputs, (b) a log of many small tainted outputs, plus a rescan of a long history. Report numbers in the PR; a material regression on (a) switches the design to the producer-side stamp. Deterministic evidence (nodes visited) goes in a normal `*.test.ts`, never a timing ratio.
+- **A `*.perf.test.ts` (REQUIREMENT):** (1) the FOLD with records on (a tracked run) against the untracked baseline on (a) a taint-free log with large outputs, (b) a log of many small tainted outputs, (c) cheap events (the copy-on-write `through` advance); it must stay near the baseline, and a material regression on (a) is a defect of the design, not a tuning matter; (2) the LIVE commit-scan cost per node and per event; (3) a rescan of a long history. Report numbers in the PR. Deterministic evidence (nodes visited, bytes recorded) goes in a normal `*.test.ts`, never a timing ratio. The first design's fold-time scan failed (1)(a) by about 290x, which is why R11 exists.
 - D2 (task S3): hook absent is byte-identical; principal recorded; throw, reject and timeout each skip with `onError` and do not mis-classify as already-started or retry; `ticking` does not stick; two racing nodes; recovery resumes as the recorded principal; the hook is not called on a resume.
