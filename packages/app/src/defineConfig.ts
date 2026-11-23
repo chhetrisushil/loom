@@ -99,7 +99,12 @@ import {
 } from "@loomwork/telemetry";
 import type { TelemetryAdapter } from "@loomwork/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loomwork/verify";
-import { LogLifecycle, TimerService, WorkflowRuntime } from "@loomwork/workflow-runtime";
+import {
+  LogLifecycle,
+  TimerService,
+  type TimerServiceOptions,
+  WorkflowRuntime,
+} from "@loomwork/workflow-runtime";
 import type {
   HeartbeatOptions,
   PrincipalCodec,
@@ -1424,6 +1429,16 @@ export interface LoomConfig {
       ttlMs?: number;
       renewEveryMs?: number;
     };
+    /**
+     * ADR 0152 D2 — the principal a scheduled occurrence starts as (recorded on its `EXECUTION_STARTED`).
+     * Must be idempotent and side-effect free for a (schedule, occurrence). A throw, rejection, timeout
+     * or malformed result skips that occurrence. See `TimerServiceOptions.principalFor`.
+     */
+    principalFor?: TimerServiceOptions["principalFor"];
+    /** ADR 0152 D2 — hook timeout, default 5000 ms, 1..60000. */
+    principalForTimeoutMs?: number;
+    /** Where a failed fire or a skipped scheduled occurrence is reported. Absent: skips go to `observability.onWarn`. */
+    onError?: (executionId: string, err: unknown) => void;
   };
   /**
    * Whether composing this app also STARTS the background services it wires (today: the
@@ -2414,6 +2429,11 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(config.timers.warmLeadMs !== undefined && { warmLeadMs: config.timers.warmLeadMs }),
       ...(config.timers.dispatcher !== undefined && { dispatcher: config.timers.dispatcher }),
       ...(config.timers.leases !== undefined && { leases: config.timers.leases }),
+      ...(config.timers.principalFor !== undefined && { principalFor: config.timers.principalFor }),
+      ...(config.timers.principalForTimeoutMs !== undefined && {
+        principalForTimeoutMs: config.timers.principalForTimeoutMs,
+      }),
+      ...(config.timers.onError !== undefined && { onError: config.timers.onError }),
     });
     // Composition starts it, unless the caller is inspecting rather than running (`autostart`).
     //

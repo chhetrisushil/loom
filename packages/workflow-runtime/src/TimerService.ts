@@ -130,13 +130,15 @@ export class RedriveExhaustedError extends Error {
 export class SchedulePrincipalError extends Error {
   constructor(
     readonly executionId: string,
-    readonly reason: "threw" | "timeout",
+    readonly reason: "threw" | "timeout" | "invalid",
     override readonly cause?: unknown
   ) {
     super(
       reason === "timeout"
         ? `schedule principal hook for "${executionId}" timed out; occurrence skipped`
-        : `schedule principal hook for "${executionId}" failed; occurrence skipped`
+        : reason === "invalid"
+          ? `schedule principal hook for "${executionId}" returned a malformed principal; occurrence skipped`
+          : `schedule principal hook for "${executionId}" failed; occurrence skipped`
     );
     this.name = "SchedulePrincipalError";
     Object.setPrototypeOf(this, SchedulePrincipalError.prototype);
@@ -145,12 +147,31 @@ export class SchedulePrincipalError extends Error {
 
 const DEFAULT_PRINCIPAL_FOR_TIMEOUT_MS = 5000;
 
+/** A plain object with at least one string identity field or a delegation object (field names: `PrincipalChain`). */
+function isPrincipalShape(v: unknown): v is PrincipalChain {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
+  const p = v as Record<string, unknown>;
+  const str = (k: string) => typeof p[k] === "string";
+  const del = typeof p.delegation === "object" && p.delegation !== null;
+  return str("tenant") || str("actor") || str("onBehalfOf") || del;
+}
+
 export interface TimerServiceOptions {
   /**
    * ADR 0152 D2 - the principal a scheduled occurrence starts as, recorded on its `EXECUTION_STARTED`
    * (ADR 0111). MUST be idempotent and free of side effects for a given (schedule, occurrence): it can
    * run on several racing nodes and again on every retry poll. Absent: the occurrence starts with no
-   * principal, exactly as before. A throw, a rejection or a timeout skips THIS occurrence (per node).
+   * principal, exactly as before. A throw, a rejection, a timeout or a malformed result (anything but
+   * `undefined` or a plain object with a string `tenant`/`actor`/`onBehalfOf` or a `delegation`; reason
+   * `"invalid"`) skips THIS occurrence (per node). A skip goes to `onError`, else to the runtime's warn path.
+   *
+   * Authorization: the start itself still rides the system grant. With the runtime's
+   * `requirePrincipal`, the hook's principal is NOT authorized for `start` and `committed()` withholds it
+   * (as for supervised children). Without `requirePrincipal` but with an execution authorizer, the
+   * principal IS authorized, and a denial is reported through `onError` and the occurrence skipped.
+   *
+   * Hooks run serially inside a tick, so a slow or timing-out hook delays this node's other timer wakes
+   * (up to `principalForTimeoutMs` per due occurrence).
    */
   principalFor?: (
     schedule: ScheduleDefinition,
@@ -544,12 +565,17 @@ export class TimerService {
         ac.abort();
         reject(new SchedulePrincipalError(`${def.id}@${occurrence}`, "timeout"));
       }, this.principalForTimeoutMs);
+      timer.unref?.();
     });
     try {
-      return await Promise.race([
+      const out = await Promise.race([
         Promise.resolve().then(() => hook(def, occurrence, { signal: ac.signal })),
         timeout,
       ]);
+      if (out !== undefined && !isPrincipalShape(out)) {
+        throw new SchedulePrincipalError(`${def.id}@${occurrence}`, "invalid");
+      }
+      return out;
     } finally {
       clearTimeout(timer);
     }
@@ -579,12 +605,12 @@ export class TimerService {
         try {
           principal = await this.resolvePrincipal(this.principalFor, def, occurrence);
         } catch (hookErr) {
-          this.onError?.(
-            executionId,
+          const skip =
             hookErr instanceof SchedulePrincipalError
               ? hookErr
-              : new SchedulePrincipalError(executionId, "threw", hookErr)
-          );
+              : new SchedulePrincipalError(executionId, "threw", hookErr);
+          if (this.onError) this.onError(executionId, skip);
+          else this.runtime.onWarn(skip.message + (skip.cause ? `: ${String(skip.cause)}` : ""));
           return "done"; // skipped: the cursor advances, so one bad hook cannot stall the schedule
         }
       }
