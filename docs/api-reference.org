@@ -1830,7 +1830,7 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 
 ** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
 
-Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. Leases, the authorizer and the broker arrive in later tasks.
+Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). Leases and the broker arrive in later tasks.
 
 #+begin_src typescript
 const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
@@ -1845,6 +1845,13 @@ function verifyTaskGrant(secret: string, g: TaskGrant): TaskGrant | undefined  /
 function taskGrantDigest(g: TaskGrant): string                            // sha256 hex of the canonical encoding incl. sig, over a validated snapshot; throws TaskGrantShapeError if malformed (does not check the sig: pass a verified grant)
 function validateGrantShape(g: unknown): asserts g is UnsignedTaskGrant   // throws TaskGrantShapeError
 class TaskGrantShapeError extends Error {}
+const TASK_GRANT_DENIAL: { blocked, shape, signature, expired, holder, scope, base }   // stable reason prefixes, "task-grant:<cause>"
+class TaskGrantAuthorizer implements CapabilityAuthorizer {
+  constructor(o: { secret: string; base: CapabilityAuthorizer; now?: () => number })  // base REQUIRED (symmetric secret); empty secret throws
+  authorize(req: CapabilityRequest): CapabilityDecision   // reads req.principal.taskGrant; never throws
+}
+// order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
+//        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
 #+end_src
 
 ** ~@loomwork/compliance~ — subject export & erasure (T3)
