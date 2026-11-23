@@ -520,7 +520,10 @@ describe("K9.3: no microtask between the post-drain seal check and the dispatch"
       runtime.registerFlow(definition, runner);
       const h = await runtime.start({ definition, runner }, {}, { executionId: `gap-${k}` });
       await h.waitForCompletion();
-      // Let any (buggy) post-seal dispatch land: a bounded run of macrotask turns.
+      // Negative assertion ("no effect runs after the seal"): there is no condition to wait on for
+      // something that must NOT happen. A post-seal dispatch is a continuation of an awaited append,
+      // which would land within a few macrotask turns of EXECUTION_COMPLETED; this bounded flush gives
+      // it that window, so a kernel with the bug still records `effect` after the seal and fails.
       for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 1));
       const done = log.indexOf("EXECUTION_COMPLETED");
       const ran = log.indexOf("effect");
