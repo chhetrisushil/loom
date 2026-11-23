@@ -213,4 +213,68 @@ describe("InMemoryGrantBroker renew", () => {
     expect(granted(await b.renew(null as never))).toBe(false);
     expect((await b.current("root"))?.epoch).toBe(0);
   });
+  it("a child's renewing down releases nothing (high-water reservation)", async () => {
+    const b = mk(setTo(1));
+    await b.mint(root());
+    await b.mint(child("c1", 10));
+    expect(granted(await b.renew(renewal(0, { taskId: "c1" })))).toBe(true);
+    await expect(b.mint(child("c2", 9))).rejects.toThrow(/headroom/);
+    const up = mk((r) => ({ leases: { w: r.epoch === 0 ? 1 : 10 } }));
+    await up.mint(root());
+    await up.mint(child("c1", 10));
+    await up.renew(renewal(0, { taskId: "c1" }));
+    expect(granted(await up.renew(renewal(1, { taskId: "c1" })))).toBe(true);
+  });
+  it("an up-renewing child raises its reservation", async () => {
+    const b = mk(setTo(6));
+    await b.mint(root());
+    await b.mint(child("c1", 2));
+    await b.renew(renewal(0, { taskId: "c1" }));
+    await expect(b.mint(child("c2", 5))).rejects.toThrow(/headroom/);
+    await b.mint(child("c3", 4));
+  });
+  it("denies a child's renewal under an expired parent; the root's own expired renewal works", async () => {
+    const clock = { t: NOW };
+    const b = mk(undefined, clock);
+    await b.mint(root());
+    await b.mint(child("c1", 4));
+    clock.t = NOW + 5000;
+    const v = await b.renew(renewal(0, { taskId: "c1" }));
+    expect(!v.granted && v.reason).toMatch(/expired/);
+    expect((await b.current("c1"))?.epoch).toBe(0);
+    expect(granted(await b.renew(renewal(0)))).toBe(true);
+  });
+  it("a policy that revokes the task cannot commit a renewal", async () => {
+    const ref: { b?: InMemoryGrantBroker } = {};
+    const b = mk(() => {
+      void ref.b?.revoke("root", "reentrant");
+      return {};
+    });
+    ref.b = b;
+    const g0 = await b.mint(root());
+    expect(granted(await b.renew(renewal()))).toBe(false);
+    expect(await b.current("root")).toBeUndefined();
+    const digests = (b as unknown as { tasks: Map<string, { digests: string[] }> }).tasks.get(
+      "root"
+    )!.digests;
+    expect(digests).toEqual([taskGrantDigest(g0)]);
+  });
+  it("a policy mutating history.spentSoFar does not change stored state", async () => {
+    const b = mk((_r, h) => {
+      h.spentSoFar.w = 999;
+      return {};
+    });
+    await b.mint(root());
+    await b.renew(renewal());
+    const spent = (b as unknown as { tasks: Map<string, { spent: unknown }> }).tasks.get(
+      "root"
+    )!.spent;
+    expect(spent).toEqual({ w: 3 });
+  });
+  it("a non-numeric policy ceiling is denied with a clear reason", async () => {
+    const b = mk(() => ({ leases: { w: "5" } }) as never);
+    await b.mint(root());
+    const v = await b.renew(renewal());
+    expect(!v.granted && v.reason).toMatch(/must be a number/);
+  });
 });
