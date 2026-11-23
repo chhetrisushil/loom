@@ -25,6 +25,8 @@
     "@loomwork/effect-runtime": "workspace:^"
   },
   "devDependencies": {
+    "@loomwork/replay-vm": "workspace:^",
+    "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
   },
