@@ -1413,6 +1413,22 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  packages/task-authority:
+    dependencies:
+      '@loomwork/classify':
+        specifier: workspace:^
+        version: link:../classify
+      '@loomwork/effect-runtime':
+        specifier: workspace:^
+        version: link:../effect-runtime
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/telemetry:
     dependencies:
       '@loomwork/classify':

@@ -206,6 +206,9 @@
       "path": "packages/classify"
     },
     {
+      "path": "packages/task-authority"
+    },
+    {
       "path": "packages/compliance"
     },
     {

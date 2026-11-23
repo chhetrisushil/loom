@@ -699,11 +699,11 @@ export const CAPABILITIES: readonly Capability[] = [
   {
     id: "task-authority",
     title: "Task-scoped Authority",
-    package: "—",
-    level: "L0",
+    package: "@loomwork/task-authority",
+    level: "L1",
     summary:
       "ADR 0150 — per-task signed grants, side-effect leases that pause on exhaustion, child leases carved by reservation, cross-lineage provenance.",
     evidence: {},
-    note: "Design accepted (ADR 0150); the @loomwork/task-authority package does not exist yet, so evidence-derived it is L0.",
+    note: "Design accepted (ADR 0150); the @loomwork/task-authority package exists and builds but holds only a version marker (slice 1 in progress), so evidence-derived it is L1.",
   },
 ];

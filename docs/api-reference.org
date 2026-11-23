@@ -1828,6 +1828,14 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 // producers: plugin-mcp taints a whole tool result; plugin-a2a taints `content` only
 #+end_src
 
+** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
+
+Slice 1 is in progress; the package currently exports only a version marker. Signed per-task grants, side-effect leases and child lease reservation arrive in later tasks.
+
+#+begin_src typescript
+const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
+#+end_src
+
 ** ~@loomwork/compliance~ — subject export & erasure (T3)
 
 #+begin_src typescript
