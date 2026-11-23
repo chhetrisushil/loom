@@ -77,6 +77,7 @@ const FEEDBACK = new Set([
   "ForkPastContinuationError",
   "ReservedSuccessorIdError",
   "RedriveExhaustedError",
+  "SchedulePrincipalError",
   "UnsafeCompactionError",
   "CompactionCheckpointMissingError",
   "BlankStreamUnrepairedError",

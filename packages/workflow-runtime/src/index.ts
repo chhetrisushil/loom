@@ -86,6 +86,7 @@ export type {
 export {
   DEFAULT_MAX_REDRIVE_ATTEMPTS,
   RedriveExhaustedError,
+  SchedulePrincipalError,
   TimerService,
   redriveDelayMs,
   scheduleRedrive,

@@ -1,4 +1,5 @@
 import type { ExecutionState, ScheduleDefinition } from "@loomwork/core";
+import type { PrincipalChain } from "@loomwork/effect-runtime";
 import {
   type EventStore,
   type LeaseStore,
@@ -122,7 +123,42 @@ export class RedriveExhaustedError extends Error {
   }
 }
 
+/**
+ * ADR 0152 D2 - what `onError` receives when `principalFor` throws, rejects or times out: the
+ * occurrence is SKIPPED by this node (never started anonymously), the cursor advances.
+ */
+export class SchedulePrincipalError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly reason: "threw" | "timeout",
+    override readonly cause?: unknown
+  ) {
+    super(
+      reason === "timeout"
+        ? `schedule principal hook for "${executionId}" timed out; occurrence skipped`
+        : `schedule principal hook for "${executionId}" failed; occurrence skipped`
+    );
+    this.name = "SchedulePrincipalError";
+    Object.setPrototypeOf(this, SchedulePrincipalError.prototype);
+  }
+}
+
+const DEFAULT_PRINCIPAL_FOR_TIMEOUT_MS = 5000;
+
 export interface TimerServiceOptions {
+  /**
+   * ADR 0152 D2 - the principal a scheduled occurrence starts as, recorded on its `EXECUTION_STARTED`
+   * (ADR 0111). MUST be idempotent and free of side effects for a given (schedule, occurrence): it can
+   * run on several racing nodes and again on every retry poll. Absent: the occurrence starts with no
+   * principal, exactly as before. A throw, a rejection or a timeout skips THIS occurrence (per node).
+   */
+  principalFor?: (
+    schedule: ScheduleDefinition,
+    occurrence: number,
+    ctx: { readonly signal: AbortSignal }
+  ) => PrincipalChain | undefined | Promise<PrincipalChain | undefined>;
+  /** ADR 0152 D2 (M2) - how long the hook may take before it counts as a throw. Default 5000 ms; 1..60_000. */
+  principalForTimeoutMs?: number;
   /** Poll cadence for due timers, in ms. Default 250. */
   pollMs?: number;
   /** Max due timers fired per poll. Default 100. */
@@ -332,6 +368,8 @@ export class TimerService {
   /** Retries per chain of a D10a expiry row whose owner was running (bounded like `wakeBackoff`). */
   private readonly expiryBackoff = new Map<string, number>();
   private readonly now: () => number;
+  private readonly principalFor: TimerServiceOptions["principalFor"];
+  private readonly principalForTimeoutMs: number;
 
   private readonly dispatcher: TimerDispatcher | undefined;
   private readonly leases: TimerServiceOptions["leases"];
@@ -354,6 +392,15 @@ export class TimerService {
     this.pollMs = options.pollMs ?? 250;
     this.batch = options.batch ?? 100;
     this.onError = options.onError;
+    this.principalFor = options.principalFor;
+    this.principalForTimeoutMs = options.principalForTimeoutMs ?? DEFAULT_PRINCIPAL_FOR_TIMEOUT_MS;
+    if (
+      !Number.isInteger(this.principalForTimeoutMs) ||
+      this.principalForTimeoutMs < 1 ||
+      this.principalForTimeoutMs > 60_000
+    ) {
+      throw new RangeError("principalForTimeoutMs must be an integer in 1..60000");
+    }
     this.fenced = options.fenced ?? false;
     this.redrivers = [...(options.redrivers ?? [])];
     this.maxRedriveAttempts = options.maxRedriveAttempts ?? DEFAULT_MAX_REDRIVE_ATTEMPTS;
@@ -484,6 +531,30 @@ export class TimerService {
     }
   }
 
+  /** Run the D2 hook under its timeout; a timeout aborts the signal and rejects, so `ticking` cannot stick. */
+  private async resolvePrincipal(
+    hook: NonNullable<TimerServiceOptions["principalFor"]>,
+    def: ScheduleDefinition,
+    occurrence: number
+  ): Promise<PrincipalChain | undefined> {
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        ac.abort();
+        reject(new SchedulePrincipalError(`${def.id}@${occurrence}`, "timeout"));
+      }, this.principalForTimeoutMs);
+    });
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => hook(def, occurrence, { signal: ac.signal })),
+        timeout,
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private async startOccurrence(
     def: ScheduleDefinition,
     occurrence: number
@@ -502,6 +573,21 @@ export class TimerService {
       if (!flow) {
         throw new Error(`schedule "${def.id}": no flow registered for flowId "${def.flowId}"`);
       }
+      // ADR 0152 D2 - the hook has its OWN try: a throw must not be classified as a start outcome below.
+      let principal: PrincipalChain | undefined;
+      if (this.principalFor !== undefined) {
+        try {
+          principal = await this.resolvePrincipal(this.principalFor, def, occurrence);
+        } catch (hookErr) {
+          this.onError?.(
+            executionId,
+            hookErr instanceof SchedulePrincipalError
+              ? hookErr
+              : new SchedulePrincipalError(executionId, "threw", hookErr)
+          );
+          return "done"; // skipped: the cursor advances, so one bad hook cannot stall the schedule
+        }
+      }
       // L12 — no fence, even with `fenced: true`. A start that loses the race must not touch
       // the fence of an execution it does not own: acquiring a token here superseded a live
       // winner's, so the winner's next write was refused as stale AFTER its first effect ran,
@@ -510,6 +596,7 @@ export class TimerService {
       // fence if the winner has since been fenced), before any body runs.
       const handle = await this.runtime.start(flow, def.input, {
         executionId,
+        ...(principal !== undefined && { principal }),
         ...this.runtime.systemOptions(),
       });
       await Promise.race([
