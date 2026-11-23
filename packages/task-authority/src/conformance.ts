@@ -5,6 +5,7 @@ import type {
   ConformanceSubject,
 } from "./conformanceKit";
 import { clock, mintReq, mk, must, mustRefuse, req } from "./conformanceKit";
+import { RUNTIME_CHECKS } from "./conformanceRuntime";
 import { taskGrantDigest } from "./grant";
 
 export type {
@@ -26,11 +27,15 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.renew-born-expired",
   "broker.reservation-never-released",
   "carve.child-renew-ceiling",
+  "carve.forged-meters",
+  "laundering.uncovered.shared-memory",
   "laundering.uncovered.a2a",
   "laundering.covered",
+  "revocation",
 ] as const;
 
 const CHECKS: Record<string, Check> = {
+  ...RUNTIME_CHECKS,
   "broker.claim-atomic": async (s) => {
     const b = mk(s);
     await b.mint(mintReq("t", 1));
@@ -116,7 +121,13 @@ const CHECKS: Record<string, Check> = {
   "laundering.covered": async () => "skipped:slice 2 (ADR 0150 D7)",
 };
 
-/** Run every check against `subject`. Never throws: a failing check is reported with its message. */
+/**
+ * Run every check against `subject`. Never throws: a failing check is reported with its message.
+ *
+ * Not every check can fail a broker: `carve.forged-meters` and `laundering.uncovered.shared-memory` exercise
+ * the package and kernel guards (the reserved `lease.` meter prefix; the grant authorizer and lease middleware),
+ * so a broken broker cannot fail them, and that is expected. They guard the stack the broker sits in.
+ */
 export async function checkTaskAuthorityConformance(
   subject: ConformanceSubject
 ): Promise<ConformanceReport> {

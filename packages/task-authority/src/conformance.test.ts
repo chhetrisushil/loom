@@ -48,6 +48,11 @@ class ChildMayRise extends InMemoryGrantBroker {
     }
   }
 }
+class NeverRevokes extends InMemoryGrantBroker {
+  override async revoked(): Promise<boolean> {
+    return false;
+  }
+}
 class ReleasesOnRevoke extends InMemoryGrantBroker {
   override async revoke(taskId: string, reason: string): Promise<void> {
     await super.revoke(taskId, reason);
@@ -92,6 +97,12 @@ describe("checkTaskAuthorityConformance", () => {
       ChildMayRise,
       "carve.child-renew-ceiling",
       /above its minted ceiling/,
+    ],
+    [
+      "a revoked() that never reports a revocation",
+      NeverRevokes,
+      "revocation",
+      /after the revoke ran/,
     ],
     [
       "a revoke that releases the reservation",

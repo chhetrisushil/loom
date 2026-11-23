@@ -66,5 +66,29 @@
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "peerDependencies": {
+    "@loomwork/core": "workspace:^",
+    "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/orchestration": "workspace:^",
+    "@loomwork/snapshot-runtime": "workspace:^",
+    "@loomwork/workflow-runtime": "workspace:^"
+  },
+  "peerDependenciesMeta": {
+    "@loomwork/core": {
+      "optional": true
+    },
+    "@loomwork/event-runtime": {
+      "optional": true
+    },
+    "@loomwork/orchestration": {
+      "optional": true
+    },
+    "@loomwork/snapshot-runtime": {
+      "optional": true
+    },
+    "@loomwork/workflow-runtime": {
+      "optional": true
+    }
   }
 }

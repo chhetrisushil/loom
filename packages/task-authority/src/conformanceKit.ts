@@ -53,5 +53,7 @@ export const req = (taskId: string, epoch: number, renewals: number): RenewalReq
   spent: {},
   renewals,
 });
+export const task = (id: string, toolId = "act") =>
+  ({ _tag: "TaskDefinition", kind: "tool", id, toolId }) as never;
 export const mk = (s: ConformanceSubject, policy?: RenewalPolicy, c = clock()) =>
   s.makeBroker({ secret: SECRET, now: c.now, ...(policy && { policy }) });
