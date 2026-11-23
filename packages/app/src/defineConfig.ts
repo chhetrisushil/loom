@@ -2694,6 +2694,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       ...(Object.keys(loopIdentityByFlow).length > 0 && { loopIdentityByFlow }),
       ...(Object.keys(runnerReachByFlow).length > 0 && { runnerReachByFlow }),
       ...(verifyCfg?.reach !== undefined && { reachDeclarations: verifyCfg.reach }),
+      ...(verifyCfg?.taskGrants !== undefined && { taskGrants: verifyCfg.taskGrants }),
     });
   };
   const verifyOptions = verifyCfg?.rules !== undefined ? { rules: verifyCfg.rules } : undefined;

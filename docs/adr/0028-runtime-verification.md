@@ -136,6 +136,12 @@ different questions: `capability-compat` asks whether K2 grants the capability a
 capability can still bust the class, and K2 will not stop it — the finding says so, which is the
 reconciliation made operational. See [ADR 0084](0084-effect-classes-static-ceiling-k2-floor.md).
 
+## Amendments (task-grant reach, ADR 0150 D9)
+
+A **ninth rule** joined the set:
+
+- **task-grant-reach** — a task-grant template (`checks: { verify: { taskGrants: [{ flowId, effects, reach? }] } }`, supplied by the app because grants are minted at runtime) may not name an effect outside the reach of the flow it is issued for. `warn`: the grant is broader than the code. A template for an unregistered flow warns; `taskGrants: []` reports an `info` (a configured gate with nothing to check); absent is a no-op (G2). Reach comes from `reachOf` (`@loomwork/app`): the flow's steps and declared reach, declared child flows, and an `agentLoop$` menu (its tools, every skill's tools, the `toolSearch` catalog), which is wide. Reach the template does not cover is not reported (D9 names only the over-broad case).
+
 ## Amendments (runner-body reach, ADR 0086)
 
 **The V1 wording of `suspension-safety` above is superseded.** Its `suspends` input had no
@@ -157,5 +163,5 @@ compiler would look maximally verified. The "auto-extraction of runner bodies in
 follow-up noted above is **done**: the compiler transform emits `loopIdentity`,
 `nonDeterministic` and `runnerReach`, and `loom verify` auto-injects all three.
 
-The rule set stands at **eight** — the seven listed under V1 above plus `effect-class`.
+The rule set stands at **nine** — the seven listed under V1 above plus `effect-class` and `task-grant-reach`.
 `RULE_ORDER` in `@loomwork/verify` is the executable list; this one is a description of it.

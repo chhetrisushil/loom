@@ -1219,6 +1219,20 @@ await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acm
 const secret = { current: process.env.TA_KEY_2!, previous: [process.env.TA_KEY_1!] };   // later: { current: KEY_2, refOnly: [KEY_1] }
 ```
 
+#### Deriving a grant from a flow's reach (ADR 0150 D9)
+
+`reachOf(runtime, flowId, options)` (`@loomwork/app`) returns the effect tool ids a flow can reach: its steps, `reachableTools`, runner-body and declared reach, every child flow listed in `children`, and each `agentLoop$` config listed in `agentLoops`. A child is started by id at run time and an agent loop is called from a runner body, so you declare those edges. `deriveGrant(reach, extra?)` (`@loomwork/task-authority`) turns that into a `MintRequest` template whose `effects` are exactly the reach. It proposes no `leases` and no `reads`: a ceiling is your decision, and the reach is of effects, not resources. Treat it as the upper bound for a mint.
+
+```ts
+import { reachOf } from "@loomwork/app";
+import { deriveGrant } from "@loomwork/task-authority";
+
+const reach = reachOf(app.runtime, "triage", { children: { triage: ["refund"] } });
+const template = deriveGrant(reach, { ttlMs: 60_000 });
+```
+
+An `agentLoop$` is WIDE: its reach is its own tools, plus the tools of EVERY skill in its registry (the model picks the skills at run time), plus the whole `toolSearch` catalog. An exploratory agent gets a grant bounded by its menu, which is the honest limit. To check the templates you mint from, give them to verify: `checks: { verify: { taskGrants: [{ flowId: "triage", effects: template.effects, reach: { children: { triage: ["refund"] } } }] } }`. The `task-grant-reach` rule warns for an effect the flow cannot reach (the grant is broader than the code), for a template naming an unregistered flow, and with an `info` when `taskGrants` is empty. It does not report reach the template leaves out.
+
 #### Covered laundering: `directedBy` (ADR 0150 D7)
 
 A grant that covers a step does not say who asked for it. When agent A's content reaches agent B and B then calls a leased

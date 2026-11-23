@@ -21,6 +21,7 @@ import type {
   VerifyMode,
 } from "@loomwork/verify";
 import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import { type ReachEdges, reachFromFlows } from "./reachCore";
 
 /**
  * The `defineConfig({ verify })` key. A bare mode is the common case; the object form
@@ -77,6 +78,16 @@ export interface RunnerReachInput {
   }[];
 }
 
+/**
+ * ADR 0150 D9 — a task-grant template the `task-grant-reach` rule checks. `reach` names the child
+ * flows and `agentLoop$` configs behind `flowId` (see `reachOf`); without it only the flow's own reach counts.
+ */
+export interface TaskGrantTemplateConfig {
+  readonly flowId: string;
+  readonly effects: readonly string[];
+  readonly reach?: ReachEdges;
+}
+
 export type VerifyConfig =
   | VerifyMode
   | {
@@ -103,6 +114,8 @@ export type VerifyConfig =
        * with no entry is reported unresolved.
        */
       readonly reach?: Readonly<Record<string, unknown>>;
+      /** ADR 0150 D9 — grant templates for the `task-grant-reach` rule; absent keeps the rule a no-op. */
+      readonly taskGrants?: readonly TaskGrantTemplateConfig[];
     };
 
 export interface NormalizedVerify {
@@ -112,6 +125,7 @@ export interface NormalizedVerify {
   readonly rules?: readonly RuleName[];
   readonly lint?: VerifyLintInputs;
   readonly reach?: Readonly<Record<string, unknown>>;
+  readonly taskGrants?: readonly TaskGrantTemplateConfig[];
 }
 
 /** Normalize the `verify` key. Object form without an explicit mode defaults to `"warn"`. */
@@ -125,6 +139,7 @@ export function normalizeVerify(v: VerifyConfig | undefined): NormalizedVerify |
     ...(v.effectClasses !== undefined && { effectClasses: v.effectClasses }),
     ...(v.lint !== undefined && { lint: v.lint }),
     ...(v.reach !== undefined && { reach: v.reach }),
+    ...(v.taskGrants !== undefined && { taskGrants: v.taskGrants }),
   };
 }
 
@@ -155,6 +170,8 @@ export interface VerifyAdapterInputs {
   readonly runnerReachByFlow?: Readonly<Record<string, RunnerReachInput>>;
   /** L32 — see `VerifyConfig.reach`: callee text / root identifier -> declared-reach carrier. */
   readonly reachDeclarations?: Readonly<Record<string, unknown>>;
+  /** ADR 0150 D9 — see `VerifyConfig.taskGrants`. */
+  readonly taskGrants?: readonly TaskGrantTemplateConfig[];
   /**
    * ADR 0061 — per-flow loop step-identity findings, feeding the determinism rule's
    * loop-identity warnings. Produce from `@loomwork/compiler`'s `analyzeLoopIdentity` (or read
@@ -418,6 +435,13 @@ export function resolveVerifyInput(
     timerStoreWired: runtime.hasTimerStore(),
     ...(grants !== undefined && { grants }),
     ...(placement !== undefined && { placement }),
+    ...(inputs.taskGrants !== undefined && {
+      taskGrants: inputs.taskGrants.map((t) => ({
+        flowId: t.flowId,
+        effects: t.effects,
+        reach: reachFromFlows(flows, t.flowId, t.reach),
+      })),
+    }),
     ...(inputs.meteredDimensions !== undefined && { meteredDimensions: inputs.meteredDimensions }),
     ...(inputs.effectClasses !== undefined && { effectClasses: inputs.effectClasses }),
   };

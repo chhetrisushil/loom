@@ -27,6 +27,7 @@ export type {
   UnresolvedReachRef,
   GrantSpec,
   PlacementSpec,
+  TaskGrantTemplateSpec,
   VerifyInput,
   VerifyOptions,
 } from "./types";
