@@ -16,6 +16,7 @@ export const TASK_GRANT_DENIAL = {
   holder: "task-grant:holder",
   scope: "task-grant:scope",
   base: "task-grant:base",
+  error: "task-grant:error",
 } as const;
 
 export interface TaskGrantAuthorizerOptions {
@@ -31,6 +32,17 @@ export interface TaskGrantAuthorizerOptions {
   now?: () => number;
 }
 
+const MAX_LIVE = 256;
+/** Bound a live (caller- or base-supplied) value before it lands in a durable denial reason. */
+function clip(v: unknown): string {
+  try {
+    const s = typeof v === "string" ? v : String(v);
+    return s.length > MAX_LIVE ? `${s.slice(0, MAX_LIVE)}…` : s;
+  } catch {
+    return "(unprintable)";
+  }
+}
+
 const deny = (prefix: string, detail: string): CapabilityDecision => ({
   allowed: false,
   reason: `${prefix}: ${detail}`,
@@ -43,7 +55,11 @@ const deny = (prefix: string, detail: string): CapabilityDecision => ({
  * and never throws.
  */
 export class TaskGrantAuthorizer implements CapabilityAuthorizer {
-  constructor(private readonly options: TaskGrantAuthorizerOptions) {
+  private readonly secret: string;
+  private readonly base: CapabilityAuthorizer;
+  private readonly now: () => number;
+
+  constructor(options: TaskGrantAuthorizerOptions) {
     if (options.base === undefined || options.base === null) {
       throw new Error(
         "TaskGrantAuthorizer: `base` is required — the grant secret is symmetric, so a verified grant " +
@@ -53,19 +69,24 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
     if (typeof options.secret !== "string" || options.secret.length === 0) {
       throw new Error("TaskGrantAuthorizer: `secret` must be a non-empty string.");
     }
+    // Copy: a later mutation of the caller's options object must not swap the secret or `base`.
+    this.secret = options.secret;
+    this.base = options.base;
+    this.now = options.now ?? Date.now;
   }
 
   authorize(req: CapabilityRequest): CapabilityDecision {
     try {
       return this.decide(req);
-    } catch (e) {
-      return deny(TASK_GRANT_DENIAL.shape, `grant could not be read: ${String(e)}`);
+    } catch {
+      // Fixed detail: never the error message (unbounded, possibly caller-influenced, and durable).
+      return deny(TASK_GRANT_DENIAL.error, "authorization failed internally");
     }
   }
 
   /** The verified snapshot, `"shape"` when malformed, `undefined` when the signature fails. */
   private verified(raw: unknown): TaskGrant | "shape" | undefined {
-    const snap = verifyTaskGrant(this.options.secret, raw as TaskGrant);
+    const snap = verifyTaskGrant(this.secret, raw as TaskGrant);
     if (snap !== undefined) return snap;
     // Verification failed: tell a malformed grant from a bad signature. `validateGrantShape`
     // takes the UNSIGNED shape, so drop `sig`. Only the label depends on this; never the decision.
@@ -80,9 +101,9 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
 
   private decide(req: CapabilityRequest): CapabilityDecision {
     const blocked = principalBlocked(req.principal);
-    if (blocked !== undefined) return deny(TASK_GRANT_DENIAL.blocked, blocked);
+    if (blocked !== undefined) return deny(TASK_GRANT_DENIAL.blocked, clip(blocked));
     const raw = req.principal?.taskGrant;
-    if (raw === undefined) return this.options.base.authorize(req);
+    if (raw === undefined) return this.base.authorize(req);
 
     // The DECISION comes from the verified
     // snapshot alone: after this step nothing reads `req.principal.taskGrant` again, so a getter or
@@ -92,13 +113,17 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
     if (g === undefined) {
       return deny(TASK_GRANT_DENIAL.signature, "grant signature invalid (forged or tampered)");
     }
-    if ((this.options.now?.() ?? Date.now()) >= g.exp) {
+    const t = this.now();
+    // A NaN or non-numeric clock must not skip expiry: only a finite time below `exp` passes.
+    if (!(typeof t === "number" && Number.isFinite(t) && t < g.exp)) {
       return deny(TASK_GRANT_DENIAL.expired, `grant for task "${g.taskId}" expired at ${g.exp}`);
     }
-    if (req.principal?.actor !== g.issuedTo) {
+    // Read the actor ONCE: the holder check and everything after it see the same value.
+    const actor = req.principal?.actor;
+    if (actor !== g.issuedTo) {
       return deny(
         TASK_GRANT_DENIAL.holder,
-        `grant issued to "${g.issuedTo}" but presented by "${req.principal?.actor ?? "(none)"}"`
+        `grant issued to "${g.issuedTo}" but presented by "${actor === undefined ? "(none)" : clip(actor)}"`
       );
     }
     const scope = new Set(g.effects);
@@ -108,11 +133,13 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
         `effect "${req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`}" not in the task grant`
       );
     }
-    const b = this.options.base.authorize(req);
-    if (!b.allowed) {
+    // Hand `base` the pinned actor, so it cannot be shown a different one than the holder check saw.
+    const pinned: CapabilityRequest = { ...req, principal: { ...req.principal, actor } };
+    const b = this.base.authorize(pinned);
+    if (b?.allowed !== true) {
       return deny(
         TASK_GRANT_DENIAL.base,
-        `granted, but the callee itself lacks "${req.toolId}": ${b.reason ?? ""}`
+        `granted, but the callee itself lacks "${clip(req.toolId)}": ${clip(b?.reason ?? "")}`
       );
     }
     return { allowed: true };
