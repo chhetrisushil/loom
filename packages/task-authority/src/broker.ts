@@ -119,6 +119,8 @@ export function cloneRequest<T>(v: T): T {
  * Reservations: the sum of ALL children's HIGH-WATER ceilings (max ever granted; revoked or not; renewing down releases nothing) for a lease never exceeds the parent's
  * ceiling. The broker NEVER releases a reservation; returning unused amounts is the parent fold's job (T8).
  * Bad input surfaces as `GrantBrokerError` (broker rules) or `TaskGrantShapeError` (grant shape), never a TypeError.
+ * Keys: `secret` is a `GrantKeys` ring fixed at construction. There is no live rotation API, and rebuilding the
+ * broker loses its in-memory ledger; a real broker persists its ledger and is rebuilt with the new ring.
  */
 export class InMemoryGrantLedger {
   protected readonly tasks = new Map<string, Rec>();

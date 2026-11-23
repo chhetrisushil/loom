@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { FlowDefinition } from "@loomwork/core";
 import {
   type CapabilityAuthorizer,
@@ -13,10 +14,12 @@ import {
   type ResumeAuthenticator,
   WorkflowRuntime,
 } from "@loomwork/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { TaskGrantAuthorizer } from "./authorizer";
+import { childLeaseEffect } from "./childLease";
 import { taskAuthorityPrincipalCodec } from "./codec";
+import { LeaseGrantInvalidError } from "./errors";
 import {
   type GrantKeys,
   type TaskGrant,
@@ -32,6 +35,10 @@ import { taskLeaseMiddleware } from "./lease";
 import { InMemoryGrantBroker, type RenewalPolicy } from "./renew";
 import { RENEWAL_GATE, answerRenewal, renewalResumeSchema, withRenewal } from "./renewal";
 
+vi.mock("node:crypto", async (orig) => {
+  const real = await orig<typeof import("node:crypto")>();
+  return { ...real, timingSafeEqual: vi.fn(real.timingSafeEqual) };
+});
 const A = "key-A";
 const B = "key-B";
 const NOW = 1_000_000;
@@ -56,7 +63,7 @@ describe("key ring (R31)", () => {
     expect(verifyTaskGrant(A, g2)).toBeUndefined();
     expect(g2.sig).not.toBe(g.sig);
     // a plain string is { current }
-    expect(keyRing(A)).toEqual({ sign: A, verify: [A] });
+    expect(keyRing(A)).toEqual({ sign: A, verify: [A], ref: [A] });
   });
 
   it("the digest does not depend on the verifying key", () => {
@@ -115,6 +122,158 @@ describe("key ring (R31)", () => {
     );
     expect(d.allowed).toBe(false);
     expect((d as { reason: string }).reason).toMatch(/^task-grant:signature/);
+  });
+});
+
+describe("refOnly keys (R35)", () => {
+  const RO: GrantKeys = { current: B, refOnly: [A] };
+  const base: CapabilityAuthorizer = { authorize: () => ({ allowed: true }) };
+  const authReq = (g: TaskGrant) =>
+    ({
+      toolId: "act",
+      executionId: "e",
+      workflowId: "wf",
+      stepId: "s",
+      principal: { actor: "agent-a", taskGrant: g },
+    }) as never;
+
+  it("a refOnly key never verifies a grant: verify, authorizer and middleware refuse it", async () => {
+    const g = signTaskGrant(A, unsigned());
+    expect(verifyTaskGrant(RO, g)).toBeUndefined();
+    const d = new TaskGrantAuthorizer({ secret: RO, base, now: () => NOW }).authorize(authReq(g));
+    expect(d.allowed).toBe(false);
+    expect((d as { reason: string }).reason).toMatch(/^task-grant:signature/);
+    const mw = taskLeaseMiddleware({ secret: RO, source: { current: async () => g } as never });
+    const ctx = { principal: { actor: "agent-a", taskGrant: g }, toolId: "act" } as never;
+    await expect(mw(ctx, {}, async () => "ran")).rejects.toBeInstanceOf(LeaseGrantInvalidError);
+    // signing is always with current
+    expect(verifyTaskGrant(B, signTaskGrant(RO, unsigned()))).toBeDefined();
+  });
+
+  it("validation: duplicates anywhere and more than 8 of either list are refused", () => {
+    const nine = Array.from({ length: 9 }, (_, i) => `k${i}`);
+    const bad: GrantKeys[] = [
+      { current: B, previous: [A, A] },
+      { current: B, refOnly: [A, A] },
+      { current: B, refOnly: [B] },
+      { current: B, previous: [A], refOnly: [A] },
+      { current: B, refOnly: nine },
+      { current: B, refOnly: [""] },
+    ];
+    for (const k of bad) expect(() => keyRing(k), JSON.stringify(k)).toThrow();
+    expect(keyRing({ current: B, previous: [A], refOnly: ["C"] })).toEqual({
+      sign: B,
+      verify: [B, A],
+      ref: [B, A, "C"],
+    });
+  });
+
+  it("each list is read exactly once (a custom iterator cannot swap keys after validation)", () => {
+    let reads = 0;
+    const previous = {
+      [Symbol.iterator]: () => (++reads === 1 ? [A] : ["evil"])[Symbol.iterator](),
+    } as unknown as string[];
+    const ring = keyRing({ current: B, previous });
+    expect(ring.verify).toEqual([B, A]);
+    expect(reads).toBe(1);
+  });
+
+  it("the codec restores a refOnly-MAC'd ref but verifies no A-signed grant", async () => {
+    const old = new InMemoryGrantBroker({ secret: A, now: () => NOW });
+    const mintReq = {
+      taskId: "t1",
+      issuedTo: "agent-a",
+      effects: ["act"],
+      leases: { w: { ceiling: 2, effects: ["act"] } },
+      ttlMs: 60_000,
+    };
+    const g = await old.mint(mintReq);
+    const refA = taskAuthorityPrincipalCodec(old, { secret: A, now: () => NOW }).toRef({
+      actor: "agent-a",
+      taskGrant: g,
+    }) as string;
+    // ledger already renewed onto B: restores under refOnly A
+    const renewed = new InMemoryGrantBroker({ secret: B, now: () => NOW });
+    await renewed.mint(mintReq);
+    const codec = taskAuthorityPrincipalCodec(renewed, { secret: RO, now: () => NOW });
+    expect((await codec.fromRef(refA, { executionId: "e1" }))?.taskGrant).toBeDefined();
+    // the still-A-signed ledger grant is NOT accepted under refOnly
+    const r = await taskAuthorityPrincipalCodec(old, { secret: RO, now: () => NOW }).fromRef(refA, {
+      executionId: "e2",
+    });
+    expect(r?.principalUnresolved).toMatch(/grant does not verify/);
+    expect(() => codec.toRef({ actor: "agent-a", taskGrant: g })).toThrow(/does not verify/);
+  });
+});
+
+describe("constant-time verification (no short-circuit)", () => {
+  const calls = () => vi.mocked(timingSafeEqual).mock.calls.length;
+  it("verifyTaskGrant compares EVERY key even when the current key matches", () => {
+    const keys: GrantKeys = { current: B, previous: [A, "C"] };
+    const g = signTaskGrant(keys, unsigned());
+    const before = calls();
+    expect(verifyTaskGrant(keys, g)).toBeDefined();
+    expect(calls() - before).toBe(3);
+  });
+
+  it("fromRef compares the ref MAC against every key (current, previous and refOnly)", async () => {
+    const keys: GrantKeys = { current: B, previous: [A], refOnly: ["C"] };
+    const b = new InMemoryGrantBroker({ secret: keys, now: () => NOW });
+    const g = await b.mint({
+      taskId: "t1",
+      issuedTo: "agent-a",
+      effects: ["act"],
+      leases: { w: { ceiling: 2, effects: ["act"] } },
+      ttlMs: 60_000,
+    });
+    const codec = taskAuthorityPrincipalCodec(b, { secret: keys, now: () => NOW });
+    const ref = codec.toRef({ actor: "agent-a", taskGrant: g }) as string; // current-MAC'd
+    const before = calls();
+    expect((await codec.fromRef(ref, { executionId: "e1" }))?.taskGrant).toBeDefined();
+    expect(calls() - before).toBe(2 + 3); // grant signature over {B, A}, ref MAC over {B, A, C}
+  });
+});
+
+describe("previous-key grants through the lease middleware and the child lease (R31)", () => {
+  const g = () => signTaskGrant(A, unsigned());
+  it("taskLeaseMiddleware runs next() for an A-signed grant under {B,[A]}", async () => {
+    const grant = g();
+    const mw = taskLeaseMiddleware({
+      secret: RING,
+      source: { current: async () => grant } as never,
+    });
+    const custom: Record<string, number> = {};
+    const ctx = {
+      principal: { actor: "agent-a", taskGrant: grant },
+      toolId: "act",
+      executionId: "e",
+      stepId: "s",
+      attempt: 1,
+      emit: (t: string, p: { custom?: Record<string, number> }) => {
+        if (t === "RESOURCE_METERED")
+          for (const [k, v] of Object.entries(p.custom ?? {})) custom[k] = (custom[k] ?? 0) + v;
+      },
+      flush: async () => {},
+      readResources: () => ({ tokens: 0, costUsd: 0, ms: 0, count: 0, custom: { ...custom } }),
+    } as never;
+    expect(await mw(ctx, {}, async () => "ran")).toBe("ran");
+    const bare = taskLeaseMiddleware({
+      secret: { current: B },
+      source: { current: async () => grant } as never,
+    });
+    await expect(bare(ctx, {}, async () => "ran")).rejects.toBeInstanceOf(LeaseGrantInvalidError);
+  });
+
+  it("childLeaseEffect accepts an A-signed grant under {B,[A]} (fails later on durability, not on the signature)", async () => {
+    const ctx = { principal: { actor: "agent-a", taskGrant: g() } } as never;
+    const ring = childLeaseEffect({ secret: RING, broker: {} as never });
+    await expect(ring.execute({ op: "reserve" } as never, ctx)).rejects.not.toBeInstanceOf(
+      LeaseGrantInvalidError
+    );
+    const only = childLeaseEffect({ secret: { current: B }, broker: {} as never });
+    await expect(only.execute({ op: "reserve" } as never, ctx)).rejects.toBeInstanceOf(
+      LeaseGrantInvalidError
+    );
   });
 });
 
@@ -291,5 +450,29 @@ describe("rotation with a real runtime", () => {
     );
     expect(h.ran.n).toBe(0); // fail closed: no effect ran
     expect((await h.runtime.loadState("e1"))?.status).toBe("failed");
+  });
+
+  it("R35: after renewing onto B, A moves to refOnly: the run still restores and completes; a NEW A-signed grant is refused", async () => {
+    const { b, shared } = await parkedAtC4();
+    const RO: GrantKeys = { current: B, refOnly: [A] };
+    b.rotate(RO);
+    const h = boot(b, RO, shared);
+    const done = await answerRenewal(h.runtime, b, "e1");
+    expect((await done.waitForCompletion()).variables._output).toEqual([
+      "c0",
+      "c1",
+      "c2:r1",
+      "c3",
+      "c4:r1",
+    ]);
+    // a fresh start with an A-signed grant cannot be recorded: A mints nothing
+    const forged = signTaskGrant(A, { ...unsigned(), taskId: "t2", rootId: "t2" });
+    await expect(
+      h.runtime.start(
+        h.flow,
+        {},
+        { executionId: "e9", principal: { actor: "agent-a", taskGrant: forged } }
+      )
+    ).rejects.toThrow(/does not verify/);
   });
 });
