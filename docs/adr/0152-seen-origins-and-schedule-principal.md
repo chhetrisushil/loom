@@ -1,6 +1,6 @@
 # ADR 0152 — Kernel seams for task-authority slice 2: run-level seen origins on the effect context; a principal hook for scheduled occurrences
 
-- Status: **Accepted** (2026-11-23) — accepted by the owner after the S2a/S2b reviews; D1 built in S2a–S2c (gate off by default), D2 (`principalFor`) builds in slice-2 task S3. History: proposed 2026-11-23, the owner answered the four open questions the same day (see "Owner rulings"), an Opus design review was applied, and ruling R11 moved the scan from the fold to the COMMIT (see "Revision")
+- Status: **Accepted** (2026-11-23) — accepted by the owner after the S2a/S2b reviews; D1 built in S2a–S2c (gate off by default), D2 (`principalFor`) built in slice-2 task S3 and amended by S10; see "As built" at the end. History: proposed 2026-11-23, the owner answered the four open questions the same day (see "Owner rulings"), an Opus design review was applied, and ruling R11 moved the scan from the fold to the COMMIT (see "Revision")
 - Date: 2026-11-23
 - Builds on: [ADR 0150](0150-task-scoped-authority.md) (D7 instruction provenance across lineages, D12 root authority
   for scheduled runs, and the 2026-11-23 slice-2 amendment), [ADR 0151](0151-effect-context-flush.md) (the model for an
@@ -410,17 +410,15 @@ Then `runtime.start(flow, def.input, { executionId, ...(principal !== undefined 
 - **Absent means byte-identical.** No hook, no extra await, no extra option key. A hook returning `undefined` starts with no principal.
 - **Idempotent and side-effect free (I7).** The hook may run on every node that polls an occurrence, and again on every retry poll
   (`StartLeaseHeldError` keeps the cursor). It must therefore be a pure function of `(schedule, occurrence)` and recorded data, and it must
-  NOT mint, claim or reserve anything: whatever it mints would be orphaned by every call that loses the race. **S10 mints the tick grant inside the run, after
-  `start` wins**, with the deterministic task id `<scheduleId>@<occurrence>` (which is the execution id), so a recovery or retry mints the same grant. The hook only
-  names the principal (a reference such as the schedule grant's holder), which the first successful `start` records. A node that loses
-  the race discards its principal with its refused start, and `redriveAbandoned` resumes the execution as the RECORDED principal without calling the hook.
+  be a pure function of recorded data and an idempotent mint. *(Amended by S10, R25: the original text said it must NOT mint, claim or reserve, and planned to mint inside the run after
+  `start` wins. The build mints in the hook instead, because the principal must be recorded on `EXECUTION_STARTED`: the hook reserves the tick's lease and mints at most one grant under the deterministic task id `<scheduleId>@<occurrence>`, so a retry or a racing node gets the same grant. A node that loses the race discards its principal with its refused start, a mint orphaned by a tick that never starts is reclaimed by `reclaimScheduledTick`, and `redriveAbandoned` resumes the execution as the RECORDED principal without calling the hook.)*
 - **Skipping is per node (M3).** The cursor lives in memory (`schedule.cursor`), and a skip returns `"done"` so the cursor advances and
   the loop cannot spin. Another node, or this node after a restart, whose hook succeeds may start that occurrence; the deterministic id
   `${def.id}@${occurrence}` keeps the start exactly-once. A skip is "not started by this node this process lifetime", not a durable tombstone.
 - **Fencing and recovery are unchanged:** the `loadState` fast path, `ExecutionAlreadyExistsError` for a raced loser, `StartLeaseHeldError` → "retry"
   (ADR 0130 D11), and the L12 rule of no fence on this start.
 
-**What D2 does NOT do.** It mints nothing and verifies nothing: the schedule grant, its one-off approval run and the per-tick child grants (ADR 0150 D12) are task-authority's.
+**What D2 does NOT do.** The kernel hook itself mints nothing and verifies nothing (the S10 hook in `@loomwork/task-authority` is what mints, see the amendment above): the schedule grant, its one-off approval run and the per-tick child grants (ADR 0150 D12) are task-authority's.
 
 ## Consequences
 
@@ -500,3 +498,14 @@ Tests required:
 - Rescan: from retained events; from a compacted log plus archive; each permanent error gives sticky overflow; a simulated timeout gives a retryable failure that persists and memoizes nothing; paged (peak events held is O(page)); the lease is held; the LRU memo.
 - **A `*.perf.test.ts` (REQUIREMENT):** (1) the FOLD with records on (a tracked run) against the untracked baseline on (a) a taint-free log with large outputs, (b) a log of many small tainted outputs, (c) cheap events (the copy-on-write `through` advance); it must stay near the baseline, and a material regression on (a) is a defect of the design, not a tuning matter; (2) the LIVE commit-scan cost per node and per event; (3) a rescan of a long history. Report numbers in the PR. Deterministic evidence (nodes visited, bytes recorded) goes in a normal `*.test.ts`, never a timing ratio. The first design's fold-time scan failed (1)(a) by about 290x, which is why R11 exists.
 - D2 (task S3): hook absent is byte-identical; principal recorded; throw, reject and timeout each skip with `onError` and do not mis-classify as already-started or retry; `ticking` does not stick; two racing nodes; recovery resumes as the recorded principal; the hook is not called on a resume.
+
+## As built (slice 2, 2026-11-24)
+
+D1 and D2 are implemented; ADR 0150's "As built (slice 2)" section covers the consumers.
+
+- **S2a, S2b, S2c (#832, #835-#837).** The fold gains the reserved variable `_seenOrigins` (EVENT_SCHEMA 1.27.0, no new event kind), written at `EXECUTION_STARTED` and carried on `continueAsNew` and fork. `kernel.features.seenOrigins` turns tracking on and `kernel.seenOrigins { maxOrigins, maxScanNodes }` sets the bounds; `EffectContext.seenOrigins` is absent where the gate is off or the seam is transient. The bounds (default 64 origins, a fixed per-origin cap) are recorded per run, overflow is sticky and fail-closed (`SEEN_ORIGINS_OVERFLOW`), and a snapshot is rescanned at upgrade (`seenOriginsSeed.ts`, with the `compactionArchive` read and its error classes) after the lease is held.
+- **The commit-time scan (R11).** The fold-time scan was measured at about 290x on a taint-free log of large outputs, so the scan moved to the COMMIT: `ExecutionJournal` walks a channel value once as it is committed and records them in the event envelope's `metadata.origins` / `originsOverflow`; the fold only merges the recorded list. A replay reads the record and never rescans.
+- **The live walk (R13).** The commit walk is over the LIVE structure the flow was handed, using classify's `isTainted` predicate, and fails closed on what it cannot walk faithfully. Two false negatives of the first R11 design were closed here: a tracked run records `origins: []` on every channel event, and the fold reads a channel event with no record as overflow.
+- **D2 (#838).** `TimerServiceOptions.principalFor(schedule, occurrence, { signal })` with `principalForTimeoutMs` and `defineConfig({ timers: { principalFor } })`: a throw, reject or timeout skips that occurrence with `onError`, and the `ticking` flag cannot stick.
+- **S10's `committed()` change (#848).** `notifyStarted` withheld the principal of every system start; it now passes the principal of a PARENT-LESS system start (a scheduled run) so an ownership policy under `requirePrincipal` learns who the run belongs to. A parented start still withholds it. One code line in `WorkflowRuntime.ts`.
+- **The D2/I7 amendment (R25).** The hook may mint exactly one grant per (schedule, occurrence); see the amended I7 bullet in D2.

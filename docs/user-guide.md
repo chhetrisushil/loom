@@ -1202,8 +1202,6 @@ await resumed.waitForCompletion();
 
 An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }` (it needs `toolErrors: "feedback"`, the default, else `AgentLoopConfigError`; a refused renewal throws `AuthorityRenewalDeniedError`). Child leases (`childLeaseEffect`, `childGrantMinter`; give `taskLeaseMiddleware` `effects: () => effectRuntime` so it can tell the real child-lease effect from another effect under the same id; the grant must also list `task-authority:child-lease` in its `effects`) and the `@loomwork/task-authority/conformance` kit (its `laundering.uncovered.a2a` check runs when the subject supplies an `a2a` transport, else it is skipped) are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what task authority refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
 
-**What the model sees when a task grant refuses a call.** By default a `task-grant:*` capability denial is terminal: it ends the run and the model never reads it. `agentLoop$({ authority: { onDenied } })` changes that (ADR 0150 D11). `"opaque"` hands the model `{ error: "not authorized for this task" }` as an `isError` tool result and the run continues, so a later allowed tool still runs. `"reason"` appends the refusal's label and a fixed sentence, for example `not authorized for this task (task-grant:scope: the effect is outside the task grant)`. The text is built from the label alone: the grant, task and actor ids, the foreign lineage set of a cross-lineage park and the base authorizer's own text are never copied, and an unknown label reads `task-grant:denied`. Only `task-grant:*` denials convert, and not `task-grant:blocked` (a shredded or unrestorable principal) or `task-grant:base` (the base authorizer's own denial): those, a base-authorizer denial with no task grant and every other terminal error stay terminal, and a RENEWABLE error (a spent lease, an expired grant, a cross-lineage park) is never converted, it parks under `onExhausted: "park"` and fails otherwise. The converted result is a recorded decision, so a replay serves the same text with no second authorize call. It needs `toolErrors: "feedback"` (the default), else `AgentLoopConfigError`.
-
 **Multi-tenant grants.** Give `mint` a `tenant` and, optionally, an `onBehalfOf`; both are signed into the grant and bound into the run's `ta2:` ref. The run's principal must carry the same values (a mismatch is refused at start, and denied as `task-grant:identity` on a transient call), and a child grant inherits them. The log holds only the ref; the broker holds identity, so erasing it there makes the task permanently unrestorable (fail closed). A delegation together with a task grant is still refused: mint a child grant instead.
 
 ```ts
@@ -1211,7 +1209,7 @@ const grant = await broker.mint({ taskId: "t2", issuedTo: "agent-a", tenant: "ac
 await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acme", onBehalfOf: "user-7", taskGrant: grant } });
 ```
 
-**Read scope and isolation (`reads` enforced from S6, `sandbox` from S8; see "Read scope" below).** `mint` also takes `reads: string[]` (globs over `<toolId>:<resource>` read capabilities, `*` any run of characters, a bare `*` refused) and `sandbox: "isolated"`. Both are signed into the grant and encoded only when present, so a grant without them is byte-identical to before. A child may only narrow them: each child read must be covered by a parent read (a parent with none allows none) and a child of an isolated parent must be isolated, else `mint` throws `GrantBrokerError`; `childGrantMinter` inherits both, and a renewal keeps them. Each `reads` entry is `<toolId>:<glob>` with a literal tool id (`**`, `*:*` and `:*` are refused), at most 4 `*`, no duplicates, 16 KB in total. Upgrade every verifier before you mint grants with these fields: an older verifier refuses them (fail closed). The `reads` check is enforced (see "Read scope" below); `sandbox` is enforced by `sandboxRequirement` (see "Isolated sandbox" below).
+**Read scope and isolation (both enforced; see "Read scope" and "Isolated sandbox" below).** `mint` also takes `reads: string[]` (globs over `<toolId>:<resource>` read capabilities, `*` any run of characters, a bare `*` refused) and `sandbox: "isolated"`. Both are signed into the grant and encoded only when present, so a grant without them is byte-identical to before. A child may only narrow them: each child read must be covered by a parent read (a parent with none allows none) and a child of an isolated parent must be isolated, else `mint` throws `GrantBrokerError`; `childGrantMinter` inherits both, and a renewal keeps them. Each `reads` entry is `<toolId>:<glob>` with a literal tool id (`**`, `*:*` and `:*` are refused), at most 4 `*`, no duplicates, 16 KB in total. Upgrade every verifier before you mint grants with these fields: an older verifier refuses them (fail closed). The `reads` check is enforced (see "Read scope" below); `sandbox` is enforced by `sandboxRequirement` (see "Isolated sandbox" below).
 
 **Rotating the secret.** Pass a ring wherever `secret` goes: `{ current, previous?, refOnly? }`. New grants sign with `current`; grants signed with a `previous` key still verify and renew onto `current`. Retire an old key in two steps: move it to `previous`, then, once its grants have renewed (or after the longest grant TTL: nothing renews a grant that never exhausts, and a run holding a grant signed by a key that has left `previous` fails to restore), to `refOnly`, where it can only restore the ref of a run already started under it (never vouch for a grant). Keep it there for the lifetime of the longest such run. **Removing a key outright strands every run started under it, and that is terminal**, so do it last.
 
@@ -1219,19 +1217,9 @@ await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acm
 const secret = { current: process.env.TA_KEY_2!, previous: [process.env.TA_KEY_1!] };   // later: { current: KEY_2, refOnly: [KEY_1] }
 ```
 
-#### Deriving a grant from a flow's reach (ADR 0150 D9)
+#### Task authority beyond the paper: slice 2 (ADR 0150 D7-D12)
 
-`reachOf(runtime, flowId, options)` (`@loomwork/app`) returns the effect tool ids a flow can reach: its steps, `reachableTools`, runner-body and declared reach, every child flow listed in `children`, and each `agentLoop$` config listed in `agentLoops`. A child is started by id at run time and an agent loop is called from a runner body, so you declare those edges. `deriveGrant(reach, extra?)` (`@loomwork/task-authority`) turns that into a `MintRequest` template whose `effects` are exactly the reach. It proposes no `leases` and no `reads`: a ceiling is your decision, and the reach is of effects, not resources. Treat it as the upper bound for a mint.
-
-```ts
-import { reachOf } from "@loomwork/app";
-import { deriveGrant } from "@loomwork/task-authority";
-
-const reach = reachOf(app.runtime, "triage", { children: { triage: ["refund"] } });
-const template = deriveGrant(reach, { ttlMs: 60_000 });
-```
-
-An `agentLoop$` is WIDE: its reach is its own tools, plus the tools of EVERY skill in its registry (the model picks the skills at run time), plus the whole `toolSearch` catalog, plus the effects the loop itself calls through the ring: `modelToolId`, `reasoningToolId` (a per-route function is expanded over `reasoning.availableRoutes`), `recall.toolId`, `writeBack.toolId` and `compaction.toolId`. Leave those out and a grant derived from the reach would deny the loop's own model call under `requireEffectRing`. An exploratory agent gets a grant bounded by its menu, which is the honest limit. To check the templates you mint from, give them to verify: `checks: { verify: { taskGrants: [{ flowId: "triage", effects: template.effects, reach: { children: { triage: ["refund"] } } }] } }`. The `task-grant-reach` rule warns for an effect the flow cannot reach (the grant is broader than the code), for a template naming an unregistered flow, and with an `info` when `taskGrants` is empty. It does not report reach the template leaves out. The reach is what you declared: an undeclared child flow or agent loop makes the rule WARN falsely (its effects look unreachable), it never passes silently. A declared child flow id that is not registered also warns, and an `info` notes a template with no declared reach over a flow with unresolved reach targets.
+Slice 1 (above) bounds what a task's tools can do. Slice 2 adds what Loom can do because it owns the channels between agents and knows what its code can reach. Read the parts in this order: [provenance](#covered-laundering-directedby-adr-0150-d7) (who directed an effect), [reads](#read-scope-reads-adr-0150-d8), the [isolated sandbox](#isolated-sandbox-sandbox-isolated-adr-0150-d10-s-r6), [scheduled runs](#scheduled-agents-a-schedule-grant-and-a-grant-per-tick-adr-0150-d12), [denial feedback](#denial-feedback-what-the-model-sees-adr-0150-d11), [reach and verify](#deriving-a-grant-from-a-flows-reach-adr-0150-d9) and the [conformance kit](#the-conformance-kit-adr-0150-d14). The kernel seams it needs (`kernel.features.seenOrigins`, `TimerServiceOptions.principalFor`) are ADR 0152. Every part is opt-in and each lists its residuals: what it does NOT see. The full decision record, including the deviations from the original design, is the "As built (slice 2)" section of the ADR.
 
 #### Covered laundering: `directedBy` (ADR 0150 D7)
 
@@ -1290,6 +1278,41 @@ channels above. Close the gaps by routing writes through the helpers, by listing
 - A2A: `new LoomAgentExecutor(runtime, flow, { taintInbound: { lineageOf: lineageOrigin(secret) } })` wraps the peer's prompt as
   `a2a-inbound:<actor>` and, for a principal with a verified grant, `lineage:<rootId>` (opt-in: the flow input becomes a tainted wrapper).
 
+#### Read scope: `reads` (ADR 0150 D8)
+
+Memory recall and durable-state loads are made checkable by being EFFECTS with a resource. Register `memoryRecallEffect(memory)`
+under an id, set `agentLoop$({ ..., recall: { toolId } })`, and the recall runs through the effect ring (authorizer, middleware,
+leases, journal): the resource is the recall scope, so a grant with `reads: ["memory.recall:user/*"]` may recall `user/1` and is
+refused (`task-grant:read-scope`) anywhere else. A replay serves the recorded entries; with `recall` unset the loop is unchanged.
+
+```ts
+effects.register("memory.recall", memoryRecallEffect(memory));
+const grant = await broker.mint({ taskId, issuedTo, effects: ["memory.recall", ...], leases, ttlMs, reads: ["memory.recall:user/*"] });
+await awaitChild(ctx, { key: "k", flowId: "child", input, ...res.spawn, reads: ["memory.recall:user/1"] }); // narrow; omit to inherit
+```
+
+- `reads` governs EVERY effect that declares `capabilities: { read: true }`, not only cross-lineage reads. Own-lineage reads are not
+  exempt: list the task's own namespace. Absent `reads` covers nothing.
+- Durable-state `load` declares itself a read with the key as the resource (`<loadToolId>:<key>`).
+- **Residual: an app must mark its own read tools** (`new ToolEffect(fn, { resourceOf, capabilities: { read: true } })`). An unmarked
+  read is NOT checked, and a read that goes straight to a store (not through an effect) is outside the ring.
+- **Not built / not checked.** Conversation-id reads (named in the D8 text) have no read effect yet. A run with NO task grant
+  (a principal-less `invokeTransient`, an unleased child, an app that never mints) has no `reads` check at all. `reads` on a spawn
+  binds only a LEASED (granted) child: `awaitChild` / `awaitChildren` refuse `reads` without a `lease`. `agentLoop$` with
+  `requireEffectRing: true` refuses `memory` without `recall.toolId`, and the distill existing-facts read follows `recall.toolId`
+  and the write-back scope.
+- The conformance check `reads.read-scope` guards the REFERENCE authorizer and the broker's `reads` at mint; it cannot test a
+  third-party authorizer.
+- Cross-lineage content that does arrive is attributed by `directedBy`; a kernel-attested writer (S-R9) is the future refinement.
+
+#### Isolated sandbox: `sandbox: "isolated"` (ADR 0150 D10, S-R6)
+
+`sandboxRequirement({ secret, effects: () => effectRuntime })` is a per-call middleware (place it before `taskLeaseMiddleware` and a refusal burns no lease unit). When the acting, VERIFIED grant has `sandbox: "isolated"` it refuses a sandbox effect whose backend does not declare `network: "none"` AND `freshPerRun: true`, with a terminal `CapabilityDeniedError` (`task-grant:sandbox`; no renewal changes what a backend is). A child of an isolated parent is isolated (the broker forces it), so the check follows a spawn. It is not a `sandboxEval$` change.
+
+- A sandbox effect is one whose `capabilities` carries a sandbox key (`language`, `network`, `freshPerRun`); the `read` marker alone is not one. A partly declared backend is checked and refused (fail closed). The caps are read once per registered effect and cached, so a later mutation cannot weaken the check.
+- Effects with no sandbox declaration (an ambient tool) are NOT refused: D10 names no rule for them, and nothing in an effect says it has ambient authority. Keep such tools off an isolated grant's `effects`. The same holds for a wrapper or decorator around a sandbox effect that does not expose the backend's `capabilities` itself: it is not detected.
+- A grant without `sandbox` is unchanged, and a run with NO task grant is not governed here. The kit check `sandbox.isolated` fails a stack that does not wire the middleware.
+
 #### Scheduled agents: a schedule grant and a grant per tick (ADR 0150 D12)
 
 A scheduled run has no human at the keyboard, so the root of its authority is a recorded approval of the SCHEDULE. Approvals are park-bound, and a schedule has no park, so the approval happens in a one-off run:
@@ -1319,40 +1342,27 @@ new TimerService(runtime, timerStore, {
 
 Each occurrence runs as `<scheduleId>@<occurrence>`, a CHILD of the schedule grant with `calls` ceiling 10 (the broker refuses a child over the schedule's headroom or expiry). The hook is idempotent: a retry poll or a racing node gets the same grant, nothing is reserved twice. If the schedule grant is missing, expired, revoked or out of headroom the occurrence is skipped and reported, never run anonymously. Under `requirePrincipal`, `ExecutionAuthorizer.committed()` receives the tick principal, so an ownership policy knows whose run it is. After a completed tick call `settleScheduledTick(runtime, broker, "nightly-report", occurrence)`: it refunds the unused lease to the schedule grant's headroom, once (a parent no execution holds has no fold, so `takeReturn` yields nothing: no double count; a held parent keeps the slice-1 take). Limits: the schedule grant is bound to the schedule id, not to a flow id. The tick grant inherits the schedule grant's `reads` and `sandbox` (an isolated schedule's ticks are isolated). The hook reserves the tick's lease and mints one grant per occurrence; a tick that minted but never started keeps its reservation until `reclaimScheduledTick(broker, "nightly-report", occurrence)` finds its grant unclaimed and expired by 60 s, then revokes it and frees the headroom (run it from a sweep over skipped occurrences). `answerScheduleApproval` takes `{ expect: { issuedTo, tenant, onBehalfOf } }` as its sixth argument: `expect.issuedTo` is REQUIRED (an approver is not the service it approves) and the spec's `tenant` / `onBehalfOf` must equal `expect`'s and the approval run's recorded principal's (a codec hides the identity, so `expect` binds there). Re-answering a COMPLETED run recovers a crash between the resume and the mint, but only if the run recorded the approval marker `requestScheduleApproval` writes after the suspend returns approved (a run that caught the refusal, or a hand-written decision, mints nothing); set `requireVerifiedApproval: true` when the runtime has a `resumeAuthenticator`, and recovery also needs the kernel-written `APPROVAL_GRANTED`. `mintScheduleGrant` serves an existing grant only if every signed field matches and it expires no later than `now + ttlMs` (a re-approval with a ttl up to 10 minutes longer is served the shorter grant, never a longer one), and `onMinted(grant, approvalExecutionId)` lets you persist the audit link. A tick cannot `continueAsNew` (R17).
 
-#### Isolated sandbox: `sandbox: "isolated"` (ADR 0150 D10, S-R6)
+#### Denial feedback: what the model sees (ADR 0150 D11)
 
-`sandboxRequirement({ secret, effects: () => effectRuntime })` is a per-call middleware (place it before `taskLeaseMiddleware` and a refusal burns no lease unit). When the acting, VERIFIED grant has `sandbox: "isolated"` it refuses a sandbox effect whose backend does not declare `network: "none"` AND `freshPerRun: true`, with a terminal `CapabilityDeniedError` (`task-grant:sandbox`; no renewal changes what a backend is). A child of an isolated parent is isolated (the broker forces it), so the check follows a spawn. It is not a `sandboxEval$` change.
+By default a `task-grant:*` capability denial is terminal: it ends the run and the model never reads it. `agentLoop$({ authority: { onDenied } })` changes that (ADR 0150 D11). `"opaque"` hands the model `{ error: "not authorized for this task" }` as an `isError` tool result and the run continues, so a later allowed tool still runs. `"reason"` appends the refusal's label and a fixed sentence, for example `not authorized for this task (task-grant:scope: the effect is outside the task grant)`. The text is built from the label alone: the grant, task and actor ids, the foreign lineage set of a cross-lineage park and the base authorizer's own text are never copied, and an unknown label reads `task-grant:denied`. Only `task-grant:*` denials convert, and not `task-grant:blocked` (a shredded or unrestorable principal) or `task-grant:base` (the base authorizer's own denial): those, a base-authorizer denial with no task grant and every other terminal error stay terminal, and a RENEWABLE error (a spent lease, an expired grant, a cross-lineage park) is never converted, it parks under `onExhausted: "park"` and fails otherwise. The converted result is a recorded decision, so a replay serves the same text with no second authorize call. It needs `toolErrors: "feedback"` (the default), else `AgentLoopConfigError`.
 
-- A sandbox effect is one whose `capabilities` carries a sandbox key (`language`, `network`, `freshPerRun`); the `read` marker alone is not one. A partly declared backend is checked and refused (fail closed). The caps are read once per registered effect and cached, so a later mutation cannot weaken the check.
-- Effects with no sandbox declaration (an ambient tool) are NOT refused: D10 names no rule for them, and nothing in an effect says it has ambient authority. Keep such tools off an isolated grant's `effects`. The same holds for a wrapper or decorator around a sandbox effect that does not expose the backend's `capabilities` itself: it is not detected.
-- A grant without `sandbox` is unchanged, and a run with NO task grant is not governed here. The kit check `sandbox.isolated` fails a stack that does not wire the middleware.
+#### Deriving a grant from a flow's reach (ADR 0150 D9)
 
-#### Read scope: `reads` (ADR 0150 D8)
-
-Memory recall and durable-state loads are made checkable by being EFFECTS with a resource. Register `memoryRecallEffect(memory)`
-under an id, set `agentLoop$({ ..., recall: { toolId } })`, and the recall runs through the effect ring (authorizer, middleware,
-leases, journal): the resource is the recall scope, so a grant with `reads: ["memory.recall:user/*"]` may recall `user/1` and is
-refused (`task-grant:read-scope`) anywhere else. A replay serves the recorded entries; with `recall` unset the loop is unchanged.
+`reachOf(runtime, flowId, options)` (`@loomwork/app`) returns the effect tool ids a flow can reach: its steps, `reachableTools`, runner-body and declared reach, every child flow listed in `children`, and each `agentLoop$` config listed in `agentLoops`. A child is started by id at run time and an agent loop is called from a runner body, so you declare those edges. `deriveGrant(reach, extra?)` (`@loomwork/task-authority`) turns that into a `MintRequest` template whose `effects` are exactly the reach. It proposes no `leases` and no `reads`: a ceiling is your decision, and the reach is of effects, not resources. Treat it as the upper bound for a mint.
 
 ```ts
-effects.register("memory.recall", memoryRecallEffect(memory));
-const grant = await broker.mint({ taskId, issuedTo, effects: ["memory.recall", ...], leases, ttlMs, reads: ["memory.recall:user/*"] });
-await awaitChild(ctx, { key: "k", flowId: "child", input, ...res.spawn, reads: ["memory.recall:user/1"] }); // narrow; omit to inherit
+import { reachOf } from "@loomwork/app";
+import { deriveGrant } from "@loomwork/task-authority";
+
+const reach = reachOf(app.runtime, "triage", { children: { triage: ["refund"] } });
+const template = deriveGrant(reach, { ttlMs: 60_000 });
 ```
 
-- `reads` governs EVERY effect that declares `capabilities: { read: true }`, not only cross-lineage reads. Own-lineage reads are not
-  exempt: list the task's own namespace. Absent `reads` covers nothing.
-- Durable-state `load` declares itself a read with the key as the resource (`<loadToolId>:<key>`).
-- **Residual: an app must mark its own read tools** (`new ToolEffect(fn, { resourceOf, capabilities: { read: true } })`). An unmarked
-  read is NOT checked, and a read that goes straight to a store (not through an effect) is outside the ring.
-- **Not built / not checked.** Conversation-id reads (named in the D8 text) have no read effect yet. A run with NO task grant
-  (a principal-less `invokeTransient`, an unleased child, an app that never mints) has no `reads` check at all. `reads` on a spawn
-  binds only a LEASED (granted) child: `awaitChild` / `awaitChildren` refuse `reads` without a `lease`. `agentLoop$` with
-  `requireEffectRing: true` refuses `memory` without `recall.toolId`, and the distill existing-facts read follows `recall.toolId`
-  and the write-back scope.
-- The conformance check `reads.read-scope` guards the REFERENCE authorizer and the broker's `reads` at mint; it cannot test a
-  third-party authorizer.
-- Cross-lineage content that does arrive is attributed by `directedBy`; a kernel-attested writer (S-R9) is the future refinement.
+An `agentLoop$` is WIDE: its reach is its own tools, plus the tools of EVERY skill in its registry (the model picks the skills at run time), plus the whole `toolSearch` catalog, plus the effects the loop itself calls through the ring: `modelToolId`, `reasoningToolId` (a per-route function is expanded over `reasoning.availableRoutes`), `recall.toolId`, `writeBack.toolId` and `compaction.toolId`. Leave those out and a grant derived from the reach would deny the loop's own model call under `requireEffectRing`. An exploratory agent gets a grant bounded by its menu, which is the honest limit. To check the templates you mint from, give them to verify: `checks: { verify: { taskGrants: [{ flowId: "triage", effects: template.effects, reach: { children: { triage: ["refund"] } } }] } }`. The `task-grant-reach` rule warns for an effect the flow cannot reach (the grant is broader than the code), for a template naming an unregistered flow, and with an `info` when `taskGrants` is empty. It does not report reach the template leaves out. The reach is what you declared: an undeclared child flow or agent loop makes the rule WARN falsely (its effects look unreachable), it never passes silently. A declared child flow id that is not registered also warns, and an `info` notes a template with no declared reach over a flow with unresolved reach targets.
+
+#### The conformance kit (ADR 0150 D14)
+
+`checkTaskAuthorityConformance(subject)` from `@loomwork/task-authority/conformance` runs the checks a broker and a runtime wiring must pass, and never throws. Slice 2 added `laundering.covered` (the `directedBy` scenario), `reads.read-scope`, `sandbox.isolated`, `broker.reads-sandbox` and `broker.refund-foldless` / `broker.refund-guards` (the refund contract of scheduled ticks). `laundering.uncovered.a2a` runs when the subject supplies `a2a: A2ATransport` (an in-process hop built on `LoomAgentExecutor`; see the [package README](../packages/task-authority/README.md)) and is otherwise reported `skipped`, never passed. `reads.read-scope` and `sandbox.isolated` guard the reference authorizer and middleware, not a third-party one.
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 

@@ -1,6 +1,6 @@
 # ADR 0150 — Task-scoped authority: grants per task, effect leases that pause when spent, and accounting by lineage, as an opt-in package
 
-- Status: **Accepted** (2026-11-23) — design accepted by the owner; amended 2026-11-23 (slice 1 as built; follow-ups closed, see the end of this ADR); slice 2 designed, see the slice-2 amendment and ADR 0152
+- Status: **Accepted** (2026-11-23) — design accepted by the owner; amended 2026-11-23 (slice 1 as built; follow-ups closed, see the end of this ADR); slice 2 BUILT (2026-11-24): D7 provenance (#840-#843, A2A ingress #842), D8 reads (#844-#846), D9 grant derivation and verify (#854, #855), D10 sandbox requirement (#847), D11 denial feedback (#853), D12 scheduled agents (#848-#852), the kit's covered and A2A laundering (#841, #856), on the ADR 0152 seams (#832, #835-#838) and the signed `reads` / `sandbox` fields (#839). Rulings that changed the design: R11 (scan at commit), R21-R30 (see the ledger); the deviations are in "As built (slice 2)" at the end
 - Date: 2026-11-23
 - Builds on: [ADR 0024](0024-k12-identity-tenancy-delegated-authority.md) (`PrincipalChain`, signed attenuated
   delegation, nested budgets, `ResumeAuthenticator`), [ADR 0111](0111-durable-principal.md) (the principal is
@@ -455,7 +455,7 @@ passes the conformance kit.
   design (D3: the codec restores the grant from the broker), so zero calls overall is impossible; "no broker calls per replayed
   effect" is what the kit asserts.
 - Covered laundering (which needs the D7 provenance taint, slice 2) and A2A laundering are reported by the kit as **skipped**, not
-  as passed. *(Status, slice 2: both are real checks. `laundering.covered` shipped with S5; `laundering.uncovered.a2a` ships with S11: the subject supplies an in-process `A2ATransport` (the kit cannot depend on `@loomwork/plugin-a2a`, which dev-depends on it), and without one the check is still reported skipped, never passed.)*
+  as passed. *(Status, slice 2: both are real checks. `laundering.covered` shipped with S5; `laundering.uncovered.a2a` shipped with S11: the subject supplies an in-process `A2ATransport` (the kit cannot depend on `@loomwork/plugin-a2a`, which dev-depends on it), and without one the check is still reported skipped, never passed.)*
 - The kit lives at `@loomwork/task-authority/conformance` (`checkTaskAuthorityConformance`: broker contract, runtime wiring,
   laundering, forged meters, revocation, carve, pause-and-renew, replay), each check with a fail-proof.
 
@@ -476,7 +476,7 @@ runtime-level conformance checks, #817 carve, pause-renew and replay checks, #81
 - Branding the child-lease tool id (`CHILD_LEASE_TOOL`), so an app effect cannot shadow it. (closed, see the later amendment: R33)
 - Cancelling the other group members when a mint is refused. (closed, see the later amendment: R33)
 - A pre-existing kernel issue: `ctx.resources` exposes the fold-owned object, not a copy (the `readResources()` seam returns a copy). (closed, see the later amendment: R32)
-- Slice 2: provenance taint across lineages (D7) and covered laundering.
+- Slice 2: provenance taint across lineages (D7) and covered laundering. *(Built; see "As built (slice 2)".)*
 
 ## Amendment (2026-11-23, later) — follow-ups closed
 
@@ -562,7 +562,7 @@ built by the same helper as `readResources()` ([ADR 0151](0151-effect-context-fl
 
 ### Still open
 
-Slice 2 (S4 carries the signed grant fields `reads` and `sandbox`; nothing else is built): provenance taint across lineages (D7), `reads` scoping (D8), grant derivation (D9), `ambient` and the enforcing sandbox (D10), the schedule root (D11) and disclosure (D12); and covered laundering, which the kit reports as skipped. The `@loomwork/verify` options the header promised did not ship with slice 1.
+*(Superseded: slice 2 is built, see "As built (slice 2)" at the end.)* Slice 2 (as written when only S4 had landed): provenance taint across lineages (D7), `reads` scoping (D8), grant derivation (D9), `ambient` and the enforcing sandbox (D10), the schedule root (D11) and disclosure (D12); and covered laundering, which the kit then reported as skipped. The `@loomwork/verify` options the header promised did not ship with slice 1.
 
 ## Amendment (2026-11-23, slice 2 design)
 
@@ -610,3 +610,27 @@ Slice 2 (D7–D12) was designed against the code at main 7409550f. The kernel se
 **S10 fix round, R26 amendment.** `answerScheduleApproval` requires `expect.issuedTo` (an approver is not the service it approves; the grant's holder is never read from the approval run's principal) and binds `tenant` / `onBehalfOf` to `expect` and, when readable, to the approval run's recorded principal. Crash recovery of a COMPLETED run needs the approval marker that `requestScheduleApproval` records only after its suspend returned approved (with the proposal's view digest), and, with `requireVerifiedApproval` (the runtime has a `resumeAuthenticator`), the kernel-written `APPROVAL_GRANTED` for the gate in the run's `_approvals`. Without the authenticator a run's own decisions are the only evidence, so flow code that hand-writes both the proposal and the marker can mint on recovery: the trust root is the flow; wire the authenticator for anything stronger. The ttl idempotence is a tolerance: a re-approval with a ttl up to `SCHEDULE_RECOVERY_MS` (10 minutes) longer is served the shorter existing grant, never one that outlives `now + ttlMs`.
 
 - **D11 as built (slice-2 S9, R27/R28).** `authority.onDenied: "reason"` shows the label plus a fixed per-label sentence (`task-grant:scope: the effect is outside the task grant`), never the raw reason, so task ids, the actor, a foreign lineage set and the base authorizer's text cannot leak. NEVER converted, in any mode: `task-grant:blocked` (a shredded, unrestorable or unresolvable principal is a kernel stop), `task-grant:base` and every non-`task-grant:` denial (R27: a base-authorizer denial stays terminal), and every renewable error (a lease exhaustion, an expired grant, a cross-lineage park). `"reason"` DOES reveal the denial's category (for example that a step was directed by another lineage); `"opaque"` hides it (`not authorized for this task`). Parks are invisible to the model, so there is no "renewal requested" text. The converted result is a recorded decision (replay serves it; `EFFECT_DENIED` is still logged).
+
+## As built (slice 2, 2026-11-24)
+
+Slice 2 (D7-D12) is implemented across slice-2 tasks S2-S11 on the ADR 0152 seams. The user guide's "Task authority beyond the paper" section is the how-to; this section records where the build departs from the text above. Rulings are in the slice-2 ledger (R9-R30).
+
+**Built.** D7 `directedBy`, `lineageOrigin` / `lineageSend` / `lineageTainter`, A2A `taintInbound` and the `CHILD_DONE` taint (#840-#843). D8 `reads` signed on the grant, declared read effects checked by `TaskGrantAuthorizer`, `memoryRecallEffect`, a child's `reads` narrowed at spawn (#839, #844-#846). D9 `reachOf`, `deriveGrant` and the verify rule `task-grant-reach` (#854, #855). D10 `sandboxRequirement` (#847). D11 `authority.onDenied` (#853). D12 the schedule grant, its approval run and a grant per tick (#848-#852). D14 the kit's `laundering.covered` and `laundering.uncovered.a2a` (#841, #856).
+
+**Deviations from the original text.**
+
+- **D7, an honest channel list (S-R1, S-R3, R21, R22).** Only the channels that carry a writer's lineage are attributed: `lineageSend`, `memoryWriteBackEffect({ originOf })`, A2A `taintInbound` and `CHILD_DONE`. The kernel tags every inbox delivery `inbox:<topic>` without a sender. Park approval is a signed grant field (`approvedLineages`) a broker writes only when built with `approveCrossLineage`, bound to `foreignSetHash`. `foreignPrefixes` extends the default foreign list (`a2a-inbound:`), `defaultForeignPrefixes: false` opts out, and an `unknown:` label is foreign.
+- **D8, reads (S-R4, R23).** `reads` governs EVERY effect that declares `capabilities: { read: true }`, not only cross-lineage reads, and own-lineage reads are not exempt: the minter lists the task's own namespace. A grant with no `reads` covers nothing. The marker is the contract; conversation-id reads and `acceptContentRefParam` (which does not exist) are not built. A spawn may narrow `reads` only for a leased child.
+- **D10, ambient tools are not refused (R24).** `sandbox: "isolated"` refuses a sandbox effect whose backend lacks `network: "none"` and `freshPerRun: true`. An effect with no sandbox declaration is not refused: nothing in an effect says it has ambient authority, so the grant's own `effects` list is the guard.
+- **D11, a label plus a fixed sentence (R27, R28).** `"reason"` shows the refusal's label and a fixed per-label sentence, never the raw reason. `task-grant:blocked` and `task-grant:base` never convert, and neither does a renewable error. D11 and D12 were swapped in the original "Still open" paragraph; D11 is disclosure and D12 is the schedule root.
+- **D12, mint in the hook with reserve and reclaim (R25, R26).** The per-tick child grant is minted inside the `principalFor` hook, idempotently, after reserving the lease at the broker; `reclaimScheduledTick` frees a tick that minted but never started. This reverses ADR 0152's first "the hook must not mint". The broker contract grew a refund: `settleChild` on a fold-less parent lowers the child's reserved high-water by the unused lease once, revokes the child, and applies only to a STARTED child. `answerScheduleApproval` requires `expect.issuedTo`.
+
+**Documented residuals.**
+
+- An unmarked read tool is not checked, and a read straight to a store is outside the effect ring.
+- A run with no task grant (a principal-less `invokeTransient`, an unleased child, an app that never mints) has no `reads` check and is not governed by `directedBy` or `sandboxRequirement`.
+- An untagged channel reads as clean, and a grant-holder writing through a raw path can label content with any lineage; the kernel-attested inbox sender (S-R9) is the real fix and is queued.
+- A wrapper or decorator that hides a sandbox backend's `capabilities` is not seen by `sandboxRequirement`.
+- `mintScheduleGrant` is idempotent only for a grant minted at most `SCHEDULE_RECOVERY_MS` (10 minutes) ago; recovery of a lost mint beyond that fails closed.
+- Without a `resumeAuthenticator` the approval's actor is unverified and the flow is the trust root on recovery (`requireVerifiedApproval` opts in to the kernel-written `APPROVAL_GRANTED`).
+- The refund spend source is the broker's own record: a fold-less parent has no fold to cross-check, so a custom broker must implement the contract the kit's `broker.refund-*` checks pin.
