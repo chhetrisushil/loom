@@ -1,6 +1,6 @@
 # ADR 0152 — Kernel seams for task-authority slice 2: run-level seen origins on the effect context; a principal hook for scheduled occurrences
 
-- Status: **Proposed** (2026-11-23) — owner answered the four open questions the same day (see "Owner rulings"), an Opus design review was applied, and ruling R11 moved the scan from the fold to the COMMIT (see "Revision"); nothing here is built
+- Status: **Accepted** (2026-11-23) — accepted by the owner after the S2a/S2b reviews; D1 built in S2a–S2c (gate off by default), D2 (`principalFor`) builds in slice-2 task S3. History: proposed 2026-11-23, the owner answered the four open questions the same day (see "Owner rulings"), an Opus design review was applied, and ruling R11 moved the scan from the fold to the COMMIT (see "Revision")
 - Date: 2026-11-23
 - Builds on: [ADR 0150](0150-task-scoped-authority.md) (D7 instruction provenance across lineages, D12 root authority
   for scheduled runs, and the 2026-11-23 slice-2 amendment), [ADR 0151](0151-effect-context-flush.md) (the model for an

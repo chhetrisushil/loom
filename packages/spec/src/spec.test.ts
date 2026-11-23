@@ -406,6 +406,10 @@ const NOT_A_CAPABILITY = new Set([
   // (`flush`, `readResources`, `reserveEffectDimensions`): a kernel seam with no package of its own, graded
   // through its consumer (ADR 0150, task-authority). No event, SPI or ABI change; nothing to grade.
   "0151",
+  // 0152 - kernel seams for task-authority slice 2: an optional EffectContext field (`seenOrigins`) behind the
+  // fleet gate `kernel.features.seenOrigins` (EVENT_SCHEMA 1.27.0: optional fields, no new event kind) and a
+  // TimerService `principalFor` hook. Graded through its consumer (ADR 0150, task-authority); no subsystem.
+  "0152",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
