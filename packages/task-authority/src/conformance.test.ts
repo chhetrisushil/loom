@@ -27,6 +27,22 @@ class NonAtomicClaim extends InMemoryGrantBroker {
     return held === undefined || held === executionId;
   }
 }
+class NeverRefunds extends InMemoryGrantBroker {
+  override async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
+    await super.settleChild(taskId, spend);
+    const r = this.tasks.get(taskId);
+    if (r?.parent !== undefined && r.settled !== undefined && Object.keys(r.settled).length === 0)
+      r.high = { ...r.minted }; // refund undone: the reservation stays whole
+  }
+}
+class RefundsAndPays extends InMemoryGrantBroker {
+  override async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
+    await super.settleChild(taskId, spend);
+    const r = this.tasks.get(taskId);
+    if (r?.parent !== undefined && r.settled !== undefined && Object.keys(r.settled).length === 0)
+      r.settled = { w: 9 }; // refunded headroom AND still takeable
+  }
+}
 class PaysTwice extends InMemoryGrantBroker {
   override async takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>> {
     const r = this.tasks.get(taskId);
@@ -257,6 +273,13 @@ describe("checkTaskAuthorityConformance", () => {
       "broker.unstarted-return",
       /both started/,
     ],
+    [
+      "a broker that never refunds a fold-less parent",
+      NeverRefunds,
+      "broker.refund-foldless",
+      /headroom/,
+    ],
+    ["a refund that is also takeable", RefundsAndPays, "broker.refund-foldless", /double count/],
     ["a takeReturn that pays twice", PaysTwice, "broker.take-return-once", /paid twice/],
     [
       "a revoked() that knows only the current digest",

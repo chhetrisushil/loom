@@ -216,14 +216,14 @@ describe("per-tick child grants (ADR 0150 D12, S10c)", () => {
   });
 
   it("a completed tick's unspent lease settles back once; a tick that never ran records nothing", async () => {
-    // Kills: settling the gross ceiling (over-returning), settling a tick that did not complete (R7), or settling twice.
+    // Kills: a broker that never refunds, settling a tick that did not complete (R7), or paying the refund AND a take (double count).
     const app = boot({ tick: 5 });
     await app.approve();
     await app.tickAt(first);
     expect(await settleScheduledTick(app.runtime as never, app.broker, "nightly", first)).toBe(
       true
     );
-    expect(await app.broker.takeReturn(`nightly@${first}`, "nightly")).toEqual({ calls: 3 }); // 5 reserved, 2 used
+    // the schedule grant has no fold: the 3 unused were REFUNDED to its headroom (not takeable as well)
     expect(await app.broker.takeReturn(`nightly@${first}`, "nightly")).toEqual({});
     expect(await settleScheduledTick(app.runtime as never, app.broker, "nightly", occ(9))).toBe(
       false
@@ -239,5 +239,33 @@ describe("per-tick child grants (ADR 0150 D12, S10c)", () => {
       false
     );
     expect(await app.broker.takeReturn(`nightly@${first}`, "nightly")).toEqual({});
+  });
+
+  it("a refund keeps a daily schedule running past ceiling/lease ticks, and is never applied twice", async () => {
+    // Kills: no refund (ceiling 100 / lease 10 stops the schedule at tick 10), a refund of the whole reservation (over-grant),
+    // and a refund repeated by a second settle (headroom grows past what was unused).
+    const app = boot({ tick: 10 });
+    await app.approve(); // ceiling 100, each tick reserves 10 and spends 2
+    for (let i = 0; i < 25; i++) {
+      await app.tickAt(occ(i));
+      expect(await settleScheduledTick(app.runtime as never, app.broker, "nightly", occ(i))).toBe(
+        true
+      );
+    }
+    expect(app.errors).toEqual([]);
+    expect(app.seen).toHaveLength(50); // 25 ticks x 2 acts, well past 100 / 10
+    for (let i = 0; i < 5; i++)
+      await settleScheduledTick(app.runtime as never, app.broker, "nightly", occ(0));
+    const probe = (ceiling: number) =>
+      app.broker.mint({
+        taskId: `probe-${ceiling}`,
+        issuedTo: "svc-reports",
+        effects: ["act"],
+        leases: { calls: { ceiling, effects: ["act"] } },
+        ttlMs: MINUTE,
+        parent: { taskId: "nightly" },
+      });
+    await expect(probe(51)).rejects.toThrow(/headroom/); // 25 x 2 spent = 50 used, 50 free: not 52
+    await expect(probe(50)).resolves.toBeDefined();
   });
 });

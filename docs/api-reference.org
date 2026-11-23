@@ -1976,7 +1976,7 @@ function schedulePrincipalFor(broker, o: { lease: Record<string, number>; ttlMs?
 //   the TimerService `principalFor` hook (ADR 0152 D2): per occurrence a CHILD grant of the schedule grant, taskId `<scheduleId>@<occurrence>` (= the execution id), ceilings = `lease`. Idempotent (a re-call
 //   returns the minted grant; a lost mint race takes the winner's). No/expired/revoked/exhausted schedule grant or an aborted signal THROWS ScheduleGrantError (the occurrence is skipped as SchedulePrincipalError).
 function settleScheduledTick(runtime, broker: GrantBroker, scheduleId: string, occurrence: number): Promise<boolean>
-//   after a COMPLETED tick records its unused lease at the broker (settleChild), takeable once with broker.takeReturn(`<scheduleId>@<n>`, scheduleId); a tick that is not completed records nothing.
+//   after a COMPLETED tick settles it at the broker (settleChild): the unused lease is REFUNDED to the schedule grant's headroom once (a parent no execution holds has no fold; takeReturn then yields nothing); a held parent keeps the slice-1 take. A tick that is not completed records nothing.
 // Errors: ScheduleDeniedError (approval refused/malformed), ScheduleGrantError { scheduleId } (a tick cannot get its grant).
 
 ** ~@loomwork/compliance~ — subject export & erasure (T3)
