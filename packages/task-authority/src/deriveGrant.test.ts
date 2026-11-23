@@ -19,4 +19,9 @@ describe("deriveGrant (ADR 0150 D9)", () => {
   it("an empty reach derives an empty grant (it must not widen to everything)", () => {
     expect(deriveGrant([]).effects).toEqual([]);
   });
+
+  it("leases falls back to {} when extra.leases is explicitly undefined", () => {
+    // kills: a spread that lets `leases: undefined` overwrite the default
+    expect(deriveGrant(["a"], { leases: undefined } as never).leases).toEqual({});
+  });
 });

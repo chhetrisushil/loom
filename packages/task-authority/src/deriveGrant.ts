@@ -16,5 +16,5 @@ export function deriveGrant(
   reach: Iterable<string>,
   extra: Partial<Omit<MintRequest, "effects">> = {}
 ): GrantTemplate {
-  return { leases: {}, ...extra, effects: [...new Set(reach)].sort() };
+  return { ...extra, leases: extra.leases ?? {}, effects: [...new Set(reach)].sort() };
 }
