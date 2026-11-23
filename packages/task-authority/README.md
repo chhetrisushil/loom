@@ -73,6 +73,18 @@ Only these channels are attributed: `lineageSend`, `memoryWriteBackEffect(memory
 A2A `taintInbound` + `lineageOf`, and `CHILD_DONE`. Raw `runtime.send`, other memory writes, durable state, conversations and `mcp:`
 read as clean unless you list their prefix; a grant-holder on a raw path can label content with any lineage. See the user guide.
 
+## Scheduled agents (ADR 0150 D12)
+
+A schedule has no human per run, so its root authority is a **schedule grant** approved once.
+1. In a one-off flow call `await requestScheduleApproval(ctx, { scheduleId, issuedTo, effects, leases, ttlMs })` (it parks);
+   an operator answers with `answerScheduleApproval(runtime, broker, executionId, { approved: true })`, which mints the grant
+   (`taskId` = `scheduleId`) only after the runtime accepted the approval. Its `leases` are the TOTAL budget over all ticks.
+2. Give the `TimerService` (or `defineConfig({ timers: { principalFor } })`) `principalFor: schedulePrincipalFor(broker, { lease: { calls: 50 } })`.
+   Each occurrence runs under its own child grant `<scheduleId>@<occurrence>`; a missing, expired, revoked or exhausted schedule grant skips that occurrence
+   (`SchedulePrincipalError`), never an anonymous run. Under `requirePrincipal`, `committed()` receives that principal.
+3. After a completed tick, `settleScheduledTick(runtime, broker, scheduleId, occurrence)` records its unused lease (`broker.takeReturn` takes it once).
+   The reference broker never releases a child's headroom, so the schedule's ceiling is a lifetime budget; renew the schedule grant to extend it.
+
 ## Child leases
 
 1. List `task-authority:child-lease` (`CHILD_LEASE_TOOL`) in the parent grant's `effects`: with `TaskGrantAuthorizer`

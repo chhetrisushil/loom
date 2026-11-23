@@ -98,3 +98,5 @@ export {
   scheduleResumeSchema,
   scheduleViewDigest,
 } from "./scheduleGrant";
+export type { SchedulePrincipalOptions, TickRuntime } from "./schedulePrincipal";
+export { schedulePrincipalFor, settleScheduledTick } from "./schedulePrincipal";

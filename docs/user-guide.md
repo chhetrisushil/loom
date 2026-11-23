@@ -1274,6 +1274,35 @@ channels above. Close the gaps by routing writes through the helpers, by listing
 - A2A: `new LoomAgentExecutor(runtime, flow, { taintInbound: { lineageOf: lineageOrigin(secret) } })` wraps the peer's prompt as
   `a2a-inbound:<actor>` and, for a principal with a verified grant, `lineage:<rootId>` (opt-in: the flow input becomes a tainted wrapper).
 
+#### Scheduled agents: a schedule grant and a grant per tick (ADR 0150 D12)
+
+A scheduled run has no human at the keyboard, so the root of its authority is a recorded approval of the SCHEDULE. Approvals are park-bound, and a schedule has no park, so the approval happens in a one-off run:
+
+```ts
+// a flow registered for the purpose
+const runner = async (ctx) => {
+  await requestScheduleApproval(ctx, {
+    scheduleId: "nightly-report", issuedTo: "svc-reports", effects: ["report.send"],
+    leases: { calls: { ceiling: 300, effects: ["report.send"] } }, // the TOTAL over every tick
+    ttlMs: 30 * 24 * 3_600_000,
+  });
+};
+// once a human is shown the parked run (spec + viewDigest), the operator answers it
+await answerScheduleApproval(runtime, broker, "approve-nightly", { approved: true }, { principal: approver });
+```
+
+`answerScheduleApproval` resumes the run first and mints the grant only if the runtime accepted the approval (with a `resumeAuthenticator` the run records `APPROVAL_GRANTED { actor, verifiedBy }`, who answers for every tick); a refused resume mints nothing, and flow code never mints. Then wire the ticks:
+
+```ts
+new TimerService(runtime, timerStore, {
+  schedules: [nightly],
+  principalFor: schedulePrincipalFor(broker, { lease: { calls: 10 }, ttlMs: 10 * 60_000 }),
+  onError: (id, err) => log.warn(id, err), // SchedulePrincipalError { cause: ScheduleGrantError }
+});
+```
+
+Each occurrence runs as `<scheduleId>@<occurrence>`, a CHILD of the schedule grant with `calls` ceiling 10 (the broker refuses a child over the schedule's headroom or expiry). The hook is idempotent: a retry poll or a racing node gets the same grant, nothing is reserved twice. If the schedule grant is missing, expired, revoked or out of headroom the occurrence is skipped and reported, never run anonymously. Under `requirePrincipal`, `ExecutionAuthorizer.committed()` receives the tick principal, so an ownership policy knows whose run it is. After a completed tick call `settleScheduledTick(runtime, broker, "nightly-report", occurrence)`: it records the unused lease (`broker.takeReturn("nightly-report@<n>", "nightly-report")` takes it once). Limits: the reference broker never releases a child's headroom, so the schedule's ceiling is a LIFETIME budget (renew the schedule grant, or approve a new one); a tick whose hook minted a grant but never started (a skip after the mint, a crash) keeps its reservation; the schedule grant is bound to the schedule id, not to a flow id.
+
 #### Isolated sandbox: `sandbox: "isolated"` (ADR 0150 D10, S-R6)
 
 `sandboxRequirement({ secret, effects: () => effectRuntime })` is a per-call middleware (place it before `taskLeaseMiddleware` and a refusal burns no lease unit). When the acting, VERIFIED grant has `sandbox: "isolated"` it refuses a sandbox effect whose backend does not declare `network: "none"` AND `freshPerRun: true`, with a terminal `CapabilityDeniedError` (`task-grant:sandbox`; no renewal changes what a backend is). A child of an isolated parent is isolated (the broker forces it), so the check follows a spawn. It is not a `sandboxEval$` change.
