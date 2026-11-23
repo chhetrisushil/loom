@@ -43,6 +43,22 @@ class RefundsAndPays extends InMemoryGrantBroker {
       r.settled = { w: 9 }; // refunded headroom AND still takeable
   }
 }
+class RefundsUnclaimed extends InMemoryGrantBroker {
+  override async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
+    this.claims.set(taskId, "forced"); // settleChild trusts the caller: a never-started child is refunded
+    await super.settleChild(taskId, spend);
+  }
+}
+class RenewableAfterRefund extends InMemoryGrantBroker {
+  override async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
+    await super.settleChild(taskId, spend);
+    const r = this.tasks.get(taskId);
+    if (r !== undefined) {
+      r.revoked = undefined; // the refund left the grant live and renewable
+      r.settled = undefined;
+    }
+  }
+}
 class PaysTwice extends InMemoryGrantBroker {
   override async takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>> {
     const r = this.tasks.get(taskId);
@@ -280,6 +296,18 @@ describe("checkTaskAuthorityConformance", () => {
       /headroom/,
     ],
     ["a refund that is also takeable", RefundsAndPays, "broker.refund-foldless", /double count/],
+    [
+      "a settleChild that refunds a child that never started",
+      RefundsUnclaimed,
+      "broker.refund-guards",
+      /unclaimed child was refunded/,
+    ],
+    [
+      "a refund that leaves the child renewable",
+      RenewableAfterRefund,
+      "broker.refund-guards",
+      /settled child renewed|stayed live/,
+    ],
     ["a takeReturn that pays twice", PaysTwice, "broker.take-return-once", /paid twice/],
     [
       "a revoked() that knows only the current digest",
