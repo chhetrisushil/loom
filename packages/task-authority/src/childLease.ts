@@ -134,8 +134,16 @@ export interface ChildGrantMinter {
       grants?: readonly string[];
       expiresAt?: number;
     }
-  ): Promise<{ actor: string; taskGrant: TaskGrant }>;
+  ): Promise<{ actor: string; taskGrant: TaskGrant; tenant?: string; onBehalfOf?: string }>;
 }
+
+// R30/R34: the chain must carry the grant's signed identity, or the codec's toRef refuses it.
+const chainOf = (g: TaskGrant) => ({
+  actor: g.issuedTo,
+  taskGrant: g,
+  ...(g.tenant !== undefined && { tenant: g.tenant }),
+  ...(g.onBehalfOf !== undefined && { onBehalfOf: g.onBehalfOf }),
+});
 
 /**
  * ADR 0150 D6, supervisor side: `superviseChildren({ taskAuthority: childGrantMinter(broker, { ttlMs }) })`.
@@ -169,7 +177,7 @@ export function childGrantMinter(
       const taskId = spec.childId;
       const held = await broker.current(taskId);
       if (held !== undefined && held.issuedTo === spec.childId && held.parentId === pid)
-        return { actor: spec.childId, taskGrant: held };
+        return chainOf(held);
       const pg = await broker.current(pid);
       if (pg === undefined) throw new GrantBrokerError(`parent task ${pid} is unknown or revoked`);
       const leases: TaskGrant["leases"] = {};
@@ -190,7 +198,7 @@ export function childGrantMinter(
           Object.keys(leases).map((n) => [n, parent.resources[`lease.${n}.reserved`] ?? 0])
         ),
       });
-      return { actor: spec.childId, taskGrant };
+      return chainOf(taskGrant);
     },
   };
 }

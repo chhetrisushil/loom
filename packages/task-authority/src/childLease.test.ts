@@ -120,12 +120,13 @@ function boot(
   o: BootOpts = {}
 ) {
   const errors: unknown[] = [];
-  const ran = { n: 0 };
+  const ran = { n: 0, seen: [] as (PrincipalChain | undefined)[] };
   const effects = new EffectRuntime([taskLeaseMiddleware({ secret: SECRET, source: broker })]);
   effects.register(
     "act",
-    new ToolEffect(async () => {
+    new ToolEffect(async (_a, ctx) => {
       ran.n++;
+      ran.seen.push((ctx as { principal?: PrincipalChain }).principal);
       return { ok: true };
     })
   );
@@ -222,6 +223,34 @@ const raw =
     out.ownRan = (await acts(ctx, "a", own)).ran;
     return out;
   };
+
+describe("child lease under a tenant parent (R30/R34)", () => {
+  it("a supervised child completes and its restored principal carries the tenant", async () => {
+    const w = world();
+    const broker = mk();
+    const g = await broker.mint({
+      taskId: PARENT,
+      issuedTo: PARENT,
+      effects: ["act", CHILD_LEASE_TOOL],
+      leases: { w: { ceiling: 10, effects: ["act"] } },
+      ttlMs: 60_000,
+      tenant: "acme",
+      onBehalfOf: "user-1",
+    });
+    const h = boot(w, broker, std({ lease: 4, childActs: 2, after: 1 }));
+    await h.runtime.start(
+      h.parentFlow,
+      {},
+      { executionId: PARENT, principal: { ...chain(g), tenant: "acme", onBehalfOf: "user-1" } }
+    );
+    const out = await output(h.runtime, PARENT);
+    expect(out.childOut).toEqual({ ran: 2 });
+    expect(h.errors).toEqual([]);
+    const kid = h.ran.seen.filter((p) => p?.actor === CHILD);
+    expect(kid.length).toBe(2);
+    for (const p of kid) expect(p).toMatchObject({ tenant: "acme", onBehalfOf: "user-1" });
+  });
+});
 
 describe("child lease reservation (ADR 0150 D6)", () => {
   it("(a) the child is bounded by its reservation; the parent by ceiling - reserved", async () => {

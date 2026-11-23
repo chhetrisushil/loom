@@ -130,6 +130,11 @@ const CHECKS: Record<string, Check> = {
       b.mint({ ...mintReq("x", 1, "p"), tenant: "other-tenant" }),
       "a child was minted into a different tenant (R30)"
     );
+    await b.mint(mintReq("free", 4));
+    await mustRefuse(
+      b.mint({ ...mintReq("y", 1, "free"), tenant: "kit-tenant" }),
+      "a child of an identity-free parent was minted into a tenant (R30)"
+    );
     must((await b.renew(req("p", 0, 0))).granted, "setup: renewal denied");
     const now = await b.current("p");
     must(

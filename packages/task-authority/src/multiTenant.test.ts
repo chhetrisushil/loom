@@ -290,3 +290,50 @@ describe("multi-tenant broker (R30)", () => {
     });
   });
 });
+
+describe("multi-tenant ref guards and erasure (R30 review)", () => {
+  it("M1: a ta1 ref recorded against an identity-free grant never restores a reissue that carries a tenant", async () => {
+    const a = broker();
+    const ref = codec(a).toRef(chainOf(await a.mint(req()))) as string;
+    expect(ref.startsWith("ta1:")).toBe(true);
+    const b = broker();
+    await b.mint(req({ tenant: "acme" }));
+    const r = await codec(b).fromRef(ref, { executionId: "x" });
+    expect(r?.principalUnresolved).toMatch(/does not bind/);
+  });
+  it("M2: the ta2 MAC binds onBehalfOf", async () => {
+    const a = broker();
+    const ref = codec(a).toRef(
+      chainOf(await a.mint(req({ tenant: "acme", onBehalfOf: "u1" })), {
+        tenant: "acme",
+        onBehalfOf: "u1",
+      })
+    ) as string;
+    const b = broker();
+    await b.mint(req({ tenant: "acme", onBehalfOf: "u2" }));
+    const r = await codec(b).fromRef(ref, { executionId: "x" });
+    expect(r?.principalUnresolved).toMatch(/does not match/);
+  });
+  it("M5: a ta2 ref never restores an identity-free grant", async () => {
+    const a = broker();
+    const ref = codec(a).toRef(
+      chainOf(await a.mint(req({ tenant: "acme" })), { tenant: "acme" })
+    ) as string;
+    const b = broker();
+    await b.mint(req());
+    const r = await codec(b).fromRef(ref, { executionId: "x" });
+    expect(r?.principalUnresolved).toMatch(/does not carry/);
+  });
+  it("M4: erasing onBehalfOf at the broker makes the task permanently unrestorable", async () => {
+    const a = broker();
+    const g = await a.mint(req({ tenant: "acme", onBehalfOf: "u1" }));
+    const ref = codec(a).toRef(chainOf(g, { tenant: "acme", onBehalfOf: "u1" })) as string;
+    const { sig: _s, onBehalfOf: _o, ...stripped } = g;
+    const erased = signTaskGrant(SECRET, stripped);
+    const src = { ...a, current: async () => erased } as unknown as InMemoryGrantBroker;
+    Object.setPrototypeOf(src, Object.getPrototypeOf(a));
+    const r = await codec(src).fromRef(ref, { executionId: "x" });
+    expect(r?.principalUnresolved).toMatch(/does not match/);
+    expect(r?.taskGrant).toBeUndefined();
+  });
+});

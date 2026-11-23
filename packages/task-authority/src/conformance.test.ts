@@ -60,6 +60,20 @@ class DropsTenantOnRenew extends InMemoryGrantBroker {
     return v;
   }
 }
+/** Lets a child of an identity-free parent take a tenant by re-signing the minted grant. */
+class ChildMayNameTenant extends InMemoryGrantBroker {
+  override async mint(r: MintRequest) {
+    const parentFree =
+      r.parent !== undefined && this.tasks.get(r.parent.taskId)?.grant.tenant === undefined;
+    const { tenant, ...rest } = r;
+    const g = await super.mint(parentFree ? rest : r);
+    const rec = this.tasks.get(r.taskId);
+    if (!parentFree || tenant === undefined || !rec) return g;
+    const { sig: _s, ...body } = rec.grant;
+    rec.grant = signTaskGrant(this.secret, { ...body, tenant });
+    return rec.grant;
+  }
+}
 class NeverRevokes extends InMemoryGrantBroker {
   override async revoked(): Promise<boolean> {
     return false;
@@ -131,6 +145,12 @@ describe("checkTaskAuthorityConformance", () => {
     expect(
       find(await checkTaskAuthorityConformance(reference), "broker.identity-fixed")?.status
     ).toBe("passed");
+  }, 60_000);
+
+  it("fails broker.identity-fixed for a broker that lets a child of an identity-free parent name a tenant", async () => {
+    const r = await checkTaskAuthorityConformance(broken(ChildMayNameTenant));
+    expect(find(r, "broker.identity-fixed")?.status).toBe("failed");
+    expect(find(r, "broker.identity-fixed")?.message).toMatch(/identity-free parent/);
   }, 60_000);
 
   it("fails pause-renew for a renewal that is granted but leaves the ceiling", async () => {

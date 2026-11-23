@@ -64,10 +64,14 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OU
  * is refused for a grant that has them) and that has no `delegation`. Identity is restored from the VERIFIED grant only, so under
  * strict/compliance (ADR 0111) the log holds only the ref; the broker holds identity and the app owns erasure of `onBehalfOf` there.
  *
- * `fromRef` answers EVERY `ta1:` ref, never `undefined` (which would let an older codec or the app's
+ * `fromRef` answers EVERY `ta1:` and `ta2:` ref, never `undefined` (which would let an older codec or the app's
  * resolver restore a principal without the grant): any failure (bad ref, MAC, miss, revoke, verify,
  * claim held elsewhere, throw, timeout) is `{ principalUnresolved }`, which the kernel denies. After a
  * revoke the execution's owner is unknown to the execution access policy (ADR 0111 `unknownOwner`).
+ *
+ * Erasure (R30): the broker holds identity. Erasing `onBehalfOf` or `tenant` there (re-sign, strip or delete
+ * the grant) makes the task PERMANENTLY unrestorable: the `ta2:` MAC no longer matches, `fromRef` gives
+ * `{ principalUnresolved }`, the kernel denies, and the execution access policy sees an unknown owner.
  *
  * R17: one grant backs exactly one execution, so a task-governed run cannot `continueAsNew` (the
  * successor copies the ref but has a new execution id) or be forked under the same grant: both are
@@ -146,6 +150,9 @@ export function taskAuthorityPrincipalCodec(
         // A ta1 ref carries no identity binding: it must never restore a grant that has one.
         if (!v2 && (grant.tenant !== undefined || grant.onBehalfOf !== undefined))
           return fail("ref does not bind the grant's tenant");
+        // And a ta2 ref only ever names a grant that has one (symmetric).
+        if (v2 && grant.tenant === undefined && grant.onBehalfOf === undefined)
+          return fail("ref binds an identity the grant does not carry");
         const want = mac(grant, v2);
         if (given.length !== want.length || !timingSafeEqual(given, want))
           return fail("ref does not match the grant's holder");
