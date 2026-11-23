@@ -42,6 +42,15 @@ Slice 1 surface (see `docs/api-reference.org`):
   refused when called (`LeaseUnmappedError`).
 - `@loomwork/task-authority/conformance`: a kit that proves a broker and runtime wiring resist laundering.
 
+## Covered laundering (`directedBy`)
+
+`directedBy({ secret, action?, appliesTo?, foreign? })` is a per-effect middleware (place it after `taskLeaseMiddleware`) that acts when
+a foreign lineage directed a leased effect: `attribute` (default, records `task-authority:directed-by`), `park`, or `deny`
+(`task-grant:cross-lineage`). Writers tag content with `lineageOrigin(secret)` / `lineageSend` /
+`memoryWriteBackEffect(memory, { originOf })`, from a VERIFIED grant only. Needs `kernel.features.seenOrigins`; an untracked run fails
+closed (`task-grant:untracked`). Park approvals are meters under the reserved `directed.` prefix. The conformance kit's
+`laundering.covered` runs this end to end. See the user guide and ADR 0150 D7.
+
 ## Child leases
 
 1. List `task-authority:child-lease` (`CHILD_LEASE_TOOL`) in the parent grant's `effects`: with `TaskGrantAuthorizer`

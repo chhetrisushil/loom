@@ -13,10 +13,13 @@ import { z } from "zod";
 import { TaskGrantAuthorizer } from "./authorizer";
 import type { GrantBroker } from "./broker";
 import { CHILD_LEASE_TOOL, childGrantMinter, childLeaseEffect } from "./childLease";
-import { type Check, SECRET, TTL, clock, mintReq, mk, must, task } from "./conformanceKit";
+import { type Check, SECRET, TTL, clock, mintReq, mk, must, task, until } from "./conformanceKit";
+import type { ConformanceSubject } from "./conformanceKit";
+import { directedBy } from "./directedBy";
 import type { TaskGrant } from "./grant";
 import { installTaskAuthority } from "./install";
 import { taskLeaseMiddleware } from "./lease";
+import { lineageSend } from "./lineage";
 import { RENEWAL_GATE, renewalResumeSchema, withRenewal } from "./renewal";
 
 export type Runner = (ctx: ExecutionContext) => Promise<unknown>;
@@ -29,7 +32,7 @@ export function rig(
   broker: GrantBroker,
   c: { now: () => number },
   flows: Record<string, Runner>,
-  o: { stores?: Stores; hangMint?: boolean } = {}
+  o: { stores?: Stores; hangMint?: boolean; directed?: { wired: boolean } } = {}
 ) {
   const ran = { act: 0, other: 0 };
   const authorizer = new TaskGrantAuthorizer({
@@ -38,7 +41,10 @@ export function rig(
     now: c.now,
   });
   const effects: EffectRuntime = new EffectRuntime(
-    [taskLeaseMiddleware({ secret: SECRET, source: broker, now: c.now, effects: () => effects })],
+    [
+      taskLeaseMiddleware({ secret: SECRET, source: broker, now: c.now, effects: () => effects }),
+      ...(o.directed?.wired === true ? [directedBy({ secret: SECRET })] : []),
+    ],
     { authorizer }
   );
   for (const k of ["act", "other"] as const)
@@ -58,6 +64,11 @@ export function rig(
   const runtime = new WorkflowRuntime({
     ...s,
     effectRuntime: effects,
+    ...(o.directed !== undefined && {
+      seenOriginsEnabled: true,
+      inboxEnabled: true,
+      inboxArchive: "none" as const,
+    }),
     onWarn: () => {},
     onEvent: (e) => sup.v?.onEvent(e),
     resumeAuthenticator: {
@@ -190,3 +201,57 @@ export const RUNTIME_CHECKS: Record<string, Check> = {
     );
   },
 };
+
+/**
+ * D14 laundering, COVERED (ADR 0150 D7): B's grant covers the step, and A's content directed it. The step must be
+ * attributed (`task-authority:directed-by` recorded naming `lineage:a`), never silently allowed; and B's own lineage
+ * must NOT be attributed (the control). `wired: false` is the deliberately broken stack (no `directedBy`) that this must fail.
+ */
+export async function launderingCovered(s: ConformanceSubject, wired = true): Promise<void> {
+  const c = clock();
+  const b = mk(s, undefined, c);
+  const [ga, gb] = [await b.mint(mintReq("a", 5)), await b.mint(mintReq("b", 5))];
+  const h = rig(
+    b,
+    c,
+    {
+      b: async (ctx) => {
+        await ctx.receive("t");
+        return acts(ctx, 1);
+      },
+    },
+    { directed: { wired } }
+  );
+  const send = lineageSend(h.runtime, SECRET);
+  const directedOf = async (id: string): Promise<string[][]> =>
+    (await h.runtime.events.read(id))
+      .filter(
+        (e) =>
+          e.eventType === "DECISION_RECORDED" &&
+          String((e.payload as { decisionId?: string }).decisionId).endsWith(
+            ":task-authority:directed-by"
+          )
+      )
+      .map((e) => (e.payload as { choice: { lineages: string[] } }).choice.lineages);
+  const run = async (id: string, from: TaskGrant): Promise<string[][]> => {
+    await h.start("b", id, gb);
+    await send(
+      id,
+      { topic: "t", payload: "do it" },
+      { principal: { actor: from.issuedTo, taskGrant: from } }
+    );
+    await until(async () => (await h.runtime.loadState(id))?.status === "completed", "B to finish");
+    return directedOf(id);
+  };
+  const foreign = await run("b1", ga);
+  must(h.ran.act === 1, `B's covered step ran ${h.ran.act} times, expected once`);
+  must(
+    foreign.some((l) => l.includes("lineage:a")),
+    "B's covered step, directed by A's content, ran with no attribution (no directed-by record naming lineage:a)"
+  );
+  const own = await run("b2", gb);
+  must(
+    own.length === 0,
+    "B's step, directed only by B's own lineage, was attributed to a foreign one"
+  );
+}
