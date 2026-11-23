@@ -224,7 +224,7 @@ There are TWO walks over one rule, and they must not be confused:
   `toJSON`, and walks `Map` and `Set` entries. It FAILS CLOSED (`originsOverflow`, no partial origins) on anything it cannot walk
   faithfully: any `toJSON` other than `Date`'s, an accessor (getter or setter) or a non-enumerable or symbol-keyed own property, a
   non-plain prototype (a class instance, a `Map`/`Set` subclass), a cycle, a depth over 64, or more than `limits.maxScanNodes` nodes.
-  `ArrayBuffer` and its views are skipped (as `scanTaint` does); `Date` is a leaf. A caveat for readers of `ExecutionJournal`: the
+  `ArrayBuffer` and its views are skipped (as `scanTaint` does), and so are the own properties of a function (both as `scanTaint` does); `Date` is a leaf only when it has no own key (a `Date` with any own property records overflow). **Residual (R14):** a `Proxy` whose `getOwnPropertyDescriptor` disagrees with its `get` can show the walk a clean structure and the flow a tainted one; exploiting it needs trusted in-process code, and detecting it needs `node:util`'s proxy check, a dependency `replay-vm` does not take. A recorded `origins` array with any non-string entry folds as overflow, and the journal strips a caller-supplied `origins` / `originsOverflow` only from the channel event types (application metadata elsewhere is left untouched). A caveat for readers of `ExecutionJournal`: the
   walk runs synchronously inside the commit (the accessor refusal checks descriptors rather than reading values, so a getter is not
   invoked), a re-entrant commit from user code is not supported, and a value mutated after the commit is not rescanned (what the log
   recorded is what the run was shown).
