@@ -113,7 +113,7 @@ interface TaskGrant {
   issuedTo: string;      // holder binding, as DelegatedGrant (principal.actor must match)
   effects: string[];     // capability ids, incl. R12 "<toolId>:<resource>"; "*" refused at mint
   leases: Record<string, { ceiling: number; effects: string[] }>; // see D4
-  reads?: string[];      // D8: Loom namespaces this task may read across lineages (slice 2, NOT built: `validateGrantShape` rejects it as an unexpected key)
+  reads?: string[];      // D8: Loom namespaces this task may read across lineages (slice 2 S4: signed and carried since S4; the check is S6)
   ambient?: "none" | "declared"; // D10 (slice 2, NOT built: rejected the same way)
   exp: number;           // absolute expiry (epoch ms), REQUIRED; a task grant never lives forever
   epoch: number;         // 0 at mint, +1 per renewal (D5)

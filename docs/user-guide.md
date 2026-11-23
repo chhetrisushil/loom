@@ -1209,6 +1209,8 @@ const grant = await broker.mint({ taskId: "t2", issuedTo: "agent-a", tenant: "ac
 await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acme", onBehalfOf: "user-7", taskGrant: grant } });
 ```
 
+**Read scope and isolation (`reads`, `sandbox`; enforced from S6 / S8).** `mint` also takes `reads: string[]` (globs over `<toolId>:<resource>` read capabilities, `*` any run of characters, a bare `*` refused) and `sandbox: "isolated"`. Both are signed into the grant and encoded only when present, so a grant without them is byte-identical to before. A child may only narrow them: each child read must be covered by a parent read (a parent with none allows none) and a child of an isolated parent must be isolated, else `mint` throws `GrantBrokerError`; `childGrantMinter` inherits both, and a renewal keeps them. Today they are carried and signed only: the `reads` check lands with S6 and the sandbox check with S8.
+
 **Rotating the secret.** Pass a ring wherever `secret` goes: `{ current, previous?, refOnly? }`. New grants sign with `current`; grants signed with a `previous` key still verify and renew onto `current`. Retire an old key in two steps: move it to `previous`, then, once its grants have renewed (or after the longest grant TTL: nothing renews a grant that never exhausts, and a run holding a grant signed by a key that has left `previous` fails to restore), to `refOnly`, where it can only restore the ref of a run already started under it (never vouch for a grant). Keep it there for the lifetime of the longest such run. **Removing a key outright strands every run started under it, and that is terminal**, so do it last.
 
 ```ts

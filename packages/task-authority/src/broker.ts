@@ -8,6 +8,7 @@ import {
   signTaskGrant,
   taskGrantDigest,
   validateGrantShape,
+  widensReadsOrSandbox,
 } from "./grant";
 
 export interface MintRequest {
@@ -23,6 +24,9 @@ export interface MintRequest {
    */
   tenant?: string;
   onBehalfOf?: string;
+  /** S-R4: signed into the grant. A child's `reads` must be covered by the parent's; a child of an isolated parent must be isolated. */
+  reads?: string[];
+  sandbox?: "isolated";
   /**
    * D6: per lease, the `lease.<n>.reserved` total in the PARENT's own fold (read by the supervisor). When
    * given with `parent`, the broker refuses unless the sum of the parent's children's high-water ceilings,
@@ -278,6 +282,8 @@ export class InMemoryGrantLedger {
     };
     if (req.tenant !== undefined) unsigned.tenant = req.tenant;
     if (req.onBehalfOf !== undefined) unsigned.onBehalfOf = req.onBehalfOf;
+    if (req.reads !== undefined) unsigned.reads = req.reads;
+    if (req.sandbox !== undefined) unsigned.sandbox = req.sandbox;
     let parent: Rec | undefined;
     if (req.parent !== undefined) {
       const pid: unknown = req.parent?.taskId;
@@ -298,6 +304,8 @@ export class InMemoryGrantLedger {
       const pg = parent.grant;
       if (!unsigned.effects.every((e) => pg.effects.includes(e)))
         throw new GrantBrokerError("child effects exceed the parent's");
+      const widened = widensReadsOrSandbox(pg, unsigned);
+      if (widened !== undefined) throw new GrantBrokerError(widened);
       for (const [name, spec] of Object.entries(unsigned.leases)) {
         if (!Object.hasOwn(pg.leases, name))
           throw new GrantBrokerError(`parent has no lease ${name}`);

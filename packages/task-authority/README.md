@@ -28,6 +28,12 @@ Slice 1 surface (see `docs/api-reference.org`):
   the middleware throws `LeaseChildEffectUnbrandedError`.
 - Multi-tenant: `tenant` / `onBehalfOf` are signed into the grant, bound in a `ta2:` ref, denied on mismatch
   (`task-grant:identity`) and inherited by children.
+- Grant fields `reads` and `sandbox: "isolated"` (ADR 0150 S-R4, enforced from S6 / S8; today they are signed and carried only):
+  `reads` is a list of globs (`*` matches any run of characters, bare `*` refused) over `<toolId>:<resource>` read
+  capabilities; `sandbox` asks that a sandbox effect be network-less and fresh per run. Both are signed and encoded only
+  when present (a grant without them keeps its signature), a child's `reads` must be covered by the parent's (absent
+  = none) and a child of an isolated parent must be isolated, and a renewal keeps both. `childGrantMinter` passes the
+  parent's through.
 - Key rotation: a secret may be a `GrantKeys` ring (`current`, `previous`, `refOnly`); removing a key strands
   runs started under it, so retire through `refOnly` (see the user guide).
 - Strict leases: `taskLeaseMiddleware` defaults to `strictLeases: true`, so an in-scope effect that no lease counts is
