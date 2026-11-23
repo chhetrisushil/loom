@@ -233,6 +233,8 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 | ~@loomwork/middleware~         | Effect middleware — ~retryMiddleware~ (deterministic backoff; skips ~TypedFailure~ by default), ~meteringMiddleware~ (K3), ~safetyMiddleware~ (K6), ~redactionMiddleware~ (~secretRef~ resolution, K10.3), ~claimCheckMiddleware~ + ~resolveClaimChecks~ (ADR 0054/0062), ~nestedBudgetMiddleware~ (K12) |
 | ~@loomwork/orchestration~      | Cross-execution orchestration — ~awaitChild~ (durable child await, recursion-guarded via ~maxDepth~) + ~fanout$~ (runtime-sized deterministic fan-out, ADR 0061) |
 | ~@loomwork/saga~               | Compensation — replay-safe rollback as ordinary ~ctx.run~ steps |
+| ~@loomwork/orchestrator~       | Composable orchestration primitives — ~decideApproval~ (risk gate) and ~dispatchPlan~ as functions apps call (ADR 0013) |
+| ~@loomwork/task-authority~     | Opt-in task-scoped authority — signed per-task grants, side-effect leases that pause the run for renewal when spent, child leases carved by reservation, a laundering conformance kit (ADR 0150, 0151) |
 | ~@loomwork/registry~           | Workflow / agent registry |
 
 *Projection & UI*

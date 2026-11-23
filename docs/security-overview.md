@@ -1,6 +1,6 @@
 # Loom security guardrails overview (for security review)
 
-*As of 2026-10-24, `main` at `64bc28b2`.*
+*As of 2026-11-23, `main` at `ac30b375`.*
 
 ## 1. Scope and how to read this document
 
@@ -8,7 +8,7 @@ Loom is a durable execution kernel for long-running and agentic workloads: every
 
 This document lists the guardrails loom ships, what each one guarantees, and where it stops. It is written for a security reviewer. Every claim names the ADR (`docs/adr/NNNN-*.md`), the package, and where possible the test that pins it, so you can check the claim against code.
 
-**Version reviewed:** `loom` `main` at commit `64bc28b2` (2026-10-24), 75 packages under `packages/`, `plugins/` and `tools/`.
+**Version reviewed:** `loom` `main` at commit `ac30b375` (2026-11-23, release 0.1.5), 77 packages under `packages/`, `plugins/` and `tools/`. The 2026-11-23 update added the guardrails of ADR 0147 to 0151 (sections 3, 4, 5 and 9); the earlier guardrail claims were last re-checked at `64bc28b2` (2026-10-24).
 
 **Read this first: almost every guardrail is opt-in.** Loom's design rule G2 says an unwired guardrail leaves behaviour byte-identical to before. This keeps the kernel generic, but it means a deployment is only as safe as what it wires. Section 9 lists what an integrator must configure. A review of loom is a review of the *mechanisms*; a review of a product built on loom must also check that those mechanisms are switched on.
 
@@ -103,6 +103,10 @@ Effects are at-least-once; steps are exactly-once with respect to the log. The k
 - **Recovery never answers a gate (ADR 0104).** Re-driving an abandoned execution never records an answer to a parked gate, so a crash cannot turn into an approval.
 - **Deterministic simulation testing (ADR 0036, `tools/dst`).** Seeded crash schedules run against a fault-injecting store, and `verifyChain` must hold across the whole crash space.
 
+### Observing durable events (ADR 0147)
+
+`observability.onDurableEvent` fires only after an event's durable write, at most once per event and in order per writer, so an exporter or audit sink fed from it never reports an event the log does not hold. `onEvent` keeps its earlier timing (supervisors, the compliance index and surfaces depend on it), so it can still see an event whose write later fails: use `onDurableEvent` for evidence.
+
 ## 4. Identity, authorization and multi-tenancy
 
 Authority is checked twice: once on the execution lifecycle (who may start, resume, query) and once on every effect (may this principal call this tool). The owner of an execution is recorded in its log and survives crashes, recovery and remote workers.
@@ -149,6 +153,20 @@ It also turns on defaults that do not depend on the workload: principal required
 ### Delegation (ADR 0024 K12.4, 0045 D2)
 
 `signDelegation` and `verifyDelegation` use HMAC-SHA256. A token is bound to its holder (`issuedTo` must match the caller's actor) and may carry a signed expiry. `DelegationAuthorizer` grants only the intersection of the verified token and the callee's own grants, and `base` is **required**: the symmetric key means a callee could mint itself a wildcard token, so the intersection is what bounds it. Cross-organisation delegation (asymmetric keys) and revocation (`jti`) are out of scope today.
+
+### Task-scoped authority (ADR 0150, 0151; opt-in `@loomwork/task-authority`)
+
+A valid credential does not say whose work is being done. This opt-in package binds authority to the task, which narrows what a prompt-injected or delegating agent can spend with perfectly valid credentials.
+
+- **Signed per-task grant.** An HMAC-signed token names the effects an execution may run, its side-effect leases and its expiry. `TaskGrantAuthorizer` denies an effect outside the grant, an expired or tampered grant, and a grant held by the wrong principal (`task-grant:*` reasons, recorded as `EFFECT_DENIED`); `base` is required, because the key is symmetric. `tenant` and `onBehalfOf` are signed in and must equal the principal's.
+- **One grant, one execution, holder-bound.** The broker's `claim` is a compare-and-set, and the log holds only a MAC'd ref (`ta1:` / `ta2:`), never the token. A fork, a reused task id or another agent cannot act as the task; a ref that no longer resolves denies every effect (fail closed). A delegation together with a task grant is refused.
+- **Leases are counted in the run's own log, durably, before the effect runs.** `taskLeaseMiddleware` reads the live fold, emits the count, checks it was kept and awaits `flush()` before `next()`; attempts are counted, not successes. With `strictLeases` (default) an in-scope effect no lease counts is refused. Revocation is checked per effect with a timeout, and anything but a clean answer reads as revoked.
+- **A spent lease, an expired grant or a revoked grant parks the run** on a typed renewal gate (`withRenewal`, `agentLoop$({ authority })`) instead of failing or running on. A broker policy decides the renewal; the approver is shown a digest of the request it answers (ADR 0117).
+- **Child leases are carved by reservation,** recorded in the parent's fold and mirrored in a never-decreasing broker ledger, so children cannot exceed the parent's ceiling, a returned amount is taken once, and a spawn with a lease and no minter fails closed.
+- **ADR 0151 seams make this enforceable.** `EffectContext.flush()` closes the crash window between a metered count and the effect; `readResources()` and a copied `ctx.resources` stop accounting middleware reading or mutating the fold-owned object; `WorkflowRuntime.reserveEffectDimensions("lease.")` stops flow code forging a `lease.*` meter dimension (effect-scope emits stay trusted).
+- **Key ring.** `GrantKeys` (`current`, `previous`, `refOnly`) rotates the secret; a key removed outright strands every run started under it (fail closed).
+
+Where it stops: see the "Task authority" row in section 9.
 
 ### Tenancy and resource isolation
 
@@ -203,6 +221,7 @@ Each model response and each tool outcome is a recorded decision, so a resume re
 ### Reasoning and memory
 
 - Model reasoning is captured in a sidecar store, never in the log, and read back *tainted* by auditors (ADR 0133).
+- **Distilled write-back (ADR 0149).** With `writeBack.distill`, the facts a run stores inherit taint from any tainted input; the distiller can supersede only fact ids it was shown; a failing distiller writes nothing and degrades; an unscoped distil warns (`LOOM_AGENT_DISTILL_SCOPE`) because facts written to the execution's own scope are never recalled.
 - Memory write-back stores answers from tainted runs as tainted; a recalled tainted entry goes into a fenced `user` message. Write-back inside the effect ring gets K2, tenant checks and the kill switch; outside the ring it must be explicitly allowed (`allowDirect: true`).
 
 ## 6. Isolation and code execution
@@ -330,6 +349,7 @@ Loom's guardrails are pinned by tests that include the negative case (the attack
 
 | Area | Residual | Source |
 | --- | --- | --- |
+| Task authority | Slice 1 only. Grants are HMAC (the verifier can mint) and the only broker shipped is in-memory: a real broker, its ledger and who may be granted what are the integrator's. Restoring a run's principal consults the broker once per resume, so an unreachable broker denies (fail closed). Provenance taint across lineages, `reads` scoping and grant derivation (ADR 0150 D7-D12) are not built, and the conformance kit skips the covered laundering checks. | ADR 0150, 0151 |
 | Defaults | Every guardrail is opt-in. A non-strict app with nothing wired lets any runtime caller start, resume, approve and cancel any execution, and every effect is allowed. | G2; section 4 |
 | Verdict provenance | In-process flow and tool code can append `EFFECT_DENIED`, `QUOTA_EXCEEDED`, `SAFETY_BLOCKED` and `EGRESS_DENIED` through `ctx.emit`, so a false denial is possible from trusted app code. Flow emits carry `metadata.flowEmit`; a tool's emit cannot be told apart from middleware's. `EFFECT_INDOUBT` is refused, and isolated tools are killed for trying. | `packages/workflow-runtime/src/userspaceEmit.ts` |
 | Tool isolation | Child-process hardening, not OS confinement. No private-IP recheck after DNS resolution, so an allowlisted name resolving to a metadata address is reachable. | ADR 0019, 0045 S7 |
@@ -374,6 +394,9 @@ ADRs live in `docs/adr/`; each one's amendments record review findings and fixes
 | 0022, 0055, 0106 | Retention, crypto-shredding, redaction, compaction integrity | `@loomwork/plugin-crypto`, `LogLifecycle` |
 | 0024, 0111 | Principal chain, delegation, tenant-scoped stores, durable principal | `@loomwork/effect-runtime`, `@loomwork/event-runtime` |
 | 0037 | Hash-chained, signed audit log | `@loomwork/plugin-audit-chain` |
+| 0147 | `onDurableEvent`: observe only events the log holds | `@loomwork/workflow-runtime` |
+| 0149 | Distilled write-back stores tainted facts, bounded supersede | `@loomwork/agent` |
+| 0150, 0151 | Task-scoped grants, leases, renewal gate; effect-context `flush` / `readResources` / reserved meter dimensions | `@loomwork/task-authority`, `@loomwork/workflow-runtime`, `@loomwork/effect-runtime` |
 | 0038 | Per-tenant fair scheduling | `@loomwork/fair-scheduler` |
 | 0039 | Execution-lifecycle authorization, authorize-before-fold | `executionAccessPolicy.ts` |
 | 0045 | HTTP authorize seam, delegation expiry, lockfile id checks | `@loomwork/plugin-a2a`, `@loomwork/plugin-worker-server`, `tools/appgen` |

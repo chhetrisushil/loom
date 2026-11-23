@@ -273,7 +273,7 @@ kept out of the step value and out of the log:
 |---|---|---|
 | Readable reasoning text | the reasoning sidecar store (`observability.reasoning.store`), content-addressed | at least the request's class; erasable on its own schedule (the store's); returned **tainted** (`llm-reasoning:<stepId>`) by `readReasoning`, so it cannot reach a prompt instruction position; served to a client only at a transport edge, to the turn's asker and the conversation's owner alone |
 | Signature / opaque continuation bytes | inline in the step value | no readable content; recorded so a resumed tool loop can send the blocks back |
-| `LLM_REASONING_CAPTURED` | the log (userspace event, ignored by the fold) | references and digests only, never text and never signatures; hash-chained under `@loomwork/audit-chain` |
+| `LLM_REASONING_CAPTURED` | the log (userspace event, ignored by the fold) | references and digests only, never text and never signatures; hash-chained under `@loomwork/plugin-audit-chain` (when the log store is wrapped by it) |
 
 Put the store under the same tenant scoping, encryption and retention you give the request
 payloads. Reasoning is corroborating evidence for an audit, not an explanation of what caused the

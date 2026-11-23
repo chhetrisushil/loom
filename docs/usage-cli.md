@@ -285,7 +285,7 @@ The default flow is an echo step. These three are the plain-workflow starting po
 
 It **never overwrites** an existing file: it prints `created <path>` (exit `0`) or `skipped <path> (already exists)` (exit `1`). A refused name exits `1` with nothing written.
 
-When a generated file imports a package the nearest `package.json` does not declare (`loom new sentinel` imports `@loomwork/plugin-sentinel`; every other kind needs nothing a fresh `create-loom-app` project lacks), `loom new` prints the exact line to add — `"@loomwork/plugin-sentinel": "workspace:*"` inside the Loom workspace, `"*"` in an app created with `--loom-path` (its `pnpm.overrides` already map every `@loomwork/*` package). It never edits `package.json`; without the dependency the whole app fails to load, not just the new file.
+When a generated file imports a package the nearest `package.json` does not declare (`loom new sentinel` imports `@loomwork/plugin-sentinel`; every other kind needs nothing a fresh `create-loom-app` project lacks), `loom new` prints the exact line to add — `"@loomwork/plugin-sentinel": "workspace:*"` inside the Loom workspace, `"*"` in an app created with `--loom-path`, and the same range as `@loomwork/core` (for example `"^0.1.5"`) in an app created from npm (its `pnpm.overrides` already map every `@loomwork/*` package). It never edits `package.json`; without the dependency the whole app fails to load, not just the new file.
 
 ### `loom gen [--dir app] [--watch]`
 
