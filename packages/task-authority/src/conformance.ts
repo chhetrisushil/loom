@@ -35,6 +35,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "carve.total-spend",
   "carve.forged-meters",
   "reads.read-scope",
+  "sandbox.isolated",
   "laundering.uncovered.shared-memory",
   "laundering.uncovered.a2a",
   "laundering.covered",

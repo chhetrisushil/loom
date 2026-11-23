@@ -78,3 +78,5 @@ export {
 } from "./lineage";
 export type { CrossLineageAction, DirectedByOptions } from "./directedBy";
 export { UNTRACKED_ORIGIN, directedBy, foreignSetHash } from "./directedBy";
+export type { SandboxRequirementOptions } from "./sandboxRequirement";
+export { sandboxRequirement } from "./sandboxRequirement";

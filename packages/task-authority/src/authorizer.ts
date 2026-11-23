@@ -28,6 +28,7 @@ export const TASK_GRANT_DENIAL = {
   crossLineage: "task-grant:cross-lineage",
   untracked: "task-grant:untracked",
   readScope: "task-grant:read-scope",
+  sandbox: "task-grant:sandbox",
 } as const;
 
 export interface TaskGrantAuthorizerOptions {
