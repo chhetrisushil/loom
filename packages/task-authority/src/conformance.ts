@@ -27,6 +27,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.renew-stale-epoch",
   "broker.renew-born-expired",
   "broker.reservation-never-released",
+  "broker.identity-fixed",
   "carve.child-renew-ceiling",
   "carve.total-spend",
   "carve.forged-meters",
@@ -115,6 +116,26 @@ const CHECKS: Record<string, Check> = {
     await b.mint(mintReq("c1", 4, "p"));
     await b.revoke("c1", "kit");
     await mustRefuse(b.mint(mintReq("c2", 1, "p")), "a revoked child's reservation was released");
+  },
+  "broker.identity-fixed": async (s) => {
+    const b = mk(s, () => ({}));
+    const id = { tenant: "kit-tenant", onBehalfOf: "kit-user" };
+    await b.mint({ ...mintReq("p", 4), ...id });
+    const kid = await b.mint(mintReq("c", 2, "p"));
+    must(
+      kid.tenant === id.tenant && kid.onBehalfOf === id.onBehalfOf,
+      "a child did not inherit identity (R30)"
+    );
+    await mustRefuse(
+      b.mint({ ...mintReq("x", 1, "p"), tenant: "other-tenant" }),
+      "a child was minted into a different tenant (R30)"
+    );
+    must((await b.renew(req("p", 0, 0))).granted, "setup: renewal denied");
+    const now = await b.current("p");
+    must(
+      now?.tenant === id.tenant && now?.onBehalfOf === id.onBehalfOf,
+      "a renewal dropped or changed tenant/onBehalfOf (R30)"
+    );
   },
   "carve.child-renew-ceiling": async (s) => {
     const b = mk(s, () => ({ leases: { w: 3 } }));

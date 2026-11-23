@@ -16,6 +16,12 @@ export interface MintRequest {
   ttlMs: number;
   parent?: { taskId: string };
   /**
+   * R30: the tenant and end user the task acts for, signed into the grant. A child INHERITS both from its
+   * parent; naming a different value (or one the parent lacks) is refused, so a child never changes identity.
+   */
+  tenant?: string;
+  onBehalfOf?: string;
+  /**
    * D6: per lease, the `lease.<n>.reserved` total in the PARENT's own fold (read by the supervisor). When
    * given with `parent`, the broker refuses unless the sum of the parent's children's high-water ceilings,
    * this one included, stays within it. Both sides only grow, so the check is sound whenever it runs.
@@ -187,12 +193,19 @@ export class InMemoryGrantLedger {
       exp: now + ttlMs,
       epoch: 0,
     };
+    if (req.tenant !== undefined) unsigned.tenant = req.tenant;
+    if (req.onBehalfOf !== undefined) unsigned.onBehalfOf = req.onBehalfOf;
     let parent: Rec | undefined;
     if (req.parent !== undefined) {
       const pid: unknown = req.parent?.taskId;
       parent = typeof pid === "string" ? this.tasks.get(pid) : undefined;
       if (!parent || parent.revoked) throw new GrantBrokerError("parent is unknown or revoked");
       if (parent.grant.exp <= now) throw new GrantBrokerError("parent has expired");
+      for (const k of ["tenant", "onBehalfOf"] as const) {
+        if (req[k] !== undefined && req[k] !== parent.grant[k])
+          throw new GrantBrokerError(`a child cannot change ${k} (it inherits the parent's)`);
+        if (parent.grant[k] !== undefined) unsigned[k] = parent.grant[k];
+      }
       unsigned.rootId = parent.grant.rootId;
       unsigned.parentId = parent.grant.taskId;
       unsigned.exp = Math.min(unsigned.exp, parent.grant.exp);
