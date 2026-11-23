@@ -106,6 +106,125 @@ describe("TaskGrantAuthorizer", () => {
     });
     const d = authz().authorize(req(sneaky, { toolId: "db.write" }));
     expect(d.allowed).toBe(false);
+    expect(d.reason).toMatch(/^task-grant:scope/);
+  });
+
+  it("snapshot wins over getters on issuedTo and exp", () => {
+    const flip = (field: string, first: unknown, later: unknown): TaskGrant => {
+      const sneaky = { ...grant() } as Record<string, unknown>;
+      let reads = 0;
+      Object.defineProperty(sneaky, field, {
+        enumerable: true,
+        get: () => (++reads === 1 ? first : later),
+      });
+      return sneaky as unknown as TaskGrant;
+    };
+    // issuedTo: signed value first, "mallory" afterwards; the actor is the signed holder
+    expect(authz().authorize(req(flip("issuedTo", "agent-a", "mallory"))).allowed).toBe(true);
+    // ... and the reverse cannot let mallory in
+    expect(
+      authz().authorize(req(flip("issuedTo", "agent-a", "mallory"), {}, "mallory")).allowed
+    ).toBe(false);
+    // exp: signed (expired) value first, far future afterwards: still expired or signature-denied
+    const exp = authz().authorize(req(flip("exp", NOW, NOW + 1e9)));
+    expect(exp.allowed).toBe(false);
+  });
+
+  it("an actor getter that changes between reads cannot pass the check with one value and show base another", () => {
+    let reads = 0;
+    const seen: unknown[] = [];
+    const spy: CapabilityAuthorizer = {
+      authorize: (r) => {
+        seen.push(r.principal?.actor, r.principal?.actor);
+        return { allowed: true };
+      },
+    };
+    const r = req(grant());
+    const principal = { taskGrant: grant() } as Record<string, unknown>;
+    Object.defineProperty(principal, "actor", {
+      enumerable: true,
+      get: () => (++reads === 1 ? "agent-a" : "mallory"),
+    });
+    r.principal = principal;
+    const d = authz(spy).authorize(r);
+    if (d.allowed) expect(seen).toEqual(["agent-a", "agent-a"]);
+    expect(d.allowed).toBe(true);
+  });
+
+  it("is total: base throwing (no grant and grant paths) is task-grant:error, no throw", () => {
+    const boom: CapabilityAuthorizer = {
+      authorize: () => {
+        throw new Error("secret detail ".repeat(10000));
+      },
+    };
+    for (const r of [req(), req(grant())]) {
+      const d = authz(boom).authorize(r);
+      expect(d.allowed).toBe(false);
+      expect(d.reason).toMatch(/^task-grant:error/);
+      expect(d.reason).not.toMatch(/secret detail/);
+    }
+    const nullProto: CapabilityAuthorizer = {
+      authorize: () => {
+        throw Object.create(null);
+      },
+    };
+    expect(authz(nullProto).authorize(req(grant())).reason).toMatch(/^task-grant:error/);
+    const badDecision = { authorize: () => null } as unknown as CapabilityAuthorizer;
+    expect(authz(badDecision).authorize(req(grant())).allowed).toBe(false);
+  });
+
+  it("is total: a throwing clock and a throwing Proxy principal deny", () => {
+    const clock = new TaskGrantAuthorizer({
+      secret: SECRET,
+      base,
+      now: () => {
+        throw new Error("clock");
+      },
+    });
+    expect(clock.authorize(req(grant())).reason).toMatch(/^task-grant:error/);
+    const r = req(grant());
+    r.principal = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("trap");
+        },
+      }
+    );
+    const d = authz().authorize(r);
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toMatch(/^task-grant:error/);
+  });
+
+  it("a NaN or non-numeric clock denies as expired", () => {
+    for (const t of [Number.NaN, "5", undefined, Number.POSITIVE_INFINITY] as unknown[]) {
+      const a = new TaskGrantAuthorizer({ secret: SECRET, base, now: () => t as number });
+      const d = a.authorize(req(grant({ exp: 1 })));
+      expect(d.allowed).toBe(false);
+      expect(d.reason).toMatch(/^task-grant:expired/);
+      expect(a.authorize(req(grant({ exp: 2 ** 52 }))).allowed).toBe(false);
+    }
+  });
+
+  it("bounds live values in a denial reason (1 MB actor)", () => {
+    const d = authz().authorize(req(grant(), {}, "x".repeat(1_000_000)));
+    expect(d.reason).toMatch(/^task-grant:holder/);
+    expect((d.reason ?? "").length).toBeLessThanOrEqual(400);
+    expect(d.reason).toContain("…");
+    const deny = { authorize: () => ({ allowed: false, reason: "y".repeat(1_000_000) }) };
+    expect((authz(deny).authorize(req(grant())).reason ?? "").length).toBeLessThanOrEqual(400);
+  });
+
+  it("copies its options: later mutation does not swap base or secret", () => {
+    const opts: { secret: string; base: CapabilityAuthorizer; now: () => number } = {
+      secret: SECRET,
+      base,
+      now: () => NOW,
+    };
+    const a = new TaskGrantAuthorizer(opts);
+    opts.secret = "other";
+    opts.base = { authorize: () => ({ allowed: false, reason: "swapped" }) };
+    expect(a.authorize(req(grant())).allowed).toBe(true);
   });
 
   it("denies a bad signature (tampered field, wrong secret)", () => {
