@@ -21,7 +21,7 @@ import type {
   VerifyMode,
 } from "@loomwork/verify";
 import type { WorkflowRuntime } from "@loomwork/workflow-runtime";
-import { type ReachEdges, reachFromFlows } from "./reachCore";
+import { type ReachEdges, reachDetailed } from "./reachCore";
 
 /**
  * The `defineConfig({ verify })` key. A bare mode is the common case; the object form
@@ -436,11 +436,15 @@ export function resolveVerifyInput(
     ...(grants !== undefined && { grants }),
     ...(placement !== undefined && { placement }),
     ...(inputs.taskGrants !== undefined && {
-      taskGrants: inputs.taskGrants.map((t) => ({
-        flowId: t.flowId,
-        effects: t.effects,
-        reach: reachFromFlows(flows, t.flowId, t.reach),
-      })),
+      taskGrants: inputs.taskGrants.map((t) => {
+        const r = reachDetailed(flows, t.flowId, t.reach);
+        return {
+          flowId: t.flowId,
+          effects: t.effects,
+          reach: r.tools,
+          ...(r.unknownChildren.length > 0 && { unknownChildren: r.unknownChildren }),
+        };
+      }),
     }),
     ...(inputs.meteredDimensions !== undefined && { meteredDimensions: inputs.meteredDimensions }),
     ...(inputs.effectClasses !== undefined && { effectClasses: inputs.effectClasses }),

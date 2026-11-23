@@ -77,4 +77,30 @@ describe("task-grant-reach end to end (ADR 0150 D9)", () => {
     });
     expect(f).toEqual([]);
   });
+
+  it("warns on an unregistered declared child instead of passing silently", () => {
+    const f = check(rt, {
+      taskGrants: [
+        { flowId: "parent", effects: ["a"], reach: { children: { parent: ["ghost"] } } },
+      ],
+    });
+    expect(f.map((x) => x.severity)).toEqual(["warn"]);
+    expect(f[0]?.message).toContain('"ghost"');
+  });
+
+  it("an `llm` template effect is covered once the loop declares its model tool", () => {
+    // kills: agentLoopReach without modelToolId, which falsely flags a correct template
+    const l = {
+      definition: agent$({ id: "x", name: "x", tools: [] } as never),
+      modelToolId: "llm",
+    };
+    const f = check(rt, {
+      taskGrants: [
+        { flowId: "parent", effects: ["a", "llm"], reach: { agentLoops: { parent: [l] } } },
+      ],
+    });
+    expect(f).toEqual([]);
+    const without = check(rt, { taskGrants: [{ flowId: "parent", effects: ["a", "llm"] }] });
+    expect(without).toHaveLength(1);
+  });
 });

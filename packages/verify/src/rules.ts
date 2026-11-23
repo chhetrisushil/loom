@@ -513,6 +513,22 @@ const taskGrantReach: Rule = (input) => {
         location: flow.id,
       });
     }
+    if (t.unknownChildren !== undefined && t.unknownChildren.length > 0) {
+      findings.push({
+        rule: "task-grant-reach",
+        severity: "warn",
+        message: `Task-grant template for flow "${flow.id}" declares child flow(s) that are not registered: ${t.unknownChildren.map((c) => `"${c}"`).join(", ")}, so their effects are not in the reach.`,
+        location: flow.id,
+      });
+    }
+    if (t.reach === undefined && (flow.unresolvedReach ?? []).length > 0) {
+      findings.push({
+        rule: "task-grant-reach",
+        severity: "info",
+        message: `Task-grant template for flow "${flow.id}" has no declared reach, so only the flow's own effects count; a child flow or agent loop it uses and the template names will be reported as unreachable.`,
+        location: flow.id,
+      });
+    }
     findings.push(...reachCoverage(flow, "task-grant-reach", "the grant's upper bound"));
   }
   return findings;
