@@ -745,6 +745,65 @@ describe("never-started child (R33)", () => {
     }
   }, 30_000);
 
+  it("I1 (R36): after the whole reservation is returned an UNRESERVED child cannot be carved on top of it", async () => {
+    const refuseFirst = (real: ChildGrantMinter): ChildGrantMinter => ({
+      ...real,
+      mintChildGrant: (p, spec) =>
+        spec.childId === CHILD
+          ? Promise.reject(new GrantBrokerError("refused by the minter"))
+          : real.mintChildGrant(p, spec),
+    });
+    const parent: Parent = async (ctx) => {
+      const res = await reserveChildLease(ctx, "k", { w: 10 });
+      await awaitChild(ctx, { key: "k", flowId: "child", input: { n: 10 }, ...res.spawn }).catch(
+        (e) => {
+          if (e instanceof SuspendError) throw e;
+        }
+      );
+      await res.settle(); // returned 10: the parent's fold shows 10 available again
+      // an UNRESERVED child: lease and leaseParent come from the flow, no reserve step, so no record
+      const v = await awaitChild(ctx, {
+        key: "v",
+        flowId: "child",
+        input: { n: 10 },
+        lease: { w: 10 },
+        leaseParent: PARENT,
+      }).catch((e) => {
+        if (e instanceof SuspendError) throw e;
+        return (e as Error).name;
+      });
+      return { v, ownRan: (await acts(ctx, "a", 10)).ran };
+    };
+    const { h } = await runParent(parent, { wrapMint: refuseFirst });
+    await output(h.runtime, PARENT);
+    expect(await h.runtime.loadState("P::v")).toBeNull(); // never minted, never ran
+    expect(h.ran.n).toBeLessThanOrEqual(10); // before R36 the child alone could spend 10 on top of the parent's 10
+    expect(String(h.errors.at(-1))).toMatch(/reserved in its fold/);
+  });
+
+  it("I3: a flow cannot reserve under another execution's child id; nothing is metered", async () => {
+    const parent: Parent = async (ctx) => {
+      const err = await ctx
+        .run(
+          { ...(task("sq") as object), toolId: CHILD_LEASE_TOOL } as never,
+          {
+            op: "reserve",
+            lease: { w: 3 },
+            child: "Q::k",
+          } as never
+        )
+        .then(
+          () => undefined,
+          (e) => (e as Error).message
+        );
+      return { ownRan: 0, err };
+    };
+    const { h } = await runParent(parent);
+    const out = await output(h.runtime, PARENT);
+    expect(out.err).toMatch(/child of this execution/);
+    expect(await custom(h.runtime, PARENT)).toEqual({});
+  });
+
   it("a child is EITHER started OR unstarted: the broker keeps the first, the other changes nothing", async () => {
     const m = (b: InMemoryGrantBroker, id: string, c: number) =>
       b.mint({

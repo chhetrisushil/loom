@@ -46,6 +46,12 @@ export function childLeaseEffect(o: {
       if (ctx.readResources === undefined || ctx.flush === undefined)
         throw new LeaseDurabilityError(CHILD_LEASE_TOOL);
       const reserve = input.op === "reserve";
+      // R36 (I3): a flow may only name ITS OWN children, or it could squat another execution's child id
+      if (
+        reserve &&
+        !(typeof input.child === "string" && input.child.startsWith(`${ctx.executionId}::`))
+      )
+        throw new GrantBrokerError("a reservation names a child of this execution");
       const want = reserve ? input.lease : await o.broker.takeReturn(input.child, grant.taskId);
       const custom: Record<string, number> = {};
       const watch: [string, number][] = [];
@@ -73,7 +79,8 @@ export function childLeaseEffect(o: {
         for (const [d, w] of watch) if (read(ctx, d) !== w) throw new LeaseDimensionDroppedError(d);
         await ctx.flush();
       }
-      // R33: the broker records it only AFTER the fold holds it, so a record never exceeds the reservation
+      // R33: the broker records it only AFTER the fold holds it, so a record never exceeds the reservation.
+      // A throw here leaks the fold reservation (the safe direction: nothing is ever returned for it).
       if (input.op === "reserve") await o.broker.reserve(grant.taskId, input.child, input.lease);
       return reserve ? { taskId: grant.taskId, lease: input.lease } : { taskId: grant.taskId };
     },
