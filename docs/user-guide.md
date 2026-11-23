@@ -183,7 +183,7 @@ runtime.register("triage-llm", new LlmEffect(async (input, ctx) => {
 }));
 ```
 
-Effect kinds: `"tool" | "llm" | "human" | "a2a"`. The `EffectContext` gives handlers `executionId`, `stepId`, `attempt`, `emit()`, and an optional `signal` (AbortSignal) for cancellation. `EffectContext.taskKind` (additive, ADR 0140) names the kind of the task the workflow runtime is running the effect under (`"tool"` inside an `agentLoop$` tool frame); middleware may use it to scope itself.
+Effect kinds: `"tool" | "llm" | "human" | "a2a"`. The `EffectContext` gives handlers `executionId`, `stepId`, `attempt`, `emit()`, and an optional `signal` (AbortSignal) for cancellation. `EffectContext.taskKind` (additive, ADR 0140) names the kind of the task the workflow runtime is running the effect under (`"tool"` inside an `agentLoop$` tool frame); middleware may use it to scope itself. Two optional members ([ADR 0151](adr/0151-effect-context-flush.md)) are present on the durable seam and absent on the transient one: `flush()` awaits the durable write of every event committed so far (a durable pre-dispatch barrier for middleware), and `readResources()` returns the live fold totals synchronously as a copy.
 
 ### Middleware wraps effects
 
@@ -1114,11 +1114,15 @@ manager, send a turn over `maxTurnChars` (the body rejects it), or send a malfor
 
 ### Task-scoped authority: grants, leases and renewal (`@loomwork/task-authority`, [ADR 0150](adr/0150-task-scoped-authority.md))
 
-A valid credential does not say whose work is being done. A task grant binds authority to the task: it names the effects an execution may run and gives side-effect **leases** (a ceiling per group of effects). When a lease is spent, or the grant expires or is revoked, the run **parks** on a renewal gate instead of failing, and a broker decides whether to renew. One grant backs exactly one execution, and the holder is bound into the principal. Needs the ADR 0151 effect-context seams (`flush`, `readResources`).
+A valid credential does not say whose work is being done. A task grant binds authority to the task: it names the effects an execution may run and gives side-effect **leases** (a ceiling per group of effects). When a lease is spent, or the grant expires or is revoked, the run **parks** on a renewal gate instead of failing, and a broker decides whether to renew. One grant backs exactly one execution, and the holder is bound into the principal. Needs the ADR 0151 effect-context seams (`flush`, `readResources`), so `@loomwork/workflow-runtime` 0.1.5 or later.
 
 ```ts
+import { type TaskDefinition, flow$ } from "@loomwork/core";
 import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
-import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
+import { type FlowRunner, WorkflowRuntime } from "@loomwork/workflow-runtime";
+import { z } from "zod";
 import {
   InMemoryGrantBroker,
   RENEWAL_GATE,
@@ -1132,44 +1136,69 @@ import {
 
 const secret = process.env.TASK_AUTHORITY_SECRET!;   // signs grants and binds the holder; one secret per deployment
 
-// 1. The broker mints, renews and revokes. Its policy decides what a renewal grants (false = deny).
-const broker = new InMemoryGrantBroker({ secret, policy: () => ({ leases: { writes: 10 } }) });
+// 1. The broker mints, renews and revokes. Its policy decides what a renewal grants (false = deny); the default
+//    policy tops up each exhausted lease by the ceiling it was minted with, one tranche per renewal, up to 8 renewals.
+const broker = new InMemoryGrantBroker({ secret });
 const grant = await broker.mint({
   taskId: "t1",
   issuedTo: "agent-a",
   effects: ["write"],                                              // the only effect this run may call
-  leases: { writes: { ceiling: 5, effects: ["write"] } },          // at most 5 attempts, then park
+  leases: { writes: { ceiling: 1, effects: ["write"] } },          // one attempt per tranche, then park
   ttlMs: 60 * 60_000,
 });
 
 // 2. Lease middleware counts each leased effect on live fold state, durably, before it runs.
 //    The authorizer denies anything outside the grant; it is required alongside the middleware.
 //    `effects` lets the middleware recognise the real child-lease effect (needed only if you register one).
-const effects = new EffectRuntime(
+const effects: EffectRuntime = new EffectRuntime(
   [taskLeaseMiddleware({ secret, source: broker, effects: () => effects })],
   { authorizer: new TaskGrantAuthorizer({ secret, base: { authorize: () => ({ allowed: true }) } }) },
 );
 effects.register("write", new ToolEffect(async () => ({ ok: true })));
 
 // 3. Install the principal codec, and register the flow with a typed schema for the renewal gate.
-const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
-installTaskAuthority(runtime, { source: broker, secret });         // also reserves the `lease.` meter prefix
-// definition: flow$({ ..., resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema } })
-runtime.registerFlow(definition, async (ctx) => {
-  // fn must be replay-pure (durable ctx calls only) and must not park; the id is unique per call site
-  return withRenewal(ctx, "write-1", (attemptId) => ctx.run(writeTask(attemptId), {}));
+const definition = flow$({
+  id: "write-twice",
+  name: "write-twice",
+  version: "1.0.0",
+  inputSchema: z.object({}),
+  outputSchema: z.unknown(),
+  steps: [],
+  resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema },
 });
+const writeTask = (attemptId: string): TaskDefinition => ({
+  _tag: "TaskDefinition",
+  kind: "tool",
+  id: `write:${attemptId}`,                                        // derive the id from the attempt id so a renewed attempt re-runs
+  toolId: "write",
+});
+const runtime = new WorkflowRuntime({
+  eventStore: new InMemoryAsyncEventStore(),
+  snapshotStore: new InMemoryAsyncSnapshotStore(),
+  effectRuntime: effects,
+});
+installTaskAuthority(runtime, { source: broker, secret });         // also reserves the `lease.` meter prefix
+const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+  // fn must be replay-pure (durable ctx calls only) and must not park; the id is unique per call site
+  await withRenewal(ctx, "write-1", (attemptId) => ctx.execute(writeTask(attemptId), {}));
+  return withRenewal(ctx, "write-2", (attemptId) => ctx.execute(writeTask(attemptId), {})); // spends the one-attempt lease: parks
+};
+runtime.registerFlow(definition, runner);
 
 // 4. Start AS the task. The principal carries the grant; a chain with a delegation is refused, and tenant / onBehalfOf must equal the grant's.
-const handle = await runtime.start(flow, {}, { executionId: "e1", principal: { actor: grant.issuedTo, taskGrant: grant } });
+const handle = await runtime.start({ definition, runner }, {}, { executionId: "e1", principal: { actor: grant.issuedTo, taskGrant: grant } });
 
-// 5. When a lease is spent the run parks on RENEWAL_GATE. Answer it through the broker (resume needs a resumeAuthenticator).
+// 5. The second write finds the lease spent, so the run parks on RENEWAL_GATE. Answer it through the broker: the
+//    default policy grants one more tranche, so the run resumes and completes. (Pass a `resumeAuthenticator` to
+//    the runtime to record who renewed; some modes require one.)
 await handle.waitForSuspend();
 const resumed = await answerRenewal(runtime, broker, "e1");
 await resumed.waitForCompletion();
 ```
 
-An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }`. Child leases (`childLeaseEffect`, `childGrantMinter`; give `taskLeaseMiddleware` `effects: () => effectRuntime` so it can tell the real child-lease effect from another effect under the same id) and the `@loomwork/task-authority/conformance` kit are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what task authority refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
+**What a renewal grants.** A renewal sets the ceiling of each lease the policy names, and spend is cumulative: it is never reset. The default policy tops up every exhausted lease by its original (minted) ceiling, one tranche per renewal, and stops after 8 renewals, so the example's `writes` lease allows one write, then two, then three. A custom policy returns `{ leases: { writes: 10 } }` to set the new TOTAL ceiling (it is not extra attempts: with 5 already spent, 10 allows 5 more) or `false` to deny. A child grant's exhausted lease is denied rather than topped up, because its ceiling was reserved in the parent's fold: it needs a new parent reservation. A granted effect that no lease counts is refused when called (`LeaseUnmappedError`) unless you pass `strictLeases: false` to `taskLeaseMiddleware`; the example's `write` effect works because the `writes` lease names it.
+
+An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }` (it needs `toolErrors: "feedback"`, the default, else `AgentLoopConfigError`; a refused renewal throws `AuthorityRenewalDeniedError`). Child leases (`childLeaseEffect`, `childGrantMinter`; give `taskLeaseMiddleware` `effects: () => effectRuntime` so it can tell the real child-lease effect from another effect under the same id; the grant must also list `task-authority:child-lease` in its `effects`) and the `@loomwork/task-authority/conformance` kit are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what task authority refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
 
 **Multi-tenant grants.** Give `mint` a `tenant` and, optionally, an `onBehalfOf`; both are signed into the grant and bound into the run's `ta2:` ref. The run's principal must carry the same values (a mismatch is refused at start, and denied as `task-grant:identity` on a transient call), and a child grant inherits them. The log holds only the ref; the broker holds identity, so erasing it there makes the task permanently unrestorable (fail closed). A delegation together with a task grant is still refused: mint a child grant instead.
 
@@ -1178,7 +1207,7 @@ const grant = await broker.mint({ taskId: "t2", issuedTo: "agent-a", tenant: "ac
 await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acme", onBehalfOf: "user-7", taskGrant: grant } });
 ```
 
-**Rotating the secret.** Pass a ring wherever `secret` goes: `{ current, previous?, refOnly? }`. New grants sign with `current`; grants signed with a `previous` key still verify and renew onto `current`. Retire an old key in two steps: move it to `previous`, then, once its grants have renewed, to `refOnly`, where it can only restore the ref of a run already started under it (never vouch for a grant). Keep it there for the lifetime of the longest such run. **Removing a key outright strands every run started under it, and that is terminal**, so do it last.
+**Rotating the secret.** Pass a ring wherever `secret` goes: `{ current, previous?, refOnly? }`. New grants sign with `current`; grants signed with a `previous` key still verify and renew onto `current`. Retire an old key in two steps: move it to `previous`, then, once its grants have renewed (or after the longest grant TTL: nothing renews a grant that never exhausts, and a run holding a grant signed by a key that has left `previous` fails to restore), to `refOnly`, where it can only restore the ref of a run already started under it (never vouch for a grant). Keep it there for the lifetime of the longest such run. **Removing a key outright strands every run started under it, and that is terminal**, so do it last.
 
 ```ts
 const secret = { current: process.env.TA_KEY_2!, previous: [process.env.TA_KEY_1!] };   // later: { current: KEY_2, refOnly: [KEY_1] }

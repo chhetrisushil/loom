@@ -13,7 +13,7 @@
 - Found by: evaluation of the whitepaper [*Task-Scoped Authority for Autonomous Agents*](../spec/task-scoped-authority-whitepaper.md) (2026-11-23).
 - Gate: second-consumer claim, see [Second consumers](#second-consumers).
 - Placement verdict: **first-party package `@loomwork/task-authority`**, plus additive opt-in options in
-  `@loomwork/agent`, `@loomwork/orchestration` and `@loomwork/verify`. **Kernel change: zero.** Every piece sits
+  `@loomwork/agent`, `@loomwork/orchestration` and `@loomwork/verify`. **Kernel change: zero.** *(Corrected 2026-11-23: slice 1 as built needed the three kernel seams of [ADR 0151](0151-effect-context-flush.md): two optional `EffectContext` methods and `WorkflowRuntime.reserveEffectDimensions`; "zero" holds only for the package's own logic. No `@loomwork/verify` option shipped.)* Every piece sits
   behind a seam that already exists: the `CapabilityAuthorizer`, `EffectMiddleware`, the `PrincipalCodec`,
   typed resume gates and the userspace-emittable events.
 - Version/compat impact: new package. `@loomwork/agent`, `@loomwork/orchestration`, `@loomwork/verify`: additive
@@ -100,7 +100,7 @@ ships separately. Slice 2 may be cut without affecting slice 1.
 `checkTaskAuthorityConformance`. Wiring it is one `defineConfig` composition. An app that does not wire it sees no
 change.
 
-**Does not:** add a syscall, an event type, a fold key or an `EffectContext` field. The rejected alternative
+**Does not:** add a syscall, an event type, a fold key or an `EffectContext` field. *(Corrected 2026-11-23: the `EffectContext` clause is superseded. Slice 1 added `flush` and `readResources` to `EffectContext` and `reserveEffectDimensions` to `WorkflowRuntime`, under [ADR 0151](0151-effect-context-flush.md); the fold-key and event-type clauses stand.)* The rejected alternative
 (a kernel `_authority` fold key) is below.
 
 ### D2 — The task grant: a signed token that names a task
@@ -113,8 +113,8 @@ interface TaskGrant {
   issuedTo: string;      // holder binding, as DelegatedGrant (principal.actor must match)
   effects: string[];     // capability ids, incl. R12 "<toolId>:<resource>"; "*" refused at mint
   leases: Record<string, { ceiling: number; effects: string[] }>; // see D4
-  reads?: string[];      // D8: Loom namespaces this task may read across lineages
-  ambient?: "none" | "declared"; // D10
+  reads?: string[];      // D8: Loom namespaces this task may read across lineages (slice 2, NOT built: `validateGrantShape` rejects it as an unexpected key)
+  ambient?: "none" | "declared"; // D10 (slice 2, NOT built: rejected the same way)
   exp: number;           // absolute expiry (epoch ms), REQUIRED; a task grant never lives forever
   epoch: number;         // 0 at mint, +1 per renewal (D5)
   sig: string;           // HMAC-SHA256 over the canonical encoding, same scheme as signDelegation
@@ -169,12 +169,12 @@ and calls `next`. Otherwise it emits `QUOTA_EXCEEDED { level: "lease", reason }`
 
 ### D5 — Running out pauses: renewable authority errors and a typed renewal gate
 
-`LeaseExhaustedError`, `GrantExpiredError` and `GrantRevokedError` share the marker `renewable: true`.
+`LeaseExhaustedError`, `GrantExpiredError` and `GrantRevokedError` share the marker `renewable: true`. *(As built there is no `GrantExpiredError` class: an expired grant is a `CapabilityDeniedError` with reason `task-grant:expired`, which `isRenewable` recognises.)*
 
 - **`withRenewal(ctx, id, fn)`** for plain flows. When `fn` throws a renewable error, it suspends on the typed gate
   `task-authority:renew` (ADR 0077) carrying a `RenewalRequest`:
   `{ taskId, epoch, spent, renewals, effectClassesCaused, justification? }`. The broker resumes it with a
-  `RenewalVerdict { granted, epoch, digest }`, authenticated by the app's `ResumeAuthenticator`, so the durable
+  `RenewalVerdict { granted, epoch, digest }`, authenticated by the app's `ResumeAuthenticator` (optional as built: without one the resume still works and only the `_approvals` record naming the approver is missing), so the durable
   approval names who renewed. On resume the codec rehydrates the new token (D3) and `fn` is retried under a fresh
   step id. The denied attempt stays in the log as evidence. A refused renewal fails the run with
   `RenewalDeniedError`.
@@ -192,7 +192,7 @@ and calls `next`. Otherwise it emits `QUOTA_EXCEEDED { level: "lease", reason }`
 Orchestration's spawn options gain `lease?: Record<string, number>`. At spawn, the parent meters
 `lease.<name>.reserved += n` in **its own** log, and the child's grant is minted with `ceiling = n`,
 `parentId = parent.taskId` and `rootId = parent.rootId`. Scope is the subset `grants` already enforces. When the
-child completes, its unused amount travels in the `CHILD_DONE` payload. The parent meters
+child completes, its unused amount travels in the `CHILD_DONE` payload *(as built it is recorded at the broker through `settleChild` and taken once through `takeReturn`; see the amendment)*. The parent meters
 `lease.<name>.returned += unused`.
 
 The parent's available lease is `ceiling − spent − reserved + returned`. Every term is additive and comes from
@@ -363,6 +363,8 @@ Slice 1 is implemented (`@loomwork/task-authority`, with the kernel seams of [AD
 above are unchanged; this amendment records where the build departs from or narrows them. Rulings are numbered R1–R29 in the slice's
 ledger; each item cites the decision it changes.
 
+- **D1 and the header's "Kernel change: zero" are superseded** *(corrected 2026-11-23)*. Slice 1 needs the kernel seams of ADR 0151 (`EffectContext.flush`, `readResources`, `WorkflowRuntime.reserveEffectDimensions`); the placement verdict holds only for the package's own logic.
+
 ### D2/D3 — one grant backs exactly one execution, and the holder is bound in the ref
 
 - **R16.** One task grant backs exactly one execution. `GrantSource.claim(taskId, executionId)` is an atomic compare-and-set: the first
@@ -410,7 +412,7 @@ ledger; each item cites the decision it changes.
   throw. On `{ ok: true }` it calls `fn(attemptId)` again outside the decider, so the value is read back from completed frames. `fn`
   MUST be replay-pure (only durable `ctx` calls) and MUST NOT park; steps keyed by the attempt id re-run after a renewal, and the id
   must be unique per call site per execution.
-- **R24.** The expired-grant reason has one exported formatter/parser pair (`formatExpiredReason` / `parseExpiredReason`).
+- **R24.** The expired-grant reason has one formatter/parser pair, internal to the package (`formatExpiredReason` / `parseExpiredReason` in `authorizer.ts`; not exported from the package index).
   `answerRenewal` overwrites `request.epoch` from `broker.current(taskId)` when available and recomputes the view digest as a tamper
   check. `withRenewal` treats any verdict other than `granted === true` as denied.
 - **R12/R8.** An expired grant may be renewed (expiry pauses, renewal resumes); `renew` refuses a result whose clamped `exp` is not in
@@ -558,4 +560,4 @@ built by the same helper as `readResources()` ([ADR 0151](0151-effect-context-fl
 
 ### Still open
 
-Slice 2: provenance taint across lineages (D7) and covered laundering, which the kit reports as skipped.
+Slice 2, none of it built: provenance taint across lineages (D7), `reads` scoping (D8), grant derivation (D9), `ambient` and the enforcing sandbox (D10), the schedule root (D11) and disclosure (D12); and covered laundering, which the kit reports as skipped. The `@loomwork/verify` options the header promised did not ship with slice 1.
