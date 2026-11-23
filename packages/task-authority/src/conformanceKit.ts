@@ -55,5 +55,12 @@ export const req = (taskId: string, epoch: number, renewals: number): RenewalReq
 });
 export const task = (id: string, toolId = "act") =>
   ({ _tag: "TaskDefinition", kind: "tool", id, toolId }) as never;
+export async function until(cond: () => Promise<boolean>, what: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!(await cond())) {
+    must(Date.now() < deadline, `timed out on ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 export const mk = (s: ConformanceSubject, policy?: RenewalPolicy, c = clock()) =>
   s.makeBroker({ secret: SECRET, now: c.now, ...(policy && { policy }) });

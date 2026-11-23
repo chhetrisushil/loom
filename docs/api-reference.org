@@ -1935,7 +1935,8 @@ const CONFORMANCE_CHECK_IDS: readonly string[]   // broker.* (claim, holder, tak
 function checkTaskAuthorityConformance(subject: ConformanceSubject): Promise<ConformanceReport>
 //   never throws. Broker-contract checks, plus (needs the optional peers core, event-runtime, snapshot-runtime, workflow-runtime, orchestration) runtime checks on a
 //   rig the kit builds: carve.forged-meters and laundering.uncovered.shared-memory guard the package and kernel, NOT the broker (a broken broker cannot fail them); revocation.
-//   skipped with a reason: laundering.uncovered.a2a ("A2A transport not available in-process"), laundering.covered ("slice 2 (ADR 0150 D7)"). carve.total-spend, pause-renew, replay follow in T10c.
+//   skipped with a reason: laundering.uncovered.a2a ("A2A transport not available in-process"), laundering.covered ("slice 2 (ADR 0150 D7)").
+//   replay: a run replaying 8 effects makes the same number of broker calls as one replaying 1 (principal resolution is a fixed cost; ruling R29). No broker can fail it: the calls come from the runtime.
 #+end_src
 
 ** ~@loomwork/compliance~ — subject export & erasure (T3)

@@ -5,6 +5,7 @@ import type {
   ConformanceSubject,
 } from "./conformanceKit";
 import { clock, mintReq, mk, must, mustRefuse, req } from "./conformanceKit";
+import { MORE_CHECKS } from "./conformanceMore";
 import { RUNTIME_CHECKS } from "./conformanceRuntime";
 import { taskGrantDigest } from "./grant";
 
@@ -27,15 +28,19 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.renew-born-expired",
   "broker.reservation-never-released",
   "carve.child-renew-ceiling",
+  "carve.total-spend",
   "carve.forged-meters",
   "laundering.uncovered.shared-memory",
   "laundering.uncovered.a2a",
   "laundering.covered",
+  "pause-renew",
+  "replay",
   "revocation",
 ] as const;
 
 const CHECKS: Record<string, Check> = {
   ...RUNTIME_CHECKS,
+  ...MORE_CHECKS,
   "broker.claim-atomic": async (s) => {
     const b = mk(s);
     await b.mint(mintReq("t", 1));
