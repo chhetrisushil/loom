@@ -87,6 +87,13 @@ export interface GrantBroker extends GrantSource {
    * WHOLE reservation takeable once through `takeReturn`, and revokes a grant minted for it but never claimed.
    * A child is EITHER started (`settleChild`, or already claimed) OR unstarted, never both: whichever comes
    * first wins and the other changes nothing. No record, or a started child: nothing happens.
+   * MUST be atomic with `claim`: "not claimed" and the revoke are ONE compare-and-set, or a child could start
+   * (claim wins) and ALSO be paid its whole reservation. A broker must also keep a NEVER-DECREASING per-parent
+   * total of what it carved (minted ceilings, plus an unminted child's reservation once settled unstarted) and
+   * compare `parentReserved` against THAT, not against the live (releasable) high-water sum: a returned
+   * reservation must not let an unreserved child be minted on top of the parent's refilled lease (R36).
+   * Called by the supervisor for any child it cannot start; a TRANSIENT failure there (fold unreadable,
+   * broker timeout) therefore becomes a permanent "unstarted" outcome: the child is never retried (M3).
    */
   settleUnstarted(childId: string, parentTaskId: string): Promise<void>;
 }
@@ -149,6 +156,13 @@ export class InMemoryGrantLedger {
   protected readonly revokedDigests = new Set<string>();
   protected readonly claims = new Map<string, string>();
   protected readonly reservations = new Map<string, Reservation>();
+  /** R36: per parent and lease, everything ever carved (minted ceilings, unminted-unstarted reservations). Never decreases. */
+  protected readonly carved = new Map<string, Record<string, number>>();
+  protected carve(parent: string, lease: string, amount: number): void {
+    const c = this.carved.get(parent) ?? {};
+    c[lease] = (c[lease] ?? 0) + amount;
+    this.carved.set(parent, c);
+  }
   protected readonly secret: GrantKeys;
   protected readonly now: () => number;
 
@@ -185,10 +199,12 @@ export class InMemoryGrantLedger {
     if (!v || v.parent !== parentTaskId || v.outcome !== undefined) return;
     const r = this.tasks.get(childId);
     if (r !== undefined) {
+      // check-unclaimed and revoke in ONE synchronous block: a claim cannot interleave (it sees revoked)
       if (this.claims.has(childId)) return; // it started: settleChild's path, never both
-      await this.revoke(childId, "never started"); // minted, never claimed: it can no longer start
-      r.high = Object.fromEntries(Object.keys(r.high).map((n) => [n, 0])); // and holds nothing
-    }
+      const revoking = this.revoke(childId, "never started"); // minted, never claimed: it can no longer start
+      r.high = Object.fromEntries(Object.keys(r.high).map((n) => [n, 0])); // it holds no headroom (carved stays)
+      await revoking;
+    } else for (const [n, a] of Object.entries(v.lease)) this.carve(v.parent, n, a); // R36
     v.outcome = "unstarted";
   }
   async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
@@ -287,7 +303,8 @@ export class InMemoryGrantLedger {
           throw new GrantBrokerError(`lease ${name} ceiling exceeds the parent's headroom`);
         if (
           req.parentReserved !== undefined &&
-          this.reserved(parent, name) + spec.ceiling > (Number(req.parentReserved[name]) || 0)
+          (this.carved.get(parent.grant.taskId)?.[name] ?? 0) + spec.ceiling >
+            (Number(req.parentReserved[name]) || 0)
         )
           throw new GrantBrokerError(`lease ${name} exceeds what the parent reserved in its fold`);
       }
@@ -312,6 +329,9 @@ export class InMemoryGrantLedger {
       justifications: [],
     });
     parent?.children.add(taskId);
+    if (parent)
+      for (const [n, l] of Object.entries(grant.leases))
+        this.carve(parent.grant.taskId, n, l.ceiling);
     return cloneRequest(grant);
   }
 

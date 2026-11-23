@@ -40,6 +40,31 @@ class PaysBothPaths extends InMemoryGrantBroker {
     if (v?.parent === parent) Object.assign(v, { outcome: "unstarted", taken: false });
   }
 }
+/** R36 I1: compares parentReserved with the live (releasable) sum, not a never-decreasing total. */
+class DecreasingSum extends InMemoryGrantBroker {
+  override async mint(r: MintRequest) {
+    if (r.parent) this.carved.delete(r.parent.taskId);
+    return super.mint(r);
+  }
+}
+/** R33 I2: leaves a minted, never-claimed grant live (and claimable). */
+class NoRevoke extends InMemoryGrantBroker {
+  override async revoke(taskId: string, reason: string): Promise<void> {
+    if (reason !== "never started") await super.revoke(taskId, reason);
+  }
+}
+/** R33 I2: reads "unclaimed", yields, then revokes: a claim can win in between. */
+class NonAtomicUnstarted extends InMemoryGrantBroker {
+  override async settleUnstarted(childId: string, parent: string): Promise<void> {
+    if (!this.tasks.has(childId)) return super.settleUnstarted(childId, parent); // unminted: nothing to race
+    const v = this.reservations.get(childId);
+    const claimed = this.claims.has(childId);
+    await Promise.resolve();
+    if (!v || v.parent !== parent || v.outcome !== undefined || claimed) return;
+    await this.revoke(childId, "never started");
+    v.outcome = "unstarted";
+  }
+}
 class ForgetsPastDigests extends InMemoryGrantBroker {
   override async revoked(digest: string): Promise<boolean> {
     return [...this.tasks.values()].some((r) => r.revoked && r.digests.at(-1) === digest);
@@ -199,6 +224,24 @@ describe("checkTaskAuthorityConformance", () => {
       PaysBothPaths,
       "broker.unstarted-return",
       /changed the take|CLAIMED|paid again/,
+    ],
+    [
+      "a parentReserved check against the decreasing sum",
+      DecreasingSum,
+      "broker.unstarted-return",
+      /unreserved child was minted/,
+    ],
+    [
+      "a settleUnstarted that leaves the minted grant live",
+      NoRevoke,
+      "broker.unstarted-return",
+      /could still be claimed/,
+    ],
+    [
+      "a settleUnstarted that is not atomic with claim",
+      NonAtomicUnstarted,
+      "broker.unstarted-return",
+      /both started/,
     ],
     ["a takeReturn that pays twice", PaysTwice, "broker.take-return-once", /paid twice/],
     [

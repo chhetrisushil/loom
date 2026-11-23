@@ -109,6 +109,44 @@ const CHECKS: Record<string, Check> = {
       none(await b.takeReturn("r", "p")),
       "a CLAIMED (started) child returned its whole reservation"
     );
+    // I2: a child minted but never claimed can no longer start, and takes its whole lease back once
+    const b2 = mk(s);
+    await b2.mint(mintReq("p", 6));
+    await b2.reserve("p", "m", { w: 6 });
+    await b2.mint({ ...mintReq("m", 6, "p"), parentReserved: { w: 6 } });
+    await b2.settleUnstarted("m", "p");
+    must(!(await b2.claim("m", "e")), "a minted, never-started child could still be claimed");
+    must((await b2.current("m")) === undefined, "settleUnstarted left the child's grant live");
+    must(
+      (await b2.takeReturn("m", "p")).w === 6,
+      "the unstarted minted child's take was not whole"
+    );
+    must(none(await b2.takeReturn("m", "p")), "the unstarted minted child was paid twice");
+    // I1 (R36): returning a reservation must not let an UNRESERVED child be carved on top of it
+    await mustRefuse(
+      b2.mint({ ...mintReq("v", 6, "p"), parentReserved: { w: 6 } }),
+      "an unreserved child was minted after a minted child's reservation was returned"
+    );
+    const b3 = mk(s);
+    await b3.mint(mintReq("p", 6));
+    await b3.reserve("p", "u2", { w: 6 });
+    await b3.settleUnstarted("u2", "p"); // never minted
+    must((await b3.takeReturn("u2", "p")).w === 6, "setup: the unminted take was not whole");
+    await mustRefuse(
+      b3.mint({ ...mintReq("v", 6, "p"), parentReserved: { w: 6 } }),
+      "an unreserved child was minted after an unminted reservation was returned"
+    );
+    // settleUnstarted is atomic with claim: never BOTH started and paid the whole reservation
+    const b4 = mk(s);
+    await b4.mint(mintReq("p", 6));
+    await b4.reserve("p", "r2", { w: 6 });
+    await b4.mint({ ...mintReq("r2", 6, "p"), parentReserved: { w: 6 } });
+    const [, claimed] = await Promise.all([b4.settleUnstarted("r2", "p"), b4.claim("r2", "e")]);
+    const paid = await b4.takeReturn("r2", "p");
+    must(
+      !(claimed && paid.w === 6),
+      "a child both started (claimed) and took its whole reservation"
+    );
   },
   "broker.revoked-covers-past-digests": async (s) => {
     const b = mk(s, () => ({}));
