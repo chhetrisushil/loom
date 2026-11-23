@@ -29,11 +29,12 @@ export interface DirectedByOptions {
    */
   foreign?: "lineage" | "any-untrusted";
   /**
-   * Origin prefixes the app declares foreign (in addition to other lineages). Default `["a2a-inbound:"]`: an A2A peer is always
-   * another principal. `inbox:` and `mcp:` stay NON-foreign (S-R3) unless listed here (`["a2a-inbound:", "inbox:"]`) or
-   * `foreign: "any-untrusted"` is set. Passing an array REPLACES the default (`[]` turns even `a2a-inbound:` off).
+   * Origin prefixes the app declares foreign, ADDED to the default `"a2a-inbound:"` (an A2A peer is always another principal).
+   * `inbox:` and `mcp:` stay NON-foreign (S-R3) unless listed here (`["inbox:"]`) or `foreign: "any-untrusted"` is set.
    */
   foreignPrefixes?: readonly string[];
+  /** `false` drops the default `"a2a-inbound:"` prefix (the only way to treat an A2A peer as not foreign). Default `true`. */
+  defaultForeignPrefixes?: boolean;
 }
 
 /**
@@ -75,7 +76,12 @@ export function directedBy(opts: DirectedByOptions): EffectMiddleware {
   const mode = opts.foreign ?? "lineage";
   const list = Array.isArray(opts.appliesTo) ? new Set<string>(opts.appliesTo) : undefined;
   const pred = typeof opts.appliesTo === "function" ? opts.appliesTo : undefined;
-  const prefixes = opts.foreignPrefixes ?? ["a2a-inbound:"];
+  const prefixes = [
+    ...new Set([
+      ...(opts.defaultForeignPrefixes === false ? [] : ["a2a-inbound:"]),
+      ...(opts.foreignPrefixes ?? []),
+    ]),
+  ];
   const decided = new Set<string>();
 
   return async (ctx, _input, next) => {
