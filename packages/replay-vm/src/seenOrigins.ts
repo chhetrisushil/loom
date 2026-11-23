@@ -140,25 +140,30 @@ export const CHANNELS: ReadonlySet<string> = new Set([
  */
 export function trackSeenOrigins(state: ExecutionState, event: EventEnvelope): ExecutionState {
   let key: unknown = state.variables[SEEN_ORIGINS_KEY];
+  let seeded = false;
   if (key === undefined) {
     if (event.eventType !== "EXECUTION_STARTED") return state;
     key = startKey(event);
     if (key === undefined) return state;
+    seeded = true;
   }
+  const fail = (limits: SeenOriginsLimits, origins: string[]): ExecutionState =>
+    withKey(state, { v: 1, limits, origins, overflow: true });
   // A malformed key fails closed (overflow, unproven); an unproven key is left as it is.
-  if (!validKey(key))
-    return withKey(state, { v: 1, limits: limitsOf(undefined), origins: [], overflow: true });
+  if (!validKey(key)) return fail(limitsOf(undefined), []);
   if (key.through === undefined) return state;
+  // Defence for a path that did not normalize the snapshot: a key not advanced to the prior sequence is unproven.
+  if (!seeded && key.through !== state.sequence) return fail(key.limits, key.origins);
   let k: SeenOriginsKey = key;
-  const m = event.metadata;
-  if (m !== undefined && k.overflow !== true && CHANNELS.has(event.eventType)) {
-    if (m.originsOverflow === true) k = { ...k, overflow: true };
-    else if (Array.isArray(m.origins)) {
+  if (k.overflow !== true && CHANNELS.has(event.eventType)) {
+    const m = event.metadata;
+    if (m?.originsOverflow === true) k = { ...k, overflow: true };
+    else if (Array.isArray(m?.origins)) {
       k = union(
         k,
-        m.origins.filter((o): o is string => typeof o === "string")
+        (m.origins as unknown[]).filter((o): o is string => typeof o === "string")
       );
-    }
+    } else k = { ...k, overflow: true }; // R13: no record on a channel event of a tracked run = not scanned = fail closed
   }
   return withKey(state, { ...k, through: event.sequence });
 }
