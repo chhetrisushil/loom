@@ -44,4 +44,13 @@ describe("@loomwork/task-authority public surface", () => {
     ]);
     expect(api.TASK_AUTHORITY_VERSION).toBe("0.0.0-slice1");
   });
+
+  it("keeps the conformance kit off the main entry (it needs the optional runtime peers)", async () => {
+    expect(Object.keys(api)).not.toContain("checkTaskAuthorityConformance");
+    const kit = await import("./conformance");
+    expect(Object.keys(kit).sort()).toEqual([
+      "CONFORMANCE_CHECK_IDS",
+      "checkTaskAuthorityConformance",
+    ]);
+  });
 });
