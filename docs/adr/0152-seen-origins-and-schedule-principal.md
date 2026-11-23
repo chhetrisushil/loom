@@ -129,6 +129,9 @@ rolling-deploy hazard ADR 0109 D8 gates for `continueAsNew`, and the remedy is t
   `state.sequence` and `through` are advanced together by the same fold; `ExecutionJournal.commitAtomic` ~262-307,
   `WorkflowRuntime.ts:9015-9026`). The test lives INSIDE `normalizeSnapshotState` (below), so every reader inherits it. A 1.26
   node's own effects have no `seenOrigins` (the field does not exist there), so a consumer sees absent = untracked and fails closed.
+  **`through` is not the whole safety net** (R13): it catches a stale 1.26 FOLD of the key, not a 1.26 WRITER that appends a tainted
+  channel event with no record while a 1.27 fold advances `through` honestly. That case, and every commit path that bypasses the
+  journal's scan (the reopen bootstrap batch until it is wired, any future path), is closed by the "no record is overflow" rule below.
 
 #### Staleness is checked in `normalizeSnapshotState` (O(1), every caller inherits it)
 
@@ -161,14 +164,20 @@ exactly once, live: the journal commit. It records what it found; the fold union
   `metadata.originsOverflow?: true`. The first form of R11 named payload fields; metadata is chosen because the positional
   `EXECUTION_RESUMED` payload is the caller's own value that the flow receives back, and adding a key to it would change the delivered
   value, a digest and a sealed payload. Metadata already carries the other kernel stamps (`kernel`, `fence`, `forkChain`, `flowEmit`)
-  and changes neither the payload nor what a flow reads. Absent means clean (nothing was found), so a tracked run's events carry
-  no extra bytes unless they hold taint.
+  and changes neither the payload nor what a flow reads. **A tracked, non-overflowed run records on EVERY channel event, `origins: []` when the value is clean (R13).** Absent no longer
+  means clean: a channel event of a tracked run that carries neither `origins` nor `originsOverflow` was not scanned by a 1.27 journal
+  (a 1.26 writer, an unwired commit path), so the FOLD reads it as OVERFLOW (fail closed). The cost is about 14 bytes of metadata per
+  channel event of a tracked run. The record is capped: more than `maxOrigins` distinct origins on one event records
+  `originsOverflow: true`. Origins are PLAINTEXT metadata: they are not sealed and not crypto-shredded (an origin label is a
+  tool name or peer id, never content; ADR 0130 sealing covers payloads only).
 - **How "tracked" is known at commit.** The scan runs only when the vm's state has a valid `_seenOrigins` key that is not already
   overflowed: its `limits` bound the walk. For the start envelope (no state yet) the payload's `seenOriginsLimits` stamp or a carried
   set plays that part. **A value committed while the run is untracked records nothing**, and an overflowed key records nothing
   further (the set is sticky; scanning would only spend time).
 - **The fold** (`replay-vm`, after each handler, for exactly the channels below) unions `metadata.origins` into the key
-  and sets `overflow` for `metadata.originsOverflow`. It never opens a payload. Its cost is O(k) for the recorded list, plus the
+  and sets `overflow` for `metadata.originsOverflow`, or when a channel event carries neither. It never opens a payload. For a key that was not
+  just seeded it also checks `through === state.sequence` (the prior sequence) and reads a mismatch as unproven overflow (defence for a path
+  that did not go through `normalizeSnapshotState`). Its cost is O(k) for the recorded list, plus the
   copy-on-write advance of `through` on every event of a tracked run. Because the recorded list is the source, the live fold and
   the replay fold read the same bytes: key order and JSONB reordering of an output cannot change the result for a 1.27 event.
 - **Trust model.** `origins` and `originsOverflow` are kernel-written. `ExecutionJournal.build` removes any caller-supplied
@@ -194,6 +203,7 @@ state before the event, exactly as the fold evaluates the handler:
 | `PARALLEL_COMPLETED.errorPayload` | **scan** | The same typed-failure data on a parallel scope. |
 | `EXECUTION_MIGRATED.migratedInput` | **scan** | The migrated input replaces `_input`. |
 | `EXECUTION_STARTED.input` | **scan** | The flow input. |
+| **the reopen bootstrap batch** (`WorkflowRuntime.landReopenBootstrap`, `ExecutionJournal.envelopeAt`) | **scan, against a scratch fold** | It writes channel events (an `EXECUTION_RESUMED`, an `EXECUTION_MIGRATED.migratedInput`) without the journal, so the vm only advances at `adopt`: each envelope is scanned against the vm state folded with the EARLIER batch entries, and the scratch fold is rebuilt from the refolded late `OUTCOME_RECORDED` on each retry. `claimRecovery`'s `EXECUTION_RECOVERED` is not a channel and carries nothing. |
 | continueAsNew carry | **carry the set**: add `carried.seenOrigins` to `carriedOf` (`continuation.ts:194`, as `resources`) and seed the successor from it, validated like `seedResources`; the carry itself is also the successor's `input`, so it is scanned too | Without it, rotating through `continueAsNew` launders every origin seen so far. The **carried-set shape** is `{ origins: string[], overflow?: true }` (each origin re-capped and deduped on seeding, more than `maxOrigins` gives overflow); `carriedOf` carries the overflow marker too. The rule, applied wherever a key is seeded (the fold at `EXECUTION_STARTED` and adoption, not only the successor stamp): **a stamp is present AND `continuedFrom` is present AND no carried set was supplied gives `overflow`** (a successor of a keyless predecessor cannot prove a clean past). The carried set is bounded by `maxOrigins x 256` bytes (default 16 KB, at most 256 KB) and is NOT counted by `maxCarryBytes`. |
 | fork | **follows `forkResources`** (`eventHandlers.ts` ~514-540): a fork of a chain member keeps `carried.seenOrigins`, and the same rule applies (stamp and `continuedFrom` and no carried set gives overflow); an ordinary fork copies its prefix, key included | A fork must not shed what its parent was shown. |
 | child results | **not propagated by the kernel** | Reading another execution's fold from inside this one would couple two logs and add an unbounded cross-execution read. The 1P orchestration supervisor taints the `CHILD_DONE` body with the child's seen origins (task-authority slice 2, S5), so the ordinary `STEP_COMPLETED` or inbox scan recovers them; the kernel carries opaque strings and stays out. |
@@ -206,22 +216,36 @@ the safe direction for a security check.
 
 #### The scan (determinism)
 
-The scan runs live at commit on in-memory values, and in the upgrade rescan on JSON read from a store (a store such as Postgres JSONB
-reorders object keys). So the walk is a pure function of the JSON VALUE, not of object identity or key order, which keeps a commit-time
-record and a rescan of the same event equal:
+There are TWO walks over one rule, and they must not be confused:
+
+- **The commit walk is over the LIVE structure** (R13), because `WorkflowContext` hands the flow the LIVE `output`, not its JSON image: a
+  `Map` entry, a field a `toJSON` hides, a non-enumerable property are all reachable by the flow. It applies exactly classify's
+  `isTainted` predicate (`__loomTainted` an object with a string `origin`, and a `value` key) to each own enumerable value BEFORE any
+  `toJSON`, and walks `Map` and `Set` entries. It FAILS CLOSED (`originsOverflow`, no partial origins) on anything it cannot walk
+  faithfully: any `toJSON` other than `Date`'s, an accessor (getter or setter) or a non-enumerable or symbol-keyed own property, a
+  non-plain prototype (a class instance, a `Map`/`Set` subclass), a cycle, a depth over 64, or more than `limits.maxScanNodes` nodes.
+  `ArrayBuffer` and its views are skipped (as `scanTaint` does); `Date` is a leaf. A caveat for readers of `ExecutionJournal`: the
+  walk runs synchronously inside the commit (the accessor refusal checks descriptors rather than reading values, so a getter is not
+  invoked), a re-entrant commit from user code is not supported, and a value mutated after the commit is not rescanned (what the log
+  recorded is what the run was shown).
+- **The rescan walk is over the JSON VALUE** (a store such as Postgres JSONB reorders object keys, and a stored event has no live
+  structure): a pure function of the JSON, not of object identity or key order, so the one-time upgrade rescan of pre-1.27 events is
+  deterministic.
+
+The rules both walks share:
 
 - **A vendored walk in `replay-vm`** (`replay-vm` has no `classify` dependency, and the kernel must not inherit later
-  semantic changes to `scanTaint`): iterative, depth pinned at 64 (M6), over a normalized JSON view: own enumerable string
+  semantic changes to `scanTaint`): iterative, depth pinned at 64 (M6). The rescan walk normalises to the JSON view: own enumerable string
   keys of plain objects and arrays; `toJSON()` applied where present, and `Map`, `Set`, `undefined`, functions and symbols
-  treated exactly as `JSON.stringify` treats them, on the live path and the replay path alike; non-finite numbers are leaves.
+  treated exactly as `JSON.stringify` treats them; non-finite numbers are leaves.
   **Cycle detection only** (an ancestor stack); there is NO shared-reference dedupe (a `WeakSet` would make the node count
   depend on object identity, which a JSON round trip changes). A cycle, a depth over 64, or more than `limits.maxScanNodes`
-  visited nodes is `exceeded`. Node counting follows the JSON view, so it is independent of key order.
+  visited nodes is `exceeded`. Node counting is independent of key order.
 - **The wrapper shape** it recognises is classify's: an object whose `__loomTainted` is an object with a string `origin`
   and that has a `value` key. A test (in `replay-vm`, with classify as a dev dependency only) asserts every shape
   `tainted()` produces is recognised, so the two cannot drift silently.
 - **Per-event origins are sorted** (code unit order) before they are recorded and unioned, so first-seen order within an
-  event never depends on object key order.
+  event never depends on object key order. The `inbox:<topic>` origin goes through the same 256-character cap as every other origin.
 - **An exceeded scan records `originsOverflow` ONLY and drops the partial origins it found**, because which origins a bounded walk
   reaches first depends on traversal order.
 - **Truncation before dedupe and count:** an origin longer than 256 characters is replaced, BEFORE it is deduped or counted, by
@@ -446,6 +470,7 @@ An Opus design review of the first draft (1b191649) found seven Important flaws 
 - **M7 document fixes.** The header no longer says "no payload change"; the stamp sites are named; the budget paragraph names the files and the unguarded `replay-vm`; a realistic growth estimate; the S2 split below.
 - **M11 deferred.** An attested inbox-sender origin (so a sender cannot choose the origin label of its own message) is a follow-up: it reopens ADR 0150 S-R1/S-R3 (writer tagging is content-level, foreign = a `lineage:` origin) and needs the owner's decision first.
 - **Re-review fixes (R10, Sonnet @285eed05).** (I-1) `through` is compared to `snapshot.state.sequence`, not `snapshot.sequence`, which a batch commit can leave behind on a healthy fleet. (I-2) The O(1) staleness check moves into `normalizeSnapshotState`, so every existing caller (compliance, replay-inspector, `foldFromCompleteLog`, `blankStream`) inherits read-only safety; the helper only rescans and adopts. (I-3) The rescan runs after `takeDriverLease` (resume, flow migration, `restoreFromState`) and before the fence, and compaction rescans before `archiveRemoved` and the truncate; the early seed is read-only. The continueAsNew / fork rule (stamp and `continuedFrom` and no carried set gives overflow) is stated for every seeding point and `carriedOf` carries the marker. Minors: the `restoreFromState` key drop moves to S2b (M-a); the budget paragraph, file list and growth estimate now agree and include `seenOriginsSeed.ts` (M-b); "off" now says a run with no stamp and no carried set folds no key (M-c); the shred error is a brand (`isPayloadShredded`), not a class, and the sealed classes are named (M-d); the carry size is noted (M-e); a read-only site reports an absent key as absent (M-f); the perf requirement covers the copy-on-write cost of `through`.
+- **R13 (review of S2a/S2a2, 2026-11-23):** two false negatives of R11 closed. (I-1) the commit walk is over the LIVE structure with classify's `isTainted` predicate and fails closed on what it cannot walk faithfully (the flow receives the live object, not its JSON image); the JSON-view walk is kept for the rescan only. (I-2) "absent means clean" failed open for a 1.26 writer and any unwired commit path: a tracked run now records `origins: []` on every channel event and the fold reads a channel event with no record as overflow; the reopen bootstrap batch is wired. Also: per-event record capped at `maxOrigins`, the `inbox:<topic>` origin capped, a fold-side `through` check, origins stated to be plaintext metadata, and the `restoreFromState` drop of a forged key (M10) must land in S2b BEFORE the gate.
 - **R11 (owner, 2026-11-23): scan at commit, record it.** The S2a perf gate measured the fold-time scan at about 290x on a taint-free log of 2000-node outputs (0.8 ms to 225 ms for 3000 events; about 37 ns per node), because today's fold never opens an output. D1 is rewritten: `ExecutionJournal` scans a channel value once when it commits the event, for a tracked run only, and records `metadata.origins` / `metadata.originsOverflow` on the envelope; the fold unions recorded lists and never rescans. The live-vs-replay ordering and JSONB divergence (I6) is moot for 1.27 events; pre-1.27 events are scanned only by the upgrade rescan, which keeps the JSON-view rules. Still EVENT_SCHEMA 1.27.0. The record is in metadata rather than the payload (the positional resume payload is the caller's value), the journal strips caller-supplied keys, and the budget estimate now includes `ExecutionJournal.ts`. Clarified at the same time: the truncation digest is FNV-1a 64 over UTF-8 bytes (16 hex digits); the carried-set shape is `{ origins: string[], overflow?: true }`; the `MESSAGE_CONSUMED` `inbox:<topic>` origin is kept as the kernel's attestation of the channel.
 - **Added by the first revision, for owner review:** `through` as a staleness detector (the review asked for the gate; `through` is what makes a gate mistake detectable rather than silent).
 
