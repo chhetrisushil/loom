@@ -1815,8 +1815,10 @@ export class WorkflowRuntime {
 
   /**
    * R3 — tell the authorizer a start is DURABLE (see {@link ExecutionAuthorizer.committed}).
-   * The principal is withheld when the start rode the system grant: that principal (a child's
-   * delegation identity, say) is not the owner of the execution.
+   * The principal is withheld when a PARENTED start rode the system grant: that principal (a child's
+   * delegation identity, say) is not the owner of the execution. A PARENT-LESS system start is a
+   * scheduled occurrence (`TimerService`), whose principal is the one `principalFor` named (ADR 0152 D2,
+   * ADR 0150 D12): it is who the run acts as and answers for, so `committed()` receives it.
    */
   private notifyStarted(
     executionId: string,
@@ -1835,7 +1837,8 @@ export class WorkflowRuntime {
         op: "start",
         executionId,
         workflowId,
-        ...(!viaSystem && principal !== undefined && { principal }),
+        ...((!viaSystem || parentExecutionId === undefined) &&
+          principal !== undefined && { principal }),
         // Lineage is trusted only from the supervisor (system grant) or the fork path, never from
         // a caller-supplied `RunOptions.parentExecutionId` (an anonymous start must not seed the
         // owner table from a parent it names).

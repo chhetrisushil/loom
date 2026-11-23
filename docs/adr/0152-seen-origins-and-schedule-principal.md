@@ -405,6 +405,7 @@ Then `runtime.start(flow, def.input, { executionId, ...(principal !== undefined 
 - **Recorded per ADR 0111** on `EXECUTION_STARTED` and rehydrated on every execute, so the tick's effects run as that principal and
   the grant it carries, never as the system. The system grant still bypasses the execution authorizer for the lifecycle op `start`
   (`systemOptions()` is spread unchanged): the hook supplies who the run acts as, not who authorized the start.
+  **`committed()` carries it (slice-2 S10a, owner ruling 2026-11-23).** `notifyStarted` withholds the principal of a PARENTED system start (a supervised child's delegation identity is not its owner) but passes a PARENT-LESS system start's principal, so under `requirePrincipal` an ownership policy learns who a scheduled run belongs to. One code line in `WorkflowRuntime.ts` (kernel budget refreshed under this ADR).
 - **Absent means byte-identical.** No hook, no extra await, no extra option key. A hook returning `undefined` starts with no principal.
 - **Idempotent and side-effect free (I7).** The hook may run on every node that polls an occurrence, and again on every retry poll
   (`StartLeaseHeldError` keeps the cursor). It must therefore be a pure function of `(schedule, occurrence)` and recorded data, and it must
