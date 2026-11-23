@@ -65,3 +65,11 @@ export {
   isChildLeaseEffect,
   reserveChildLease,
 } from "./childLease";
+export type { LineagePrincipal } from "./lineage";
+export {
+  LINEAGE_ORIGIN_PREFIX,
+  lineageOrigin,
+  lineageSend,
+  lineageTainter,
+  wrapLineage,
+} from "./lineage";

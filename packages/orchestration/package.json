@@ -23,11 +23,11 @@
     "@loomwork/core": "workspace:^",
     "@loomwork/effect-runtime": "workspace:^",
     "@loomwork/event-runtime": "workspace:^",
+    "@loomwork/replay-vm": "workspace:^",
     "@loomwork/verify": "workspace:^",
     "@loomwork/workflow-runtime": "workspace:^"
   },
   "devDependencies": {
-    "@loomwork/replay-vm": "workspace:*",
     "@loomwork/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

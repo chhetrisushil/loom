@@ -982,6 +982,9 @@ importers:
       '@loomwork/event-runtime':
         specifier: workspace:^
         version: link:../event-runtime
+      '@loomwork/replay-vm':
+        specifier: workspace:^
+        version: link:../replay-vm
       '@loomwork/verify':
         specifier: workspace:^
         version: link:../verify
@@ -989,9 +992,6 @@ importers:
         specifier: workspace:^
         version: link:../workflow-runtime
     devDependencies:
-      '@loomwork/replay-vm':
-        specifier: workspace:*
-        version: link:../replay-vm
       '@loomwork/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
