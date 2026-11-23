@@ -40,7 +40,8 @@ export class GrantRevokedError extends Error {
   readonly retryable = false;
   constructor(
     detail: string,
-    readonly taskId: string = detail
+    readonly taskId: string = detail,
+    readonly epoch?: number
   ) {
     super(`task grant revoked: ${detail}`);
     this.name = "GrantRevokedError";

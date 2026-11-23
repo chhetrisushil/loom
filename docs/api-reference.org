@@ -1905,7 +1905,7 @@ function taskLeaseMiddleware(o: TaskLeaseOptions): EffectMiddleware   // reads c
 //   must show spent + 1 (else LeaseDimensionDroppedError: the fold's 32-dimension cap is full), `await flush()`, next(). No in-process counters: the fold is the spend.
 // D5 (R20): source.revoked(digest) with a timeout. A clean `false` is trusted for revocationCacheMs; `true` is sticky; anything else (undefined, a throw, a non-promise, a timeout) is revoked.
 class LeaseExhaustedError extends Error { renewable: true; lease; ceiling; spent; epoch; taskId? }
-class GrantRevokedError extends Error { renewable: true; taskId }
+class GrantRevokedError extends Error { renewable: true; taskId; epoch? }
 class RenewalDeniedError extends Error {}   // renewable: false; a refused renewal or more than maxRenewals
 class LeaseUnmappedError extends Error {}   // renewable: false
 class LeaseGrantInvalidError extends Error {}   // renewable: false
@@ -1916,12 +1916,14 @@ const RENEWAL_GATE = "task-authority:renew"
 const renewalResumeSchema: ZodType   // { granted: true, epoch, digest, viewDigest? } | { granted: false, reason, viewDigest? }: flow$({ resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema } })
 function isRenewable(err: unknown): boolean   // `renewable === true`, or a CapabilityDeniedError (by name) whose reason starts "task-grant:expired", on the cause chain (depth 8)
 function withRenewal<T>(ctx: RenewalContext, id: string, fn: (attemptId: string) => Promise<T>, o?: { maxRenewals?: number /* 8 */; taskId?: string }): Promise<T>
-//   attempt ids: `id`, then `${id}:r<n>`. A renewable failure is recorded as DECISION_RECORDED "task-authority:attempt:<id>:<n>" { request: RenewalRequest } (read it from
-//   loadState().variables._decisions[..].choice), then ctx.suspend({ on: RENEWAL_GATE, correlationKey: `${executionId}#${id}#${n}`, viewDigest: sha256({ gate, request }) }).
-//   granted => retry under a fresh id (the codec restores the new grant); denied, or n > maxRenewals => RenewalDeniedError. Replay serves a failed attempt from its decision
-//   (fn is not re-run); only failures are recorded. A non-renewable error propagates untouched. `taskId` is a fallback for errors that name none.
+//   attempt ids: `id`, then `${id}:r<n>`. EVERY attempt's outcome is recorded: DECISION_RECORDED "task-authority:attempt:<id>:<n>" { ok: true } | { request: RenewalRequest }
+//   (read it from loadState().variables._decisions[..].choice); after { ok: true }, fn is called once more OUTSIDE the decision to get its value (durable steps replay from
+//   their frames). A renewable failure then ctx.suspend({ on: RENEWAL_GATE, correlationKey: `${executionId}#${id}#${n}`, viewDigest: sha256({ gate, request }) }).
+//   The payload is parsed with renewalResumeSchema even without resumeSchemas; granted => retry under a fresh id (the codec restores the new grant); denied, malformed, or
+//   n > maxRenewals => RenewalDeniedError. fn MUST be replay-pure and MUST NOT park; attempt-id steps re-run after a renewal, stable-id steps replay; `id` MUST be unique per
+//   call site per execution. A non-renewable error propagates untouched, recording nothing. No task/epoch on the error and no `taskId` => RenewalDeniedError (never epoch 0).
 function answerRenewal<H>(runtime: RenewalRuntime<H>, broker: { renew(r): Promise<RenewalVerdict> }, executionId: string, resumeOpts?: unknown): Promise<H>
-//   operator helper: reads the pending request, broker.renew(request), runtime.resume(id, { eventType: RENEWAL_GATE, payload: verdict + viewDigest echo }, resumeOpts)
+//   operator helper: reads the pending request, refuses if its digest != the parked viewDigest, takes the epoch from broker.current when offered, broker.renew(request), runtime.resume(id, { eventType: RENEWAL_GATE, payload: verdict + viewDigest echo }, resumeOpts)
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
 #+end_src
