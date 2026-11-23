@@ -1510,3 +1510,36 @@ describe("defineConfig - the compaction archive (ADR 0138 review: M1, M3)", () =
     );
   });
 });
+
+describe("kernel.features.seenOrigins and kernel.seenOrigins (ADR 0152 S2b)", () => {
+  const mem = { autostart: false, storage: { kind: "memory" } } as const;
+  it("refuses out-of-range limits, with the gate on or off", () => {
+    for (const on of [true, false]) {
+      expect(() =>
+        defineConfig({
+          ...mem,
+          kernel: { features: { seenOrigins: on }, seenOrigins: { maxOrigins: 0 } },
+        })
+      ).toThrow(RangeError);
+    }
+  });
+  it("valid limits are stamped on a started run when the gate is on, nothing when off", async () => {
+    for (const on of [true, false]) {
+      const eventStore = new InMemoryAsyncEventStore();
+      const app = defineConfig({
+        autostart: false,
+        storage: { kind: "custom", eventStore, snapshotStore: new InMemoryAsyncSnapshotStore() },
+        kernel: { features: { seenOrigins: on }, seenOrigins: { maxOrigins: 7 } },
+      });
+      registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+      await (
+        await app.runtime.start(gatedFlow(), { incidentId: "i1" }, { executionId: "so" })
+      ).waitForSuspend();
+      const first = (await eventStore.read("so"))[0]?.payload as { seenOriginsLimits?: unknown };
+      expect(first.seenOriginsLimits).toEqual(
+        on ? { maxOrigins: 7, maxScanNodes: 10_000 } : undefined
+      );
+      await app.close();
+    }
+  });
+});

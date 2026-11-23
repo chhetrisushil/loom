@@ -3,6 +3,7 @@ import { step$ } from "@loomwork/core";
 import type { ExecutionState, FlowDefinition } from "@loomwork/core";
 import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loomwork/event-runtime";
+import { seenOriginsList } from "@loomwork/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -17,6 +18,7 @@ const io = { inputSchema: z.any(), outputSchema: z.any() };
 const mk = (id: string) => step$({ id, name: id, toolId: id, ...io });
 const taint = mk("taint");
 const probe = mk("probe");
+const live = step$({ id: "live", name: "live", toolId: "live", ...io });
 const probe2b = step$({ id: "probe-b", name: "probe-b", toolId: "probe", ...io });
 
 type Probe = { present: boolean; list?: readonly string[] };
@@ -28,6 +30,7 @@ function world() {
   const archive = inboxArchiveFor(eventStore);
   const probes: Probe[] = [];
   const transient: Probe[] = [];
+  const liveReads: { before: string[]; after: string[] }[] = [];
   const runtime = (deps: Partial<WorkflowRuntimeDeps> = {}) => {
     const effects = new EffectRuntime();
     effects.register("taint", new ToolEffect(async (i: unknown) => tainted(i, "lineage:A")));
@@ -38,6 +41,16 @@ function world() {
         if (ctx.seenOrigins) p.list = ctx.seenOrigins();
         (i === "t" ? transient : probes).push(p);
         return i;
+      })
+    );
+    effects.register(
+      "live",
+      new ToolEffect(async (_i: unknown, ctx) => {
+        const before = [...(ctx.seenOrigins?.() ?? ["<absent>"])];
+        ctx.emit("DECISION_RECORDED", { decisionId: "d-live", choice: tainted(1, "lineage:Z") });
+        await ctx.flush?.();
+        liveReads.push({ before, after: [...(ctx.seenOrigins?.() ?? ["<absent>"])] });
+        return 1;
       })
     );
     return new WorkflowRuntime({
@@ -51,7 +64,7 @@ function world() {
       ...deps,
     });
   };
-  return { eventStore, snapshotStore, probes, transient, runtime };
+  return { eventStore, snapshotStore, probes, transient, liveReads, runtime };
 }
 
 function reg(rt: WorkflowRuntime, id: string, runner: FlowRunner<unknown, unknown>) {
@@ -61,7 +74,7 @@ function reg(rt: WorkflowRuntime, id: string, runner: FlowRunner<unknown, unknow
     name: id,
     version: "1.0.0",
     ...io,
-    steps: [taint, probe, probe2b],
+    steps: [taint, probe, probe2b, live],
   } as unknown as FlowDefinition<unknown, unknown>;
   rt.registerFlow(definition, runner);
   return { definition, runner } as RegisteredFlow<unknown, unknown>;
@@ -244,6 +257,83 @@ describe("seen origins: fleet gate, stamps and EffectContext.seenOrigins", () =>
     await rt2.send("r1", { topic: "go", payload: 1, messageId: "g" });
     await until(() => w.probes.length > 0);
     expect(w.probes.at(-1)?.present).toBe(false);
+  });
+
+  it("a gate-off continueAsNew of a tracked predecessor writes no carry and no stamp; its successor reads absent", async () => {
+    const w = world();
+    const body: FlowRunner<unknown, unknown> = async (ctx, input) => {
+      if ((input as { n?: number } | undefined)?.n === 1) {
+        await ctx.run(probe, "succ");
+        return "done";
+      }
+      await ctx.run(taint, "x");
+      await ctx.receive("go");
+      return ctx.continueAsNew({ n: 1 });
+    };
+    const on = w.runtime({ seenOriginsEnabled: true, continueAsNewEnabled: true });
+    const h = await on.start(reg(on, "co", body), {}, { executionId: "co" });
+    await settle(h);
+    const off = w.runtime({ continueAsNewEnabled: true }); // the gate is off on the node that rotates
+    reg(off, "co", body);
+    await off.send("co", { topic: "go", payload: 1, messageId: "g" });
+    await until(async () =>
+      (await w.eventStore.read("co~1").catch(() => [])).some(
+        (e) => e.eventType === "EXECUTION_COMPLETED"
+      )
+    );
+    const first = (await w.eventStore.read("co~1"))[0]?.payload as {
+      seenOriginsLimits?: unknown;
+      continuedFrom?: { carried?: Record<string, unknown> };
+    };
+    expect(first.seenOriginsLimits).toBeUndefined();
+    expect(first.continuedFrom?.carried).not.toHaveProperty("seenOrigins");
+    expect(w.probes.at(-1)?.present).toBe(false);
+  });
+
+  it("a read inside one effect is live: an emitted tainted decision shows on the second read", async () => {
+    const w = world();
+    const rt = w.runtime({ seenOriginsEnabled: true });
+    const f = reg(rt, "lv", async (ctx) => {
+      await ctx.run(live, 1);
+      return "done";
+    });
+    await (await rt.start(f, {}, { executionId: "lv1" })).waitForCompletion();
+    expect(w.liveReads).toEqual([{ before: [], after: ["lineage:Z"] }]);
+  });
+
+  it("a run started gate-off then resumed on a gate-on runtime reads absent", async () => {
+    const w = world();
+    const body: FlowRunner<unknown, unknown> = async (ctx) => {
+      await ctx.receive("go");
+      await ctx.run(probe, "p");
+      return "done";
+    };
+    const off = w.runtime();
+    await settle(await off.start(reg(off, "up", body), {}, { executionId: "up1" }));
+    const on = w.runtime({ seenOriginsEnabled: true });
+    reg(on, "up", body);
+    await on.send("up1", { topic: "go", payload: 1, messageId: "g" });
+    await until(() => w.probes.length > 0);
+    expect(w.probes.at(-1)?.present).toBe(false);
+  });
+
+  it("a fork of a tracked run sees the parent's origins; a fork of an untracked run reads absent", async () => {
+    const w = world();
+    const body: FlowRunner<unknown, unknown> = async (ctx) => {
+      await ctx.run(taint, "x");
+      await ctx.receive("go");
+      return "done";
+    };
+    for (const tracked of [true, false]) {
+      const rt = w.runtime(tracked ? { seenOriginsEnabled: true } : {});
+      const id = `fk-${tracked}`;
+      await settle(await rt.start(reg(rt, "fk", body), {}, { executionId: id }));
+      const log = await w.eventStore.read(id);
+      const at = log.filter((e) => e.eventType === "STEP_COMPLETED").at(-1)?.sequence ?? 0;
+      const child = await rt.fork(id, at, { executionId: `${id}-child`, system: true } as never);
+      const st = await rt.loadState(child.executionId, rt.systemOptions());
+      expect(seenOriginsList(st as ExecutionState)).toEqual(tracked ? ["lineage:A"] : undefined);
+    }
   });
 
   it("refuses out-of-range limits at construction", () => {

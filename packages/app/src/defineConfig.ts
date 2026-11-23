@@ -1301,7 +1301,7 @@ export interface LoomConfig {
        */
       sha256FlowHash?: boolean;
     };
-    /** ADR 0152 - seen-origins limits (read only when `features.seenOrigins` is on); out of range is refused at construction. */
+    /** ADR 0152 - seen-origins limits (validated at construction even when `features.seenOrigins` is off, stamped only when on); out of range is refused. */
     seenOrigins?: {
       /** Distinct origins kept per run before the set overflows. Integer 1..1024. Default 64. */
       maxOrigins?: number;
@@ -2316,11 +2316,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     }),
     ...(config.kernel?.features?.sha256FlowHash === true && { sha256FlowHash: true }),
     ...(config.kernel?.features?.scopes === true && { scopes: true }),
-    ...(config.kernel?.features?.seenOrigins === true && {
-      seenOriginsEnabled: true,
-      ...(config.kernel.seenOrigins !== undefined && {
-        seenOriginsLimits: config.kernel.seenOrigins,
-      }),
+    ...(config.kernel?.features?.seenOrigins === true && { seenOriginsEnabled: true }),
+    // validated at construction even with the gate off (like `maxCarryBytes`)
+    ...(config.kernel?.seenOrigins !== undefined && {
+      seenOriginsLimits: config.kernel.seenOrigins,
     }),
     ...(config.kernel?.features?.continueAsNew === true && {
       continueAsNewEnabled: true,

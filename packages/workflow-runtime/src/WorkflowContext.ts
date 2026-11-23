@@ -2,7 +2,12 @@ import { tainted } from "@loomwork/classify";
 import { BUILTIN_METER_DIMENSIONS, SuspendError, TypedFailure, fnv1a64 } from "@loomwork/core";
 import type { ExecutableTask, StepDefinition, SuspendWait } from "@loomwork/core";
 import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loomwork/effect-runtime";
-import { FLOW_DIVERGED_GATE, seenOriginsList } from "@loomwork/replay-vm";
+import {
+  FLOW_DIVERGED_GATE,
+  SEEN_ORIGINS_OVERFLOW,
+  hasSeenOrigins,
+  seenOriginsList,
+} from "@loomwork/replay-vm";
 import type { ReplayVM } from "@loomwork/replay-vm";
 import { linkSignals, parallelLimit } from "@loomwork/scheduler";
 import type { DecisionInner } from "./DivergenceGuard";
@@ -1063,8 +1068,9 @@ export class WorkflowContextImpl implements WorkflowContext {
       readResources: (): ResourceSnapshot => this.resourceCopy(),
       // ADR 0152 D1 - only for a TRACKED run with the fleet gate on; absent otherwise (fail closed for consumers).
       ...(this.seenOriginsOn &&
-        seenOriginsList(this.vm.peekState()) !== undefined && {
-          seenOrigins: (): readonly string[] => seenOriginsList(this.vm.peekState()) ?? [],
+        hasSeenOrigins(this.vm.peekState()) && {
+          seenOrigins: (): readonly string[] =>
+            seenOriginsList(this.vm.peekState()) ?? [SEEN_ORIGINS_OVERFLOW],
         }),
     };
 

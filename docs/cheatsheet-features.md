@@ -61,7 +61,7 @@ defineConfig({
   storage: { kind: "custom", eventStore, snapshotStore },
   timers:  { store, leases, dispatcher, schedules },
   autostart: false,        // build, don't run
-  kernel: { features: { scopes, inbox, inboxTopicStreams, continueAsNew, redrive } },  // opt-in syscalls
+  kernel: { features: { scopes, inbox, inboxTopicStreams, continueAsNew, redrive, seenOrigins } },  // opt-in syscalls
   security:      { … },    // the three rings, strict, crypto, compliance, killSwitch
   observability: { … },    // onEvent, onDurableEvent, telemetry, onWarn, onStorageError, reasoning
   durability:    { … },    // snapshotEvery, retention, heartbeat leases (ADR 0130 D11)

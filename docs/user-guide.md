@@ -1005,6 +1005,8 @@ Live view: `createAgentModelEffect(provider, { stream: true, reasoning: { store,
 
 A chat is one long-lived execution. `conversation$` is its flow: it parks on the inbox for each user turn, answers it with `agentLoop$`, records the exchange, and rotates (`continueAsNew`) every `rotateEveryTurns` so no generation's log grows without bound. Needs `kernel.features.inbox` and `kernel.features.continueAsNew`.
 
+`kernel.features.seenOrigins` (ADR 0152, default off, same rolling-upgrade rule as `continueAsNew`: enable it only once every node runs a 1.27.0+ kernel) makes the kernel record which taint origins have crossed into each run; an effect reads them as `ctx.seenOrigins?.()`. Absent means untracked and a consumer must fail closed; an overflowed set contains `SEEN_ORIGINS_OVERFLOW` (test with `includes`). `kernel.seenOrigins: { maxOrigins, maxScanNodes }` sets the limits stamped on new runs (validated even with the flag off). A `continueAsNew` carries the set to the successor only while the flag is on.
+
 ```ts
 import { agent$ } from "@loomwork/core";
 import { createAgentModelEffect } from "@loomwork/agent";
