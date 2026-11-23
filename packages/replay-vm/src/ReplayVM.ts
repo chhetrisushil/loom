@@ -172,6 +172,12 @@ export class ReplayVM {
     return this.state;
   }
 
+  /** ADR 0152 S2c: install the key an adoption rebuilt (the driver, after its lease). Replaces, never merges. */
+  replaceSeenOrigins(key: unknown): void {
+    this.owned = new WeakSet<object>();
+    this.state = { ...this.state, variables: { ...this.state.variables, _seenOrigins: key } };
+  }
+
   applyEvent(event: EventEnvelope): void {
     this.state = foldEvents([event], this.state, this.owned);
     this.track(event);

@@ -22,7 +22,7 @@
       "adr": "0152"
     },
     "WorkflowRuntime.ts": {
-      "codeLines": 6835,
+      "codeLines": 6864,
       "adr": "0152"
     },
     "__tests__/quarantineHarness.ts": {
@@ -168,6 +168,10 @@
     "sealGuard.ts": {
       "codeLines": 415,
       "adr": "0148"
+    },
+    "seenOriginsSeed.ts": {
+      "codeLines": 154,
+      "adr": "0152"
     },
     "signedResumeAuthenticator.ts": {
       "codeLines": 192,
