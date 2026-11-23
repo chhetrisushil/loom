@@ -1,6 +1,6 @@
 # ADR 0151 — `EffectContext.flush()`, `readResources()` and `reserveEffectDimensions()`: middleware can make its own events durable before the effect runs, read the live totals, and keep its accounting dimensions out of flow code's reach
 
-- Status: **Proposed**
+- Status: **Accepted** (2026-11-23) — implemented (#809, #820)
 - Date: 2026-11-23
 - Builds on: [ADR 0150](0150-task-scoped-authority.md) (D4 counts side-effect attempts, so the count must be
   durable before the attempt), K9.3 (the `idempotent: false` pre-dispatch drain of `STEP_STARTED`), K3

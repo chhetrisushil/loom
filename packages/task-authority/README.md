@@ -20,6 +20,10 @@ Slice 1 surface (see `docs/api-reference.org`):
   effect as `CHILD_LEASE_TOOL` and give the lease middleware `effects: () => effectRuntime`: only the effect
   `childLeaseEffect()` made is exempt from counting, and without the lookup (or with another effect under that id)
   the middleware throws `LeaseChildEffectUnbrandedError`.
+- Multi-tenant: `tenant` / `onBehalfOf` are signed into the grant, bound in a `ta2:` ref, denied on mismatch
+  (`task-grant:identity`) and inherited by children.
+- Key rotation: a secret may be a `GrantKeys` ring (`current`, `previous`, `refOnly`); removing a key strands
+  runs started under it, so retire through `refOnly` (see the user guide).
 - `@loomwork/task-authority/conformance`: a kit that proves a broker and runtime wiring resist laundering.
 
 Design: [ADR 0150 — task-scoped authority](../../docs/adr/0150-task-scoped-authority.md).
