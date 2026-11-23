@@ -61,6 +61,12 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | typeof TIMED_OU
  * resolver restore a principal without the grant): any failure (bad ref, MAC, miss, revoke, verify,
  * claim held elsewhere, throw, timeout) is `{ principalUnresolved }`, which the kernel denies. After a
  * revoke the execution's owner is unknown to the execution access policy (ADR 0111 `unknownOwner`).
+ *
+ * R17: one grant backs exactly one execution, so a task-governed run cannot `continueAsNew` (the
+ * successor copies the ref but has a new execution id) or be forked under the same grant: both are
+ * denied at their first effect as "claimed by another execution". A new generation needs a NEW child
+ * grant (broker `mint({ parent })`) on a new start. Recording an outcome (`recordOutcome`) as a task
+ * principal whose grant has expired is refused with {@link TaskAuthorityPrincipalError} and writes nothing.
  */
 export function taskAuthorityPrincipalCodec(
   source: GrantSource,

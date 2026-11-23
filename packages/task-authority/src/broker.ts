@@ -38,6 +38,9 @@ export interface GrantSource {
   /**
    * Bind a task to ONE execution (R16): the first claim wins, a repeat by the same `executionId` is true,
    * any other execution gets false. An unknown or revoked task is false.
+   *
+   * MUST be an atomic compare-and-set: first caller wins, idempotent for the same `executionId`. A
+   * non-atomic implementation (read, then write) lets two executions both claim the same task.
    */
   claim(taskId: string, executionId: string): Promise<boolean>;
 }

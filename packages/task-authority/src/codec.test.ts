@@ -10,9 +10,10 @@ import {
   type RegisteredFlow,
   WorkflowRuntime,
 } from "@loomwork/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { GrantSource } from "./broker";
+import { InMemoryGrantLedger } from "./broker";
 import { taskAuthorityPrincipalCodec } from "./codec";
 import { TaskAuthorityPrincipalError } from "./errors";
 import { type TaskGrant, signTaskGrant } from "./grant";
@@ -77,6 +78,7 @@ interface BootOpts {
   orch?: "before" | "after";
   now?: () => number;
   source?: GrantSource;
+  continueAsNewEnabled?: boolean;
 }
 function boot(broker: InMemoryGrantBroker, o: BootOpts = {}) {
   const { shared } = o;
@@ -105,6 +107,7 @@ function boot(broker: InMemoryGrantBroker, o: BootOpts = {}) {
   const runtime = new WorkflowRuntime({
     ...stores,
     effectRuntime: effects,
+    ...(o.continueAsNewEnabled && { continueAsNewEnabled: true }),
     ...(o.resolver && { principalResolver: o.resolver }),
   });
   runtime.registerFlow(definition, runner as FlowRunner<unknown, unknown>);
@@ -219,6 +222,181 @@ describe("principal record", () => {
     const resumed = await h.runtime.resume("ea", GO, { principal: chainOf(g) });
     await expect(resumed.waitForCompletion()).resolves.toBeDefined();
     expect(h.seen).toHaveLength(2);
+  });
+});
+
+const until = async (f: () => Promise<boolean>) => {
+  for (let i = 0; i < 400; i++) {
+    if (await f()) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error("condition not reached");
+};
+const typesOf = async (h: { eventStore: InMemoryAsyncEventStore }, id: string) =>
+  (await h.eventStore.read(id)).map((e) => e.eventType);
+
+describe("generations, forks and late outcomes of a task-held run (R17)", () => {
+  const rotDef: FlowDefinition = { ...definition, id: "ta-rot", name: "ta-rot" };
+  const rotRunner: FlowRunner<{ gen?: number } | undefined, unknown> = async (ctx, input) => {
+    await ctx.execute(task(`g${input?.gen ?? 0}`), {});
+    if (input?.gen === undefined) return ctx.continueAsNew({ gen: 1 });
+    return { ok: true };
+  };
+  const rotFlow = { definition: rotDef, runner: rotRunner } as unknown as RegisteredFlow;
+
+  it("continueAsNew: the successor is denied at its first effect; a NEW child grant starts a run that acts", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker);
+    const h = boot(broker, { continueAsNewEnabled: true });
+    h.runtime.registerFlow(rotDef, rotRunner as FlowRunner<unknown, unknown>);
+    await h.runtime.start(rotFlow, {}, { executionId: "gen", principal: chainOf(g) });
+    await until(async () => (await typesOf(h, "gen~1")).includes("EFFECT_DENIED"));
+    // the predecessor's first effect ran; the successor's was denied before any authorizer
+    expect(h.seen).toHaveLength(1);
+    expect(h.asked).toHaveLength(1);
+    const failed = (await h.eventStore.read("gen~1")).find((e) => e.eventType === "EFFECT_DENIED");
+    expect(JSON.stringify(failed?.payload)).toMatch(/claimed by another execution/);
+    // continueAsNew cannot take a principal (the successor copies the predecessor's ref), so the
+    // supported path is a NEW child grant on a NEW start, never the same grant.
+    const child = await broker.mint({
+      taskId: "task-2",
+      issuedTo: "agent-a",
+      effects: ["act"],
+      leases: { w: { ceiling: 5, effects: ["act"] } },
+      ttlMs: 60_000,
+      parent: { taskId: "task-1" },
+    });
+    const next = await h.runtime.start(
+      rotFlow,
+      { gen: 1 },
+      { executionId: "gen2", principal: chainOf(child) }
+    );
+    await expect(next.waitForCompletion()).resolves.toBeDefined();
+    expect(h.seen).toHaveLength(2);
+    expect(h.seen[1]!.taskGrant).toMatchObject({ taskId: "task-2" });
+    expect(h.asked).toHaveLength(2);
+  });
+
+  it("fork: acting as the owner is denied at its first effect; a plain non-task forker runs", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker);
+    const h = boot(broker);
+    const run = await h.runtime.start(flow, {}, { executionId: "pf", principal: chainOf(g) });
+    await run.waitForSuspend();
+    const tip = (await h.runtime.loadState("pf", h.runtime.systemOptions()))!.sequence;
+    const askedBefore = h.asked.length;
+    const asOwner = await h.runtime.fork("pf", tip, { executionId: "pf-owner", actAs: "owner" });
+    const ro = await h.runtime.resume(asOwner.executionId, GO, { principal: chainOf(g) });
+    await expect(ro.waitForCompletion()).rejects.toThrow(/claimed by another execution/);
+    expect(await typesOf(h, "pf-owner")).toContain("EFFECT_DENIED");
+    expect(h.asked.length).toBe(askedBefore);
+    const bob: PrincipalChain = { actor: "bob" };
+    const byBob = await h.runtime.fork("pf", tip, { executionId: "pf-bob", principal: bob });
+    const rb = await h.runtime.resume(byBob.executionId, GO, { principal: bob });
+    await expect(rb.waitForCompletion()).resolves.toBeDefined();
+    expect(h.seen.at(-1)).toMatchObject({ actor: "bob" });
+    expect(h.seen.at(-1)?.taskGrant).toBeUndefined();
+  });
+
+  it("late outcome: an expired-grant task principal is refused and nothing is written", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker);
+    let clock = NOW;
+    const h = boot(broker, { now: () => clock });
+    const run = await h.runtime.start(flow, {}, { executionId: "lo", principal: chainOf(g) });
+    await run.waitForSuspend();
+    const done = await h.runtime.resume("lo", GO, { principal: chainOf(g) });
+    await done.waitForCompletion();
+    const before = (await h.eventStore.read("lo")).length;
+    clock = NOW + 120_000;
+    await expect(
+      h.runtime.recordOutcome(
+        "lo",
+        { decisionId: "d1", key: "k", success: true },
+        { principal: chainOf(g) }
+      )
+    ).rejects.toThrow(TaskAuthorityPrincipalError);
+    expect((await h.eventStore.read("lo")).length).toBe(before);
+  });
+});
+
+describe("taskAuthorityPrincipalCodec — timers and claim ordering", () => {
+  it("leaves no timer behind after a fast answer, an error, or a timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const b = mkBroker();
+      const g = await mint(b);
+      const ref = await refOf(mk(b), g);
+      expect(await mk(b).fromRef(ref, ctx)).toMatchObject({ actor: "agent-a" });
+      expect(vi.getTimerCount()).toBe(0);
+      const boom: GrantSource = {
+        current: async () => {
+          throw new Error("down");
+        },
+        claim: async () => true,
+      };
+      unresolved(await mk(boom).fromRef(ref, ctx), /source failed/);
+      expect(vi.getTimerCount()).toBe(0);
+      const hang = new Promise<never>(() => {});
+      const p = mk({ current: () => hang, claim: async () => true }, { timeoutMs: 50 }).fromRef(
+        ref,
+        ctx
+      );
+      await vi.advanceTimersByTimeAsync(50);
+      unresolved(await p, /timed out/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a revoked task makes zero claim calls", async () => {
+    const g = await mint(mkBroker());
+    const ref = await refOf(mk(mkBroker()), g);
+    const claims: string[] = [];
+    const src: GrantSource = {
+      current: async () => g,
+      revoked: async () => true,
+      claim: async (t, e) => {
+        claims.push(`${t}/${e}`);
+        return true;
+      },
+    };
+    unresolved(await mk(src).fromRef(ref, ctx), /revoked/);
+    expect(claims).toEqual([]);
+    const b = mkBroker();
+    await mint(b);
+    await b.revoke("task-1", "r");
+    unresolved(
+      await mk({
+        ...b,
+        current: (t) => b.current(t),
+        claim: async (t, e) => {
+          claims.push(t + e);
+          return true;
+        },
+      } as GrantSource).fromRef(ref, ctx),
+      /revoked/
+    );
+    expect(claims).toEqual([]);
+  });
+});
+
+describe("GrantSource.claim conformance (atomic compare-and-set)", () => {
+  it("50 concurrent claims with distinct execution ids: exactly one wins, and it stays the winner", async () => {
+    const ledger = new InMemoryGrantLedger({ secret: SECRET, now: () => NOW });
+    await ledger.mint({
+      taskId: "t",
+      issuedTo: "agent-a",
+      effects: ["act"],
+      leases: { w: { ceiling: 1, effects: ["act"] } },
+      ttlMs: 60_000,
+    });
+    const ids = Array.from({ length: 50 }, (_, i) => `e${i}`);
+    const results = await Promise.all(ids.map((id) => ledger.claim("t", id)));
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const winner = ids[results.indexOf(true)]!;
+    expect(await ledger.claim("t", winner)).toBe(true);
   });
 });
 
