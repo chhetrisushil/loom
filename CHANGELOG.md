@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Kernel: the effect context's `resources` is a copy, not the fold-owned object ([ADR 0151](docs/adr/0151-effect-context-flush.md) D6).** `EffectContext.resources` (and the `resources` handed to a decide scope's transient call) was the execution's live `variables._resources` by reference, so middleware or an effect writing `ctx.resources.tokens = 0` or `ctx.resources.custom.x = 999` silently changed the fold that metering, `nestedBudget` and the lease middleware read. It is now a copy (including `custom`), built by the same helper as `readResources()`. Impact: code that relied on mutating `ctx.resources` to affect the fold stops working; meter with `ctx.emit("RESOURCE_METERED", ...)` instead.
+
 ### Added
 
 - **ADR 0151 (Proposed): `EffectContext.flush()`, `readResources()` and `reserveEffectDimensions()` ([ADR 0151](docs/adr/0151-effect-context-flush.md)).** An optional `flush?: () => Promise<void>` on the effect context awaits the journal's write-behind tail, so middleware that emits `RESOURCE_METERED` (the task-authority lease counter, metering) can make the count durable before the effect runs. After the drain it applies the K9.3 seal rule through one shared helper. A second optional method, `readResources()`, reads the execution's live fold totals synchronously (a copy, unlike the build-time `resources` snapshot), so accounting middleware is exact against concurrent effects and can detect a dropped custom dimension. Both are absent on the transient seam. `WorkflowRuntime.reserveEffectDimensions(prefix)` (D7) reserves a custom meter-dimension prefix: flow code can no longer forge a reserved dimension, while effects and middleware stay trusted; no prefix reserved is byte-identical. Closes the crash window where a side effect happened with its count never stored. Additive and optional: no new event, no EVENT_SCHEMA or ABI change; the kernel budget for `WorkflowContext.ts` grows by the wiring.

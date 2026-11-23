@@ -1053,12 +1053,10 @@ export class WorkflowContextImpl implements WorkflowContext {
       idempotencyKey: this.idempotencyKeyFor(id),
       // K3 — running resource totals (from the durable fold) so accounting/quota
       // middleware can meter and enforce budgets deterministically.
-      resources: this.resourceSnapshot(),
+      // A copy taken now: the fold-owned object must not be mutable from middleware (ADR 0151 D6).
+      resources: this.resourceCopy(),
       // ADR 0151 D6 — live, synchronous, and a copy (the snapshot object is fold-owned).
-      readResources: (): ResourceSnapshot => {
-        const r = this.resourceSnapshot();
-        return r.custom === undefined ? { ...r } : { ...r, custom: { ...r.custom } };
-      },
+      readResources: (): ResourceSnapshot => this.resourceCopy(),
     };
 
     let output: TOut;
@@ -1236,7 +1234,7 @@ export class WorkflowContextImpl implements WorkflowContext {
           },
           // Admission control sees the execution's running spend (the charge is dropped
           // by the no-op emit, so spend made here is invisible to the budget).
-          resources: this.resourceSnapshot(),
+          resources: this.resourceCopy(),
           ...(signal !== undefined && { signal }),
           ...(this.principal !== undefined && { principal: this.principal }),
           ...(o?.onDelta !== undefined && { onDelta: o.onDelta }),
@@ -1332,6 +1330,12 @@ export class WorkflowContextImpl implements WorkflowContext {
         count: 0,
       }
     );
+  }
+
+  /** A copy of the running totals (incl. `custom`) that userspace may mutate without touching the fold. */
+  private resourceCopy(): ResourceSnapshot {
+    const r = this.resourceSnapshot();
+    return r.custom === undefined ? { ...r } : { ...r, custom: { ...r.custom } };
   }
 
   /** Current spend for a dimension, read from the deterministic `_resources` fold (0 if unset). */
