@@ -956,6 +956,11 @@ export async function agentLoop$(
         "agentLoop$ requireEffectRing: `reasoning` calls its routes' providers directly, outside authorization/metering/the kill switch. Set `reasoningToolId` (see registerReasoningRoutes) or drop `reasoning` for `modelToolId`."
       );
     }
+    if (config.memory !== undefined && config.recall === undefined) {
+      throw new Error(
+        "agentLoop$ requireEffectRing: `memory` is recalled inline, outside authorization. Set `recall.toolId` (see memoryRecallEffect)."
+      );
+    }
     if (
       config.writeBack !== undefined &&
       config.writeBack !== false &&
@@ -1021,6 +1026,9 @@ export async function agentLoop$(
         "LOOM_AGENT_DISTILL_SCOPE"
       );
     }
+  }
+  if (config.recall !== undefined && config.memory === undefined) {
+    throw new AgentLoopConfigError("agentLoop$ `recall.toolId` requires `memory`");
   }
   if (config.writeBack !== undefined && config.writeBack !== false && config.memory === undefined) {
     // A write-back with nowhere to write reads as persistence it isn't.
@@ -2123,6 +2131,7 @@ export async function agentLoop$(
           answer: lastContent,
           sawTaintFrom,
           warn: (m) => emitLoopWarning(config, m, "LOOM_AGENT_DISTILL"),
+          recallToolId: config.recall?.toolId,
         });
         if (w !== undefined && (w.entries.length > 0 || w.forget.length > 0)) {
           req = { tier, scope, entries: w.entries, forget: w.forget };

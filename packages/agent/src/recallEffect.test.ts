@@ -13,7 +13,12 @@ import {
 import { WorkflowRuntime, answerApproval } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { type AgentLoopConfig, agentLoop$, memoryRecallEffect } from "./agentLoop$";
+import {
+  type AgentLoopConfig,
+  agentLoop$,
+  memoryRecallEffect,
+  memoryWriteBackEffect,
+} from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 
 // ADR 0150 D8 (slice-2 S6a): memory recall as an effect, scoped by a task grant's `reads`.
@@ -35,7 +40,10 @@ function boot(o: {
   park?: boolean;
   reads?: string[] | undefined;
   scope?: string;
+  /** `writeBack.scope` with `distill` (the existing-facts read). */
+  distillScope?: string;
 }) {
+  const distillCalls: unknown[] = [];
   const store = new InMemoryMemoryStore();
   const reads = { n: 0 };
   const countingStore = Object.create(store, {
@@ -69,13 +77,21 @@ function boot(o: {
     const effects = new EffectRuntime([], {
       authorizer: new TaskGrantAuthorizer({
         secret: SECRET,
-        base: new GrantTable({ ask: ["model", "memrecall", "t0"] }),
+        base: new GrantTable({ ask: ["model", "memrecall", "t0", "memwrite", "distill"] }),
         now: () => NOW,
       }),
     });
     effects.register("model", createAgentModelEffect(provider));
     effects.register("memrecall", memoryRecallEffect(memory));
     effects.register("t0", new ToolEffect(async () => ({ ok: true })));
+    effects.register("memwrite", memoryWriteBackEffect(memory));
+    effects.register(
+      "distill",
+      new ToolEffect(async (i) => {
+        distillCalls.push(i);
+        return { add: [] };
+      })
+    );
     const runtime = new WorkflowRuntime({
       eventStore,
       snapshotStore,
@@ -95,6 +111,9 @@ function boot(o: {
       memory,
       memoryScope: o.scope ?? "user/1",
       ...(o.recall && { recall: { toolId: "memrecall" } }),
+      ...(o.distillScope !== undefined && {
+        writeBack: { toolId: "memwrite", scope: o.distillScope, distill: { toolId: "distill" } },
+      }),
       ...(o.park === true && { needsApproval: () => true }),
     };
     if (o.park === true) {
@@ -120,6 +139,7 @@ function boot(o: {
   const snapshotStore = new InMemoryAsyncSnapshotStore();
   return {
     memory,
+    distillCalls,
     reads,
     requests,
     eventStore,
@@ -130,7 +150,7 @@ function boot(o: {
       const g = await broker.mint({
         taskId: `t-${id}`,
         issuedTo: "agent-a",
-        effects: ["model", "memrecall", "t0"],
+        effects: ["model", "memrecall", "t0", "memwrite", "distill"],
         leases: {},
         ttlMs: 60_000,
         ...(o.reads !== undefined && { reads: o.reads }),
@@ -205,5 +225,75 @@ describe("agentLoop$ recall.toolId (ADR 0150 D8)", () => {
     expect((await resumed.waitForCompletion()).status).toBe("completed");
     expect(b.reads.n).toBe(before);
     expect(seenInPrompt(b.requests)).toContain("remembered-thing");
+  });
+
+  // kills: a distill existing-facts read that stays inline (unauthorized) even with recall.toolId set (R23 I1)
+  it("with recall.toolId the distill existing-facts read is the recall EFFECT on the write-back scope", async () => {
+    const b = boot({ recall: true, reads: ["memrecall:user/*"], distillScope: "user/2" });
+    await seed(b.memory);
+    await seed(b.memory, "user/2");
+    const { h } = await b.start();
+    expect((await h.waitForCompletion()).status).toBe("completed");
+    const events = await b.eventStore.read("e1");
+    const existing = events.filter(
+      (e) =>
+        e.eventType === "STEP_STARTED" && JSON.stringify(e.payload).includes("writeback:existing")
+    );
+    expect(existing).toHaveLength(1);
+    expect(JSON.stringify(existing[0]?.payload)).toContain('"scope":"user/2"');
+    expect(
+      events.some(
+        (e) =>
+          e.eventType === "DECISION_RECORDED" &&
+          JSON.stringify(e.payload).includes("writeback:existing")
+      )
+    ).toBe(false);
+    expect(b.distillCalls).toHaveLength(1);
+  });
+
+  // kills: changing the recall-unset distill path (it stays the recorded decision)
+  it("recall unset: the distill existing-facts read is still the recorded decision", async () => {
+    const b = boot({ recall: false, distillScope: "user/2" });
+    const { h } = await b.start();
+    await h.waitForCompletion();
+    const events = await b.eventStore.read("e1");
+    expect(
+      events.some(
+        (e) =>
+          e.eventType === "DECISION_RECORDED" &&
+          JSON.stringify(e.payload).includes("writeback:existing")
+      )
+    ).toBe(true);
+  });
+
+  // kills: requireEffectRing allowing an inline recall; recall.toolId accepted with no memory
+  it("requireEffectRing refuses `memory` without recall.toolId; recall.toolId without memory is a config error", async () => {
+    const run = async (extra: Partial<AgentLoopConfig>) => {
+      const b = boot({ recall: true });
+      const effects = new EffectRuntime([]);
+      effects.register(
+        "model",
+        createAgentModelEffect({ complete: async () => ({ content: "x", stopReason: "end_turn" }) })
+      );
+      const runtime = new WorkflowRuntime({
+        eventStore: b.eventStore,
+        snapshotStore: b.snapshotStore,
+        effectRuntime: effects,
+      });
+      runtime.registerFlow(flowDef, async (ctx) =>
+        agentLoop$(ctx, { definition: agent, modelToolId: "model", ...extra }, { prompt: "go" })
+      );
+      const h = await runtime.start(flowDef, {}, { executionId: "x" });
+      return h.waitForCompletion().then(
+        (s) => s.status,
+        (e: Error) => e.message
+      );
+    };
+    const mem = boot({ recall: false }).memory;
+    expect(String(await run({ memory: mem, requireEffectRing: true }))).toMatch(/recall\.toolId/);
+    expect(String(await run({ recall: { toolId: "memrecall" } }))).toMatch(/requires `memory`/);
+    expect(
+      await run({ memory: mem, recall: { toolId: "memrecall" }, requireEffectRing: true })
+    ).not.toMatch(/recall\.toolId/);
   });
 });
