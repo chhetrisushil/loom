@@ -147,11 +147,14 @@ export class SchedulePrincipalError extends Error {
 
 const DEFAULT_PRINCIPAL_FOR_TIMEOUT_MS = 5000;
 
-/** A plain object with at least one string identity field or a delegation object (field names: `PrincipalChain`). */
+/**
+ * A plain object with at least one NON-EMPTY string identity field or a delegation object (field names:
+ * `PrincipalChain`). Codec-only fields (the chain's index signature) are not accepted on their own.
+ */
 function isPrincipalShape(v: unknown): v is PrincipalChain {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
   const p = v as Record<string, unknown>;
-  const str = (k: string) => typeof p[k] === "string";
+  const str = (k: string) => typeof p[k] === "string" && (p[k] as string).length > 0;
   const del = typeof p.delegation === "object" && p.delegation !== null;
   return str("tenant") || str("actor") || str("onBehalfOf") || del;
 }
