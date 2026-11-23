@@ -113,7 +113,7 @@ interface TaskGrant {
   issuedTo: string;      // holder binding, as DelegatedGrant (principal.actor must match)
   effects: string[];     // capability ids, incl. R12 "<toolId>:<resource>"; "*" refused at mint
   leases: Record<string, { ceiling: number; effects: string[] }>; // see D4
-  reads?: string[];      // D8: Loom namespaces this task may read across lineages (slice 2 S4: signed and carried since S4; the check is S6)
+  reads?: string[];      // D8: Loom namespaces this task may read across lineages (slice 2 S4: signed and carried; S6: checked for effects declaring `capabilities.read`)
   sandbox?: "isolated";  // D10 (renamed from `ambient`, S-R4): carried since S4; the check is S8
   exp: number;           // absolute expiry (epoch ms), REQUIRED; a task grant never lives forever
   epoch: number;         // 0 at mint, +1 per renewal (D5)
@@ -237,6 +237,8 @@ step**. The paper only offers "work with no origin in B's task", which an audito
 paper says.
 
 ### D8 — Loom's own shared namespaces are scoped by the grant
+
+> **Amended (slice-2 S6, owner ruling 2026-11-23).** `reads` governs EVERY effect that declares `capabilities: { read: true }`, not only cross-lineage reads: `<toolId>:<resource>` must be covered by `grant.reads` (`task-grant:read-scope`), absent `reads` covers nothing, and own-lineage reads are NOT exempt (the minter lists the task's own namespace). Cross-lineage CONTENT is attributed by S5's `directedBy`; a kernel-attested writer (S-R9) is the future refinement. The `scopedMemoryStore` wrapper below is superseded by the recall effect (`agentLoop$` `recall.toolId`, `memoryRecallEffect`) and the durable-state `load` effect, whose resource is the scope or key. Residual: an app must mark its own read tools; an unmarked read is not checked.
 
 `grant.reads` lists the namespaces the task may read across lineages (memory scopes, conversation ids, durable-state
 keys), as globs. The package ships wrappers (`scopedMemoryStore`, and the equivalent for durable state) that refuse

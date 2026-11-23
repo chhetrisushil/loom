@@ -13,6 +13,7 @@ import {
 } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { TaskGrantAuthorizer } from "./authorizer";
 import { GrantBrokerError } from "./broker";
 import {
   CHILD_LEASE_TOOL,
@@ -111,6 +112,8 @@ interface BootOpts {
   /** Wrap the real minter (crash simulation). */
   wrapMint?: (real: ChildGrantMinter) => ChildGrantMinter;
   noMinter?: boolean;
+  /** Put the real grant authorizer on the ring (needed to see a `reads` refusal). */
+  authorize?: boolean;
 }
 
 function boot(
@@ -121,9 +124,25 @@ function boot(
 ) {
   const errors: unknown[] = [];
   const ran = { n: 0, seen: [] as (PrincipalChain | undefined)[] };
-  const effects: EffectRuntime = new EffectRuntime([
-    taskLeaseMiddleware({ secret: SECRET, source: broker, effects: () => effects }),
-  ]);
+  const effects: EffectRuntime = new EffectRuntime(
+    [taskLeaseMiddleware({ secret: SECRET, source: broker, effects: () => effects })],
+    o.authorize === true
+      ? {
+          authorizer: new TaskGrantAuthorizer({
+            secret: SECRET,
+            base: { authorize: () => ({ allowed: true }) },
+            now: () => NOW,
+          }),
+        }
+      : {}
+  );
+  effects.register(
+    "rd",
+    new ToolEffect(async () => ({ ok: true }), {
+      resourceOf: (i: { scope?: string }) => i.scope,
+      capabilities: { read: true },
+    })
+  );
   effects.register(
     "act",
     new ToolEffect(async (_a, ctx) => {
@@ -142,7 +161,25 @@ function boot(
     onEvent: (e) => holder.sup?.onEvent(e),
   });
   const childRunner: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext, input) => {
-    const { n, fails, forge } = input as { n: number; fails?: boolean; forge?: boolean };
+    const { n, fails, forge, reads } = input as {
+      n: number;
+      fails?: boolean;
+      forge?: boolean;
+      reads?: string[];
+    };
+    if (reads !== undefined) {
+      const got: Record<string, boolean> = {};
+      for (const scope of reads)
+        got[scope] = await ctx
+          .run({ _tag: "TaskDefinition", kind: "tool", id: `r-${scope}`, toolId: "rd" } as never, {
+            scope,
+          })
+          .then(
+            () => true,
+            () => false
+          );
+      return got;
+    }
     if (forge === true) ctx.emit("RESOURCE_METERED", { custom: { "lease.w.returned": 100 } });
     const r = await acts(ctx, "c", n);
     if (fails === true) throw new Error("child blew up");
@@ -842,4 +879,62 @@ describe("never-started child (R33)", () => {
     await expect(b.reserve(PARENT, "v", { w: 3 })).rejects.toThrow(/different reservation/);
     await expect(b.reserve("nope", "x", { w: 1 })).rejects.toThrow(/unknown or revoked/);
   });
+});
+
+describe("spawn-time reads narrowing (ADR 0150 D8)", () => {
+  const rootReads = (b: InMemoryGrantBroker, reads: string[]): Promise<TaskGrant> =>
+    b.mint({
+      taskId: PARENT,
+      issuedTo: PARENT,
+      effects: ["act", "rd", CHILD_LEASE_TOOL],
+      leases: { w: { ceiling: 10, effects: ["act", "rd"] } },
+      ttlMs: 60_000,
+      reads,
+    });
+  const spawnReads =
+    (reads?: string[]): Parent =>
+    async (ctx) => {
+      const res = await reserveChildLease(ctx, "k", { w: 2 });
+      return awaitChild(ctx, {
+        key: "k",
+        flowId: "child",
+        input: { n: 0, reads: ["a/x", "b/y"] },
+        ...res.spawn,
+        ...(reads !== undefined && { reads }),
+      });
+    };
+  async function go(reads: string[] | undefined) {
+    const w = world();
+    const broker = mk();
+    const g = await rootReads(broker, ["rd:a/*", "rd:b/*"]);
+    const h = boot(w, broker, spawnReads(reads), { authorize: true });
+    await h.runtime.start(h.parentFlow, {}, { executionId: PARENT, principal: chain(g) });
+    return { out: (await finished(h.runtime, PARENT)).variables._output, broker, h };
+  }
+
+  // kills: a spawn that drops `reads` (the child inherits everything), or one that grants the child other namespaces
+  it("a child narrowed at spawn reads its namespace and is refused the parent's other one", async () => {
+    const { out, broker } = await go(["rd:a/*"]);
+    expect(out).toEqual({ "a/x": true, "b/y": false });
+    expect((await broker.current(CHILD))?.reads).toEqual(["rd:a/*"]);
+  }, 20_000);
+
+  // kills: narrowing that becomes the default (inheritance must stay the default)
+  it("without `reads` on the spawn the child inherits the parent's reads", async () => {
+    const { out, broker } = await go(undefined);
+    expect(out).toEqual({ "a/x": true, "b/y": true });
+    expect((await broker.current(CHILD))?.reads).toEqual(["rd:a/*", "rd:b/*"]);
+  }, 20_000);
+
+  // kills: a minter that trusts the spawn's `reads` without the broker's subset check
+  it("a spawn that WIDENS the parent's reads is refused by the broker; no child runs", async () => {
+    const w = world();
+    const broker = mk();
+    const g = await rootReads(broker, ["rd:a/*"]);
+    const h = boot(w, broker, spawnReads(["rd:*"]), { authorize: true });
+    await h.runtime.start(h.parentFlow, {}, { executionId: PARENT, principal: chain(g) });
+    await finished(h.runtime, PARENT).catch(() => undefined);
+    expect(await broker.current(CHILD)).toBeUndefined();
+    expect(await h.runtime.loadState(CHILD)).toBeNull();
+  }, 20_000);
 });

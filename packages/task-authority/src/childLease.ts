@@ -154,6 +154,8 @@ export interface ChildGrantMinter {
       childId: string;
       lease: Amounts;
       grants?: readonly string[];
+      /** ADR 0150 D8 - narrow the child's `reads` (default: inherit the parent's). The broker refuses a widening. */
+      reads?: readonly string[];
       expiresAt?: number;
     }
   ): Promise<{ actor: string; taskGrant: TaskGrant; tenant?: string; onBehalfOf?: string }>;
@@ -203,6 +205,7 @@ export function childGrantMinter(
         return chainOf(held);
       const pg = await broker.current(pid);
       if (pg === undefined) throw new GrantBrokerError(`parent task ${pid} is unknown or revoked`);
+      const reads = spec.reads ?? pg.reads;
       const leases: TaskGrant["leases"] = {};
       for (const [n, ceiling] of Object.entries(spec.lease)) {
         const ps = pg.leases[n];
@@ -217,8 +220,8 @@ export function childGrantMinter(
         leases,
         ttlMs,
         parent: { taskId: pid },
-        // S-R4: a child inherits the parent's read scope and isolation (the broker refuses a widening)
-        ...(pg.reads !== undefined && { reads: pg.reads }),
+        // S-R4/D8: a child inherits the parent's read scope unless the spawn narrows it; the broker refuses a widening
+        ...(reads !== undefined && { reads: [...reads] }),
         ...(pg.sandbox !== undefined && { sandbox: pg.sandbox }),
         parentReserved: Object.fromEntries(
           Object.keys(leases).map((n) => [n, parent.resources[`lease.${n}.reserved`] ?? 0])
