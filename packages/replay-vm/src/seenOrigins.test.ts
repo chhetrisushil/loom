@@ -24,6 +24,7 @@ const env = (sequence: number, r: Raw, metadata?: Record<string, unknown>): Even
 const start = (extra: Record<string, unknown> = {}, input: unknown = {}): Raw => ({
   eventType: "EXECUTION_STARTED",
   payload: { input, seenOriginsLimits: STAMP, ...extra },
+  metadata: { origins: [] }, // R13: a tracked run records on every channel event, empty when clean
 });
 const completed = (output: unknown = 1, stepId = "s"): Raw => ({
   eventType: "STEP_COMPLETED",
@@ -32,7 +33,7 @@ const completed = (output: unknown = 1, stepId = "s"): Raw => ({
 /** A STEP_COMPLETED whose commit recorded `origins`. */
 const rec = (origins: string[], overflow = false): Raw => ({
   ...completed(),
-  metadata: { ...(origins.length > 0 && { origins }), ...(overflow && { originsOverflow: true }) },
+  metadata: overflow ? { originsOverflow: true } : { origins },
 });
 const fold = (raws: Raw[], initial?: Partial<ExecutionState>, from = 0): ExecutionState =>
   foldEvents(
@@ -43,6 +44,51 @@ const keyOf = (s: Partial<ExecutionState>) =>
   s.variables?.[SEEN_ORIGINS_KEY] as
     | { origins: string[]; overflow?: true; through?: number; limits: typeof STAMP }
     | undefined;
+
+describe("R13: no record on a channel event of a tracked run is overflow (fail closed)", () => {
+  const CHANNELS = [
+    "STEP_COMPLETED",
+    "MESSAGE_CONSUMED",
+    "EXECUTION_RESUMED",
+    "DECISION_RECORDED",
+    "STEP_FAILED",
+    "PARALLEL_COMPLETED",
+    "EXECUTION_MIGRATED",
+  ];
+  it.each(CHANNELS)("%s with no metadata (a 1.26 writer / an unwired commit path)", (t) => {
+    const k = keyOf(fold([start(), { eventType: t, payload: {} }]));
+    expect(k?.overflow).toBe(true);
+    expect(k?.through).toBe(1);
+  });
+  it("metadata with neither origins nor originsOverflow (only kernel/fence stamps), or a non-array origins", () => {
+    expect(keyOf(fold([start(), { ...completed(), metadata: { kernel: true } }]))?.overflow).toBe(
+      true
+    );
+    expect(keyOf(fold([start(), { ...completed(), metadata: { origins: "x" } }]))?.overflow).toBe(
+      true
+    );
+  });
+  it("a start with the stamp but no record also fails closed; a non-channel event never needs one", () => {
+    expect(keyOf(fold([{ ...start(), metadata: undefined }]))?.overflow).toBe(true);
+    expect(
+      keyOf(fold([start(), { eventType: "STEP_STARTED", payload: { stepId: "a" } }]))?.overflow
+    ).toBeUndefined();
+  });
+  it("a tainted STEP_COMPLETED appended with no metadata folds to overflow, not clean", () => {
+    const tainted = { __loomTainted: { origin: "peer:x" }, value: 1 };
+    const k = keyOf(fold([start(), completed(tainted)]));
+    expect(k?.origins).toEqual([]);
+    expect(k?.overflow).toBe(true);
+  });
+  it("m-4: a key not advanced to the prior sequence is unproven overflow even without normalize", () => {
+    const s0 = fold([start(), rec(["a"])]);
+    const stale = { ...s0, sequence: s0.sequence + 3 }; // a 1.26 fold advanced the sequence, left through behind
+    const k = keyOf(foldEvents([env(9, rec(["b"]))], stale));
+    expect(k?.overflow).toBe(true);
+    expect(k?.through).toBeUndefined();
+    expect(k?.origins).toEqual(["a"]);
+  });
+});
 
 describe("the fold unions RECORDED lists", () => {
   const CHANNEL_TYPES = [
@@ -91,7 +137,11 @@ describe("the fold unions RECORDED lists", () => {
   it("originsOverflow is sticky; the maxOrigins+1th distinct origin overflows and is dropped; later records are ignored", () => {
     const small = { ...STAMP, maxOrigins: 2 };
     const a = fold([
-      { eventType: "EXECUTION_STARTED", payload: { input: {}, seenOriginsLimits: small } },
+      {
+        eventType: "EXECUTION_STARTED",
+        payload: { input: {}, seenOriginsLimits: small },
+        metadata: { origins: [] },
+      },
       rec(["a", "b"]),
       rec(["c"]),
       rec(["a"]),
@@ -101,7 +151,12 @@ describe("the fold unions RECORDED lists", () => {
     expect(keyOf(b)).toMatchObject({ origins: [], overflow: true, through: 2 });
   });
   it("a clean tracked run has the key with origins [] (distinct from an untracked run)", () => {
-    expect(keyOf(fold([start(), completed()]))).toMatchObject({ origins: [], through: 1 });
+    expect(keyOf(fold([start(), rec([])]))).toEqual({
+      v: 1,
+      limits: STAMP,
+      origins: [],
+      through: 1,
+    });
   });
   it("invalid recorded limits fall back to the defaults, per field; limits survive a snapshot", () => {
     const bad = fold([
@@ -113,7 +168,11 @@ describe("the fold unions RECORDED lists", () => {
     expect(keyOf(bad)?.limits).toEqual({ maxOrigins: 64, maxScanNodes: 500 });
     const small = { maxOrigins: 1, maxScanNodes: 100 };
     const a = fold([
-      { eventType: "EXECUTION_STARTED", payload: { input: {}, seenOriginsLimits: small } },
+      {
+        eventType: "EXECUTION_STARTED",
+        payload: { input: {}, seenOriginsLimits: small },
+        metadata: { origins: [] },
+      },
       rec(["a"]),
     ]);
     const snap = normalizeSnapshotState(JSON.parse(JSON.stringify(a)) as ExecutionState);
