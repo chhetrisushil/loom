@@ -109,8 +109,9 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
         return deny(`policy named a lease the grant lacks: ${name}`);
       if (ceiling < this.reserved(rec, name))
         return deny(`lease ${name} below children's reservations`);
-      if (parent && ceiling > this.headroom(parent, name, cur.taskId))
-        return deny(`lease ${name} ceiling exceeds the parent's headroom`);
+      // A child's ceiling was reserved in its parent's fold at the MINTED amount: a top-up is a new reservation.
+      if (parent && ceiling > (rec.high[name] ?? 0))
+        return deny(`lease ${name} ceiling exceeds the minted (reserved) amount`);
       lease.ceiling = ceiling;
     }
     let next: TaskGrant;

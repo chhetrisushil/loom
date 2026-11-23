@@ -333,15 +333,16 @@ describe("taskAuthorityPrincipalCodec — timers and claim ordering", () => {
         current: async () => {
           throw new Error("down");
         },
+        holder: async () => undefined,
         claim: async () => true,
       };
       unresolved(await mk(boom).fromRef(ref, ctx), /source failed/);
       expect(vi.getTimerCount()).toBe(0);
       const hang = new Promise<never>(() => {});
-      const p = mk({ current: () => hang, claim: async () => true }, { timeoutMs: 50 }).fromRef(
-        ref,
-        ctx
-      );
+      const p = mk(
+        { current: () => hang, holder: async () => undefined, claim: async () => true },
+        { timeoutMs: 50 }
+      ).fromRef(ref, ctx);
       await vi.advanceTimersByTimeAsync(50);
       unresolved(await p, /timed out/);
       expect(vi.getTimerCount()).toBe(0);
@@ -357,6 +358,7 @@ describe("taskAuthorityPrincipalCodec — timers and claim ordering", () => {
     const src: GrantSource = {
       current: async () => g,
       revoked: async () => true,
+      holder: async () => undefined,
       claim: async (t, e) => {
         claims.push(`${t}/${e}`);
         return true;
@@ -371,6 +373,7 @@ describe("taskAuthorityPrincipalCodec — timers and claim ordering", () => {
       await mk({
         ...b,
         current: (t) => b.current(t),
+        holder: async () => undefined,
         claim: async (t, e) => {
           claims.push(t + e);
           return true;
@@ -500,6 +503,7 @@ describe("taskAuthorityPrincipalCodec.fromRef", () => {
         asked++;
         return undefined;
       },
+      holder: async () => undefined,
       claim: async () => true,
     };
     const c = mk(src);
@@ -521,6 +525,7 @@ describe("taskAuthorityPrincipalCodec.fromRef", () => {
     const viaDigest: GrantSource = {
       current: async () => g,
       revoked: async () => true,
+      holder: async () => undefined,
       claim: async () => true,
     };
     unresolved(await mk(viaDigest).fromRef(ref, ctx), /revoked/);
@@ -535,19 +540,25 @@ describe("taskAuthorityPrincipalCodec.fromRef", () => {
       current: async () => {
         throw new Error("down");
       },
+      holder: async () => undefined,
       claim: async () => true,
     };
     unresolved(await mk(boom).fromRef(ref, ctx), /source failed/);
     const forged = signTaskGrant("other", unsigned(g));
     unresolved(
-      await mk({ current: async () => forged, claim: async () => true }).fromRef(ref, ctx),
+      await mk({
+        current: async () => forged,
+        holder: async () => undefined,
+        claim: async () => true,
+      }).fromRef(ref, ctx),
       /does not verify/
     );
     unresolved(
-      await mk({ current: async () => g, claim: async () => true }).fromRef(
-        `ta1:other.${ref.split(".")[1]}`,
-        ctx
-      ),
+      await mk({
+        current: async () => g,
+        holder: async () => undefined,
+        claim: async () => true,
+      }).fromRef(`ta1:other.${ref.split(".")[1]}`, ctx),
       /task id mismatch/
     );
   });
@@ -557,7 +568,11 @@ describe("taskAuthorityPrincipalCodec.fromRef", () => {
     const ref = await refOf(mk(b), g);
     unresolved(await mk(b).fromRef(`ta1:task-1.${"A".repeat(43)}`, ctx), /holder/);
     const reissued = signTaskGrant(SECRET, { ...unsigned(g), issuedTo: "agent-b" });
-    const src: GrantSource = { current: async () => reissued, claim: async () => true };
+    const src: GrantSource = {
+      current: async () => reissued,
+      holder: async () => undefined,
+      claim: async () => true,
+    };
     unresolved(await mk(src).fromRef(ref, ctx), /holder/);
   });
   it("another execution's claim is refused", async () => {
@@ -574,9 +589,14 @@ describe("taskAuthorityPrincipalCodec.fromRef", () => {
     const hang = new Promise<never>(() => {});
     const ref = await refOf(mk(mkBroker()), g);
     for (const src of [
-      { current: () => hang, claim: async () => true },
-      { current: async () => g, revoked: () => hang, claim: async () => true },
-      { current: async () => g, claim: () => hang },
+      { current: () => hang, holder: async () => undefined, claim: async () => true },
+      {
+        current: async () => g,
+        revoked: () => hang,
+        holder: async () => undefined,
+        claim: async () => true,
+      },
+      { current: async () => g, holder: async () => undefined, claim: () => hang },
     ] as GrantSource[])
       unresolved(await mk(src, { timeoutMs: 50 }).fromRef(ref, ctx), /timed out/);
   });
