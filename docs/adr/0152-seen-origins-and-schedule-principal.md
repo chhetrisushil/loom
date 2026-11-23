@@ -116,7 +116,8 @@ rolling-deploy hazard ADR 0109 D8 gates for `continueAsNew`, and the remedy is t
 - **Off (default):** nothing is stamped (`seenOriginsLimits` is not written), so a run with no stamp and no carried set folds no key
   (the fold keys on the RECORDED stamp or carry, never on the runtime gate), `EffectContext.seenOrigins` is
   ABSENT, the helper of "Seeding sites" is a no-op. Behaviour is byte-identical to 1.26.0. Consumers treat absent as
-  "untracked".
+  "untracked". **A gate-off `continueAsNew` writes no `carried.seenOrigins` either** (R15): the carry is written only while the gate is on, so
+  the successor of a tracked predecessor on a gate-off node is untracked and reads as absent (fail closed), never as a key with default limits.
 - **On:** `start` and the continuation start stamp the limits; the driver paths adopt untracked runs (see "Adoption");
   `seenOrigins` is present for a tracked run.
 - **The operator turns the gate on only after every node runs a 1.27.0+ kernel**, the ADR 0109 D8 rule. The way to know it is
