@@ -8,7 +8,7 @@ import {
   loadInstructions,
   sha256Hex,
 } from "@loomwork/core";
-import type { Effect } from "@loomwork/effect-runtime";
+import type { Effect, EffectContext } from "@loomwork/effect-runtime";
 import { ToolEffect } from "@loomwork/effect-runtime";
 import type {
   LlmContent,
@@ -2314,11 +2314,35 @@ async function applyWriteBack(memory: TieredMemory, req: WriteBackRequest): Prom
  * R10 — the effect `writeBack.toolId` resolves to: register it on the `EffectRuntime` and the
  * write-back is authorized, metered and kill-switched like any other effect, and journaled.
  */
-export function memoryWriteBackEffect(memory: TieredMemory): ToolEffect {
-  return new ToolEffect(async (input) => {
-    await applyWriteBack(memory, input as WriteBackRequest);
-    return { written: (input as WriteBackRequest).entries.length };
+export function memoryWriteBackEffect(
+  memory: TieredMemory,
+  options: {
+    /**
+     * ADR 0150 D7 / S-R1 — the writer's provenance, from the effect's VERIFIED principal (use
+     * `lineageOrigin(secret)` of `@loomwork/task-authority`: `(ctx) => lineage(ctx.principal)`). When it returns an
+     * origin every entry is written wrapped in it (outside any taint it already carries), so a reader in another
+     * lineage sees whose content this is. Never derive it from `input`: that is flow-supplied.
+     */
+    originOf?: (ctx: EffectContext) => string | undefined;
+  } = {}
+): ToolEffect {
+  return new ToolEffect(async (input, ctx) => {
+    const req = input as WriteBackRequest;
+    const origin = options.originOf?.(ctx);
+    const entries =
+      origin === undefined
+        ? req.entries
+        : req.entries.map((e) => ({ ...e, content: lineageWrap(e.content, origin) }));
+    await applyWriteBack(memory, { ...req, entries });
+    return { written: req.entries.length };
   });
+}
+
+/** An already-tainted value keeps its wrapper INSIDE the writer's (unlike `tainted()`, which keeps only one). */
+function lineageWrap(content: unknown, origin: string): unknown {
+  const mark = (content as { __loomTainted?: { origin?: unknown } } | null)?.__loomTainted;
+  if (typeof mark === "object" && mark !== null && mark.origin === origin) return content;
+  return { __loomTainted: { origin }, value: content };
 }
 
 /** The minimal registration surface of an `EffectRuntime` (`app.effectRuntime`). */

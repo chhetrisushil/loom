@@ -13,6 +13,7 @@ import {
   iterateExecutionIds,
   readRangeOf,
 } from "@loomwork/event-runtime";
+import { seenOriginsList } from "@loomwork/replay-vm";
 import { declareReach } from "@loomwork/verify";
 import {
   ChainHopLimitError,
@@ -1491,6 +1492,20 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       );
     } else if ("output" in (payload as object)) await settleChild(key);
   };
+  // ADR 0150 D7 / S-R9 - a child's seen origins reach the parent on the CHILD_DONE body, one taint wrapper per
+  // origin under `childOrigins` (the kernel's commit scan finds them, so the parent's own `seenOrigins` grows).
+  // An UNTRACKED child (no key) adds nothing: the seen-origins gate is fleet-wide, so a mixed fleet is the gap.
+  const childOriginsOf = async (payload: unknown, key: string): Promise<unknown[]> => {
+    const p = payload as { settled?: unknown[] };
+    const ids = Array.isArray(p.settled) ? p.settled.map((_, i) => `${key}#${i}`) : [key];
+    const found = new Set<string>();
+    for (const id of ids) {
+      const st = await deps.runtime.loadState(id, deps.runtime.systemOptions()).catch(() => null);
+      for (const o of (st === null || st === undefined ? undefined : seenOriginsList(st)) ?? [])
+        found.add(o);
+    }
+    return [...found].sort().map((origin) => ({ __loomTainted: { origin }, value: null }));
+  };
   const resumeParent = async (
     parentId: string,
     payload: unknown,
@@ -1499,7 +1514,15 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const key = opts.key;
     if (deps.taskAuthority !== undefined && key !== undefined) await settleCompleted(payload, key);
     const sys = deps.runtime.systemOptions();
-    const body = key !== undefined ? { ...(payload as object), viewDigest: key } : payload;
+    const childOrigins = key !== undefined ? await childOriginsOf(payload, key) : [];
+    const body =
+      key !== undefined
+        ? {
+            ...(payload as object),
+            viewDigest: key,
+            ...(childOrigins.length > 0 && { childOrigins }),
+          }
+        : payload;
     let fence: number | undefined;
     let fences = 0;
     let fenceIfAt: number | undefined;

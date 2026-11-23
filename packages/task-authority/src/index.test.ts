@@ -9,6 +9,7 @@ describe("@loomwork/task-authority public surface", () => {
       "GrantRevokedError",
       "InMemoryGrantBroker",
       "InMemoryGrantLedger",
+      "LINEAGE_ORIGIN_PREFIX",
       "LeaseChildEffectUnbrandedError",
       "LeaseDimensionDroppedError",
       "LeaseDurabilityError",
@@ -36,6 +37,9 @@ describe("@loomwork/task-authority public surface", () => {
       "installTaskAuthority",
       "isChildLeaseEffect",
       "isRenewable",
+      "lineageOrigin",
+      "lineageSend",
+      "lineageTainter",
       "renewalDecisionId",
       "renewalResumeSchema",
       "renewalViewDigest",
@@ -48,6 +52,7 @@ describe("@loomwork/task-authority public surface", () => {
       "verifyTaskGrant",
       "widensReadsOrSandbox",
       "withRenewal",
+      "wrapLineage",
     ]);
     expect(api.TASK_AUTHORITY_VERSION).toBe("0.0.0-slice1");
   });
