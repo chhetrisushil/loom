@@ -402,6 +402,10 @@ const NOT_A_CAPABILITY = new Set([
   // 0149 - opt-in distilled memory write-back (`writeBack.distill`, `createDistillerEffect`): an option on
   // one `@loomwork/agent` function plus a built-in effect. No event, SPI, ABI or subsystem change; nothing to grade.
   "0149",
+  // 0151 - two optional methods and one composition-time reservation on the kernel's EffectContext
+  // (`flush`, `readResources`, `reserveEffectDimensions`): a kernel seam with no package of its own, graded
+  // through its consumer (ADR 0150, task-authority). No event, SPI or ABI change; nothing to grade.
+  "0151",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

@@ -1,6 +1,6 @@
 # ADR 0150 — Task-scoped authority: grants per task, effect leases that pause when spent, and accounting by lineage, as an opt-in package
 
-- Status: **Accepted** (2026-11-23) — design accepted by the owner; amended 2026-11-23 (slice 1 as built, see the end of this ADR); slice 2 pending
+- Status: **Accepted** (2026-11-23) — design accepted by the owner; amended 2026-11-23 (slice 1 as built; follow-ups closed, see the end of this ADR); slice 2 pending
 - Date: 2026-11-23
 - Builds on: [ADR 0024](0024-k12-identity-tenancy-delegated-authority.md) (`PrincipalChain`, signed attenuated
   delegation, nested budgets, `ResumeAuthenticator`), [ADR 0111](0111-durable-principal.md) (the principal is
@@ -380,7 +380,8 @@ ledger; each item cites the decision it changes.
   together with `tenant`, `onBehalfOf` or a `delegation` is REFUSED at start (`toRef` throws, before the append), as is a grant that
   fails `verify`, holder or expiry checks. `orchestrationPrincipalCodec.toRef` returns `undefined` for any chain with a `taskGrant`.
   Under task authority a child is narrowed by its own task grant (D6), not a delegation. Failing closed beats a silent drop to base
-  authority; multi-tenant chains are a follow-up (broker-held identity).
+  authority. (Corrected: the `tenant` / `onBehalfOf` refusal was REVERSED by R30/R34, see the later amendment; only
+  `delegation` together with a task grant is still refused.)
 - **R14.** A failed restore answers EVERY `ta1:` ref with an unresolved principal (`{ principalUnresolved }`, never `undefined`),
   so no other codec or resolver can answer a ref this one owns.
 - **R4.** `verifyTaskGrant` is verify-and-snapshot: it returns a frozen plain copy (strict key allowlist, at most 64 KiB) or
@@ -435,7 +436,7 @@ ledger; each item cites the decision it changes.
   and an operator resolves it. For a RESERVE the operator adopts the step with output `{ taskId, lease }`; a wrong value changes the
   spawn ceiling the minter then checks against the parent's fold, so it cannot exceed what was metered. An in-doubt RETURN is lost,
   never doubled (the broker's one-time `takeReturn` has already run or not).
-- **Known residual.** A child that never starts loses its reservation: nothing observes the never-started child to settle it.
+- **Known residual.** A child that never starts loses its reservation: nothing observes the never-started child to settle it. (closed, see the later amendment: R33)
 
 ### D13 — the `GrantSource` SPI grew
 
@@ -456,18 +457,95 @@ passes the conformance kit.
 
 ### Pull requests
 
-Draft stack, in order: #808 principal codec and `installTaskAuthority` (D3), #809 `EffectContext.flush()` (ADR 0151, Proposed), #810
-`taskLeaseMiddleware` (D3/D4/D5), #811 `withRenewal` (D5), #812 orchestration child-lease spawn hook (D6), #813 child lease
-reservation (D6), #814 `agentLoop$` park on exhausted authority (D5), #815 conformance kit, #816 runtime-level conformance checks,
-#817 carve, pause-renew and replay checks, #818 slice-1 minors wave. Earlier: #802 (this ADR accepted), #803 and #804 (grant shape
-and signing).
+Draft stack, in order: #801/#802 (this ADR accepted); #803 to #807 (T1 to T4b: grant shape and signing, the authorizer, the broker and
+ledger, landed via #807); #808 to #818 (T5 to T11a, landed via #818): #808 principal codec and `installTaskAuthority` (D3), #809
+`EffectContext.flush()` (ADR 0151), #810 `taskLeaseMiddleware` (D3/D4/D5), #811 `withRenewal` (D5), #812 orchestration child-lease
+spawn hook (D6), #813 child lease reservation (D6), #814 `agentLoop$` park on exhausted authority (D5), #815 conformance kit, #816
+runtime-level conformance checks, #817 carve, pause-renew and replay checks, #818 slice-1 minors wave; #819 (T11b) this amendment;
+#820 to #824 (T12 to T15) the follow-ups below; T16 the later amendment.
 
 ### Follow-ups
 
-- Key rotation for parked runs (a run parked across a secret rotation cannot restore its grant).
-- Multi-tenant chains: a `taskGrant` together with `tenant`, `onBehalfOf` or a delegation (R13).
-- A never-started child's reservation (D6 residual).
-- Branding the child-lease tool id (`CHILD_LEASE_TOOL`), so an app effect cannot shadow it.
-- Cancelling the other group members when a mint is refused.
-- A pre-existing kernel issue: `ctx.resources` exposes the fold-owned object, not a copy (the `readResources()` seam returns a copy).
+- Key rotation for parked runs (a run parked across a secret rotation cannot restore its grant). (closed, see the later amendment: R31/R35)
+- Multi-tenant chains: a `taskGrant` together with `tenant`, `onBehalfOf` or a delegation (R13). (closed for `tenant` / `onBehalfOf`, see the later amendment: R30/R34; a delegation together with a grant stays refused)
+- A never-started child's reservation (D6 residual). (closed, see the later amendment: R33)
+- Branding the child-lease tool id (`CHILD_LEASE_TOOL`), so an app effect cannot shadow it. (closed, see the later amendment: R33)
+- Cancelling the other group members when a mint is refused. (closed, see the later amendment: R33)
+- A pre-existing kernel issue: `ctx.resources` exposes the fold-owned object, not a copy (the `readResources()` seam returns a copy). (closed, see the later amendment: R32)
 - Slice 2: provenance taint across lineages (D7) and covered laundering.
+
+## Amendment (2026-11-23, later) — follow-ups closed
+
+The slice-1 follow-ups are built. The sections above and the first amendment stand, except where an item below says it reverses one.
+Rulings R30 to R35 are in the slice's ledger.
+
+### D3 — multi-tenant grants (R30, R34; T13, #821). This REVERSES the first amendment's "tenant / onBehalfOf refused"
+
+- `tenant` and `onBehalfOf` are part of the signed `TaskGrant` (and of `MintRequest`). The principal codec restores them from the
+  VERIFIED grant only, so under strict/compliance (ADR 0111) the log still holds only the ref.
+- A grant that carries either field is referenced as `ta2:<taskId>.<mac>`, the MAC also binding `tenant` and `onBehalfOf` (the
+  encoding is a JSON array of the four fields, so no field can be shifted into another). A grant with neither keeps the `ta1:` ref
+  unchanged. `fromRef` refuses a downgrade (a `ta1:` ref naming a grant that has identity, and a `ta2:` ref naming one that has
+  none), so a ref cannot be replayed under a weaker identity.
+- A chain whose `tenant` / `onBehalfOf` differ from the grant's is refused at start (`toRef`), in both directions: a chain without
+  them is refused for a grant that has them.
+- `TaskGrantAuthorizer` enforces the same rule on the TRANSIENT path (`invokeTransient`, which has no codec): it denies with a
+  reason starting `task-grant:identity` when `req.principal.tenant` / `onBehalfOf` differ from the verified grant's. Without this an
+  acme grant presented with `tenant: "globex"` would be judged under globex's policy.
+- A child INHERITS identity: `MintRequest` naming a different `tenant` / `onBehalfOf` than the parent's (or one the parent lacks)
+  is refused, and `childGrantMinter` returns the grant's `tenant` / `onBehalfOf` on the child chain, so the child start passes `toRef`.
+- The broker holds identity. Erasing `onBehalfOf` or `tenant` there (re-sign, strip or delete the grant) makes the task PERMANENTLY
+  unrestorable: the MAC no longer matches, `fromRef` answers `{ principalUnresolved }`, the kernel denies and the execution
+  access policy sees an unknown owner. That is fail-closed erasure, by design.
+- Still refused: a `delegation` together with a task grant (R13). A delegating child is narrowed by its own grant (D6 mint), so
+  delegation users mint child grants.
+- The kit gains `broker.identity-fixed` (with a broken broker as its fail-proof).
+
+### D3/D13 — key ring (R31, R35; T14, #822)
+
+- Wherever a grant secret is accepted (`signTaskGrant` / `verifyTaskGrant`, `InMemoryGrantBroker`, `TaskGrantAuthorizer`,
+  `taskLeaseMiddleware`, `taskAuthorityPrincipalCodec` / `installTaskAuthority`, `childLeaseEffect`, `childGrantMinter`) it may be
+  a `GrantKeys`: a string, or `{ current, previous?, refOnly? }`. Signing and the ref MAC use `current`. Grants verify against
+  `current` then `previous`. `refOnly` keys verify a recorded REF MAC (`fromRef`) and are NEVER accepted for a grant signature.
+- The ring is read once and sealed (a later mutation of the caller's object changes nothing); at most 8 keys per list; empty keys
+  and duplicates across `current`, `previous` and `refOnly` are refused. Verification is constant-time over the whole ring.
+- **Retirement procedure.** (1) Add the new key as `current` and move the old one to `previous`: live grants verify and renew onto
+  the new key. (2) Once its grants have renewed onto `current` (or the longest grant TTL has passed), move the old key from
+  `previous` to `refOnly` and keep it there for the lifetime of the longest-lived run started under it. (3) Remove it only when no such
+  run can still resume.
+- **Removing a key strands runs.** A run started under a removed key (its recorded ref MAC no longer verifies) can never restore
+  its principal: `fromRef` answers `{ principalUnresolved }` and the kernel denies. That is terminal. There is no seam to re-record
+  a ref under a new key, and making `fromRef` throw so the run merely pauses was rejected (it breaks the codec contract and can
+  double a renewal's side effect).
+- **Why `refOnly`.** Keeping the old key as `previous` for the sake of old runs would keep a possibly-leaked key able to sign
+  grants. As `refOnly` a leaked old key can only restore an EXISTING grant to its own holder, not mint or widen authority. That
+  limits the exposure of the retirement window to "resume what was already granted".
+- The kit gains `broker.signs-current-key`.
+
+### D4 — `ctx.resources` is a copy (R32; T12, #820)
+
+`EffectContext.resources` (and the `resources` handed to a decide scope's transient call) was the fold-owned object. It is now a copy,
+built by the same helper as `readResources()` ([ADR 0151](0151-effect-context-flush.md) D6), `custom` included. Code that wrote
+`ctx.resources.x` to affect the fold stops working; meter with `ctx.emit("RESOURCE_METERED", ...)`.
+
+### D6 — child lease follow-ups (R33; T15, #823 and #824)
+
+- **A never-started child returns its reservation (#823).** `GrantBroker` records the reservation the parent made in its fold:
+  `reserve(parentTaskId, childId, lease)` (called by the reserve step after the fold meters it). If the child will never start (its mint
+  was refused, or the supervisor gave up), `settleUnstarted(childId, parentTaskId)` makes the WHOLE reservation takeable once through
+  `takeReturn`, and revokes a grant minted for it but never claimed. A child is EITHER started (`settleChild`, or already claimed) OR
+  unstarted, never both: whichever comes first wins and the other changes nothing. This closes the first amendment's known residual.
+  The kit gains `broker.unstarted-return`.
+- **A refused group mint cancels started members (#824).** When a mint for one member of a spawn group is refused, the supervisor
+  cancels the members that already started (`cascadeCancel`), instead of leaving them running beside a refused sibling.
+- **The child-lease effect is branded (#824).** `childLeaseEffect()` is recognised by a module-private brand (`isChildLeaseEffect`), not by
+  its tool id, so an app effect registered under `CHILD_LEASE_TOOL` cannot shadow the exemption.
+  **Breaking:** the lease middleware can only see which effect is registered through `effects: () => effectRuntime` (a getter, since
+  the runtime is built after its middleware). Wiring that registers `CHILD_LEASE_TOOL` and does not pass `effects` loses the exemption:
+  the child-lease call becomes an ordinary leased effect and strict leases refuse it.
+- **`GrantBroker` gained required methods.** A broker written against slice 1 must add `reserve`, `settleUnstarted` and (from the first
+  amendment) `claim`, `holder`, `settleChild` and `takeReturn`; the conformance kit fails a broker that lacks or mis-implements them.
+
+### Still open
+
+Slice 2: provenance taint across lineages (D7) and covered laundering, which the kit reports as skipped.

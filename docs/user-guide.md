@@ -1144,8 +1144,9 @@ const grant = await broker.mint({
 
 // 2. Lease middleware counts each leased effect on live fold state, durably, before it runs.
 //    The authorizer denies anything outside the grant; it is required alongside the middleware.
+//    `effects` lets the middleware recognise the real child-lease effect (needed only if you register one).
 const effects = new EffectRuntime(
-  [taskLeaseMiddleware({ secret, source: broker })],
+  [taskLeaseMiddleware({ secret, source: broker, effects: () => effects })],
   { authorizer: new TaskGrantAuthorizer({ secret, base: { authorize: () => ({ allowed: true }) } }) },
 );
 effects.register("write", new ToolEffect(async () => ({ ok: true })));
@@ -1159,7 +1160,7 @@ runtime.registerFlow(definition, async (ctx) => {
   return withRenewal(ctx, "write-1", (attemptId) => ctx.run(writeTask(attemptId), {}));
 });
 
-// 4. Start AS the task. The principal carries the grant; a chain with tenant / onBehalfOf / delegation is refused.
+// 4. Start AS the task. The principal carries the grant; a chain with a delegation is refused, and tenant / onBehalfOf must equal the grant's.
 const handle = await runtime.start(flow, {}, { executionId: "e1", principal: { actor: grant.issuedTo, taskGrant: grant } });
 
 // 5. When a lease is spent the run parks on RENEWAL_GATE. Answer it through the broker (resume needs a resumeAuthenticator).
@@ -1168,7 +1169,20 @@ const resumed = await answerRenewal(runtime, broker, "e1");
 await resumed.waitForCompletion();
 ```
 
-An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }`. Child leases (`childLeaseEffect`, `childGrantMinter`; give `taskLeaseMiddleware` `effects: () => effectRuntime` so it can tell the real child-lease effect from another effect under the same id) and the `@loomwork/task-authority/conformance` kit are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what slice 1 refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
+An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }`. Child leases (`childLeaseEffect`, `childGrantMinter`; give `taskLeaseMiddleware` `effects: () => effectRuntime` so it can tell the real child-lease effect from another effect under the same id) and the `@loomwork/task-authority/conformance` kit are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what task authority refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
+
+**Multi-tenant grants.** Give `mint` a `tenant` and, optionally, an `onBehalfOf`; both are signed into the grant and bound into the run's `ta2:` ref. The run's principal must carry the same values (a mismatch is refused at start, and denied as `task-grant:identity` on a transient call), and a child grant inherits them. The log holds only the ref; the broker holds identity, so erasing it there makes the task permanently unrestorable (fail closed). A delegation together with a task grant is still refused: mint a child grant instead.
+
+```ts
+const grant = await broker.mint({ taskId: "t2", issuedTo: "agent-a", tenant: "acme", onBehalfOf: "user-7", effects: ["write"], leases: {}, ttlMs: 60_000 });
+await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acme", onBehalfOf: "user-7", taskGrant: grant } });
+```
+
+**Rotating the secret.** Pass a ring wherever `secret` goes: `{ current, previous?, refOnly? }`. New grants sign with `current`; grants signed with a `previous` key still verify and renew onto `current`. Retire an old key in two steps: move it to `previous`, then, once its grants have renewed, to `refOnly`, where it can only restore the ref of a run already started under it (never vouch for a grant). Keep it there for the lifetime of the longest such run. **Removing a key outright strands every run started under it, and that is terminal**, so do it last.
+
+```ts
+const secret = { current: process.env.TA_KEY_2!, previous: [process.env.TA_KEY_1!] };   // later: { current: KEY_2, refOnly: [KEY_1] }
+```
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 
