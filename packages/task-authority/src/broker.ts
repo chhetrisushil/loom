@@ -51,6 +51,8 @@ export interface Rec {
   digests: string[];
   parent?: string | undefined;
   children: Set<string>;
+  /** Per lease, the highest ceiling ever granted to this task: its reservation against the parent (R11). */
+  high: Record<string, number>;
   spent: Record<string, number>;
   justifications: TaintedValue<string>[];
   revoked?: string;
@@ -71,7 +73,7 @@ export function cloneRequest<T>(v: T): T {
 
 /**
  * Reference in-process ledger (ADR 0150 D13): mint, current, revoked, revoke. Not an enforcement point.
- * Reservations: the sum of ALL children's ceilings (revoked or not) for a lease never exceeds the parent's
+ * Reservations: the sum of ALL children's HIGH-WATER ceilings (max ever granted; revoked or not; renewing down releases nothing) for a lease never exceeds the parent's
  * ceiling. The broker NEVER releases a reservation; returning unused amounts is the parent fold's job (T8).
  * Bad input surfaces as `GrantBrokerError` (broker rules) or `TaskGrantShapeError` (grant shape), never a TypeError.
  */
@@ -101,7 +103,7 @@ export class InMemoryGrantLedger {
   protected reserved(parent: Rec, lease: string, except?: string): number {
     let sum = 0;
     for (const id of parent.children)
-      if (id !== except) sum += this.tasks.get(id)?.grant.leases[lease]?.ceiling ?? 0;
+      if (id !== except) sum += this.tasks.get(id)?.high[lease] ?? 0;
     return sum;
   }
 
@@ -152,6 +154,7 @@ export class InMemoryGrantLedger {
       digests: [taskGrantDigest(grant)],
       parent: parent?.grant.taskId,
       children: new Set(),
+      high: Object.fromEntries(Object.entries(grant.leases).map(([n, l]) => [n, l.ceiling])),
       spent: {},
       justifications: [],
     });
