@@ -109,6 +109,8 @@ returns a copy (mutating it never reaches the fold). A check-then-emit in one sy
 against concurrent effects of the same execution: emits fold synchronously, so the next read sees them. It is
 absent on the transient seam and on test contexts, and a consumer that needs it fails closed, like `flush`.
 
+`ctx.resources` is now also a copy (T12; it used to be the fold-owned `_resources` object): an effect or middleware that wrote `ctx.resources.tokens = 0` or `.custom.x = 999` changed the live fold, defeating K3 metering, `nestedBudget` and the lease reads, and replay purity. The decide scope's transient call gets a copy for the same reason. Both share one copy helper with `readResources()`.
+
 I5 consequence: after its emit, middleware re-reads and checks that the dimension it just metered is present
 (`Object.hasOwn(custom, name)`); if the fold dropped it, the middleware fails closed instead of dispatching.
 
