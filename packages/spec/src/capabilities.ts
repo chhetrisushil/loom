@@ -696,4 +696,14 @@ export const CAPABILITIES: readonly Capability[] = [
     evidence: {},
     note: "Concept only — there is NO gpu-worker package. Demand-driven (#72). A hand-assigned 'L1' would be a badge that lies; evidence-derived it is L0.",
   },
+  {
+    id: "task-authority",
+    title: "Task-scoped Authority",
+    package: "—",
+    level: "L0",
+    summary:
+      "ADR 0150 — per-task signed grants, side-effect leases that pause on exhaustion, child leases carved by reservation, cross-lineage provenance.",
+    evidence: {},
+    note: "Design accepted (ADR 0150); the @loomwork/task-authority package does not exist yet, so evidence-derived it is L0.",
+  },
 ];

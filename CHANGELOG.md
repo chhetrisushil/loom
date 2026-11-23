@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **ADR 0150 (Proposed): task-scoped authority ([ADR 0150](docs/adr/0150-task-scoped-authority.md)).** A design for an opt-in first-party package, `@loomwork/task-authority`, that gives each task a signed grant (scope, expiry, lease ceilings, root and parent ids) instead of standing per-identity authority. Leases count side effects in the execution's own fold. Exhausted, expired or revoked authority parks the run on a typed renewal gate instead of failing it. Children reserve their lease from the parent's, and cross-lineage provenance taint records which lineage directed an effect. A conformance kit uses the two-agent laundering test as its acceptance bar. Design only: nothing ships with this entry. Kernel change zero, no new event.
+- **ADR 0150 (Accepted): task-scoped authority ([ADR 0150](docs/adr/0150-task-scoped-authority.md)).** A design for an opt-in first-party package, `@loomwork/task-authority`, that gives each task a signed grant (scope, expiry, lease ceilings, root and parent ids) instead of standing per-identity authority. Leases count side effects in the execution's own fold. Exhausted, expired or revoked authority parks the run on a typed renewal gate instead of failing it. Children reserve their lease from the parent's, and cross-lineage provenance taint records which lineage directed an effect. A conformance kit uses the two-agent laundering test as its acceptance bar. Design only: nothing ships with this entry. Kernel change zero, no new event.
 
 ## [0.1.4] - 2026-11-18
 

@@ -1,6 +1,6 @@
 # ADR 0150 — Task-scoped authority: grants per task, effect leases that pause when spent, and accounting by lineage, as an opt-in package
 
-- Status: **Proposed**
+- Status: **Accepted** (2026-11-23) — design accepted by the owner; implementation (slice 1, then slice 2) pending
 - Date: 2026-11-23
 - Builds on: [ADR 0024](0024-k12-identity-tenancy-delegated-authority.md) (`PrincipalChain`, signed attenuated
   delegation, nested budgets, `ResumeAuthenticator`), [ADR 0111](0111-durable-principal.md) (the principal is
