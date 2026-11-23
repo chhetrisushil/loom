@@ -23,7 +23,8 @@ export type RuleName =
   | "placement-compat"
   | "resource-compat"
   | "classification-reachability"
-  | "effect-class";
+  | "effect-class"
+  | "task-grant-reach";
 
 export interface Finding {
   readonly rule: RuleName;
@@ -188,6 +189,17 @@ export interface PlacementSpec {
   readonly supportedKinds?: Readonly<Record<string, readonly string[]>>;
 }
 
+/**
+ * ADR 0150 D9 — an app-supplied task-grant TEMPLATE for a flow (grants are minted at runtime, so the
+ * static check reads the template the app mints from). `reach` is the flow's reach INCLUDING child
+ * flows and agent loops, resolved by the adapter (`reachOf`); absent, the flow's own `effects` are used.
+ */
+export interface TaskGrantTemplateSpec {
+  readonly flowId: string;
+  readonly effects: readonly string[];
+  readonly reach?: readonly string[];
+}
+
 export interface VerifyInput {
   readonly flows: readonly FlowSpec[];
   /**
@@ -205,6 +217,12 @@ export interface VerifyInput {
   readonly placement?: PlacementSpec;
   /** Dimensions the wired `meteringMiddleware` covers (e.g. `["tokens","costUsd","ms"]`). */
   readonly meteredDimensions?: readonly string[];
+  /**
+   * ADR 0150 D9 — the app's task-grant templates, one per flow it mints grants for. Absent ⇒ the
+   * `task-grant-reach` rule is a no-op (G2); present but empty ⇒ it says so (a configured gate with
+   * nothing to check reads as coverage).
+   */
+  readonly taskGrants?: readonly TaskGrantTemplateSpec[];
   readonly resumeAuthenticatorWired?: boolean;
   /**
    * Whether a `TimerStore` is wired. When it is, `WorkflowRuntime` derives

@@ -3880,7 +3880,7 @@ function verify(input: VerifyInput, options?: { rules?: readonly RuleName[] }): 
 function runVerification(mode: "off" | "warn" | "error", buildInput: () => VerifyInput, options?: VerifyOptions, log?: (message: string) => void): VerificationReport | null   // null when mode is "off"
 function formatReport(report: VerificationReport): string
 const RULE_ORDER: readonly RuleName[]  // determinism · replay-safety · suspension-safety · capability-compat ·
-                                       // placement-compat · resource-compat · classification-reachability · effect-class
+                                       // placement-compat · resource-compat · classification-reachability · effect-class · task-grant-reach
 const RULES: Record<RuleName, Rule>
 class VerificationError extends Error { readonly report: VerificationReport }
 #+end_src

@@ -470,6 +470,54 @@ const effectClass: Rule = (input) => {
   return findings;
 };
 
+/**
+ * task-grant-reach (ADR 0150 D9) — a task-grant template may not name an effect outside the reach of
+ * the flow it is issued for: the grant is broader than the code. `warn`, not `error`: a template is an
+ * upper bound the operator may narrow, and reach analysis has limits (unresolved targets are reported
+ * beside it). The other direction (reach the template does not cover) is deliberately not reported:
+ * ADR 0150 D9 only names the over-broad case.
+ */
+const taskGrantReach: Rule = (input) => {
+  const templates = input.taskGrants;
+  if (templates === undefined) return []; // G2: unwired ⇒ no-op
+  if (templates.length === 0) {
+    return [
+      {
+        rule: "task-grant-reach",
+        severity: "info",
+        message:
+          "`checks.verify.taskGrants` is configured but empty, so no grant template was checked against a flow's reach.",
+      },
+    ];
+  }
+  const findings: Finding[] = [];
+  const flows = new Map(input.flows.map((f) => [f.id, f] as const));
+  for (const t of templates) {
+    const flow = flows.get(t.flowId);
+    if (flow === undefined) {
+      findings.push({
+        rule: "task-grant-reach",
+        severity: "warn",
+        message: `Task-grant template names flow "${t.flowId}", which is not registered, so its effects were not checked.`,
+        location: t.flowId,
+      });
+      continue;
+    }
+    const reach = new Set(t.reach ?? (flow.effects ?? []).map((e) => e.toolId));
+    const extra = [...new Set(t.effects)].filter((e) => !reach.has(e)).sort();
+    if (extra.length > 0) {
+      findings.push({
+        rule: "task-grant-reach",
+        severity: "warn",
+        message: `Task-grant template for flow "${flow.id}" names ${extra.length} effect(s) the flow cannot reach: ${extra.map((e) => `"${e}"`).join(", ")}. The grant is broader than the code.`,
+        location: flow.id,
+      });
+    }
+    findings.push(...reachCoverage(flow, "task-grant-reach", "the grant's upper bound"));
+  }
+  return findings;
+};
+
 export const RULES: Record<RuleName, Rule> = {
   determinism,
   "replay-safety": replaySafety,
@@ -479,6 +527,7 @@ export const RULES: Record<RuleName, Rule> = {
   "resource-compat": resourceCompat,
   "classification-reachability": classificationReachability,
   "effect-class": effectClass,
+  "task-grant-reach": taskGrantReach,
 };
 
 /** Canonical rule order (matches ADR 0028). */
@@ -491,4 +540,5 @@ export const RULE_ORDER: readonly RuleName[] = [
   "resource-compat",
   "classification-reachability",
   "effect-class",
+  "task-grant-reach",
 ];

@@ -22,6 +22,7 @@ lives (K2 authority, K9 delivery, K11 versioning). This package shifts those fai
 | `resource-compat` | a declared budget dimension that nothing meters (K3); a budget with no ceiling |
 | `classification-reachability` | a `secret()`/`sensitive()`/`internal()` mark under a record/union/tuple/intersection, which no egress sink can address — masked nowhere, encrypted nowhere, externalized nowhere (K10-R1, [ADR 0076](../../docs/adr/0076-wildcard-classification-paths.md)) |
 | `effect-class` | a flow reaching an effect whose declared class exceeds the flow's own ceiling ([ADR 0084](../../docs/adr/0084-effect-classes-static-ceiling-k2-floor.md)); no-op until the app declares its class vocabulary |
+| `task-grant-reach` | a task-grant template (`checks.verify.taskGrants`) naming an effect the flow cannot reach, i.e. a grant broader than the code ([ADR 0150](../../docs/adr/0150-task-scoped-authority.md) D9); no-op until templates are supplied, `info` when the list is empty |
 
 (`migration-safety` from the requirements folds into `replay-safety` — in the stateless-worker
 model, resume *is* migration.)

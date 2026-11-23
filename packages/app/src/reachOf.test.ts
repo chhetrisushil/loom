@@ -7,7 +7,8 @@ import { WorkflowRuntime } from "@loomwork/workflow-runtime";
 import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { agentLoopReach, reachOf } from "./reachOf";
+import { agentLoopReach } from "./reachCore";
+import { reachOf } from "./reachOf";
 
 const mkTool = (id: string) =>
   tool$({
