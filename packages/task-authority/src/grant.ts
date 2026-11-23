@@ -174,8 +174,16 @@ function canonicalBody(g: UnsignedTaskGrant): string {
     taskId: g.taskId,
   });
 }
-/** One secret, or a rotation ring: sign/MAC with `current`, verify against `current` then `previous`. */
-export type GrantKeys = string | { current: string; previous?: readonly string[] };
+/**
+ * One secret, or a rotation ring: sign/MAC with `current`; verify grants against `current` then
+ * `previous`; `refOnly` keys verify a recorded REF MAC (`fromRef`) and are NEVER accepted for a grant
+ * signature, so a retired key cannot mint authority. Retire a key in two steps: move it to `previous`;
+ * once its grants have renewed onto `current` (or after the longest grant TTL) move it to `refOnly`, and
+ * keep it there for the lifetime of any run started under it. Removing it entirely strands those runs.
+ */
+export type GrantKeys =
+  | string
+  | { current: string; previous?: readonly string[]; refOnly?: readonly string[] };
 const MAX_PREVIOUS_KEYS = 8;
 
 /**
@@ -183,23 +191,43 @@ const MAX_PREVIOUS_KEYS = 8;
  * current first. Throws on a non-string or empty key, more than 8 previous keys, or `current` listed
  * in `previous`.
  */
-export function keyRing(keys: GrantKeys): { sign: string; verify: readonly string[] } {
-  const ring = typeof keys === "string" ? { current: keys } : keys;
-  const cur = (ring as { current?: unknown } | null)?.current;
+export function keyRing(keys: GrantKeys): {
+  sign: string;
+  verify: readonly string[];
+  ref: readonly string[];
+} {
+  const ring = (typeof keys === "string" ? { current: keys } : keys) as {
+    current?: unknown;
+    previous?: unknown;
+    refOnly?: unknown;
+  } | null;
+  const cur = ring?.current;
   if (typeof cur !== "string" || cur.length === 0) fail("secret must be a non-empty string");
-  const prev = (ring as { previous?: readonly unknown[] }).previous ?? [];
-  if (!Array.isArray(prev) || prev.length > MAX_PREVIOUS_KEYS)
-    fail(`at most ${MAX_PREVIOUS_KEYS} previous keys`);
-  for (const k of prev)
-    if (typeof k !== "string" || k.length === 0 || k === cur)
-      fail("previous keys must be non-empty and differ from current");
-  return { sign: cur as string, verify: [cur as string, ...(prev as string[])] };
+  // Each list is read EXACTLY ONCE (a custom iterator could yield different keys twice).
+  const list = (v: unknown, what: string): string[] => {
+    if (v === undefined) return [];
+    if (typeof v === "string" || typeof (v as Iterable<unknown>)?.[Symbol.iterator] !== "function")
+      fail(`${what} must be a list`);
+    const out = Array.from(v as Iterable<unknown>);
+    if (out.length > MAX_PREVIOUS_KEYS) fail(`at most ${MAX_PREVIOUS_KEYS} ${what} keys`);
+    return out as string[];
+  };
+  const prev = list(ring?.previous, "previous");
+  const refOnly = list(ring?.refOnly, "refOnly");
+  const all = [cur as string, ...prev, ...refOnly];
+  if (all.some((k) => typeof k !== "string" || k.length === 0) || new Set(all).size !== all.length)
+    fail("keys must be non-empty and unique across current, previous and refOnly");
+  return { sign: cur as string, verify: [cur as string, ...prev], ref: all };
 }
 
 /** Validate and COPY a key ring (a later mutation of the caller's object cannot change it). */
 export function sealKeys(keys: GrantKeys): GrantKeys {
   const r = keyRing(keys);
-  return Object.freeze({ current: r.sign, previous: Object.freeze(r.verify.slice(1)) });
+  return Object.freeze({
+    current: r.sign,
+    previous: Object.freeze(r.verify.slice(1)),
+    refOnly: Object.freeze(r.ref.slice(r.verify.length)),
+  });
 }
 
 const mac = (secret: string, g: UnsignedTaskGrant): string =>

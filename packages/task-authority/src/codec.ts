@@ -90,8 +90,8 @@ export function taskAuthorityPrincipalCodec(
   source: GrantSource,
   opts: TaskAuthorityCodecOptions
 ): TaskAuthorityPrincipalCodec {
-  const { sign, verify } = keyRing(opts.secret);
   const secret = sealKeys(opts.secret);
+  const { sign, ref: refKeys } = keyRing(secret);
   const now = opts.now ?? Date.now;
   const timeoutMs = opts.timeoutMs ?? 5000;
   const mac = (g: TaskGrant, v2: boolean, key: string): Buffer =>
@@ -163,7 +163,7 @@ export function taskAuthorityPrincipalCodec(
           return fail("ref binds an identity the grant does not carry");
         // Every key is compared (no early exit): the ref may be MAC'd with a previous key.
         let match = false;
-        for (const k of verify) {
+        for (const k of refKeys) {
           const want = mac(grant, v2, k);
           match = (given.length === want.length && timingSafeEqual(given, want)) || match;
         }
