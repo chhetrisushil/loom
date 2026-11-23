@@ -385,3 +385,122 @@ describe("ADR 0151 D6: EffectContext.readResources()", () => {
     expect(after).toEqual([{ count: 1, gpu: 5 }]);
   });
 });
+
+// ── ADR 0151 D7: reserveEffectDimensions ───────────────────────────────────────────────────────
+describe("ADR 0151 D7: reserveEffectDimensions", () => {
+  type Emit = (ctx: { emit: (t: string, p: unknown) => void }) => void;
+  function bootReserve(opts: {
+    prefix?: string;
+    flowEmit?: Emit;
+    effectEmit?: Emit;
+    suspend?: boolean;
+  }) {
+    const store = new InMemoryAsyncEventStore();
+    const mk = () => {
+      const effects = new EffectRuntime();
+      effects.register(
+        "tool-a",
+        new ToolEffect(async (_i, c) => {
+          opts.effectEmit?.(c);
+          return { ok: true };
+        })
+      );
+      const runtime = new WorkflowRuntime({
+        eventStore: store,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: effects,
+        onWarn: () => {},
+      });
+      const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+        opts.flowEmit?.(ctx);
+        const out = await ctx.run(stepA, {});
+        if (opts.suspend === true) await ctx.suspend({ on: "Approval" });
+        return out;
+      };
+      const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
+        _tag: "FlowDefinition",
+        id: "reserve",
+        name: "reserve",
+        version: "1.0.0",
+        inputSchema: io.inputSchema,
+        outputSchema: io.outputSchema,
+        steps: [stepA],
+      };
+      runtime.registerFlow(definition, runner);
+      return { runtime, flow: { definition, runner } };
+    };
+    const first = mk();
+    if (opts.prefix !== undefined) first.runtime.reserveEffectDimensions(opts.prefix);
+    return { store, first, mk };
+  }
+  const meter = (name: string) => ({ custom: { [name]: 1 } });
+
+  it("refuses a flow emit under a reserved prefix, appends nothing, and allows other names", async () => {
+    const t = bootReserve({
+      prefix: "x.",
+      flowEmit: (c) => c.emit("RESOURCE_METERED", meter("y.a")),
+    });
+    const h = await t.first.runtime.start(t.first.flow, {}, { executionId: "rs-1" });
+    await h.waitForCompletion();
+    expect(await types(t.store, "rs-1")).toContain("RESOURCE_METERED");
+
+    const bad = bootReserve({
+      prefix: "x.",
+      flowEmit: (c) => c.emit("RESOURCE_METERED", meter("x.a")),
+    });
+    const hb = await bad.first.runtime.start(bad.first.flow, {}, { executionId: "rs-2" });
+    const err = await hb.waitForCompletion().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(String(err)).toMatch(/reserved \(prefix "x\."\)/);
+    expect(await types(bad.store, "rs-2")).not.toContain("RESOURCE_METERED");
+  });
+
+  it("allows an effect-scope emit under the reserved prefix, and it folds", async () => {
+    const t = bootReserve({
+      prefix: "x.",
+      effectEmit: (c) => c.emit("RESOURCE_METERED", meter("x.a")),
+    });
+    const h = await t.first.runtime.start(t.first.flow, {}, { executionId: "rs-3" });
+    await h.waitForCompletion();
+    expect(await types(t.store, "rs-3")).toContain("RESOURCE_METERED");
+  });
+
+  it("reserving is idempotent; an invalid prefix throws", () => {
+    const t = bootReserve({});
+    t.first.runtime.reserveEffectDimensions("x.");
+    t.first.runtime.reserveEffectDimensions("x.");
+    for (const bad of ["", "X.", "1x", "a b", "x".repeat(65)]) {
+      expect(() => t.first.runtime.reserveEffectDimensions(bad)).toThrow(/reserveEffectDimensions/);
+    }
+  });
+
+  it("with no prefix reserved, a flow emit of any valid name is unchanged", async () => {
+    const t = bootReserve({ flowEmit: (c) => c.emit("RESOURCE_METERED", meter("x.a")) });
+    const h = await t.first.runtime.start(t.first.flow, {}, { executionId: "rs-4" });
+    await h.waitForCompletion();
+    expect(await types(t.store, "rs-4")).toContain("RESOURCE_METERED");
+  });
+
+  it("replay: an effect meter recorded before the prefix was reserved still replays on resume", async () => {
+    const t = bootReserve({
+      suspend: true,
+      effectEmit: (c) => c.emit("RESOURCE_METERED", meter("x.a")),
+    });
+    await t.first.runtime.start(t.first.flow, {}, { executionId: "rs-5" });
+    const deadline = Date.now() + 5_000;
+    while (!(await types(t.store, "rs-5")).includes("EXECUTION_SUSPENDED")) {
+      if (Date.now() > deadline) throw new Error("timed out waiting for EXECUTION_SUSPENDED");
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    // A fresh runtime reserves the prefix AFTER the effect meter was recorded; resume replays it.
+    const second = t.mk();
+    second.runtime.reserveEffectDimensions("x.");
+    const h2 = await second.runtime.resume("rs-5", { eventType: "Approval", payload: {} });
+    await h2.waitForCompletion();
+    const log = await types(t.store, "rs-5");
+    expect(log).toContain("EXECUTION_COMPLETED");
+    expect(log.filter((e) => e === "RESOURCE_METERED")).toHaveLength(1);
+  });
+});

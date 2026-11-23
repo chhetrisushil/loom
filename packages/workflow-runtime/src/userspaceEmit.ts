@@ -216,7 +216,8 @@ export function guardUserspaceEmit(
   eventType: string,
   payload: unknown,
   scope?: EmitScope,
-  ceilings?: Readonly<Record<string, number>>
+  ceilings?: Readonly<Record<string, number>>,
+  reserved?: ReadonlySet<string>
 ): unknown {
   if (!KERNEL.has(eventType)) return payload;
   if (!USERSPACE_KERNEL_EVENTS.has(eventType)) {
@@ -262,7 +263,22 @@ export function guardUserspaceEmit(
           );
         }
       }
-      if ("custom" in plain) assertCustomDimensions(eventType, plain.custom, ceilings);
+      if ("custom" in plain) {
+        assertCustomDimensions(eventType, plain.custom, ceilings);
+        // ADR 0151 D7 — FLOW code never meters a dimension an app reserved for its effects/middleware.
+        if (scope?.kind === "flow" && reserved !== undefined && reserved.size > 0) {
+          for (const name of Object.keys(plain.custom as object)) {
+            for (const prefix of reserved) {
+              if (name.startsWith(prefix)) {
+                refuse(
+                  eventType,
+                  `custom dimension "${name}" is reserved (prefix "${prefix}") for registered effects and middleware (ADR 0151 D7); flow code cannot meter it`
+                );
+              }
+            }
+          }
+        }
+      }
       return plain;
     }
     case "OUTCOME_RECORDED": {
