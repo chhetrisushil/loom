@@ -114,7 +114,7 @@ interface TaskGrant {
   effects: string[];     // capability ids, incl. R12 "<toolId>:<resource>"; "*" refused at mint
   leases: Record<string, { ceiling: number; effects: string[] }>; // see D4
   reads?: string[];      // D8: Loom namespaces this task may read across lineages (slice 2 S4: signed and carried; S6: checked for effects declaring `capabilities.read`)
-  sandbox?: "isolated";  // D10 (renamed from `ambient`, S-R4): carried since S4; the check is S8
+  sandbox?: "isolated";  // D10 (renamed from `ambient`, S-R4): carried since S4; checked by `sandboxRequirement` (S8)
   exp: number;           // absolute expiry (epoch ms), REQUIRED; a task grant never lives forever
   epoch: number;         // 0 at mint, +1 per renewal (D5)
   sig: string;           // HMAC-SHA256 over the canonical encoding, same scheme as signDelegation

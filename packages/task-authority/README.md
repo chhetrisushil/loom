@@ -42,6 +42,14 @@ Slice 1 surface (see `docs/api-reference.org`):
   refused when called (`LeaseUnmappedError`).
 - `@loomwork/task-authority/conformance`: a kit that proves a broker and runtime wiring resist laundering.
 
+## Isolated sandbox (`sandbox: "isolated"`, ADR 0150 D10)
+
+`sandboxRequirement({ secret, effects: () => effectRuntime })` refuses (terminal, `task-grant:sandbox`), per call, a sandbox
+effect under an isolated grant unless its backend declares `network: "none"` and `freshPerRun: true`. A sandbox effect is
+one whose `capabilities` has `language`, `network` or `freshPerRun` (S6's `read` marker is not one; a partial declaration is
+refused). Caps are read once per registered effect. Effects without a sandbox declaration are not refused (D10 names no
+rule for ambient tools), a grant without `sandbox` is unchanged, and a run with no task grant is not governed. Kit check: `sandbox.isolated`.
+
 ## Read scope (`reads`, ADR 0150 D8)
 
 An effect that declares `capabilities: { read: true }` is a READ. The runtime marks its authorization request `read: true`, and

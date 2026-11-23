@@ -50,6 +50,7 @@ describe("@loomwork/task-authority public surface", () => {
       "renewalResumeSchema",
       "renewalViewDigest",
       "reserveChildLease",
+      "sandboxRequirement",
       "signTaskGrant",
       "taskAuthorityPrincipalCodec",
       "taskGrantDigest",

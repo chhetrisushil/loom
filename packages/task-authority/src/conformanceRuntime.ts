@@ -1,7 +1,7 @@
 import { type FlowDefinition, SuspendError } from "@loomwork/core";
 import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
-import { superviseChildren } from "@loomwork/orchestration";
+import { awaitChild, superviseChildren } from "@loomwork/orchestration";
 import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   type ExecutionContext,
@@ -12,7 +12,12 @@ import {
 import { z } from "zod";
 import { TaskGrantAuthorizer } from "./authorizer";
 import type { GrantBroker } from "./broker";
-import { CHILD_LEASE_TOOL, childGrantMinter, childLeaseEffect } from "./childLease";
+import {
+  CHILD_LEASE_TOOL,
+  childGrantMinter,
+  childLeaseEffect,
+  reserveChildLease,
+} from "./childLease";
 import { type Check, SECRET, TTL, clock, mintReq, mk, must, task, until } from "./conformanceKit";
 import type { ConformanceSubject } from "./conformanceKit";
 import { directedBy } from "./directedBy";
@@ -21,12 +26,18 @@ import { installTaskAuthority } from "./install";
 import { taskLeaseMiddleware } from "./lease";
 import { lineageSend } from "./lineage";
 import { RENEWAL_GATE, renewalResumeSchema, withRenewal } from "./renewal";
+import { sandboxRequirement } from "./sandboxRequirement";
 
 export type Runner = (ctx: ExecutionContext) => Promise<unknown>;
 export interface Stores {
   eventStore: InMemoryAsyncEventStore;
   snapshotStore: InMemoryAsyncSnapshotStore;
 }
+const BACKEND = { language: "js", wallClock: "hard", memory: true, cpu: true };
+const SANDBOX_EFFECTS: Record<string, object> = {
+  sbxOk: { ...BACKEND, network: "none", freshPerRun: true },
+  sbxNet: { ...BACKEND, network: "open", freshPerRun: true },
+};
 /** A real runtime on the production wiring: codec, lease middleware, grant authorizer, supervisor. */
 export function rig(
   broker: GrantBroker,
@@ -38,9 +49,11 @@ export function rig(
     directed?: { wired: boolean; gate?: boolean };
     /** `false` is the broken stack: the read effect does not declare itself a read, so `reads` is never checked. */
     readMarked?: boolean;
+    /** Sandbox effects (`sbxOk`: network none + fresh, `sbxNet`: network open); `wired: false` is the broken stack. */
+    sandbox?: { wired: boolean; effects?: Record<string, object> };
   } = {}
 ) {
-  const ran = { act: 0, other: 0, rd: 0 };
+  const ran = { act: 0, other: 0, rd: 0, sbx: 0 };
   const authorizer = new TaskGrantAuthorizer({
     secret: SECRET,
     base: { authorize: () => ({ allowed: true }) },
@@ -48,6 +61,9 @@ export function rig(
   });
   const effects: EffectRuntime = new EffectRuntime(
     [
+      ...(o.sandbox?.wired === true
+        ? [sandboxRequirement({ secret: SECRET, effects: () => effects })]
+        : []),
       taskLeaseMiddleware({ secret: SECRET, source: broker, now: c.now, effects: () => effects }),
       ...(o.directed?.wired === true ? [directedBy({ secret: SECRET })] : []),
     ],
@@ -74,6 +90,17 @@ export function rig(
       }
     )
   );
+  for (const [id, capabilities] of Object.entries(o.sandbox?.effects ?? SANDBOX_EFFECTS))
+    effects.register(
+      id,
+      new ToolEffect(
+        async () => {
+          ran.sbx++;
+          return { ok: true };
+        },
+        { capabilities }
+      )
+    );
   effects.register(CHILD_LEASE_TOOL, childLeaseEffect({ secret: SECRET, broker }));
   const s = o.stores ?? {
     eventStore: new InMemoryAsyncEventStore(),
@@ -184,7 +211,67 @@ export async function readScope(s: ConformanceSubject, marked = true): Promise<v
   const none = await (await h.start("none", "n", await grant("n"))).waitForCompletion();
   must(none.variables._output === false, "a read ran under a grant with no reads");
 }
+/**
+ * ADR 0150 D10: an `isolated` grant refuses a sandbox effect whose backend is not network-less and fresh per run, in the
+ * grant's own run and in a child's (which inherits `isolated`); a grant without `sandbox` is not restricted.
+ * `wired: false` is the broken stack (no `sandboxRequirement`).
+ */
+export async function sandboxIsolated(s: ConformanceSubject, wired = true): Promise<void> {
+  const c = clock();
+  const b = mk(s, undefined, c);
+  const grant = (id: string, isolated: boolean, ceiling = 8) =>
+    b.mint({
+      ...mintReq(id, ceiling),
+      effects: ["act", "sbxOk", "sbxNet", CHILD_LEASE_TOOL],
+      leases: { w: { ceiling, effects: ["act", "sbxOk", "sbxNet"] } },
+      ...(isolated && { sandbox: "isolated" as const }),
+    });
+  const tryRun = (ctx: ExecutionContext, tool: string): Promise<boolean> =>
+    ctx.run(task(`s-${tool}`, tool), {}).then(
+      () => true,
+      (e) => {
+        if (e instanceof SuspendError) throw e;
+        return false;
+      }
+    );
+  const both = async (ctx: ExecutionContext) => [
+    await tryRun(ctx, "sbxOk"),
+    await tryRun(ctx, "sbxNet"),
+  ];
+  const parent: Runner = async (ctx) => {
+    const res = await reserveChildLease(ctx, "k", { w: 3 });
+    await awaitChild(ctx, { key: "k", flowId: "kid", input: {}, ...res.spawn });
+    await res.settle();
+    return true;
+  };
+  const h = rig(b, c, { iso: both, free: both, parent, kid: both }, { sandbox: { wired } });
+  const got = async (flow: string, id: string, isolated: boolean) =>
+    JSON.stringify(
+      (await (await h.start(flow, id, await grant(id, isolated))).waitForCompletion()).variables
+        ._output
+    );
+  must(
+    (await got("iso", "iso", true)) === "[true,false]",
+    "an isolated grant ran a network-capable sandbox effect, or refused the network-less fresh one"
+  );
+  must(
+    (await got("free", "free", false)) === "[true,true]",
+    "a grant without sandbox was restricted"
+  );
+  const before = h.ran.sbx;
+  await (await h.start("parent", "P", await grant("P", true))).waitForSuspend();
+  await h.sup.recover(); // the supervisor starts the child
+  await until(
+    async () => (await h.runtime.loadState("P"))?.status === "completed",
+    "the isolated parent to finish"
+  );
+  must(
+    h.ran.sbx - before === 1,
+    `a child of an isolated parent ran a network-capable sandbox effect (${h.ran.sbx - before} sandbox runs, want 1)`
+  );
+}
 export const RUNTIME_CHECKS: Record<string, Check> = {
+  "sandbox.isolated": (s) => sandboxIsolated(s),
   "reads.read-scope": (s) => readScope(s),
   // Guards the package and kernel (reserved `lease.` prefix), not the broker: a broken broker cannot fail this.
   "carve.forged-meters": async (s) => {
