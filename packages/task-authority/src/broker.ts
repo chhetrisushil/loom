@@ -42,6 +42,13 @@ export interface RenewalRequest {
   renewals: number;
   effectClassesCaused?: string[];
   justification?: TaintedValue<string> | string;
+  /**
+   * ADR 0150 D7 (`directedBy` park): the renewal is a request to APPROVE a cross-lineage step. `lineages` is the foreign
+   * set the approver is shown and `hash` its full sha256 (`foreignSetHash`); a grant carries the approved hash back.
+   */
+  reason?: "cross-lineage";
+  lineages?: string[];
+  hash?: string;
 }
 export type RenewalVerdict =
   | { granted: true; epoch: number; digest: string }

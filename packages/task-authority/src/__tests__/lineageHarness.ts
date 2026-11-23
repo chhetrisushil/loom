@@ -37,6 +37,8 @@ export async function until(cond: () => boolean | Promise<boolean>, what: string
 /** What a leased `act` call saw: the kernel's seen-origins list (`undefined` = untracked). */
 export interface ActCall {
   seen: readonly string[] | undefined;
+  /** `directed-by` records already DURABLE in the log when the effect body ran. */
+  logged: number;
 }
 
 /**
@@ -49,12 +51,16 @@ export function world(
     maxOrigins?: number;
     middleware?: (effects: () => EffectRuntime) => EffectMiddleware[];
     policy?: RenewalPolicy;
+    approveCrossLineage?: ConstructorParameters<
+      typeof InMemoryGrantBroker
+    >[0]["approveCrossLineage"];
   } = {}
 ) {
   const broker = new InMemoryGrantBroker({
     secret: SECRET,
     now: () => NOW,
     ...(o.policy !== undefined && { policy: o.policy }),
+    ...(o.approveCrossLineage !== undefined && { approveCrossLineage: o.approveCrossLineage }),
   });
   const acts: ActCall[] = [];
   const effects: EffectRuntime = new EffectRuntime([
@@ -64,7 +70,14 @@ export function world(
   effects.register(
     "act",
     new ToolEffect(async (_i: unknown, ctx: EffectContext) => {
-      acts.push({ seen: ctx.seenOrigins?.() });
+      const logged = (await eventStore.read(ctx.executionId)).filter(
+        (e) =>
+          e.eventType === "DECISION_RECORDED" &&
+          String((e.payload as { decisionId?: string }).decisionId).endsWith(
+            ":task-authority:directed-by"
+          )
+      ).length;
+      acts.push({ seen: ctx.seenOrigins?.(), logged });
       return { ok: true };
     })
   );

@@ -32,7 +32,7 @@ export function rig(
   broker: GrantBroker,
   c: { now: () => number },
   flows: Record<string, Runner>,
-  o: { stores?: Stores; hangMint?: boolean; directed?: { wired: boolean } } = {}
+  o: { stores?: Stores; hangMint?: boolean; directed?: { wired: boolean; gate?: boolean } } = {}
 ) {
   const ran = { act: 0, other: 0 };
   const authorizer = new TaskGrantAuthorizer({
@@ -65,7 +65,7 @@ export function rig(
     ...s,
     effectRuntime: effects,
     ...(o.directed !== undefined && {
-      seenOriginsEnabled: true,
+      ...(o.directed.gate !== false && { seenOriginsEnabled: true }),
       inboxEnabled: true,
       inboxArchive: "none" as const,
     }),
@@ -203,46 +203,55 @@ export const RUNTIME_CHECKS: Record<string, Check> = {
 };
 
 /**
- * D14 laundering, COVERED (ADR 0150 D7): B's grant covers the step, and A's content directed it. The step must be
- * attributed (`task-authority:directed-by` recorded naming `lineage:a`), never silently allowed; and B's own lineage
- * must NOT be attributed (the control). `wired: false` is the deliberately broken stack (no `directedBy`) that this must fail.
+ * D14 laundering, COVERED (ADR 0150 D7), for the channel THIS kit drives: `lineageSend` into an inbox. B's grant covers the
+ * step and A's content directed it; the step must be attributed (`task-authority:directed-by` naming `lineage:a`), never
+ * silently allowed, and B's own lineage must NOT be attributed. Control: with the seen-origins gate OFF the same step must be
+ * refused (untracked fails closed). This proves the stack, not that every channel is tagged: raw writes and untagged
+ * channels are outside it (see the user guide's coverage list). `wired: false` is the broken stack (no `directedBy`).
  */
 export async function launderingCovered(s: ConformanceSubject, wired = true): Promise<void> {
-  const c = clock();
-  const b = mk(s, undefined, c);
-  const [ga, gb] = [await b.mint(mintReq("a", 5)), await b.mint(mintReq("b", 5))];
-  const h = rig(
-    b,
-    c,
-    {
-      b: async (ctx) => {
-        await ctx.receive("t");
-        return acts(ctx, 1);
+  const stack = async (gate: boolean) => {
+    const c = clock();
+    const b = mk(s, undefined, c);
+    const [ga, gb] = [await b.mint(mintReq("a", 5)), await b.mint(mintReq("b", 5))];
+    const h = rig(
+      b,
+      c,
+      {
+        b: async (ctx) => {
+          await ctx.receive("t");
+          return acts(ctx, 1);
+        },
       },
-    },
-    { directed: { wired } }
-  );
-  const send = lineageSend(h.runtime, SECRET);
-  const directedOf = async (id: string): Promise<string[][]> =>
-    (await h.runtime.events.read(id))
-      .filter(
-        (e) =>
-          e.eventType === "DECISION_RECORDED" &&
-          String((e.payload as { decisionId?: string }).decisionId).endsWith(
-            ":task-authority:directed-by"
-          )
-      )
-      .map((e) => (e.payload as { choice: { lineages: string[] } }).choice.lineages);
-  const run = async (id: string, from: TaskGrant): Promise<string[][]> => {
-    await h.start("b", id, gb);
-    await send(
-      id,
-      { topic: "t", payload: "do it" },
-      { principal: { actor: from.issuedTo, taskGrant: from } }
+      { directed: { wired, gate } }
     );
-    await until(async () => (await h.runtime.loadState(id))?.status === "completed", "B to finish");
-    return directedOf(id);
+    const send = lineageSend(h.runtime, SECRET);
+    const directedOf = async (id: string): Promise<string[][]> =>
+      (await h.runtime.events.read(id))
+        .filter(
+          (e) =>
+            e.eventType === "DECISION_RECORDED" &&
+            String((e.payload as { decisionId?: string }).decisionId).endsWith(
+              ":task-authority:directed-by"
+            )
+        )
+        .map((e) => (e.payload as { choice: { lineages: string[] } }).choice.lineages);
+    const run = async (id: string, from: TaskGrant): Promise<string[][]> => {
+      await h.start("b", id, gb);
+      await send(
+        id,
+        { topic: "t", payload: "do it" },
+        { principal: { actor: from.issuedTo, taskGrant: from } }
+      );
+      await until(
+        async () => (await h.runtime.loadState(id))?.status === "completed",
+        "B to finish"
+      );
+      return directedOf(id);
+    };
+    return { h, run, ga, gb };
   };
+  const { h, run, ga, gb } = await stack(true);
   const foreign = await run("b1", ga);
   must(h.ran.act === 1, `B's covered step ran ${h.ran.act} times, expected once`);
   must(
@@ -253,5 +262,12 @@ export async function launderingCovered(s: ConformanceSubject, wired = true): Pr
   must(
     own.length === 0,
     "B's step, directed only by B's own lineage, was attributed to a foreign one"
+  );
+  // Control: with tracking OFF the step cannot be shown free of foreign direction, so it must NOT run.
+  const off = await stack(false);
+  await off.run("b1", off.ga);
+  must(
+    off.h.ran.act === 0,
+    "an untracked run (seen-origins gate off) ran B's step: it must fail closed"
   );
 }

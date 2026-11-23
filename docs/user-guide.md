@@ -1219,17 +1219,17 @@ const secret = { current: process.env.TA_KEY_2!, previous: [process.env.TA_KEY_1
 
 #### Covered laundering: `directedBy` (ADR 0150 D7)
 
-A grant that covers a step does not say who asked for it. When agent A's content reaches agent B (shared memory, an
-inbox, a child result) and B then calls a leased effect, B's grant may cover the step, so the authorizer is silent.
-`directedBy` closes that: it reads the run's seen origins (`ctx.seenOrigins`, ADR 0152, behind
-`kernel.features.seenOrigins`) and acts when a **foreign lineage** is among them.
+A grant that covers a step does not say who asked for it. When agent A's content reaches agent B and B then calls a leased
+effect, B's grant may cover the step, so the authorizer is silent. `directedBy` closes that for the channels listed below: it
+reads the run's seen origins (`ctx.seenOrigins`, ADR 0152, behind `kernel.features.seenOrigins`) and acts when a **foreign
+lineage** is among them.
 
 ```ts
 import { directedBy, lineageOrigin, lineageSend } from "@loomwork/task-authority";
 import { memoryWriteBackEffect } from "@loomwork/agent";
 
 // Writers tag what they write with their VERIFIED lineage (`lineage:<rootId>`, from the signed grant only):
-const lineage = lineageOrigin(secret);
+const lineage = lineageOrigin(secret); // pass the AUTHENTICATED principal only, never one the caller built
 effects.register("memory-write", memoryWriteBackEffect(memory, { originOf: (ctx) => lineage(ctx.principal) }));
 const send = lineageSend(runtime, secret); // runtime.send with the payload tagged as the sender's lineage
 
@@ -1237,18 +1237,41 @@ const send = lineageSend(runtime, secret); // runtime.send with the payload tagg
 const policy = directedBy({ secret, action: "attribute" }); // or "park" | "deny"
 ```
 
-- `action` (default `"attribute"`): `attribute` records `task-authority:directed-by { lineages }` before the effect and lets it run;
-  `deny` refuses with `task-grant:cross-lineage`; `park` throws a renewable error, so `withRenewal` parks on the renewal gate and
-  a granted renewal approves exactly that foreign set (a new foreign lineage parks again).
-- `appliesTo` (a predicate or tool ids; default every leased effect) names the effects the policy covers.
-- **Foreign** means a `lineage:` origin whose rootId differs from the acting grant's; the overflow marker counts as foreign.
-  Other untrusted origins (`mcp:`, `inbox:`) are ignored unless `foreign: "any-untrusted"`.
-- **Untracked fails closed.** With the gate off `ctx.seenOrigins` is absent: every action but `park` denies (`task-grant:untracked`),
-  and `park` parks. There is no honest way to attribute what is not tracked.
-- Residual: a writer WITHOUT a grant can label fresh content `lineage:<your own root>` and it reads as yours. Re-labelling someone
-  else's content cannot hide the original origin, and a forged foreign label only makes the policy stricter.
-  `foreign: "any-untrusted"` closes the residual (the inbox origin is still present).
-- A tracked child's seen origins reach the parent on the `CHILD_DONE` body (`childOrigins`), so delegating does not wash them.
+**Which channels are attributed.** Only these carry the writer's lineage: `lineageSend`, `memoryWriteBackEffect({ originOf })`,
+A2A `LoomAgentExecutor({ taintInbound: { lineageOf } })`, and `CHILD_DONE` (a child's seen origins, read from its head generation;
+an unreadable, reclaimed or untracked child gives a tracked parent the overflow marker). The kernel also tags every inbox delivery
+`inbox:<topic>`, without saying who sent it.
+
+**Which channels read as clean in lineage mode.** A raw `runtime.send` (it carries `inbox:<topic>` only), memory written any other
+way, durable state, conversation turns, MCP results (`mcp:`), A2A with `taintInbound` off, and anything outside Loom (files, a
+shared bucket, timing). Direct I/O inside an effect that never passes through `ctx` is also invisible. A grant-holder writing through a
+RAW path can label content with ANY lineage, including the reader's own, so a lineage label is evidence of origin only for the tagged
+channels above. Close the gaps by routing writes through the helpers, by listing prefixes as foreign (below), or with
+`foreign: "any-untrusted"`. The kernel-attested inbox sender (so `inbox:` can name the sender) is the real fix for the inbox and is queued (ADR 0150 S-R9).
+
+- `action` (default `"attribute"`): `attribute` records `task-authority:directed-by { lineages }` (durable before the effect) and lets it
+  run; `deny` refuses with `task-grant:cross-lineage`; `park` throws a renewable error naming `{ lineages, hash }`.
+- **Park approval** is evidence on the SIGNED grant: a broker that grants a renewal request naming that hash adds it to the grant's
+  `approvedLineages` (encoded only when present), and the retry runs only when the acting grant lists the hash of the SAME foreign
+  set. The reference broker refuses such a renewal unless built with `approveCrossLineage` (`true` or a predicate over the request), so a
+  lease top-up policy never approves one by accident. An approval survives later renewals; a new foreign set parks again.
+- `appliesTo` (a predicate or tool ids) names the effects the policy covers. It defaults to LEASED effects only: an effect no lease
+  counts is not governed unless you list it.
+- **Foreign** means a `lineage:` origin whose rootId differs from the acting grant's, the overflow marker, any `unknown:` label (the
+  kernel's truncation and scan-bound labels), and the origins matching `foreignPrefixes`. The default is `["a2a-inbound:"]` because an
+  A2A peer is always another principal; pass your own array to replace it (`[]` turns it off; add `"inbox:"` to treat every inbox
+  delivery as foreign). `mcp:` and `inbox:` are not foreign unless listed or `foreign: "any-untrusted"` is set.
+- Overflow is **sticky** for the run: once the set overflows it stays foreign.
+- **Untracked fails closed.** With the gate off `ctx.seenOrigins` is absent: every action but `park` denies (`task-grant:untracked`);
+  `park` parks on the explicit set `unknown:seen-origins-untracked`, so only a request naming that set approves it.
+- A principal with NO task grant (a grantless reader) is not governed by `directedBy`: the grant authorizer decides, so give every
+  agent that acts under this policy a grant.
+- A denied or parked call has already burned one lease unit (the policy runs after `taskLeaseMiddleware`); to avoid that, place
+  `directedBy` before the lease middleware.
+- `memoryWriteBackEffect({ originOf })` also tags B's own facts as B's lineage, so a later run of another lineage that recalls them reads
+  them as foreign: that is the point, and it applies to your own agents' shared scopes too.
+- A2A: `new LoomAgentExecutor(runtime, flow, { taintInbound: { lineageOf: lineageOrigin(secret) } })` wraps the peer's prompt as
+  `a2a-inbound:<actor>` and, for a principal with a verified grant, `lineage:<rootId>` (opt-in: the flow input becomes a tainted wrapper).
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 

@@ -7,6 +7,7 @@ import {
   type RenewalVerdict,
   cloneRequest,
 } from "./broker";
+import { MAX_APPROVALS } from "./grant";
 import {
   type GrantKeys,
   type LeaseSpec,
@@ -42,6 +43,19 @@ function badRenewal(r: RenewalRequest): string | undefined {
     (!Array.isArray(c) || c.length > 32 || !c.every((e) => typeof e === "string" && e.length <= 64))
   )
     return "effectClassesCaused over 32 entries or an entry over 64 chars";
+  if (r?.reason !== undefined) {
+    const { lineages: l, hash: h } = r;
+    if (
+      r.reason !== "cross-lineage" ||
+      typeof h !== "string" ||
+      !/^[0-9a-f]{64}$/.test(h) ||
+      !Array.isArray(l) ||
+      l.length > 64 ||
+      !l.every((x) => typeof x === "string" && x.length <= 300)
+    )
+      return "a cross-lineage request needs a sha256 hash and at most 64 lineages of at most 300 chars";
+  } else if (r?.lineages !== undefined || r?.hash !== undefined)
+    return "lineages/hash need a reason";
   const text = isTainted(j) ? j.value : j;
   if (j !== undefined && (typeof text !== "string" || text.length > MAX_JUSTIFICATION))
     return `justification must be a string of at most ${MAX_JUSTIFICATION} code units`;
@@ -60,12 +74,20 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
   /** Why the built-in policy denied the renewal in flight (read synchronously right after it returns). */
   private denyWhy = "policy denied the renewal";
 
+  private readonly approveCross: boolean | ((r: Readonly<RenewalRequest>) => boolean) | undefined;
+
   constructor(o: {
     secret: GrantKeys;
     now?: (() => number) | undefined;
     policy?: RenewalPolicy | undefined;
+    /**
+     * ADR 0150 D7: grant a renewal that APPROVES a cross-lineage step (`directedBy` `park`). Default: refused, so a
+     * lease top-up policy never approves one by accident. `true`, or a predicate over the request (which names the foreign set).
+     */
+    approveCrossLineage?: boolean | ((r: Readonly<RenewalRequest>) => boolean) | undefined;
   }) {
     super(o);
+    this.approveCross = o.approveCrossLineage;
     this.policy = o.policy ?? ((r, h) => this.topUp(r, h));
   }
 
@@ -105,6 +127,13 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     if (!rec || rec.revoked) return deny("unknown or revoked task");
     const cur = rec.grant;
     if (req.epoch !== cur.epoch) return deny("stale epoch");
+    // D7: approving a cross-lineage step is a decision the operator opts into, whatever the lease policy says.
+    const crossOk = this.approveCross;
+    if (
+      req.reason === "cross-lineage" &&
+      !(typeof crossOk === "function" ? crossOk(req) === true : crossOk === true)
+    )
+      return deny("cross-lineage approval is not enabled on this broker (approveCrossLineage)");
     if (req.justification !== undefined) {
       rec.justifications.push(tainted(req.justification as string, "task-authority:renewal"));
       if (rec.justifications.length > MAX_JUSTIFICATIONS_KEPT) rec.justifications.shift();
@@ -152,7 +181,20 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
       const now = this.now();
       const exp = Math.min(now + rec.ttlMs, parent?.grant.exp ?? Number.POSITIVE_INFINITY);
       if (parent && exp <= now) return deny("parent has expired"); // a root may still renew when expired (D5)
-      next = signTaskGrant(this.secret, { ...body, leases, exp, epoch: cur.epoch + 1 });
+      const approvals =
+        req.reason === "cross-lineage"
+          ? [
+              ...(cur.approvedLineages ?? []).filter((h) => h !== req.hash),
+              req.hash as string,
+            ].slice(-MAX_APPROVALS)
+          : cur.approvedLineages; // an unrelated renewal keeps what was approved
+      next = signTaskGrant(this.secret, {
+        ...body,
+        leases,
+        exp,
+        epoch: cur.epoch + 1,
+        ...(approvals !== undefined && { approvedLineages: approvals }),
+      });
     } catch (e) {
       return deny(e instanceof Error ? e.message : "invalid renewal");
     }

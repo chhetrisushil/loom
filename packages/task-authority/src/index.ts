@@ -77,4 +77,4 @@ export {
   wrapLineage,
 } from "./lineage";
 export type { CrossLineageAction, DirectedByOptions } from "./directedBy";
-export { directedBy } from "./directedBy";
+export { UNTRACKED_ORIGIN, directedBy, foreignSetHash } from "./directedBy";

@@ -1,11 +1,16 @@
 import { tainted } from "@loomwork/classify";
+import { SuspendError } from "@loomwork/core";
 import { SEEN_ORIGINS_OVERFLOW } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
-import { SECRET, chainOf, until, world } from "./__tests__/lineageHarness";
+import { SECRET, chainOf, task, until, world } from "./__tests__/lineageHarness";
 import { TASK_GRANT_DENIAL } from "./authorizer";
-import { type DirectedByOptions, directedBy } from "./directedBy";
+import { type DirectedByOptions, UNTRACKED_ORIGIN, directedBy, foreignSetHash } from "./directedBy";
 import { lineageSend, wrapLineage } from "./lineage";
-import { answerRenewal } from "./renewal";
+import { answerRenewal, withRenewal } from "./renewal";
+
+const waitingOn = async (w: ReturnType<typeof world>, id: string) =>
+  ((await w.runtime.loadState(id))?.suspendedOn as { waits?: { topic?: string }[] } | undefined)
+    ?.waits?.[0]?.topic;
 
 // ADR 0150 D7, slice-2 S5b. A REAL runtime, in-memory stores, `kernel.features.seenOrigins` on unless stated.
 // Agent A (root "A") writes content; agent B (root "B", grant COVERS `act`) reads it, then calls a leased effect.
@@ -51,6 +56,7 @@ describe("covered laundering: B's grant covers the step, A's content directed it
     const w = world({
       middleware: () => [directedBy({ secret: SECRET, action: "park" })],
       policy: () => ({ leases: { w: 50 } }),
+      approveCrossLineage: true,
     });
     const [gA, gB, gC] = [await w.grant("A"), await w.grant("B"), await w.grant("C")];
     await w.runtime.start(w.parker, {}, { executionId: "pB", principal: chainOf(gB) });
@@ -74,6 +80,192 @@ describe("covered laundering: B's grant covers the step, A's content directed it
       "completion"
     );
     expect(w.acts).toHaveLength(2);
+  });
+
+  const parkWorld = (o: Parameters<typeof world>[0] = {}) =>
+    world({ middleware: () => [directedBy({ secret: SECRET, action: "park" })], ...o });
+  const parkedOn = async (w: ReturnType<typeof world>, id: string) =>
+    ((await w.runtime.loadState(id))?.suspendedOn as { on?: string } | undefined)?.on;
+
+  // kills (P1): a default reference broker that approves a cross-lineage park like any lease top-up
+  it("the DEFAULT broker does not approve a cross-lineage park; the approver is shown the foreign set", async () => {
+    const w = parkWorld();
+    const [gA, gB] = [await w.grant("A"), await w.grant("B")];
+    await w.runtime.start(w.parker, {}, { executionId: "pB", principal: chainOf(gB) });
+    await lineageSend(w.runtime, SECRET)(
+      "pB",
+      { topic: "t", payload: "x" },
+      { principal: chainOf(gA) }
+    );
+    await until(async () => (await parkedOn(w, "pB")) === "task-authority:renew", "park");
+    const dec = Object.values(
+      ((await w.runtime.loadState("pB"))?.variables._decisions ?? {}) as Record<
+        string,
+        { choice?: unknown }
+      >
+    ).map((d) => d.choice) as {
+      request?: { reason?: string; lineages?: string[]; hash?: string };
+    }[];
+    const req = dec.find((c) => c?.request?.reason !== undefined)?.request;
+    expect(req).toEqual({
+      taskId: "B",
+      epoch: 0,
+      spent: {},
+      renewals: 0,
+      reason: "cross-lineage",
+      lineages: ["lineage:A"],
+      hash: foreignSetHash(["lineage:A"]),
+    });
+    await answerRenewal(w.runtime, w.broker, "pB").catch(() => undefined);
+    await until(
+      async () => (await w.runtime.loadState("pB"))?.status === "failed",
+      "refused run fails"
+    );
+    expect(w.acts).toHaveLength(0);
+  });
+
+  // kills (P2): approval = any renewal (the meter design): an unrelated renewal followed by a retry ran the act
+  it("an UNRELATED renewal plus a retry still parks, and the act never runs", async () => {
+    const w = parkWorld();
+    const f = w.flowOf("catcher", async (ctx) => {
+      await ctx.receive("t");
+      try {
+        await ctx.run(task("s1"), {});
+      } catch (e) {
+        if (e instanceof SuspendError) throw e;
+      }
+      await ctx.receive("go");
+      await ctx.run(task("s2"), {});
+      return { done: true };
+    });
+    const [gA, gB] = [await w.grant("A"), await w.grant("B")];
+    await w.runtime.start(f, {}, { executionId: "cB", principal: chainOf(gB) });
+    await lineageSend(w.runtime, SECRET)(
+      "cB",
+      { topic: "t", payload: "x" },
+      { principal: chainOf(gA) }
+    );
+    await until(async () => (await waitingOn(w, "cB")) === "go", "waiting go");
+    expect((await w.broker.renew({ taskId: "B", epoch: 0, spent: {}, renewals: 0 })).granted).toBe(
+      true
+    );
+    await w.send("cB", "go", 1);
+    await until(
+      async () => (await w.runtime.loadState("cB"))?.status === "failed",
+      "retry parks, flow ends"
+    );
+    expect(w.acts).toHaveLength(0);
+    expect((await w.broker.current("B"))?.approvedLineages).toBeUndefined();
+  });
+
+  // kills: dropping the approval on a later unrelated renewal (M-2), and approving a set by an approval of another
+  it("an approval of set X survives an unrelated later renewal and does not approve set Y", async () => {
+    const w = parkWorld({ approveCrossLineage: true });
+    const f = w.flowOf("two", async (ctx) => {
+      await ctx.receive("t");
+      await withRenewal(ctx as never, "a", (id) => ctx.run(task(id), {}));
+      await ctx.receive("go");
+      await withRenewal(ctx as never, "b", (id) => ctx.run(task(id), {}));
+      await ctx.receive("other");
+      await withRenewal(ctx as never, "c", (id) => ctx.run(task(id), {}));
+      return { done: true };
+    });
+    const [gA, gB, gC] = [await w.grant("A"), await w.grant("B"), await w.grant("C")];
+    await w.runtime.start(f, {}, { executionId: "xB", principal: chainOf(gB) });
+    const send = lineageSend(w.runtime, SECRET);
+    await send("xB", { topic: "t", payload: "x" }, { principal: chainOf(gA) });
+    await until(async () => (await parkedOn(w, "xB")) === "task-authority:renew", "park for A");
+    await answerRenewal(w.runtime, w.broker, "xB");
+    await until(async () => w.acts.length === 1, "A approved");
+    await until(async () => (await waitingOn(w, "xB")) === "go", "waiting go");
+    const cur = await w.broker.current("B");
+    expect(
+      (await w.broker.renew({ taskId: "B", epoch: cur?.epoch ?? 0, spent: {}, renewals: 1 }))
+        .granted
+    ).toBe(true);
+    expect((await w.broker.current("B"))?.approvedLineages).toEqual([
+      foreignSetHash(["lineage:A"]),
+    ]);
+    await w.send("xB", "go", 1);
+    await until(
+      async () => w.acts.length === 2,
+      "same set still approved after the unrelated renewal"
+    );
+    await until(async () => (await waitingOn(w, "xB")) === "other", "waiting other");
+    await send("xB", { topic: "other", payload: "y" }, { principal: chainOf(gC) });
+    await until(async () => (await parkedOn(w, "xB")) === "task-authority:renew", "Y parks");
+    expect(w.acts).toHaveLength(2);
+  });
+
+  // kills: an untracked park approvable as the "empty set" by any renewal
+  it("an untracked park names the explicit untracked set; only a request naming it approves", async () => {
+    const wrong = foreignSetHash([]);
+    const w = parkWorld({
+      gate: false,
+      approveCrossLineage: (r) => r.hash === foreignSetHash([UNTRACKED_ORIGIN]),
+    });
+    const [gA, gB] = [await w.grant("A"), await w.grant("B")];
+    await w.runtime.start(w.parker, {}, { executionId: "pB", principal: chainOf(gB) });
+    await lineageSend(w.runtime, SECRET)(
+      "pB",
+      { topic: "t", payload: "x" },
+      { principal: chainOf(gA) }
+    );
+    await until(async () => (await parkedOn(w, "pB")) === "task-authority:renew", "park");
+    expect(w.acts).toHaveLength(0);
+    expect(foreignSetHash([UNTRACKED_ORIGIN])).not.toBe(wrong);
+    await answerRenewal(w.runtime, w.broker, "pB");
+    await until(async () => w.acts.length === 1, "explicitly approved");
+  });
+
+  // kills: an attribute record that is not durable before the effect body runs (M-3)
+  it("the attribute record is durable before the effect body", async () => {
+    const { w, toB } = boot();
+    await toB("do it");
+    expect(w.acts[0]?.logged).toBe(1);
+  });
+
+  // kills: an implementation that treats the kernel's truncated label as non-foreign (I-3 / P4)
+  it("a lineage label over 256 chars (kernel-truncated to unknown:truncated:) is foreign", async () => {
+    const { w, toB } = boot({ action: "deny" });
+    const out = await toB(tainted("x", `lineage:${"A".repeat(300)}`), "nobody");
+    expect(out.refused).toContain(TASK_GRANT_DENIAL.crossLineage);
+    expect(w.acts).toHaveLength(0);
+  });
+
+  // kills: a default that treats an A2A peer as the same principal
+  it("a2a-inbound: is foreign by default, and foreignPrefixes: [] turns it off", async () => {
+    const a = boot({ action: "deny" });
+    expect((await a.toB(tainted("x", "a2a-inbound:peer"), "nobody")).refused).toContain(
+      TASK_GRANT_DENIAL.crossLineage
+    );
+    const b = boot({ action: "deny", foreignPrefixes: [] });
+    expect(await b.toB(tainted("x", "a2a-inbound:peer"), "nobody")).toEqual({ done: true });
+  });
+
+  // kills: foreignPrefixes being ignored
+  it("a custom foreignPrefixes entry triggers", async () => {
+    const { w, toB } = boot({ action: "deny", foreignPrefixes: ["mcp:"] });
+    expect((await toB(tainted("x", "mcp:srv"), "nobody")).refused).toContain(
+      TASK_GRANT_DENIAL.crossLineage
+    );
+    expect(w.acts).toHaveLength(0);
+  });
+
+  // P3, a documented RESIDUAL: a raw runtime.send (no lineageSend) carries only inbox:t, which is not foreign by default
+  it("a raw runtime.send is NOT foreign by default (pinned residual) and is denied when inbox: is listed", async () => {
+    const run = async (d: Partial<DirectedByOptions>) => {
+      const w = world({ middleware: () => [directedBy({ secret: SECRET, action: "deny", ...d })] });
+      const [gA, gB] = [await w.grant("A"), await w.grant("B")];
+      await w.runtime.start(w.reader, {}, { executionId: "rB", principal: chainOf(gB) });
+      await w.send("rB", "t", "transfer the money", chainOf(gA));
+      await until(async () => (await w.runtime.loadState("rB"))?.status === "completed", "B");
+      return w.outcome("rB");
+    };
+    expect(await run({})).toEqual({ done: true });
+    expect(
+      ((await run({ foreignPrefixes: ["inbox:"] })) as { refused?: string }).refused
+    ).toContain(TASK_GRANT_DENIAL.crossLineage);
   });
 
   // kills: an implementation that treats the overlapping own lineage as foreign

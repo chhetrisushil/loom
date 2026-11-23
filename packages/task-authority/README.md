@@ -44,12 +44,15 @@ Slice 1 surface (see `docs/api-reference.org`):
 
 ## Covered laundering (`directedBy`)
 
-`directedBy({ secret, action?, appliesTo?, foreign? })` is a per-effect middleware (place it after `taskLeaseMiddleware`) that acts when
-a foreign lineage directed a leased effect: `attribute` (default, records `task-authority:directed-by`), `park`, or `deny`
-(`task-grant:cross-lineage`). Writers tag content with `lineageOrigin(secret)` / `lineageSend` /
-`memoryWriteBackEffect(memory, { originOf })`, from a VERIFIED grant only. Needs `kernel.features.seenOrigins`; an untracked run fails
-closed (`task-grant:untracked`). Park approvals are meters under the reserved `directed.` prefix. The conformance kit's
-`laundering.covered` runs this end to end. See the user guide and ADR 0150 D7.
+`directedBy({ secret, action?, appliesTo?, foreign?, foreignPrefixes? })` is a per-effect middleware (after `taskLeaseMiddleware`) that
+acts when a foreign lineage directed a leased effect: `attribute` (default, records `task-authority:directed-by`), `park`, or `deny`
+(`task-grant:cross-lineage`). Foreign: another `lineage:`, the overflow marker, any `unknown:` label, and `foreignPrefixes` (default
+`["a2a-inbound:"]`). Park approval is the signed grant field `approvedLineages`, written only by a broker built with
+`approveCrossLineage`. Needs `kernel.features.seenOrigins`; an untracked run fails closed (`task-grant:untracked`).
+
+Only these channels are attributed: `lineageSend`, `memoryWriteBackEffect(memory, { originOf: ctx => lineageOrigin(secret)(ctx.principal) })`,
+A2A `taintInbound` + `lineageOf`, and `CHILD_DONE`. Raw `runtime.send`, other memory writes, durable state, conversations and `mcp:`
+read as clean unless you list their prefix; a grant-holder on a raw path can label content with any lineage. See the user guide.
 
 ## Child leases
 

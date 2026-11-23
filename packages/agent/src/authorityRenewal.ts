@@ -15,6 +15,10 @@ export interface AuthorityRenewalRequest {
   epoch: number;
   spent: Record<string, number>;
   renewals: number;
+  /** ADR 0150 D7: set when the park is a `directedBy` cross-lineage approval (same shape as task-authority's). */
+  reason?: "cross-lineage";
+  lineages?: string[];
+  hash?: string;
 }
 
 /** The park was refused, or the request cannot be made (fails closed). Terminal for the loop. */
@@ -62,7 +66,14 @@ export function renewalRequestOf(err: unknown, n: number): AuthorityRenewalReque
     throw new AuthorityRenewalDeniedError("the error names no task or epoch");
   const spent =
     typeof e.lease === "string" && typeof e.spent === "number" ? { [e.lease]: e.spent } : {};
-  return { taskId, epoch, spent, renewals: n };
+  // ADR 0150 D7: a cross-lineage park names the foreign set it needs approved (covered by the view digest).
+  const cross =
+    e.reason === "task-grant:cross-lineage" &&
+    typeof e.hash === "string" &&
+    Array.isArray(e.lineages)
+      ? { reason: "cross-lineage" as const, lineages: e.lineages as string[], hash: e.hash }
+      : {};
+  return { taskId, epoch, spent, renewals: n, ...cross };
 }
 
 export const renewalDecisionId = (id: string, n: number): string =>
