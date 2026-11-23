@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
+import { isTerminalLayer } from "./toolFailure";
 
 /**
  * ADR 0150 D5, the agent half. `@loomwork/agent` does NOT depend on `@loomwork/task-authority`, so this
- * file restates the few pure rules `withRenewal` / `answerRenewal` share, structurally. The shapes MUST
- * stay equal to `task-authority/src/renewal.ts` (`authorityRenewal.test.ts` pins digest and decision id
- * against the real `renewalViewDigest` / `renewalDecisionId`), so one operator helper answers both.
+ * file restates the few pure rules `withRenewal` / `answerRenewal` share, structurally. They MUST stay equal
+ * to `task-authority/src/renewal.ts`: `authorityRenewal.test.ts` pins the digest, the decision id, the
+ * terminal-name list and the detection against the real exports, so one operator helper answers both.
  */
 export const DEFAULT_RENEWAL_GATE = "task-authority:renew";
 
@@ -26,6 +27,11 @@ export class AuthorityRenewalDeniedError extends Error {
 }
 
 const EXPIRED = /^task-grant:expired: grant for task "(.*)" epoch (\d+) expired at /s;
+/**
+ * Walks the cause chain (depth 8) and stops at the FIRST terminal layer (`isTerminalLayer`): a kill switch,
+ * safety or divergence error wrapping a renewable one never parks. A layer that is itself renewable (or an
+ * expired-grant denial, a `CapabilityDeniedError` and so terminal by name) is checked first.
+ */
 const find = (err: unknown): Record<string, unknown> | undefined => {
   let e = err;
   for (let i = 0; i < 8 && typeof e === "object" && e !== null; i++) {
@@ -37,6 +43,7 @@ const find = (err: unknown): Record<string, unknown> | undefined => {
       EXPIRED.test(o.reason)
     )
       return o;
+    if (isTerminalLayer(e)) return undefined;
     e = o.cause;
   }
   return undefined;

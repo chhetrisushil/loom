@@ -1560,10 +1560,12 @@ export async function agentLoop$(
       for (let n = from; ; n++) {
         // Attempt n>0 is a fresh task id: the failed frame of the earlier attempt is never the answer.
         const attempt = n === 0 ? task : { ...task, id: `${id}:r${n}` };
+        // The first attempt's decision is `${id}:outcome` in BOTH modes (a feedback-mode log replays under
+        // park unchanged); only a renewable error adds a mirror record, which `answerRenewal` reads.
         const recorded = await c.decide<
           { ok: true } | { failed: unknown } | { error: string } | { request: unknown }
         >(
-          parks ? renewalDecisionId(id, n) : `${id}:outcome`,
+          n === 0 ? `${id}:outcome` : renewalDecisionId(id, n),
           async () => {
             try {
               await c.execute(attempt, toolCall.input);
@@ -1586,8 +1588,10 @@ export async function agentLoop$(
           { source: SOURCE_OUTCOME }
         );
         if ("request" in recorded) {
+          if (n === 0) await c.decide(renewalDecisionId(id, 0), () => recorded);
           // A park cannot happen inside a parallel branch: hand it to the settle phase.
           if (inBranch) return { output: undefined, isError: false, renewFrom: n };
+          if (await aborted(c, `t${turn}:renew:${j}:${n}`)) interrupted();
           const key = `${ctx.executionId}#${id}#${n}`;
           const verdict = await ctx.suspend({
             on: config.authority?.gate ?? DEFAULT_RENEWAL_GATE,
@@ -1712,19 +1716,21 @@ export async function agentLoop$(
           typeof parallelTools === "number" ? { limit: parallelTools } : {}
         );
         for (const [k, j] of toRun.entries()) outcomes[j] = ran[k] as Outcome;
-        for (const j of toRun) {
-          const from = (outcomes[j] as Outcome).renewFrom;
-          if (from !== undefined)
-            outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j, false, from);
-        }
         if (ran.some((o) => o.notRun === true)) {
           // The stop landed while the scope ran: carry out every call that completed (the ones that
           // never started are simply absent), then raise the interruption outside the scope.
           for (const [j, toolCall] of calls.entries()) {
             const o = outcomes[j];
-            if (o !== undefined && o.notRun !== true) record(toolCall, j, o);
+            if (o !== undefined && o.notRun !== true && o.renewFrom === undefined)
+              record(toolCall, j, o);
           }
           interrupted();
+        }
+        // Renewal parks: after the scope settled (and only if no stop landed), one call at a time.
+        for (const j of toRun) {
+          const from = (outcomes[j] as Outcome).renewFrom;
+          if (from !== undefined)
+            outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j, false, from);
         }
       }
       // Fed back in the model's order, whichever call finished first.

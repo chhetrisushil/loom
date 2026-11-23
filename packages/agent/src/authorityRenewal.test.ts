@@ -1,12 +1,27 @@
 import { createHash } from "node:crypto";
 import type { FlowDefinition } from "@loomwork/core";
 import { agent$, tool$ } from "@loomwork/core";
-import { EffectRuntime, ToolEffect } from "@loomwork/effect-runtime";
+import {
+  type CapabilityAuthorizer,
+  CapabilityDeniedError,
+  EffectRuntime,
+  ToolEffect,
+} from "@loomwork/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
 import type { LlmProvider, LlmRequest, LlmToolCall } from "@loomwork/llm";
 import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
-import { LeaseExhaustedError, answerRenewal } from "@loomwork/task-authority";
-import { WorkflowRuntime } from "@loomwork/workflow-runtime";
+import {
+  InMemoryGrantBroker,
+  LeaseExhaustedError,
+  RENEWAL_TERMINAL_NAMES,
+  TaskGrantAuthorizer,
+  answerRenewal,
+  installTaskAuthority,
+  renewalDecisionId,
+  renewalViewDigest,
+  isRenewable as taIsRenewable,
+} from "@loomwork/task-authority";
+import { WorkflowRuntime, answerApproval } from "@loomwork/workflow-runtime";
 import type { FlowRunner } from "@loomwork/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -14,6 +29,10 @@ import { AgentLoopConfigError, agentLoop$ } from "./agentLoop$";
 import type { AgentLoopConfig } from "./agentLoop$";
 import * as local from "./authorityRenewal";
 import { createAgentModelEffect } from "./createAgentModelEffect";
+import { TERMINAL_ERROR_NAMES } from "./toolFailure";
+
+const SECRET = "agent-renewal-secret";
+const clock = { t: 1_000_000 };
 
 // ADR 0150 D5 (agent half) - `authority.onExhausted: "park"`.
 
@@ -54,10 +73,16 @@ interface World {
 function boot(
   policy: Partial<AgentLoopConfig>,
   failFirst: Record<string, number>,
-  calls: LlmToolCall[],
+  turns: LlmToolCall[][],
   eventStore = new InMemoryAsyncEventStore(),
-  snapshotStore = new InMemoryAsyncSnapshotStore()
+  snapshotStore = new InMemoryAsyncSnapshotStore(),
+  opts: {
+    failWith?: (tool: string, n: number) => Error;
+    authorizer?: CapabilityAuthorizer;
+    broker?: InMemoryGrantBroker;
+  } = {}
 ) {
+  const { failWith } = opts;
   const w: World = { calls: { x: 0, y: 0 }, effects: { x: 0, y: 0 }, results: [] };
   const provider: LlmProvider = {
     async complete(request: LlmRequest) {
@@ -67,12 +92,13 @@ function boot(
         p.type === "tool_result" ? [{ id: p.toolUseId, isError: p.isError === true }] : []
       );
       w.results.push(res);
-      return request.messages.some((m) => m.role === "assistant")
+      const t = turns[request.messages.filter((m) => m.role === "assistant").length];
+      return t === undefined
         ? { content: "done", stopReason: "end_turn" }
-        : { content: "go", toolCalls: calls, stopReason: "tool_use" };
+        : { content: "go", toolCalls: t, stopReason: "tool_use" };
     },
   };
-  const effects = new EffectRuntime();
+  const effects = new EffectRuntime([], opts.authorizer ? { authorizer: opts.authorizer } : {});
   effects.register("model", createAgentModelEffect(provider));
   for (const id of ["x", "y"]) {
     effects.register(
@@ -80,13 +106,26 @@ function boot(
       new ToolEffect(async () => {
         w.calls[id] = (w.calls[id] as number) + 1;
         if ((w.calls[id] as number) <= (failFirst[id] ?? 0))
-          throw new LeaseExhaustedError("tokens", 5, 5, w.calls[id] as number, `task-${id}`);
+          throw (
+            failWith?.(id, w.calls[id] as number) ??
+            new LeaseExhaustedError("tokens", 5, 5, w.calls[id] as number, `task-${id}`)
+          );
         w.effects[id] = (w.effects[id] as number) + 1;
         return { ok: true };
       })
     );
   }
-  const runtime = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime: effects });
+  const runtime = new WorkflowRuntime({
+    eventStore,
+    snapshotStore,
+    effectRuntime: effects,
+    ...(opts.broker && {
+      resumeAuthenticator: {
+        verify: () => ({ status: "verified", actor: "ops", verifiedBy: "t" }),
+      },
+      onWarn: () => {},
+    }),
+  });
   const runner: FlowRunner<unknown, { content: string }> = async (ctx) => {
     const out = await agentLoop$(
       ctx,
@@ -96,10 +135,12 @@ function boot(
     return { content: out.content };
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
+  if (opts.broker)
+    installTaskAuthority(runtime, { source: opts.broker, secret: SECRET, now: () => clock.t });
   return { runtime, eventStore, snapshotStore, w };
 }
 
-const one = [{ id: "c1", name: "x", input: {} }];
+const one = [[{ id: "c1", name: "x", input: {} }]];
 const settle = async (h: {
   waitForSuspend(): Promise<{ status: string }>;
   waitForCompletion(): Promise<{ status: string }>;
@@ -154,8 +195,10 @@ describe("agentLoop$ authority.onExhausted", () => {
 
   it("park under parallelTools: each exhausted call parks in call order after the scope settles", async () => {
     const calls = [
-      { id: "c1", name: "x", input: {} },
-      { id: "c2", name: "y", input: {} },
+      [
+        { id: "c1", name: "x", input: {} },
+        { id: "c2", name: "y", input: {} },
+      ],
     ];
     const { runtime, w } = boot(
       { authority: { onExhausted: "park" }, parallelTools: true },
@@ -265,5 +308,192 @@ describe("agentLoop$ authority.onExhausted", () => {
       renewals: 0,
     });
     expect(local.isRenewable(new Error("x"))).toBe(false);
+  });
+
+  const lease = () => new LeaseExhaustedError("tokens", 5, 5, 1, "task-x");
+  const decisions = (events: { eventType: string; payload: unknown }[]) =>
+    events
+      .filter((e) => e.eventType === "DECISION_RECORDED")
+      .map((e) => (e.payload as { decisionId: string }).decisionId);
+
+  it("replay safety: a log recorded in feedback mode resumes under park, nothing re-run, nothing added", async () => {
+    const turns = [[{ id: "c1", name: "x", input: {} }], [{ id: "c2", name: "y", input: {} }]];
+    const base = { needsApproval: (c: { name: string }) => c.name === "y" };
+    const a = boot(base, { x: 1 }, turns, undefined, undefined, {
+      failWith: () => new Error("flaky upstream"),
+    });
+    const h = await a.runtime.start(flowDef, {}, { executionId: "up" });
+    expect(await settle(h)).toBe("suspended");
+    expect(a.w.results[1]).toEqual([{ id: "c1", isError: true }]); // fed back, not renewed
+    const before = decisions(await a.eventStore.read("up"));
+    const b = boot(
+      { ...base, authority: { onExhausted: "park" } },
+      { x: 0 },
+      turns,
+      a.eventStore,
+      a.snapshotStore
+    );
+    const st = (await b.runtime.loadState("up"))!;
+    const r = await b.runtime.resume("up", answerApproval(st, { approved: true }));
+    expect((await r.waitForCompletion()).status).toBe("completed");
+    expect(b.w.calls.x).toBe(0); // the fed-back failure was served from the log
+    expect(decisions(await b.eventStore.read("up"))).toEqual([
+      ...before,
+      "ren#turn:1:tool:0:outcome",
+    ]);
+  });
+
+  it("the reverse switch: a run parked under park resumes under feedback and still renews", async () => {
+    const a = boot({ authority: { onExhausted: "park" } }, { x: 1 }, one);
+    const h = await a.runtime.start(flowDef, {}, { executionId: "rev" });
+    expect(await settle(h)).toBe("suspended");
+    const b = boot({}, { x: 0 }, one, a.eventStore, a.snapshotStore);
+    const r = await answerRenewal(b.runtime, broker(), "rev");
+    expect((await r.waitForCompletion()).status).toBe("completed");
+    expect(b.w.effects.x).toBe(1);
+    expect(b.w.calls.x).toBe(1);
+  });
+
+  it("a safety, kill-switch or divergence layer around a renewable error never parks, in either package", async () => {
+    for (const name of ["KillSwitchEngagedError", "SafetyViolationError", "FlowDivergenceError"]) {
+      const wrapped = Object.assign(new Error("wrapped", { cause: lease() }), { name });
+      expect(local.isRenewable(wrapped), name).toBe(false);
+      expect(taIsRenewable(wrapped), name).toBe(false);
+      const { runtime } = boot(
+        { authority: { onExhausted: "park" } },
+        { x: 1 },
+        one,
+        undefined,
+        undefined,
+        {
+          failWith: () => wrapped,
+        }
+      );
+      const h = await runtime.start(flowDef, {});
+      await expect(h.waitForCompletion()).rejects.toThrow();
+    }
+    const expired = new CapabilityDeniedError(
+      "x",
+      'task-grant:expired: grant for task "t" epoch 2 expired at 5'
+    );
+    const scope = new CapabilityDeniedError("x", 'task-grant:scope: effect "x" not in grant');
+    expect([local.isRenewable(expired), taIsRenewable(expired)]).toEqual([true, true]);
+    expect([local.isRenewable(scope), taIsRenewable(scope)]).toEqual([false, false]);
+  });
+
+  it("drift guards: terminal names, decision id and digest equal task-authority's", () => {
+    expect([...RENEWAL_TERMINAL_NAMES].sort()).toEqual([...TERMINAL_ERROR_NAMES].sort());
+    const req = { taskId: "t#1", epoch: 3, spent: { a: 1 }, renewals: 2 };
+    expect(local.renewalViewDigest("k#1#0", req)).toBe(renewalViewDigest("k#1#0", req));
+    expect(local.renewalDecisionId("a#b", 4)).toBe(renewalDecisionId("a#b", 4));
+  });
+
+  it("a stop beats a renewal park (sequential and parallel)", async () => {
+    for (const mode of [{}, { parallelTools: 1 }]) {
+      const ac = new AbortController();
+      const { runtime, w } = boot(
+        { authority: { onExhausted: "park" }, signal: ac.signal, ...mode },
+        { x: 1 },
+        [
+          [
+            { id: "c1", name: "x", input: {} },
+            { id: "c2", name: "y", input: {} },
+          ],
+        ],
+        undefined,
+        undefined,
+        {
+          failWith: () => {
+            ac.abort();
+            return lease();
+          },
+        }
+      );
+      const h = await runtime.start(flowDef, {});
+      expect(await settle(h).catch(() => "failed"), JSON.stringify(mode)).toBe("failed");
+      expect((await runtime.loadState(h.executionId))?.suspendedOn).toBeUndefined();
+      expect(w.effects.x).toBe(0);
+    }
+  });
+
+  it("a real TaskGrantAuthorizer denial of an expired grant parks and renews", async () => {
+    clock.t = 1_000_000;
+    const broker = new InMemoryGrantBroker({
+      secret: SECRET,
+      now: () => clock.t,
+      policy: () => ({}),
+    });
+    const g = await broker.mint({
+      taskId: "t1",
+      issuedTo: "agent-a",
+      effects: ["model", "x"],
+      leases: {},
+      ttlMs: 60_000,
+    });
+    const real = new TaskGrantAuthorizer({
+      secret: SECRET,
+      base: { authorize: () => ({ allowed: true }) },
+      now: () => clock.t,
+    });
+    const authorizer: CapabilityAuthorizer = {
+      authorize: (r) => {
+        if (r.toolId === "x" && r.stepId === "ren#turn:0:tool:0") clock.t = g.exp + 1; // the grant lapses
+        return real.authorize(r);
+      },
+    };
+    const { runtime, w } = boot(
+      { authority: { onExhausted: "park" } },
+      {},
+      one,
+      undefined,
+      undefined,
+      {
+        authorizer,
+        broker,
+      }
+    );
+    const h = await runtime.start(
+      flowDef,
+      {},
+      { executionId: "real", principal: { actor: "agent-a", taskGrant: g } }
+    );
+    expect(await settle(h)).toBe("suspended");
+    const st = (await runtime.loadState("real"))!;
+    expect(st.suspendedOn?.on).toBe("task-authority:renew");
+    expect(w.calls.x).toBe(0); // denied before the tool ran
+    const r = await answerRenewal(runtime, broker, "real");
+    expect((await r.waitForCompletion()).status).toBe("completed");
+    expect(w.effects.x).toBe(1);
+    expect(w.results.flat()).toEqual([{ id: "c1", isError: false }]);
+  });
+
+  it("park mode still feeds an ordinary tool error back as isError", async () => {
+    const { runtime, w } = boot(
+      { authority: { onExhausted: "park" } },
+      { x: 1 },
+      one,
+      undefined,
+      undefined,
+      {
+        failWith: () => new Error("ordinary"),
+      }
+    );
+    const h = await runtime.start(flowDef, {});
+    expect(await settle(h)).toBe("completed");
+    expect(w.results.flat()).toEqual([{ id: "c1", isError: true }]);
+  });
+
+  it("a verdict {granted:true} lacking epoch/digest is a denial", async () => {
+    const { runtime } = boot({ authority: { onExhausted: "park" } }, { x: 1 }, one);
+    const h = await runtime.start(flowDef, {});
+    expect(await settle(h)).toBe("suspended");
+    const st = (await runtime.loadState(h.executionId))!;
+    const r = await runtime.resume(h.executionId, {
+      eventType: "task-authority:renew",
+      payload: { granted: true, viewDigest: st.suspendedOn?.viewDigest },
+    });
+    await expect(r.waitForCompletion()).rejects.toMatchObject({
+      name: "AuthorityRenewalDeniedError",
+    });
   });
 });

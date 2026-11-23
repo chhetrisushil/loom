@@ -193,6 +193,9 @@ function isTerminalOne(err: unknown, declaredNonRetryable = true): boolean {
   return false;
 }
 
+/** A layer the tool loop treats as the runtime's, ignoring a bare `retryable === false` (ADR 0150 D5: a renewable error sets it itself). */
+export const isTerminalLayer = (err: unknown): boolean => isTerminalOne(err, false);
+
 /**
  * R10 — may a tool's failure be handed back to the model as an `isError` result, or must it reach
  * the runtime?
