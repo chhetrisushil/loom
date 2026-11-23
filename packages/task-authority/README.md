@@ -46,8 +46,8 @@ Slice 1 surface (see `docs/api-reference.org`):
 
 `directedBy({ secret, action?, appliesTo?, foreign?, foreignPrefixes? })` is a per-effect middleware (after `taskLeaseMiddleware`) that
 acts when a foreign lineage directed a leased effect: `attribute` (default, records `task-authority:directed-by`), `park`, or `deny`
-(`task-grant:cross-lineage`). Foreign: another `lineage:`, the overflow marker, any `unknown:` label, and `foreignPrefixes` (default
-`["a2a-inbound:"]`). Park approval is the signed grant field `approvedLineages`, written only by a broker built with
+(`task-grant:cross-lineage`). Foreign: another `lineage:`, the overflow marker, any `unknown:` label, and `foreignPrefixes` (added to the default
+`a2a-inbound:`; `defaultForeignPrefixes: false` drops it). Park approval is the signed grant field `approvedLineages`, written only by a broker built with
 `approveCrossLineage`. Needs `kernel.features.seenOrigins`; an untracked run fails closed (`task-grant:untracked`).
 
 Only these channels are attributed: `lineageSend`, `memoryWriteBackEffect(memory, { originOf: ctx => lineageOrigin(secret)(ctx.principal) })`,

@@ -1243,7 +1243,7 @@ an unreadable, reclaimed or untracked child gives a tracked parent the overflow 
 `inbox:<topic>`, without saying who sent it.
 
 **Which channels read as clean in lineage mode.** A raw `runtime.send` (it carries `inbox:<topic>` only), memory written any other
-way, durable state, conversation turns, MCP results (`mcp:`), A2A with `taintInbound` off, and anything outside Loom (files, a
+way, durable state, conversation turns, MCP results (`mcp:`), A2A with `taintInbound` off, A2A `provideInput` payloads for gates that have a `resumeSchema` (NOT tainted, the typed shape would refuse a wrapper), and anything outside Loom (files, a
 shared bucket, timing). Direct I/O inside an effect that never passes through `ctx` is also invisible. A grant-holder writing through a
 RAW path can label content with ANY lineage, including the reader's own, so a lineage label is evidence of origin only for the tagged
 channels above. Close the gaps by routing writes through the helpers, by listing prefixes as foreign (below), or with
@@ -1258,9 +1258,10 @@ channels above. Close the gaps by routing writes through the helpers, by listing
 - `appliesTo` (a predicate or tool ids) names the effects the policy covers. It defaults to LEASED effects only: an effect no lease
   counts is not governed unless you list it.
 - **Foreign** means a `lineage:` origin whose rootId differs from the acting grant's, the overflow marker, any `unknown:` label (the
-  kernel's truncation and scan-bound labels), and the origins matching `foreignPrefixes`. The default is `["a2a-inbound:"]` because an
-  A2A peer is always another principal; pass your own array to replace it (`[]` turns it off; add `"inbox:"` to treat every inbox
-  delivery as foreign). `mcp:` and `inbox:` are not foreign unless listed or `foreign: "any-untrusted"` is set.
+  kernel's truncation and scan-bound labels, and `unknown:lineage-too-long` for a root id whose origin would exceed 256 chars), and the
+  origins matching `foreignPrefixes`. `a2a-inbound:` is always in that list (an A2A peer is always another principal); `foreignPrefixes`
+  ADDS to it (add `"inbox:"` to treat every inbox delivery as foreign), and `defaultForeignPrefixes: false` is the explicit opt-out
+  that drops it. `mcp:` and `inbox:` are not foreign unless listed or `foreign: "any-untrusted"` is set.
 - Overflow is **sticky** for the run: once the set overflows it stays foreign.
 - **Untracked fails closed.** With the gate off `ctx.seenOrigins` is absent: every action but `park` denies (`task-grant:untracked`);
   `park` parks on the explicit set `unknown:seen-origins-untracked`, so only a request naming that set approves it.

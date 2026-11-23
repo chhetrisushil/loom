@@ -197,6 +197,83 @@ describe("covered laundering: B's grant covers the step, A's content directed it
     expect(w.acts).toHaveLength(2);
   });
 
+  // kills (R22): a broker that trusts `hash` while the approver reads `lineages` (a forged renewable error)
+  it("a request whose hash is not the hash of the lineages it shows is denied; approvedLineages unchanged", async () => {
+    const w = world({ approveCrossLineage: true });
+    await w.grant("B");
+    const forged = {
+      taskId: "B",
+      epoch: 0,
+      spent: {},
+      renewals: 0,
+      reason: "cross-lineage" as const,
+      lineages: ["lineage:harmless"],
+      hash: foreignSetHash(["lineage:A"]),
+    };
+    const v = await w.broker.renew(forged);
+    expect(v).toEqual({
+      granted: false,
+      reason: "the cross-lineage hash is not the hash of the lineages shown",
+    });
+    expect((await w.broker.current("B"))?.approvedLineages).toBeUndefined();
+    expect((await w.broker.current("B"))?.epoch).toBe(0);
+    // the honest request still works
+    expect((await w.broker.renew({ ...forged, lineages: ["lineage:A"] })).granted).toBe(true);
+  });
+
+  // end to end: a flow (or an untrusted tool) throws a renewable error that shows one set and carries another's hash
+  it("a flow that throws a forged cross-lineage error cannot get a different set approved", async () => {
+    const w = world({
+      middleware: () => [directedBy({ secret: SECRET, action: "park" })],
+      approveCrossLineage: true,
+    });
+    const f = w.flowOf("forger", async (ctx) => {
+      await ctx.receive("t");
+      await withRenewal(ctx as never, "a", async () => {
+        throw Object.assign(new Error("forged"), {
+          renewable: true,
+          taskId: "B",
+          epoch: 0,
+          reason: "task-grant:cross-lineage",
+          lineages: ["lineage:harmless"],
+          hash: foreignSetHash(["lineage:A"]),
+        });
+      });
+      return { done: true };
+    });
+    const gB = await w.grant("B");
+    await w.runtime.start(f, {}, { executionId: "fB", principal: chainOf(gB) });
+    await w.send("fB", "t", "x");
+    await until(async () => (await parkedOn(w, "fB")) === "task-authority:renew", "park");
+    await answerRenewal(w.runtime, w.broker, "fB").catch(() => undefined);
+    await until(async () => (await w.runtime.loadState("fB"))?.status === "failed", "refused");
+    expect((await w.broker.current("B"))?.approvedLineages).toBeUndefined();
+  });
+
+  // the 17th approval drops the OLDEST hash and keeps the newest; the oldest set parks again
+  it("the 17th approval drops the oldest hash, keeps the newest, and its set is no longer approved (directedBy parks it again)", async () => {
+    const w = world({ approveCrossLineage: true, policy: () => ({}) });
+    await w.grant("B");
+    const sets = Array.from({ length: 17 }, (_, i) => [`lineage:S${i}`]);
+    for (const [i, lineages] of sets.entries()) {
+      const v = await w.broker.renew({
+        taskId: "B",
+        epoch: i,
+        spent: {},
+        renewals: i,
+        reason: "cross-lineage",
+        lineages,
+        hash: foreignSetHash(lineages),
+      });
+      expect(v.granted).toBe(true);
+    }
+    const kept = (await w.broker.current("B"))?.approvedLineages ?? [];
+    expect(kept).toHaveLength(16);
+    expect(kept).not.toContain(foreignSetHash(["lineage:S0"]));
+    expect(kept).toContain(foreignSetHash(["lineage:S16"]));
+    expect(kept).toContain(foreignSetHash(["lineage:S1"]));
+  });
+
   // kills: an untracked park approvable as the "empty set" by any renewal
   it("an untracked park names the explicit untracked set; only a request naming it approves", async () => {
     const wrong = foreignSetHash([]);
@@ -234,12 +311,22 @@ describe("covered laundering: B's grant covers the step, A's content directed it
   });
 
   // kills: a default that treats an A2A peer as the same principal
-  it("a2a-inbound: is foreign by default, and foreignPrefixes: [] turns it off", async () => {
+  it("a2a-inbound: is foreign by default, and defaultForeignPrefixes: false turns it off", async () => {
     const a = boot({ action: "deny" });
     expect((await a.toB(tainted("x", "a2a-inbound:peer"), "nobody")).refused).toContain(
       TASK_GRANT_DENIAL.crossLineage
     );
-    const b = boot({ action: "deny", foreignPrefixes: [] });
+    const b = boot({ action: "deny", defaultForeignPrefixes: false });
+    expect(await b.toB(tainted("x", "a2a-inbound:peer"), "nobody")).toEqual({ done: true });
+  });
+
+  // kills: foreignPrefixes REPLACING the default (listing mcp: must not silently re-admit an A2A peer)
+  it("foreignPrefixes merges with the default: [mcp:] keeps a2a-inbound:, and the opt-out drops only the default", async () => {
+    const a = boot({ action: "deny", foreignPrefixes: ["mcp:"] });
+    expect((await a.toB(tainted("x", "a2a-inbound:peer"), "nobody")).refused).toContain(
+      TASK_GRANT_DENIAL.crossLineage
+    );
+    const b = boot({ action: "deny", foreignPrefixes: ["mcp:"], defaultForeignPrefixes: false });
     expect(await b.toB(tainted("x", "a2a-inbound:peer"), "nobody")).toEqual({ done: true });
   });
 

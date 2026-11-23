@@ -7,6 +7,7 @@ import {
   type RenewalVerdict,
   cloneRequest,
 } from "./broker";
+import { foreignSetHash } from "./directedBy";
 import { MAX_APPROVALS } from "./grant";
 import {
   type GrantKeys,
@@ -54,6 +55,10 @@ function badRenewal(r: RenewalRequest): string | undefined {
       !l.every((x) => typeof x === "string" && x.length <= 300)
     )
       return "a cross-lineage request needs a sha256 hash and at most 64 lineages of at most 300 chars";
+    // The approval is bound to the hash, but the APPROVER reads `lineages`: a request whose hash is not the hash of the
+    // lineages it shows could get a different set approved than the one the approver saw (a forged renewable error).
+    if (h !== foreignSetHash(l))
+      return "the cross-lineage hash is not the hash of the lineages shown";
   } else if (r?.lineages !== undefined || r?.hash !== undefined)
     return "lineages/hash need a reason";
   const text = isTainted(j) ? j.value : j;
@@ -181,19 +186,20 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
       const now = this.now();
       const exp = Math.min(now + rec.ttlMs, parent?.grant.exp ?? Number.POSITIVE_INFINITY);
       if (parent && exp <= now) return deny("parent has expired"); // a root may still renew when expired (D5)
-      const approvals =
+      // An unrelated renewal keeps `approvedLineages` through `...body`; a cross-lineage one appends (the 17th drops the oldest).
+      const approved =
         req.reason === "cross-lineage"
           ? [
               ...(cur.approvedLineages ?? []).filter((h) => h !== req.hash),
               req.hash as string,
             ].slice(-MAX_APPROVALS)
-          : cur.approvedLineages; // an unrelated renewal keeps what was approved
+          : undefined;
       next = signTaskGrant(this.secret, {
         ...body,
         leases,
         exp,
         epoch: cur.epoch + 1,
-        ...(approvals !== undefined && { approvedLineages: approvals }),
+        ...(approved !== undefined && { approvedLineages: approved }),
       });
     } catch (e) {
       return deny(e instanceof Error ? e.message : "invalid renewal");
