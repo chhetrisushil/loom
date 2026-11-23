@@ -320,7 +320,7 @@ describe("trust: the record is the kernel's alone", () => {
     const payloadKey = foldEvents([env(1, completed({ origins: ["f"] }), undefined)], st);
     expect(keyOf(payloadKey)?.origins).toEqual([]);
     const junk = foldEvents([env(1, completed(1), { origins: [1, null, "ok"] })], st);
-    expect(keyOf(junk)?.origins).toEqual(["ok"]);
+    expect(keyOf(junk)?.overflow).toBe(true); // M-B: a junk entry is overflow, not dropped
   });
 });
 
@@ -381,6 +381,15 @@ describe("R13 I-1: the commit walk is over the LIVE structure (the flow is hande
     });
     expect(rec({ __loomTainted: { origin: 5 }, value: 1 })).toEqual({ origins: [] });
     expect(rec({ __loomTainted: { origin: "a" } })).toEqual({ origins: [] }); // no value key
+  });
+  it("M-A: a Date with ANY own key records overflow; a plain Date is still a leaf", () => {
+    expect(rec(Object.assign(new Date(0), { x: T("dateprop") }))).toEqual({
+      originsOverflow: true,
+    });
+    expect(
+      rec(Object.defineProperty(new Date(0), "h", { value: T("hidden"), enumerable: false }))
+    ).toEqual({ originsOverflow: true });
+    expect(rec({ d: new Date(0) })).toEqual({ origins: [] });
   });
   it("Date is a leaf; ArrayBuffer and typed-array views are skipped (as scanTaint does), not overflow", () => {
     expect(
