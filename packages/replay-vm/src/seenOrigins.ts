@@ -159,10 +159,11 @@ export function trackSeenOrigins(state: ExecutionState, event: EventEnvelope): E
     const m = event.metadata;
     if (m?.originsOverflow === true) k = { ...k, overflow: true };
     else if (Array.isArray(m?.origins)) {
-      k = union(
-        k,
-        (m.origins as unknown[]).filter((o): o is string => typeof o === "string")
-      );
+      const list = m.origins as unknown[];
+      // a non-string entry is not something a 1.27 journal writes: fail closed rather than drop it
+      k = list.every((o) => typeof o === "string")
+        ? union(k, list as string[])
+        : { ...k, overflow: true };
     } else k = { ...k, overflow: true }; // R13: no record on a channel event of a tracked run = not scanned = fail closed
   }
   return withKey(state, { ...k, through: event.sequence });
