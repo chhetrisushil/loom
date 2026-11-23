@@ -127,7 +127,8 @@ async function scan(
         "json"
       );
       const bad =
-        over0 === true || (Array.isArray(rec0) && !rec0.every((o) => typeof o === "string"));
+        over0 === true ||
+        (rec0 !== undefined && (!Array.isArray(rec0) || !rec0.every((o) => typeof o === "string")));
       const merged =
         rec === undefined
           ? undefined
