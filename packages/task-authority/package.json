@@ -32,6 +32,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@loomwork/plugin-durable-state": "workspace:^",
     "@loomwork/core": "workspace:^",
     "@loomwork/event-runtime": "workspace:^",
     "@loomwork/orchestration": "workspace:^",

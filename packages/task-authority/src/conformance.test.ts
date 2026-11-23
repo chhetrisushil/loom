@@ -6,7 +6,7 @@ import {
   type ConformanceSubject,
   checkTaskAuthorityConformance,
 } from "./conformance";
-import { launderingCovered } from "./conformanceRuntime";
+import { launderingCovered, readScope } from "./conformanceRuntime";
 import { keyRing, signTaskGrant } from "./grant";
 import { InMemoryGrantBroker } from "./renew";
 
@@ -214,9 +214,19 @@ describe("checkTaskAuthorityConformance", () => {
     await expect(launderingCovered(reference, true)).resolves.toBeUndefined();
   }, 30_000);
 
+  // The fail-proof of reads.read-scope: a stack whose read effect is not declared a read lets a read outside `reads` run.
+  it("reads.read-scope fails a stack that does not check reads, and passes with it", async () => {
+    await expect(readScope(reference, false)).rejects.toThrow(/must be refused/);
+    await expect(readScope(reference, true)).resolves.toBeUndefined();
+  }, 30_000);
+
   it("the guard checks do not depend on the broker: a broken broker cannot fail them", async () => {
     const r = await checkTaskAuthorityConformance(broken(ReleasesOnRevoke));
-    for (const id of ["carve.forged-meters", "laundering.uncovered.shared-memory"])
+    for (const id of [
+      "carve.forged-meters",
+      "laundering.uncovered.shared-memory",
+      "reads.read-scope",
+    ])
       expect(find(r, id)?.status).toBe("passed");
   }, 30_000);
 

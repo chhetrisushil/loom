@@ -1440,6 +1440,9 @@ importers:
       '@loomwork/orchestration':
         specifier: workspace:^
         version: link:../orchestration
+      '@loomwork/plugin-durable-state':
+        specifier: workspace:^
+        version: link:../../plugins/durable-state
       '@loomwork/replay-vm':
         specifier: workspace:^
         version: link:../replay-vm

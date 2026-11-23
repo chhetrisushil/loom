@@ -169,13 +169,6 @@ const seed = (m: TieredMemory, scope = "user/1") =>
 const seenInPrompt = (rs: LlmRequest[]) => JSON.stringify(rs.map((r) => r.messages));
 
 describe("agentLoop$ recall.toolId (ADR 0150 D8)", () => {
-  // kills: a recall effect that does not declare itself a read, or whose resource is not the scope
-  it("memoryRecallEffect declares a read whose resource is the recall scope", () => {
-    const e = memoryRecallEffect(boot({ recall: true }).memory);
-    expect(e.capabilities).toEqual({ read: true });
-    expect(e.resourceOf?.({ tier: "working", scope: "user/1" })).toBe("user/1");
-  });
-
   // kills: an authorizer that ignores `reads`, or a recall that bypasses the effect ring
   it("a recall covered by reads runs and reaches the prompt", async () => {
     const b = boot({ recall: true, reads: ["memrecall:user/*"] });
@@ -184,6 +177,23 @@ describe("agentLoop$ recall.toolId (ADR 0150 D8)", () => {
     expect((await h.waitForCompletion()).status).toBe("completed");
     expect(seenInPrompt(b.requests)).toContain("remembered-thing");
   });
+
+  // kills: absent reads treated as allow-all; reads matched on the bare toolId; a denial that is not task-grant:read-scope
+  for (const reads of [undefined, [], ["memrecall:other/*"], ["model:user/1"]]) {
+    it(`a recall NOT covered by reads (${JSON.stringify(reads)}) is denied and never reads the store`, async () => {
+      const b = boot({ recall: true, reads });
+      await seed(b.memory);
+      const afterSeed = b.reads.n;
+      const { h } = await b.start();
+      await h.waitForCompletion().catch(() => undefined);
+      const events = await b.eventStore.read("e1");
+      const denied = events.filter((e) => e.eventType === "EFFECT_DENIED");
+      expect(denied).toHaveLength(1);
+      expect(JSON.stringify(denied[0]?.payload)).toContain("task-grant:read-scope");
+      expect(b.reads.n).toBe(afterSeed); // the denied recall never reached the store
+      expect(b.requests).toHaveLength(0);
+    });
+  }
 
   // kills: always routing through the effect (changes the log of every existing agent), or dropping the decide record
   it("unset: the recall is the inline decision, no effect step, and works without any grant `reads`", async () => {

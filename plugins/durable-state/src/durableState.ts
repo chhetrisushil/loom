@@ -171,7 +171,8 @@ export function durableState<T>(config: DurableStateConfig<T>): DurableStateHand
     // peeking at a sentinel's carry state changes nothing and should not have to
     // start an execution to look. Pinning it to either seam would forbid a
     // legitimate caller, which is why the marker is opt-in rather than required.
-    { idempotent: true }
+    // ADR 0150 D8: the key is the resource and the effect declares itself a read, so a task grant's `reads` can scope it.
+    { idempotent: true, resourceOf: (i: LoadInput) => i.key, capabilities: { read: true } }
   );
 
   // K9 — declared idempotent: the CAS makes a crash-recovery re-run safe. If the

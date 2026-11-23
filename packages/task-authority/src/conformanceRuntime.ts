@@ -32,9 +32,15 @@ export function rig(
   broker: GrantBroker,
   c: { now: () => number },
   flows: Record<string, Runner>,
-  o: { stores?: Stores; hangMint?: boolean; directed?: { wired: boolean; gate?: boolean } } = {}
+  o: {
+    stores?: Stores;
+    hangMint?: boolean;
+    directed?: { wired: boolean; gate?: boolean };
+    /** `false` is the broken stack: the read effect does not declare itself a read, so `reads` is never checked. */
+    readMarked?: boolean;
+  } = {}
 ) {
-  const ran = { act: 0, other: 0 };
+  const ran = { act: 0, other: 0, rd: 0 };
   const authorizer = new TaskGrantAuthorizer({
     secret: SECRET,
     base: { authorize: () => ({ allowed: true }) },
@@ -55,6 +61,19 @@ export function rig(
         return { ok: true };
       })
     );
+  effects.register(
+    "rd",
+    new ToolEffect(
+      async () => {
+        ran.rd++;
+        return { ok: true };
+      },
+      {
+        resourceOf: (i: { scope?: string }) => i.scope,
+        ...(o.readMarked !== false && { capabilities: { read: true } }),
+      }
+    )
+  );
   effects.register(CHILD_LEASE_TOOL, childLeaseEffect({ secret: SECRET, broker }));
   const s = o.stores ?? {
     eventStore: new InMemoryAsyncEventStore(),
@@ -126,7 +145,47 @@ export const acts = async (ctx: ExecutionContext, n: number, tool = "act") => {
   }
   return ran;
 };
+/**
+ * ADR 0150 D8: a READ effect (`capabilities.read`) is refused unless `<toolId>:<resource>` is covered by the grant's
+ * `reads`; absent `reads` covers nothing. `marked: false` is the broken stack (the read is not declared, so it is never checked).
+ */
+export async function readScope(s: ConformanceSubject, marked = true): Promise<void> {
+  const c = clock();
+  const b = mk(s, undefined, c);
+  const grant = (id: string, reads?: string[]) =>
+    b.mint({
+      ...mintReq(id, 5),
+      effects: ["act", "rd"],
+      leases: { w: { ceiling: 5, effects: ["act", "rd"] } },
+      ...(reads !== undefined && { reads }),
+    });
+  const read = async (ctx: ExecutionContext, scope: string): Promise<boolean> =>
+    ctx.run(task(`r-${scope}`, "rd"), { scope }).then(
+      () => true,
+      (e) => {
+        if (e instanceof SuspendError) throw e;
+        return false;
+      }
+    );
+  const h = rig(
+    b,
+    c,
+    {
+      f: async (ctx) => [await read(ctx, "mine/a"), await read(ctx, "theirs/b")],
+      none: async (ctx) => read(ctx, "mine/a"),
+    },
+    { readMarked: marked }
+  );
+  const out = await (await h.start("f", "f", await grant("f", ["rd:mine/*"]))).waitForCompletion();
+  must(
+    JSON.stringify(out.variables._output) === "[true,false]",
+    `a read ${JSON.stringify(out.variables._output)}: the covered read must run and the one outside reads must be refused`
+  );
+  const none = await (await h.start("none", "n", await grant("n"))).waitForCompletion();
+  must(none.variables._output === false, "a read ran under a grant with no reads");
+}
 export const RUNTIME_CHECKS: Record<string, Check> = {
+  "reads.read-scope": (s) => readScope(s),
   // Guards the package and kernel (reserved `lease.` prefix), not the broker: a broken broker cannot fail this.
   "carve.forged-meters": async (s) => {
     const c = clock();
