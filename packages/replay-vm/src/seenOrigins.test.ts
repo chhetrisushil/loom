@@ -125,16 +125,19 @@ describe("the fold unions RECORDED lists", () => {
       through: 0,
     });
   });
-  it("a record on a non-channel event, or in a payload key, is ignored; junk entries are dropped", () => {
+  it("a record on a non-channel event, or in a payload key, is ignored; a junk entry is overflow", () => {
     const s = fold([start()]);
     expect(
       keyOf(foldEvents([env(1, { eventType: "APP_EVENT", payload: {} }, { origins: ["f"] })], s))
         ?.origins
     ).toEqual([]);
     expect(keyOf(foldEvents([env(1, completed({ origins: ["f"] }))], s))?.origins).toEqual([]);
-    expect(
-      keyOf(foldEvents([env(1, completed(), { origins: [1, null, "ok"] })], s))?.origins
-    ).toEqual(["ok"]);
+    // M-B: a non-string entry in a recorded list is overflow, not silently dropped
+    for (const bad of [[1], [null, "ok"], ["ok", {}]]) {
+      const k = keyOf(foldEvents([env(1, completed(), { origins: bad })], s));
+      expect(k?.overflow).toBe(true);
+      expect(k?.origins).toEqual([]);
+    }
   });
   it("originsOverflow is sticky; the maxOrigins+1th distinct origin overflows and is dropped; later records are ignored", () => {
     const small = { ...STAMP, maxOrigins: 2 };
