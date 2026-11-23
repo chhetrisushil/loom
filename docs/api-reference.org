@@ -1926,6 +1926,15 @@ function answerRenewal<H>(runtime: RenewalRuntime<H>, broker: { renew(r): Promis
 //   operator helper: reads the pending request, refuses if its digest != the parked viewDigest, takes the epoch from broker.current when offered, broker.renew(request), runtime.resume(id, { eventType: RENEWAL_GATE, payload: verdict + viewDigest echo }, resumeOpts)
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
+// ── subpath "@loomwork/task-authority/conformance" (D14) ──
+interface ConformanceSubject { makeBroker(o: { secret: string; now: () => number; policy?: RenewalPolicy }): GrantBroker }
+type CheckStatus = "passed" | "failed" | "skipped"
+interface ConformanceResult { id: string; status: CheckStatus; message?: string }   // message = why it failed or was skipped
+interface ConformanceReport { ok: boolean; results: ConformanceResult[] }            // ok = no check failed
+const CONFORMANCE_CHECK_IDS: readonly string[]   // broker.* (claim, holder, take-return, revoked, mint, renew, reservation), carve.child-renew-ceiling, laundering.*
+function checkTaskAuthorityConformance(subject: ConformanceSubject): Promise<ConformanceReport>
+//   never throws. Broker-contract checks; skipped with a reason: laundering.uncovered.a2a ("A2A transport not available in-process"),
+//   laundering.covered ("slice 2 (ADR 0150 D7)"). The runtime-level D14 checks (laundering over shared memory, carve, pause-renew, replay, revocation) follow in T10b.
 #+end_src
 
 ** ~@loomwork/compliance~ — subject export & erasure (T3)

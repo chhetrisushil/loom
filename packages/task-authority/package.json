@@ -11,6 +11,12 @@
       "require": "./dist/index.js",
       "node": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./conformance": {
+      "types": "./dist/conformance.d.ts",
+      "require": "./dist/conformance.js",
+      "node": "./dist/conformance.js",
+      "default": "./dist/conformance.js"
     }
   },
   "scripts": {
