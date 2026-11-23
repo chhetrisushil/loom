@@ -35,6 +35,7 @@ import {
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
 import { sliceBySequence } from "@loomwork/event-runtime/sequence";
 import {
+  CUSTOM_DIMENSION_PATTERN,
   EVENT_SCHEMA_VERSION,
   FAILED_WHILE_PARKED,
   FLOW_DIVERGED_GATE,
@@ -1397,6 +1398,22 @@ export class WorkflowRuntime {
           };
   }
   private readonly composedCodecs = new Set<PrincipalCodec>();
+  private readonly reservedDimensions = new Set<string>();
+  /**
+   * ADR 0151 D7 — a composition-time contributor: reserve a custom metering-dimension prefix for the
+   * app's registered effects and middleware. FLOW code (`ctx.emit`) can no longer emit a
+   * `RESOURCE_METERED` whose `custom` names a dimension under it; effect-scope emits are unaffected.
+   * Idempotent. The kernel knows no vocabulary: the contributor names the prefix. Applies to new
+   * appends only (a recorded event is never re-guarded).
+   */
+  reserveEffectDimensions(prefix: string): void {
+    if (typeof prefix !== "string" || !CUSTOM_DIMENSION_PATTERN.test(prefix)) {
+      throw new Error(
+        `reserveEffectDimensions: "${String(prefix)}" must be non-empty and match ${String(CUSTOM_DIMENSION_PATTERN)}`
+      );
+    }
+    this.reservedDimensions.add(prefix);
+  }
   /**
    * R3k review P2-a — the record a start wrote, kept for the life of its LIVE execution. A minted
    * id's sequence 0 is journalled behind the fold, so a lifecycle op (`cancel`, `query`) landing
@@ -9177,6 +9194,7 @@ export class WorkflowRuntime {
         onWarn: this.onWarn,
         scopes: this.scopes,
         ...(this.meterCeilings !== undefined && { meterCeilings: this.meterCeilings }),
+        reservedDimensions: this.reservedDimensions,
         ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
         ...(this.surface !== undefined && { surface: this.surface }),
         // ADR 0130 D11 (S7c): no effect is dispatched under a lease that is no longer valid.

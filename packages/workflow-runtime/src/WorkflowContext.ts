@@ -490,6 +490,7 @@ export class WorkflowContextImpl implements WorkflowContext {
 
   /** ADR 0115 — per-dimension overrides of the metering sanity ceilings (the guard reads them). */
   private readonly meterCeilings: Readonly<Record<string, number>> | undefined;
+  private readonly reservedDimensions: ReadonlySet<string> | undefined;
 
   constructor(
     executionId: string,
@@ -520,6 +521,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       inbox?: InboxBinding;
       continuation?: ContinuationBinding;
       meterCeilings?: Readonly<Record<string, number>>;
+      reservedDimensions?: ReadonlySet<string>;
       /** ADR 0113 D3 — told which recorded steps the re-run asks for. */
       divergence?: DivergenceHooks;
       /** ADR 0130 D11 — throws (a lost lease) when no effect may be dispatched any more. */
@@ -535,6 +537,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     });
     this.continueSignal.catch(() => {});
     this.meterCeilings = opts.meterCeilings;
+    this.reservedDimensions = opts.reservedDimensions;
     this.parkSignal = new Promise<never>((_resolve, reject) => {
       this.rejectPark = reject;
     });
@@ -600,7 +603,8 @@ export class WorkflowContextImpl implements WorkflowContext {
         kind: "flow",
         conflicts: this.decisionConflict,
       },
-      this.meterCeilings
+      this.meterCeilings,
+      this.reservedDimensions
     ); // ADR 0104
     const digest = flowEmitDigest(eventType, payload, this.suspendPassthroughsConsumed);
     if (digest === undefined) {

@@ -380,3 +380,5 @@ park differently from a fresh scan.
   leaves an execution `recoverAbandoned` refuses as terminal, and it also makes a live execution
   read as `failed`. The cause is in the fold, and fixing it changes the folded status of existing
   logs, so it needs its own decision. **Fixed by [ADR 0105](0105-a-caught-step-failure-is-not-the-executions.md).**
+
+> ADR 0151 D7 narrows flow-scope `RESOURCE_METERED`: a flow cannot meter a custom dimension under a prefix the app reserved with `reserveEffectDimensions`.

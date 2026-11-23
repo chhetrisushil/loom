@@ -18,12 +18,12 @@
       "adr": "0039"
     },
     "WorkflowContext.ts": {
-      "codeLines": 1826,
+      "codeLines": 1830,
       "adr": "0151"
     },
     "WorkflowRuntime.ts": {
-      "codeLines": 6808,
-      "adr": "0130"
+      "codeLines": 6819,
+      "adr": "0151"
     },
     "__tests__/quarantineHarness.ts": {
       "codeLines": 190,
@@ -190,8 +190,8 @@
       "adr": "0148"
     },
     "userspaceEmit.ts": {
-      "codeLines": 216,
-      "adr": "baseline"
+      "codeLines": 231,
+      "adr": "0151"
     },
     "writeConflict.ts": {
       "codeLines": 16,

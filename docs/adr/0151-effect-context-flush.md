@@ -1,4 +1,4 @@
-# ADR 0151 — `EffectContext.flush()` and `readResources()`: middleware can make its own events durable before the effect runs, and read the live totals
+# ADR 0151 — `EffectContext.flush()`, `readResources()` and `reserveEffectDimensions()`: middleware can make its own events durable before the effect runs, read the live totals, and keep its accounting dimensions out of flow code's reach
 
 - Status: **Proposed**
 - Date: 2026-11-23
@@ -111,6 +111,25 @@ absent on the transient seam and on test contexts, and a consumer that needs it 
 
 I5 consequence: after its emit, middleware re-reads and checks that the dimension it just metered is present
 (`Object.hasOwn(custom, name)`); if the fold dropped it, the middleware fails closed instead of dispatching.
+
+### D7 — `reserveEffectDimensions(prefix)`: flow code cannot forge accounting dimensions
+
+`RESOURCE_METERED` is on the userspace allow-list and its `custom` dimensions only have to match
+`/^[a-z][a-z0-9._-]{0,63}$/` with a value in [0, 1e15]; nothing reserved a prefix. So FLOW code could
+`ctx.emit("RESOURCE_METERED", { custom: { "lease.w.returned": 100 } })` and forge the counters an accounting
+middleware (the task-authority lease, a child-reservation minter) relies on; a probe ran 50 leased effects against
+a ceiling of 10.
+
+`WorkflowRuntime.reserveEffectDimensions(prefix)` is a composition-time contributor, modelled on
+`composePrincipalCodec`. The prefix must be non-empty and match the custom-dimension charset (else it throws);
+reserving is idempotent. `guardUserspaceEmit` then refuses a FLOW-scope `RESOURCE_METERED` whose `custom` names a
+dimension starting with any reserved prefix. EFFECT-scope emits are unaffected.
+
+The trust line: grants and guards bound the model and flow code; effects and middleware are registered by the app
+and are trusted. The kernel knows no vocabulary: the contributor (for example `@loomwork/task-authority`) names its
+own prefix, so nothing like "lease" appears in the kernel. It is additive: with no prefix reserved the behaviour is
+byte-identical. It guards new appends only: a recorded event is never re-guarded, so a log that holds an effect
+meter under a prefix reserved later still replays (a re-run FLOW emit under it is refused, as any new emit).
 
 ## Consequences
 
