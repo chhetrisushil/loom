@@ -2,7 +2,14 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { PrincipalChain } from "@loomwork/effect-runtime";
 import type { GrantSource } from "./broker";
 import { TaskAuthorityPrincipalError } from "./errors";
-import { type TaskGrant, taskGrantDigest, verifyTaskGrant } from "./grant";
+import {
+  type GrantKeys,
+  type TaskGrant,
+  keyRing,
+  sealKeys,
+  taskGrantDigest,
+  verifyTaskGrant,
+} from "./grant";
 
 /**
  * Structural twin of the kernel's `PrincipalCodec` (ADR 0111): declared here so this package
@@ -14,7 +21,7 @@ export interface TaskAuthorityPrincipalCodec {
 }
 
 export interface TaskAuthorityCodecOptions {
-  secret: string;
+  secret: GrantKeys;
   /** Clock for the `exp` check in `toRef`. Default `Date.now`. */
   now?: (() => number) | undefined;
   /** Bound on each `GrantSource` call in `fromRef`. Default 5000. */
@@ -83,11 +90,12 @@ export function taskAuthorityPrincipalCodec(
   source: GrantSource,
   opts: TaskAuthorityCodecOptions
 ): TaskAuthorityPrincipalCodec {
-  const { secret } = opts;
+  const { sign, verify } = keyRing(opts.secret);
+  const secret = sealKeys(opts.secret);
   const now = opts.now ?? Date.now;
   const timeoutMs = opts.timeoutMs ?? 5000;
-  const mac = (g: TaskGrant, v2: boolean): Buffer =>
-    createHmac("sha256", secret)
+  const mac = (g: TaskGrant, v2: boolean, key: string): Buffer =>
+    createHmac("sha256", key)
       .update(
         v2
           ? `ta2\n${JSON.stringify([g.taskId, g.issuedTo, g.tenant ?? null, g.onBehalfOf ?? null])}`
@@ -121,7 +129,7 @@ export function taskAuthorityPrincipalCodec(
       if (!(grant.exp > now())) return refuse("the task grant has expired");
       if (!okTaskId(grant.taskId)) return refuse("the task id is not recordable");
       const v2 = grant.tenant !== undefined || grant.onBehalfOf !== undefined;
-      return `${v2 ? TASK_REF_PREFIX_V2 : TASK_REF_PREFIX}${grant.taskId}.${mac(grant, v2).toString("base64url")}`;
+      return `${v2 ? TASK_REF_PREFIX_V2 : TASK_REF_PREFIX}${grant.taskId}.${mac(grant, v2, sign).toString("base64url")}`;
     },
     async fromRef(ref, context) {
       const v2 = typeof ref === "string" && ref.startsWith(TASK_REF_PREFIX_V2);
@@ -153,9 +161,13 @@ export function taskAuthorityPrincipalCodec(
         // And a ta2 ref only ever names a grant that has one (symmetric).
         if (v2 && grant.tenant === undefined && grant.onBehalfOf === undefined)
           return fail("ref binds an identity the grant does not carry");
-        const want = mac(grant, v2);
-        if (given.length !== want.length || !timingSafeEqual(given, want))
-          return fail("ref does not match the grant's holder");
+        // Every key is compared (no early exit): the ref may be MAC'd with a previous key.
+        let match = false;
+        for (const k of verify) {
+          const want = mac(grant, v2, k);
+          match = (given.length === want.length && timingSafeEqual(given, want)) || match;
+        }
+        if (!match) return fail("ref does not match the grant's holder");
         if (
           source.revoked !== undefined &&
           (await ask(source.revoked(taskGrantDigest(grant)))) !== false

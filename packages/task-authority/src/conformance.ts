@@ -7,7 +7,7 @@ import type {
 import { clock, mintReq, mk, must, mustRefuse, req } from "./conformanceKit";
 import { MORE_CHECKS } from "./conformanceMore";
 import { RUNTIME_CHECKS } from "./conformanceRuntime";
-import { taskGrantDigest } from "./grant";
+import { type TaskGrant, taskGrantDigest, verifyTaskGrant } from "./grant";
 
 export type {
   CheckStatus,
@@ -28,6 +28,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.renew-born-expired",
   "broker.reservation-never-released",
   "broker.identity-fixed",
+  "broker.signs-current-key",
   "carve.child-renew-ceiling",
   "carve.total-spend",
   "carve.forged-meters",
@@ -140,6 +141,29 @@ const CHECKS: Record<string, Check> = {
     must(
       now?.tenant === id.tenant && now?.onBehalfOf === id.onBehalfOf,
       "a renewal dropped or changed tenant/onBehalfOf (R30)"
+    );
+  },
+  "broker.signs-current-key": async (s) => {
+    // R31: with a rotation ring, mint and renewal sign with `current`, never a previous key.
+    const b = s.makeBroker({
+      secret: { current: "kit-key-new", previous: ["kit-key-old"] },
+      now: clock().now,
+      policy: () => ({ leases: { w: 20 } }),
+    });
+    const minted = await b.mint(mintReq("k", 4));
+    must(
+      verifyTaskGrant("kit-key-new", minted) !== undefined,
+      "a minted grant is not signed with the current key"
+    );
+    must((await b.renew(req("k", 0, 0))).granted, "setup: renewal denied");
+    const renewed = (await b.current("k")) as TaskGrant;
+    must(
+      verifyTaskGrant("kit-key-new", renewed) !== undefined,
+      "a renewed grant is not signed with the current key (R31)"
+    );
+    must(
+      verifyTaskGrant("kit-key-old", renewed) === undefined,
+      "a renewed grant verifies under a previous key"
     );
   },
   "carve.child-renew-ceiling": async (s) => {

@@ -7,7 +7,13 @@ import {
   type RenewalVerdict,
   cloneRequest,
 } from "./broker";
-import { type LeaseSpec, type TaskGrant, signTaskGrant, taskGrantDigest } from "./grant";
+import {
+  type GrantKeys,
+  type LeaseSpec,
+  type TaskGrant,
+  signTaskGrant,
+  taskGrantDigest,
+} from "./grant";
 
 /**
  * Decides a renewal. MUST be synchronous: there is no await between the epoch check and the commit, so two
@@ -53,7 +59,7 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
   private readonly policy: RenewalPolicy;
 
   constructor(o: {
-    secret: string;
+    secret: GrantKeys;
     now?: (() => number) | undefined;
     policy?: RenewalPolicy | undefined;
   }) {

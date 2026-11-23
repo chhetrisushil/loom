@@ -1,8 +1,10 @@
 import type { TaintedValue } from "@loomwork/classify";
 import {
+  type GrantKeys,
   type LeaseSpec,
   type TaskGrant,
   type UnsignedTaskGrant,
+  sealKeys,
   signTaskGrant,
   taskGrantDigest,
   validateGrantShape,
@@ -122,11 +124,11 @@ export class InMemoryGrantLedger {
   protected readonly tasks = new Map<string, Rec>();
   protected readonly revokedDigests = new Set<string>();
   protected readonly claims = new Map<string, string>();
-  protected readonly secret: string;
+  protected readonly secret: GrantKeys;
   protected readonly now: () => number;
 
-  constructor(o: { secret: string; now?: (() => number) | undefined }) {
-    this.secret = o.secret;
+  constructor(o: { secret: GrantKeys; now?: (() => number) | undefined }) {
+    this.secret = sealKeys(o.secret);
     this.now = o.now ?? Date.now;
   }
 

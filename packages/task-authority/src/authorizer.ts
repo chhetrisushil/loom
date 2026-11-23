@@ -5,7 +5,13 @@ import {
   capabilityIds,
   principalBlocked,
 } from "@loomwork/effect-runtime";
-import { type TaskGrant, validateGrantShape, verifyTaskGrant } from "./grant";
+import {
+  type GrantKeys,
+  type TaskGrant,
+  sealKeys,
+  validateGrantShape,
+  verifyTaskGrant,
+} from "./grant";
 
 /** Stable machine prefixes of a denial reason, one per cause (a later task classifies `expired` as renewable). */
 export const TASK_GRANT_DENIAL = {
@@ -22,7 +28,7 @@ export const TASK_GRANT_DENIAL = {
 
 export interface TaskGrantAuthorizerOptions {
   /** Shared secret that verifies grants. SYMMETRIC: a verifier can also mint, which is why `base` is required. */
-  secret: string;
+  secret: GrantKeys;
   /**
    * The callee's OWN authority, REQUIRED and load-bearing: the secret is symmetric, so a callee can sign
    * itself a grant for any effect. Only the intersection with `base` bounds it (same reasoning as
@@ -66,7 +72,7 @@ const deny = (prefix: string, detail: string): CapabilityDecision => ({
  * and never throws.
  */
 export class TaskGrantAuthorizer implements CapabilityAuthorizer {
-  private readonly secret: string;
+  private readonly secret: GrantKeys;
   private readonly base: CapabilityAuthorizer;
   private readonly now: () => number;
 
@@ -77,11 +83,16 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
           "cannot bound a callee's authority on its own (see ADR 0024, ADR 0150 D2)."
       );
     }
-    if (typeof options.secret !== "string" || options.secret.length === 0) {
-      throw new Error("TaskGrantAuthorizer: `secret` must be a non-empty string.");
+    let sealed: GrantKeys;
+    try {
+      sealed = sealKeys(options.secret);
+    } catch {
+      throw new Error(
+        "TaskGrantAuthorizer: `secret` must be a non-empty string or a valid key ring."
+      );
     }
     // Copy: a later mutation of the caller's options object must not swap the secret or `base`.
-    this.secret = options.secret;
+    this.secret = sealed;
     this.base = options.base;
     this.now = options.now ?? Date.now;
   }
