@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-23
+
 ### Fixed
 
 - **Kernel: the effect context's `resources` is a copy, not the fold-owned object ([ADR 0151](docs/adr/0151-effect-context-flush.md) D6).** `EffectContext.resources` (and the `resources` handed to a decide scope's transient call) was the execution's live `variables._resources` by reference, so middleware or an effect writing `ctx.resources.tokens = 0` or `ctx.resources.custom.x = 999` silently changed the fold that metering, `nestedBudget` and the lease middleware read. It is now a copy (including `custom`), built by the same helper as `readResources()`. Impact: code that relied on mutating `ctx.resources` to affect the fold stops working; meter with `ctx.emit("RESOURCE_METERED", ...)` instead.
