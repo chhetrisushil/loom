@@ -91,7 +91,7 @@ describe("checkTaskAuthorityConformance", () => {
       "a child that may renew above its minted ceiling",
       ChildMayRise,
       "carve.child-renew-ceiling",
-      /above the ceiling it was minted/,
+      /above its minted ceiling/,
     ],
     [
       "a revoke that releases the reservation",

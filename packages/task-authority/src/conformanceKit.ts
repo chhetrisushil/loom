@@ -1,4 +1,4 @@
-import type { GrantBroker, MintRequest } from "./broker";
+import type { GrantBroker, MintRequest, RenewalRequest } from "./broker";
 import { CHILD_LEASE_TOOL } from "./childLease";
 import type { RenewalPolicy } from "./renew";
 
@@ -40,10 +40,18 @@ export const mintReq = (taskId: string, ceiling: number, parent?: string): MintR
   ttlMs: TTL,
   ...(parent !== undefined && { parent: { taskId: parent } }),
 });
-export const refused = (p: Promise<unknown>) =>
-  p.then(
+export const mustRefuse = async (p: Promise<unknown>, msg: string): Promise<void> => {
+  const threw = await p.then(
     () => false,
     () => true
   );
+  must(threw, msg);
+};
+export const req = (taskId: string, epoch: number, renewals: number): RenewalRequest => ({
+  taskId,
+  epoch,
+  spent: {},
+  renewals,
+});
 export const mk = (s: ConformanceSubject, policy?: RenewalPolicy, c = clock()) =>
   s.makeBroker({ secret: SECRET, now: c.now, ...(policy && { policy }) });
