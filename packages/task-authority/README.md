@@ -50,7 +50,7 @@ globs (`globCovers`); a grant with no `reads` covers nothing. EVERY declared rea
 the minter lists the task's own namespace. Cross-lineage CONTENT is attributed by `directedBy`, not here. `memoryRecallEffect(memory)`
 (resource = the recall scope; use it with `agentLoop$({ recall: { toolId } })`) and durable-state `load` (resource = the key)
 self-declare. Residual: an app must mark its OWN read tools (`new ToolEffect(fn, { resourceOf, capabilities: { read: true } })`); an
-unmarked read is not checked. A spawn may narrow a child with `awaitChild({ reads })`; inheritance stays the default and the broker
+unmarked read is not checked, and a run with no task grant has no `reads` check. Conversation-id reads are not built. The kit check `reads.read-scope` guards the reference authorizer and the broker's `reads` at mint, not a third-party authorizer. A spawn may narrow (leased children only: `reads` without a `lease` is refused) a child with `awaitChild({ reads })`; inheritance stays the default and the broker
 refuses a widening.
 
 ## Covered laundering (`directedBy`)

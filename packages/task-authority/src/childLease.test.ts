@@ -1,7 +1,7 @@
 import { type EventEnvelope, type FlowDefinition, SuspendError } from "@loomwork/core";
 import { EffectRuntime, type PrincipalChain, ToolEffect } from "@loomwork/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loomwork/event-runtime";
-import { awaitChild, superviseChildren } from "@loomwork/orchestration";
+import { awaitChild, awaitChildren, superviseChildren } from "@loomwork/orchestration";
 import { InMemoryAsyncSnapshotStore } from "@loomwork/snapshot-runtime";
 import {
   EFFECT_INDOUBT_RESOLVED,
@@ -937,4 +937,71 @@ describe("spawn-time reads narrowing (ADR 0150 D8)", () => {
     expect(await broker.current(CHILD)).toBeUndefined();
     expect(await h.runtime.loadState(CHILD)).toBeNull();
   }, 20_000);
+
+  const GCHILD = "P::g#0";
+  const groupSpawn =
+    (member: { reads?: string[]; lease?: boolean }): Parent =>
+    async (ctx) => {
+      try {
+        const res = await reserveChildLease(ctx, "g", { w: 2 });
+        return await awaitChildren(ctx, {
+          key: "g",
+          children: [
+            {
+              flowId: "child",
+              input: { n: 0, reads: ["a/x", "b/y"] },
+              ...(member.lease !== false && res.spawn),
+              ...(member.reads !== undefined && { reads: member.reads }),
+            },
+          ],
+        });
+      } catch (e) {
+        if (e instanceof SuspendError) throw e;
+        return { err: (e as Error).message };
+      }
+    };
+
+  // kills: a group member whose `reads` is dropped between awaitChildren and the mint
+  it("a group member narrowed at spawn reads its namespace only", async () => {
+    const w = world();
+    const broker = mk();
+    const g = await rootReads(broker, ["rd:a/*", "rd:b/*"]);
+    const h = boot(w, broker, groupSpawn({ reads: ["rd:a/*"] }), { authorize: true });
+    await h.runtime.start(h.parentFlow, {}, { executionId: PARENT, principal: chain(g) });
+    await finished(h.runtime, PARENT);
+    expect((await broker.current(GCHILD))?.reads).toEqual(["rd:a/*"]);
+    expect(JSON.stringify((await finished(h.runtime, GCHILD)).variables._output)).toBe(
+      '{"a/x":true,"b/y":false}'
+    );
+  }, 20_000);
+
+  // kills: `reads` without a lease being silently ignored (the child would run grantless with unbounded reads)
+  for (const kind of ["single", "group member"] as const) {
+    it(`reads without a lease is refused for a ${kind}; no child starts`, async () => {
+      const w = world();
+      const broker = mk();
+      const g = await rootReads(broker, ["rd:a/*"]);
+      const parent: Parent =
+        kind === "single"
+          ? async (ctx) => {
+              try {
+                return await awaitChild(ctx, {
+                  key: "k",
+                  flowId: "child",
+                  input: { n: 0 },
+                  reads: ["rd:a/*"],
+                });
+              } catch (e) {
+                if (e instanceof SuspendError) throw e;
+                return { err: (e as Error).message };
+              }
+            }
+          : groupSpawn({ reads: ["rd:a/*"], lease: false });
+      const h = boot(w, broker, parent, { authorize: true });
+      await h.runtime.start(h.parentFlow, {}, { executionId: PARENT, principal: chain(g) });
+      const out = (await finished(h.runtime, PARENT)).variables._output as { err?: string };
+      expect(out.err).toMatch(/names `reads` but no `lease`/);
+      expect(await h.runtime.loadState(kind === "single" ? CHILD : GCHILD)).toBeNull();
+    }, 20_000);
+  }
 });
