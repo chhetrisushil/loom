@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { tainted } from "@loomwork/classify";
 import type { ExecutionState } from "@loomwork/core";
 import type { PrincipalChain } from "@loomwork/effect-runtime";
 import type { RegisteredFlow, ResumeEvent, WorkflowRuntime } from "@loomwork/workflow-runtime";
@@ -51,7 +52,26 @@ export interface LoomAgentExecutorOptions {
    * executor, where the id is the embedder's own; the HTTP server turns it on.
    */
   namespaceByPrincipal?: boolean;
+  /**
+   * ADR 0150 D7 / S-R7 - taint what the peer sends. The prompt (and a `provideInput` payload) is wrapped as
+   * `a2a-inbound:<peer>`, the peer being the AUTHENTICATED principal's `actor` (`anonymous` when none), so the run's seen
+   * origins name it. With `lineageOf` (pass `lineageOrigin(secret)` of `@loomwork/task-authority`) a principal that carries a
+   * VERIFIED task grant also adds its `lineage:<rootId>` as the outer wrapper; no verified grant, no lineage origin.
+   * OPT-IN because the flow then receives `{ prompt: <tainted wrapper> }`: its input schema must accept that (unwrap with
+   * `unwrapTainted` to compute, never on the way to a prompt). Default `false`: nothing changes.
+   */
+  taintInbound?:
+    | boolean
+    | { lineageOf?: (principal: PrincipalChain | undefined) => string | undefined };
 }
+
+/** A peer label that is safe to embed in an origin: printable ASCII, bounded. */
+const peerLabel = (principal: PrincipalChain | undefined): string => {
+  const a = principal?.actor;
+  return typeof a === "string" && a !== ""
+    ? a.replace(/[^\x20-\x7e]/g, "?").slice(0, 128)
+    : "anonymous";
+};
 
 /** R12 — does this principal carry the minimum identity a per-caller namespace needs? */
 export function hasActor(principal: PrincipalChain): boolean {
@@ -152,8 +172,17 @@ export class LoomAgentExecutor implements AgentExecutor {
       : clientId;
   }
 
+  /** S-R7: the peer's content, wrapped as inbound (and as its verified lineage) when `taintInbound` is on. */
+  private inbound<T>(value: T, call: ExecutorCall): unknown {
+    const o = this.options.taintInbound;
+    if (o === undefined || o === false) return value;
+    const inner = tainted(value, `a2a-inbound:${peerLabel(call.principal)}`);
+    const lineage = typeof o === "object" ? o.lineageOf?.(call.principal) : undefined;
+    return lineage === undefined ? inner : { __loomTainted: { origin: lineage }, value: inner };
+  }
+
   async submit(task: A2ATask, call: ExecutorCall = {}): Promise<{ id: string }> {
-    const prompt = task.message.parts.map((p) => p.text).join("\n");
+    const prompt = this.inbound(task.message.parts.map((p) => p.text).join("\n"), call);
     const identity = call.principal !== undefined ? { principal: call.principal } : {};
     const handle = await this.runtime.start(
       this.flow,
@@ -186,7 +215,11 @@ export class LoomAgentExecutor implements AgentExecutor {
     call: ExecutorCall = {}
   ): Promise<{ id: string }> {
     const identity = call.principal !== undefined ? { principal: call.principal } : {};
-    const handle = await this.runtime.resume(this.idFor(call, taskId), event, identity);
+    const handle = await this.runtime.resume(
+      this.idFor(call, taskId),
+      { ...event, payload: this.inbound(event.payload, call) },
+      identity
+    );
     return { id: taskId };
   }
 }

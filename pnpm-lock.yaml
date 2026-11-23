@@ -1674,6 +1674,9 @@ importers:
       '@loomwork/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
+      '@loomwork/task-authority':
+        specifier: workspace:*
+        version: link:../../packages/task-authority
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
