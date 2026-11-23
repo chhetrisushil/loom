@@ -1830,7 +1830,7 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 
 ** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
 
-Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). T4 adds the broker SPI and =InMemoryGrantLedger= (D13); T4b adds =InMemoryGrantBroker= (renewal). T5 adds the principal codec and installer (D3). Leases arrive in a later task.
+Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). T4 adds the broker SPI and =InMemoryGrantLedger= (D13); T4b adds =InMemoryGrantBroker= (renewal). T5 adds the principal codec and installer (D3). T6 adds =taskLeaseMiddleware= (D3 digest, D4 leases, D5 revocation).
 
 #+begin_src typescript
 const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
@@ -1894,6 +1894,19 @@ class TaskAuthorityPrincipalError extends Error {}   // toRef refused a chain ca
 function taskAuthorityPrincipalCodec(source: GrantSource, opts: TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec
 interface PrincipalCodecHost { composePrincipalCodec(codec): void }   // a WorkflowRuntime; no kernel dependency is added
 function installTaskAuthority(runtime: PrincipalCodecHost, o: { source: GrantSource } & TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec  // composePrincipalCodec: keeps any codec already set
+interface TaskLeaseOptions { secret: string; source?: GrantSource; strictLeases?: boolean; revocationTimeoutMs?: number /* default 5000 */ }
+function taskLeaseMiddleware(o: TaskLeaseOptions): EffectMiddleware   // reads ctx.principal.taskGrant; none => next() untouched, zero events
+// D4: the effect maps to the first lease (sorted by name) whose `effects` contain its toolId (EffectContext carries no resource, so NOT `toolId:resource`).
+//   No lease: strictLeases => LeaseUnmappedError, else runs uncounted. A leased effect: spent = max(fold `lease.<name>` + in-flight reservations, process floor), reserved
+//   SYNCHRONOUSLY; at/over the ceiling => QUOTA_EXCEEDED { level: "lease" } + LeaseExhaustedError { renewable: true, lease, ceiling, spent, epoch }. Under it: emit
+//   DECISION_RECORDED "task-authority:grant:<epoch>" { digest, exp, epoch } (once per step/attempt/epoch), emit RESOURCE_METERED { custom: { "lease.<name>": 1 } },
+//   `await ctx.flush()` (ADR 0151), then next(). A leased effect on a context WITHOUT flush() => LeaseDurabilityError (never runs; a lease-governed effect runs only on a durable context).
+//   The attempt is counted whether or not the effect then throws. D5: source.revoked(digest) checked with a timeout (fails closed), a `false` cached per digest => GrantRevokedError { renewable: true }.
+//   Bounded: 1024 executions (idle evicted first), 256 decision keys per execution, 4096 cached digests. A forged grant throws.
+class LeaseExhaustedError extends Error { renewable: true; lease; ceiling; spent; epoch }
+class GrantRevokedError extends Error { renewable: true }
+class LeaseUnmappedError extends Error {}   // renewable: false
+class LeaseDurabilityError extends Error {} // renewable: false
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
 #+end_src

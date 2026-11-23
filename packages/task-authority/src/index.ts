@@ -20,3 +20,11 @@ export type { TaskAuthorityCodecOptions, TaskAuthorityPrincipalCodec } from "./c
 export { TASK_REF_PREFIX, taskAuthorityPrincipalCodec } from "./codec";
 export type { PrincipalCodecHost } from "./install";
 export { installTaskAuthority } from "./install";
+export type { TaskLeaseOptions } from "./lease";
+export { taskLeaseMiddleware } from "./lease";
+export {
+  GrantRevokedError,
+  LeaseDurabilityError,
+  LeaseExhaustedError,
+  LeaseUnmappedError,
+} from "./errors";
