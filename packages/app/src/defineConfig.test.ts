@@ -1077,6 +1077,52 @@ describe("defineConfig — agent auto-wiring (a2a / agentSurface, opt-in)", () =
     expect(app.schedules.map((s) => s.id)).toEqual(["nightly"]);
   });
 
+  it("timers.principalFor / principalForTimeoutMs / onError reach the TimerService (ADR 0152 D2)", async () => {
+    // Kills: config keys accepted but not forwarded (the hook never called; a throw not reaching onError).
+    const MIN = 60_000;
+    const now = 28_333_334 * MIN + MIN / 2;
+    const first = (Math.floor(now / MIN) + 1) * MIN;
+    const flow = {
+      definition: {
+        _tag: "FlowDefinition",
+        id: "nightly-flow",
+        name: "nightly-flow",
+        version: "1.0.0",
+        inputSchema: z.object({}),
+        outputSchema: z.object({}),
+        steps: [],
+      },
+      runner: (async () => ({})) as never,
+    } as RegisteredFlow;
+    const sched = schedule$({ id: "nightly", cron: "* * * * *", flowId: "nightly-flow" });
+    const principalFor = vi.fn((_d: unknown, occ: number) => {
+      if (occ === first + MIN) throw new Error("boom");
+      return { actor: "svc", tenant: "t" };
+    });
+    const onError = vi.fn();
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      execution: { now: () => now },
+      autostart: false,
+      timers: {
+        store: new InMemoryTimerStore(),
+        schedules: [sched],
+        principalFor,
+        principalForTimeoutMs: 1234,
+        onError,
+      },
+    });
+    await app.timerService?.tick(first);
+    expect(principalFor).toHaveBeenCalledTimes(1);
+    const started = await app.stores.eventStore.read(`nightly@${first}`);
+    expect(JSON.stringify(started[0]?.payload)).toContain('"svc"');
+    await app.timerService?.tick(first + MIN);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]?.[0]).toBe(`nightly@${first + MIN}`);
+    await app.close();
+  });
+
   it("warns when schedules are declared but no timers store is configured", () => {
     const nightly = schedule$({ id: "nightly", cron: "0 0 * * *", flowId: "report" });
     const onWarn = vi.fn();

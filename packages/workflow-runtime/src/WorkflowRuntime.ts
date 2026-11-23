@@ -1051,7 +1051,8 @@ export class WorkflowRuntime {
   private readonly onDurableEvent: ((event: EventEnvelope) => void) | undefined;
   private readonly branchRegistry: BranchRegistry | undefined;
   private readonly onStorageError: ((executionId: string, err: unknown) => void) | undefined;
-  private readonly onWarn: (message: string) => void;
+  /** @internal the runtime warn path (`observability.onWarn`, default console.warn); TimerService reuses it. */
+  readonly onWarn: (message: string) => void;
   /** One warning per (flow, gate) — a hot loop must not narrate the same dropped deadline. */
   private readonly warnedDroppedDeadlines = new Set<string>();
   private readonly warnedStrayPassthroughs = new Set<string>();

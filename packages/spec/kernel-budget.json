@@ -14,7 +14,7 @@
       "adr": "baseline"
     },
     "TimerService.ts": {
-      "codeLines": 877,
+      "codeLines": 891,
       "adr": "0152"
     },
     "WorkflowContext.ts": {
