@@ -1028,14 +1028,16 @@ Built from ~ctx.decide~ + ~ctx.suspend~ — no syscall and no new event type. A 
 
 #+begin_src typescript
 function awaitChild<TOut>(ctx, spec: { key: string; flowId: string; input: unknown; maxDepth?: number;
-  grants?: readonly string[]; expiresAt?: number; detached?: boolean }): Promise<TOut>
+  grants?: readonly string[]; expiresAt?: number; detached?: boolean;
+  lease?: Record<string, number>; leaseParent?: string /* ADR 0150 D6: carved lease ceilings + the parent task id; spread `reserveChildLease().spawn`; needs SupervisorDeps.taskAuthority, else the spawn fails closed */ }): Promise<TOut>
 function awaitChildren<TOut>(ctx, group: { key: string; maxDepth?: number; children: readonly { flowId: string; input: unknown;
-  grants?: readonly string[]; expiresAt?: number; detached?: boolean }[] }): Promise<ChildResult<TOut>[]>
+  grants?: readonly string[]; expiresAt?: number; detached?: boolean; lease?: Record<string, number>; leaseParent?: string }[] }): Promise<ChildResult<TOut>[]>
 function awaitAll<TOut>(ctx, group: { key: string; maxDepth?: number;
   children: readonly { flowId: string; input: unknown }[] }): Promise<TOut[]>   // all-or-nothing: throws childFailed
 type ChildResult<TOut> = { status: "completed"; output: TOut } | { status: "failed"; error: string } | { status: "cancelled"; reason?: string }   // ctx is Pick<ExecutionContext, "executionId" | "decide" | "suspend">
 function superviseChildren(deps: SupervisorDeps): ChildSupervisor  // wire into onEvent
-interface SupervisorDeps { runtime: WorkflowRuntime; flows: Record<string, RegisteredFlow>; onError?; delegation?: { secret: string }; limits?: SpawnLimits; redrive?: RedriveWiring; tuning?: Partial<SupervisorTuning> }
+interface SupervisorDeps { runtime: WorkflowRuntime; flows: Record<string, RegisteredFlow>; onError?; delegation?: { secret: string }; limits?: SpawnLimits; redrive?: RedriveWiring; tuning?: Partial<SupervisorTuning>;
+  taskAuthority?: { mintChildGrant; settleChild(childId, resources): Promise<void>; settleUnstarted?(childId, parentTaskId): Promise<void> } /* ADR 0150 D6: `childGrantMinter(broker, { ttlMs })` of @loomwork/task-authority; a spawn with a `lease` and no hook fails closed */ }
 interface ChildSupervisor { onEvent(event: EventEnvelope): void; recover(options?: { source?: ExecutionEnumerable; pageSize?: number }): Promise<RecoverSummary>; parkedOnChild(executionId: string): Promise<boolean>; size() }
 function fanout$<TIn, TOut>(ctx, baseStep: StepDefinition<TIn, TOut>, items: readonly TIn[],
   options?: { limit?: number }): Promise<TOut[]>                  // one step per item, bounded concurrency
@@ -1579,11 +1581,14 @@ interface EffectContext {
   executionId: string; stepId: string; workflowId: string; attempt: number;
   emit(eventType: string, payload: unknown): void;
   readonly signal?: AbortSignal;      // cancellation
-  readonly resources?: ResourceSnapshot;  // (2.0, K3) running totals BEFORE this effect
+  readonly resources?: ResourceSnapshot;  // (2.0, K3) running totals BEFORE this effect (a copy, not the fold-owned object)
+  readonly flush?: () => Promise<void>;   // (ADR 0151) await the durable write of every event committed so far; rejects if a write failed or the step's signal aborted, never resolves if the run was sealed; ABSENT on the transient seam (a caller that needs durability must fail closed)
+  readonly readResources?: () => ResourceSnapshot;  // (ADR 0151 D6) live fold totals, synchronous, a copy; absent on the transient seam
   readonly priority?: number;             // (2.0, M6) @loomwork/scheduler Priority when scheduled
   readonly callKey?: string;              // (L30) set only on execution-stamped TRANSIENT calls; id-minting sites append it to (executionId, stepId)
   readonly toolId?: string; readonly taskKind?: string; readonly onDelta?: DeltaSink; readonly idempotencyKey?: string; readonly principal?: PrincipalChain;
 }
+// WorkflowRuntime.reserveEffectDimensions(prefix: string): void   // (ADR 0151 D7) composition-time: flow code (ctx.emit) can no longer emit a RESOURCE_METERED whose `custom` names a dimension under `prefix` (include the delimiter: `lease.`); effect-scope emits are unaffected; per runtime instance; idempotent; prefix must match the custom-dimension charset, else it throws. `installTaskAuthority` calls it.
 interface ResourceSnapshot { tokens: number; costUsd: number; ms: number; count: number; exceeded?: boolean; /* plus optional memBytes, wallMs, netBytes, custom */ }
 interface Effect<TIn, TOut> { kind: EffectKind; execute(input: TIn, ctx: EffectContext): Promise<TOut>; }
 
@@ -1830,13 +1835,13 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 
 ** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
 
-Slice 1 is in progress. T2 ships the signed task grant token (D2): an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. T3 adds =TaskGrantAuthorizer= (D2). T4 adds the broker SPI and =InMemoryGrantLedger= (D13); T4b adds =InMemoryGrantBroker= (renewal). T5 adds the principal codec and installer (D3). T6 adds =taskLeaseMiddleware= (D3 digest, D4 leases, D5 revocation).
+Slice 1 shipped in 0.1.5 (ADR 0150, amended twice on 2026-11-23). Slice 2 (D7-D12: provenance taint and the rest) is not built. The signed task grant token (D2) is an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. The package also ships =TaskGrantAuthorizer=, the broker SPI with =InMemoryGrantLedger= and =InMemoryGrantBroker= (renewal), the principal codec and installer, =taskLeaseMiddleware=, the renewal helpers, child leases and the conformance kit. It needs the ADR 0151 kernel seams (=EffectContext.flush=, =readResources=, =WorkflowRuntime.reserveEffectDimensions=).
 
 #+begin_src typescript
 const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
 interface LeaseSpec { ceiling: number; effects: readonly string[] }
 interface TaskGrant {
-  taskId: string; rootId: string; parentId?: string; issuedTo: string
+  taskId: string; rootId: string; parentId?: string; issuedTo: string; tenant?: string; onBehalfOf?: string
   effects: string[]; leases: Record<string, LeaseSpec>; exp: number; epoch: number; sig: string
 }
 type UnsignedTaskGrant = Omit<TaskGrant, "sig">
@@ -1846,18 +1851,22 @@ function verifyTaskGrant(secret: GrantKeys, g: TaskGrant): TaskGrant | undefined
 function taskGrantDigest(g: TaskGrant): string                            // sha256 hex of the canonical encoding incl. sig, over a validated snapshot; throws TaskGrantShapeError if malformed (does not check the sig: pass a verified grant)
 function validateGrantShape(g: unknown): asserts g is UnsignedTaskGrant   // throws TaskGrantShapeError
 class TaskGrantShapeError extends Error {}
-const TASK_GRANT_DENIAL: { blocked, shape, signature, expired, holder, scope, base }   // stable reason prefixes, "task-grant:<cause>"
+const TASK_GRANT_DENIAL: { blocked, shape, signature, expired, holder, identity, scope, base, error }   // stable reason prefixes, "task-grant:<cause>"
 class TaskGrantAuthorizer implements CapabilityAuthorizer {
   constructor(o: { secret: GrantKeys; base: CapabilityAuthorizer; now?: () => number })  // base REQUIRED (symmetric secret); empty secret throws
   authorize(req: CapabilityRequest): CapabilityDecision   // reads req.principal.taskGrant; never throws
 }
-interface MintRequest { taskId; issuedTo; effects: string[]; leases: Record<string, LeaseSpec>; ttlMs; parent?: { taskId } }
+interface MintRequest { taskId; issuedTo; effects: string[]; leases: Record<string, LeaseSpec>; ttlMs; parent?: { taskId }; tenant?: string; onBehalfOf?: string; parentReserved?: Record<string, number> /* D6: the parent's `lease.<n>.reserved` totals, supplied by the supervisor */ }
 interface RenewalRequest { taskId; epoch; spent: Record<string, number>; renewals; effectClassesCaused?: string[]; justification?: TaintedValue<string> | string }
 type RenewalVerdict = { granted: true; epoch: number; digest: string } | { granted: false; reason: string }
-interface GrantSource { current(taskId): Promise<TaskGrant | undefined>; revoked?(digest): Promise<boolean>; claim(taskId, executionId): Promise<boolean> }
+interface GrantSource { current(taskId): Promise<TaskGrant | undefined>; revoked?(digest): Promise<boolean>; claim(taskId, executionId): Promise<boolean>; holder(taskId): Promise<string | undefined> }  // holder: side-effect free (never claims)
 // claim (R16, REQUIRED): first claim wins, a repeat by the same executionId is true, another execution is false; unknown/revoked task is false.
 //   taskIds MUST NOT be reused or reissued to another holder (the ref MAC binds the holder, R15).
-interface GrantBroker extends GrantSource { mint(r): Promise<TaskGrant>; renew(r): Promise<RenewalVerdict>; revoke(taskId, reason): Promise<void> }
+interface GrantBroker extends GrantSource {
+  mint(r): Promise<TaskGrant>; renew(r): Promise<RenewalVerdict>; revoke(taskId, reason): Promise<void>
+  settleChild(taskId, spend: Record<string, number>): Promise<void>; takeReturn(taskId, parentTaskId): Promise<Record<string, number>>
+  reserve(parentTaskId, childId, lease: Record<string, number>): Promise<void>; settleUnstarted(childId, parentTaskId): Promise<void>
+}   // a custom broker implements ALL of these; run the conformance kit against it
 // R33 (unstarted child): `reserve(parentTaskId, childId, lease)` records at the broker the reservation the parent's fold holds (childId = `<parentExecutionId>::<key>`);
 //   idempotent per (parent, child, lease), a different lease / an unknown or revoked parent / a bad amount is GrantBrokerError. `reserveChildLease` calls it AFTER the fold meters, so
 //   the record never exceeds the reservation (a crash between the two loses the record: the reservation stays reserved, never doubled). A child minted under a record may not exceed it.
@@ -1866,7 +1875,7 @@ interface GrantBroker extends GrantSource { mint(r): Promise<TaskGrant>; renew(r
 //   but never CLAIMED and releases its high-water. A group refused during recovery also cancels members already RUNNING (ADR 0112 cascade). R36: the broker keeps a NEVER-DECREASING per-parent `carved[lease]` (each minted ceiling, plus an unminted child's reservation at settleUnstarted) and compares `parentReserved` against it, so a returned reservation cannot back an unreserved child (lineage stays <= the root ceiling); the released high-water serves only the ceiling headroom check. `settleUnstarted` MUST be atomic with `claim` (check-unclaimed + revoke is one CAS). The reserve step refuses a `child` that does not start with `<ctx.executionId>::`. A transient failure that makes the supervisor call `settleUnstarted` is a permanent "unstarted" outcome; a `broker.reserve` throw after the flush leaks the fold reservation (safe direction). Either started (settleChild, or claimed) or unstarted, never both: the first wins, the other changes nothing. conformance: `broker.unstarted-return`.
 class GrantBrokerError extends Error {}
 class InMemoryGrantLedger {                       // mint / current / revoked / claim / revoke (renewal arrives in T4b)
-  constructor(o: { secret: string; now?: () => number })
+  constructor(o: { secret: GrantKeys; now?: () => number })
 }
 // mint: the request is cloned FIRST (size-capped at 64 KiB; BigInt/cycles => GrantBrokerError), then validated. Bad input is a
 //   GrantBrokerError (broker rule) or TaskGrantShapeError (grant shape), never a TypeError. Root => rootId = taskId, epoch 0,
@@ -1898,12 +1907,12 @@ class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBroker {
 //   After a revoke the execution's owner is unknown to the execution access policy (ADR 0111 unknownOwner). orchestrationPrincipalCodec.toRef declines a chain with a taskGrant.
 const TASK_REF_PREFIX: "ta1:"; const TASK_REF_PREFIX_V2: "ta2:"
 interface TaskAuthorityPrincipalCodec { toRef(chain): string | undefined; fromRef(ref, ctx: { executionId }): Promise<PrincipalChain | undefined> }  // structural twin of the kernel PrincipalCodec
-interface TaskAuthorityCodecOptions { secret: string; now?: () => number /* toRef exp check, default Date.now */; timeoutMs?: number /* per source call, default 5000 */ }
+interface TaskAuthorityCodecOptions { secret: GrantKeys; now?: () => number /* toRef exp check, default Date.now */; timeoutMs?: number /* per source call, default 5000 */ }
 class TaskAuthorityPrincipalError extends Error {}   // toRef refused a chain carrying a taskGrant it cannot encode
 function taskAuthorityPrincipalCodec(source: GrantSource, opts: TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec
 interface PrincipalCodecHost { composePrincipalCodec(codec): void }   // a WorkflowRuntime; no kernel dependency is added
 function installTaskAuthority(runtime: PrincipalCodecHost, o: { source: GrantSource } & TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec  // composePrincipalCodec: keeps any codec already set
-interface TaskLeaseOptions { secret: string; source?: GrantSource; effects?: () => { entries(): Iterable<[string, unknown]> } /* R33: the registry lookup (`() => effectRuntime`) */; strictLeases?: boolean /* default TRUE */; revocationTimeoutMs?: number /* 5000 */; revocationCacheMs?: number /* 1000 */; now?: () => number }
+interface TaskLeaseOptions { secret: GrantKeys; source?: GrantSource; effects?: () => { entries(): Iterable<[string, unknown]> } /* R33: the registry lookup (`() => effectRuntime`) */; strictLeases?: boolean /* default TRUE */; revocationTimeoutMs?: number /* 5000 */; revocationCacheMs?: number /* 1000 */; now?: () => number }
 function taskLeaseMiddleware(o: TaskLeaseOptions): EffectMiddleware   // reads ctx.principal.taskGrant; none => next() untouched, zero events
 // R33 (branded child-lease effect): only the effect `childLeaseEffect()` returned is exempt from counting under CHILD_LEASE_TOOL (`isChildLeaseEffect(e)`, a module-private WeakSet brand).
 //   The middleware cannot see the effect (EffectContext carries only `toolId`), so it looks the registered effect up through `effects` (`() => effectRuntime`; a getter because the
@@ -1924,6 +1933,9 @@ class LeaseUnmappedError extends Error {}   // renewable: false
 class LeaseGrantInvalidError extends Error {}   // renewable: false
 class LeaseDimensionDroppedError extends Error {}   // renewable: false
 class LeaseDurabilityError extends Error {} // renewable: false
+class LeaseChildEffectUnbrandedError extends Error {}   // renewable: false; the effect under CHILD_LEASE_TOOL is not the branded one
+// Also exported: MAX_JUSTIFICATION (4096) and MAX_JUSTIFICATIONS_KEPT (16) (renewal bounds); RENEWAL_TERMINAL_NAMES (error names `isRenewable` stops at); renewalDecisionId(id, n) = `task-authority:attempt:<id>:<n>`;
+//   renewalViewDigest(gate, request); TaskGrantAuthorizerOptions; ChildLeaseContext and ChildGrantMinter (the structural shapes `reserveChildLease` and `superviseChildren({ taskAuthority })` take).
 // D5 renewal (plain flows). Needs no kernel dependency: `ctx` is the structural RenewalContext { executionId, suspend, decide }.
 const RENEWAL_GATE = "task-authority:renew"
 const renewalResumeSchema: ZodType   // { granted: true, epoch, digest, viewDigest? } | { granted: false, reason, viewDigest? }: flow$({ resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema } })
@@ -1931,7 +1943,7 @@ function isRenewable(err: unknown): boolean   // `renewable === true`, or a Capa
 function withRenewal<T>(ctx: RenewalContext, id: string, fn: (attemptId: string) => Promise<T>, o?: { maxRenewals?: number /* 8 */; taskId?: string }): Promise<T>
 //   attempt ids: `id`, then `${id}:r<n>`. EVERY attempt's outcome is recorded: DECISION_RECORDED "task-authority:attempt:<id>:<n>" { ok: true } | { request: RenewalRequest }
 //   (read it from loadState().variables._decisions[..].choice); after { ok: true }, fn is called once more OUTSIDE the decision to get its value (durable steps replay from
-//   their frames). A renewable failure then ctx.suspend({ on: RENEWAL_GATE, correlationKey: `${executionId}#${id}#${n}`, viewDigest: sha256({ gate, request }) }).
+//   their frames). A renewable failure then ctx.suspend({ on: RENEWAL_GATE, correlationKey: `${executionId}#${id}#${n}`, viewDigest: renewalViewDigest(correlationKey, request) /* sha256 of JSON.stringify({ gate: <the correlationKey>, req }) */ }).
 //   The payload is parsed with renewalResumeSchema even without resumeSchemas; granted => retry under a fresh id (the codec restores the new grant); denied, malformed, or
 //   n > maxRenewals => RenewalDeniedError. fn MUST be replay-pure and MUST NOT park; attempt-id steps re-run after a renewal, stable-id steps replay; `id` MUST be unique per
 //   call site per execution. A non-renewable error propagates untouched, recording nothing. No task/epoch on the error and no `taskId` => RenewalDeniedError (never epoch 0).
@@ -2737,6 +2749,7 @@ function agentLoop$(ctx: ExecutionContext, config: AgentLoopConfig, input: Agent
 //   needsApproval?: (toolCall, turn, onMenu?) => boolean — `true` PARKS the call on `approvalGate` for a human before it runs, `false` runs it (a policy that returns nothing parks). Composes with `kind: "human"` tools exactly as requireApproval did
 //   requireApproval?: (toolCall, turn, onMenu?) => boolean — @deprecated alias of needsApproval with the INVERTED polarity (auto-approve: `true` = proceed, `false` = park); same recorded log; one LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED warning per process; both given = AgentLoopConfigError
 //   toolErrors?: "feedback" | "fail"   — default feedback: a failing tool is an isError tool_result (authority/safety/quota/cancel/park never are)
+//   authority?: { onExhausted?: "fail" | "park"; gate?: string; maxRenewals?: number }   — (ADR 0150 D5) what a RENEWABLE authority error from a tool (spent task lease, expired or revoked task grant) does: default "fail"; "park" parks on `gate` (default "task-authority:renew", the gate `answerRenewal` answers) and re-runs the call under a fresh task id once granted; `maxRenewals` default 8 per call; needs toolErrors "feedback" (else AgentLoopConfigError); `kind: "human"` tools are not renewed; a refusal or too many renewals fails the run with AuthorityRenewalDeniedError
 //   parallelTools?: boolean | number   — one turn's calls through ctx.parallel (sequential when the turn holds a `kind: "human"` tool); ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
 //   compaction?: { toolId: string; afterMessages?: number; afterBytes?: number; keepRecent?: 4 } — fold older turns into one summary through the journaled effect `toolId` ({ messages } -> { summary }); at least one threshold; OPT-IN
 //   warnTranscriptBytes?: number | false — with NO compaction, ONE warning per run (onWarn, else LOOM_AGENT_STATE_GROWTH) when the transcript passes this many bytes; default DEFAULT_STATE_GROWTH_WARN_BYTES (256 KiB); report-only (ADR 0137)

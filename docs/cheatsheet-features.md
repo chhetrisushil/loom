@@ -93,6 +93,7 @@ defineConfig({
 | `ctx.sleep(ms)` · `ctx.sleepUntil(t)` | durable timers; need a `TimerStore`; the wake is a logged fact |
 | `runtime.send` → `ctx.receive` / `ctx.select` | durable inbox: queue a message into a *running or parked* execution (ADR 0110); `kernel.features.inbox` |
 | `runtime.quarantineInbox` / `releaseInbox` / `discardInbox` | operator verbs on a topic: hold, release in order, drop (principal required; ADR 0110, 0130) |
+| `EffectContext.flush` / `readResources`, `WorkflowRuntime.reserveEffectDimensions(prefix)` | (ADR 0151) wait for every committed event to be durable / read the live fold totals as a copy (both absent on the transient seam) / reserve a meter-dimension prefix that flow code cannot write under |
 | `timers.leases` | claim an execution before waking it, so two nodes don't both pay |
 | `timers.dispatcher` | wake on the lane the execution started on, not the poller's |
 
@@ -111,7 +112,7 @@ onboarding, billing runs, ETL steps, order sagas, anything that must outlive its
 | wait for a human or webhook | `ctx.suspend({ on, timeout? })` + `flow$({ resumeSchemas })` to validate the payload |
 | run on a calendar | `schedule$({ id, cron, timeZone?, flowId })` in `timers.schedules`; one idempotent start per occurrence |
 | undo on failure | `@loomwork/saga` — `withSaga(ctx, saga => saga.run(step, input, compensator))`; compensators run in reverse; a failing compensator does not abort the rollback and `withSaga` then throws `SagaCompensationError` (original as `cause`); a cancellation or other runtime signal propagates unchanged |
-| parent and child workflows | `@loomwork/orchestration` — `awaitChild` · `awaitChildren` · `awaitAll` (wire `superviseChildren`) |
+| parent and child workflows | `@loomwork/orchestration` — `awaitChild` · `awaitChildren` · `awaitAll` (wire `superviseChildren`); a spawn may carve a task lease (`lease` / `leaseParent`, ADR 0150 D6; needs `taskAuthority`) |
 | map one step over many items | `fanout$(ctx, step, items)` — bounded concurrency, one step id per item |
 | long-lived loop | `continueAsNew` to bound history; the inbox as an event-driven mailbox |
 
@@ -187,8 +188,8 @@ All optional, all separate.
 
 | | |
 |---|---|
-| `@loomwork/agent` | `agentLoop$` — ReAct loop over declared tools. `needsApproval` (`true` **parks**; bound to what the approver saw), `parallelTools`, `writeBack` (memory; `distill` stores consolidated facts, `createDistillerEffect`, ADR 0149), `toolSearch` / `skillActivation` for big menus, `returnsMedia` tools, `authority: { onExhausted: "park" }` (a spent lease or expired grant parks on the renewal gate; ADR 0150). A tainted `input.context` is refused (`UntrustedContextError`) |
-| `@loomwork/task-authority` | Task-scoped authority (ADR 0150, slice 1): `signTaskGrant` / `TaskGrantAuthorizer`, `InMemoryGrantBroker` (mint / renew / revoke / claim), `installTaskAuthority` (holder-bound ref; one grant = one execution), `taskLeaseMiddleware` (live, durable lease counts; needs the ADR 0151 `flush` / `readResources` seams), `withRenewal` + `answerRenewal` (park on an exhausted lease, resume on a verdict), child leases by reservation (a never-started child returns it), multi-tenant grants (`tenant` / `onBehalfOf` signed in, `ta2:` ref), key rotation (`GrantKeys` `current` / `previous` / `refOnly`), `@loomwork/task-authority/conformance` |
+| `@loomwork/agent` | `agentLoop$` — ReAct loop over declared tools. `needsApproval` (`true` **parks**; bound to what the approver saw), `parallelTools`, `writeBack` (memory; `distill` stores consolidated facts, `createDistillerEffect`, ADR 0149), `toolSearch` / `skillActivation` for big menus, `returnsMedia` tools, `authority: { onExhausted: "park" }` (a spent lease or expired grant parks on the renewal gate; needs `toolErrors: "feedback"`, the default; a refused renewal throws `AuthorityRenewalDeniedError`; ADR 0150). A tainted `input.context` is refused (`UntrustedContextError`) |
+| `@loomwork/task-authority` | Task-scoped authority (ADR 0150, slice 1): `signTaskGrant` / `TaskGrantAuthorizer`, `InMemoryGrantBroker` (mint / renew / revoke / claim), `installTaskAuthority` (holder-bound ref; one grant = one execution), `taskLeaseMiddleware` (live, durable lease counts; needs the ADR 0151 `flush` / `readResources` seams and `WorkflowRuntime.reserveEffectDimensions`; `strictLeases` default refuses an effect no lease counts), `withRenewal` + `answerRenewal` (park on an exhausted lease, resume on a verdict), child leases by reservation (`reserveChildLease` + `childGrantMinter` + the `lease` / `leaseParent` spawn options and `SupervisorDeps.taskAuthority`; the grant must list `task-authority:child-lease`; a never-started child returns its reservation), multi-tenant grants (`tenant` / `onBehalfOf` signed in, `ta2:` ref), key rotation (`GrantKeys` `current` / `previous` / `refOnly`), `@loomwork/task-authority/conformance` |
 | `@loomwork/conversation` | `conversation$` / `createConversations`: multi-turn chat on one chained execution; barge-in; token budget; `shared` mode runs each turn as its asker. SSE: `@loomwork/plugin-conversation-sse` |
 | `@loomwork/llm` | provider-agnostic completion + streaming; content parts (images, files) claim-checked by address via a `ContentResolver` (ADR 0120) |
 | `@loomwork/memory` | scoped, TTL/size-bounded agent memory |
@@ -218,7 +219,7 @@ All optional, all separate.
 | `@loomwork/worker-runtime` | the worker contract — local, remote HTTP, Cloud Run |
 | `@loomwork/graph-executor` | fan a node set into per-node executions |
 | `@loomwork/fair-scheduler` | per-tenant fairness; bounded concurrency |
-| `@loomwork/orchestration` | spawn children, `awaitChild(ren)`, `awaitAll` |
+| `@loomwork/orchestration` | spawn children, `awaitChild(ren)`, `awaitAll`; `lease` / `leaseParent` spawn options and the `taskAuthority` supervisor hook (ADR 0150) |
 | `@loomwork/saga` | `createSaga` / `withSaga` — compensate in reverse |
 
 ## Reading what happened — no writes

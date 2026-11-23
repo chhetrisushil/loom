@@ -12,7 +12,7 @@
   metering. K3 budgets meter AFTER the effect through the same write-behind journal, and the K8 abort path
   already shows that "metered before the effect can escape it" matters there. Any accounting middleware that must
   never under-count a side effect it allowed is the general case.
-- Placement verdict: **kernel (two optional fields on `EffectContext`, `flush` and `readResources`, wired in `WorkflowContext`)**. Durability of the
+- Placement verdict: **kernel (two optional fields on `EffectContext`, `flush` and `readResources`, wired in `WorkflowContext`, plus the composition-time `WorkflowRuntime.reserveEffectDimensions` of D7)**. Durability of the
   journal is the kernel's alone: no seam outside it can await the write-behind tail.
 - Version/compat impact: `EffectContext` gains an OPTIONAL `flush?: () => Promise<void>` and `readResources?: () => ResourceSnapshot` (additive; middleware and
   effects that do not call it are byte-identical). No new event, no EVENT_SCHEMA or KERNEL_ABI change. The kernel
