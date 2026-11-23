@@ -82,7 +82,9 @@ export interface GrantBroker extends GrantSource {
    * nothing (R7), and a second call changes nothing.
    * REFUND (ADR 0150 D12): when the parent is NOT held by an execution (`holder(parent)` is undefined: a schedule
    * grant has no fold), the broker also lowers the child's reserved high-water mark by the unused amount, so the
-   * parent's headroom is restored exactly once and `takeReturn` then yields nothing. A HELD parent keeps the
+   * parent's headroom is restored exactly once, the child's grant is REVOKED (it is done: a renewal must not re-inflate
+   * the reservation, and `renew` refuses a settled child) and `takeReturn` then yields nothing. Only a child that STARTED
+   * (`holder(child)` set) is refunded; an unclaimed one is released through `settleUnstarted`, and `settleChild` on it is a no-op. A HELD parent keeps the
    * slice-1 rule: the amount is takeable once into its fold's `returned` meter and headroom is not released.
    */
   settleChild(taskId: string, spend: Record<string, number>): Promise<void>;
@@ -224,8 +226,13 @@ export class InMemoryGrantLedger {
       await revoking;
     } else for (const [n, a] of Object.entries(v.lease)) this.carve(v.parent, n, a); // R36
     v.outcome = "unstarted";
+    if (!this.claims.has(v.parent)) v.taken = true; // R26: a fold-less parent has nothing to take a return into
   }
   async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
+    const child = this.tasks.get(taskId);
+    // R26: a fold-less parent refunds only a child that STARTED (claimed); an unclaimed one goes through settleUnstarted
+    if (child?.parent !== undefined && !this.claims.has(child.parent) && !this.claims.has(taskId))
+      return;
     const v = this.reservations.get(taskId);
     if (v !== undefined) {
       if (v.outcome === "unstarted") return;
@@ -244,8 +251,11 @@ export class InMemoryGrantLedger {
       // REFUND (ADR 0150 D12): a parent no execution holds has NO fold to take a return into (a schedule grant),
       // so the unused part of the child's reservation goes straight back to the parent's headroom, once
       // (`settled` guards a second call). `takeReturn` then has nothing to hand out: no double count.
+      // Only a STARTED child (claimed) is refunded (R26).
       for (const [n, u] of Object.entries(unused)) r.high[n] = (r.high[n] ?? 0) - u;
       r.settled = {};
+      // R26: a completed run needs no live grant; revoking it stops a renewal re-inflating the high-water mark
+      await this.revoke(taskId, "settled");
     }
   }
   async takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>> {

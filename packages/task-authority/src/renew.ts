@@ -130,6 +130,7 @@ export class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBro
     if (bad) return deny(bad);
     const rec = this.tasks.get(req.taskId);
     if (!rec || rec.revoked) return deny("unknown or revoked task");
+    if (rec.settled !== undefined) return deny("the child is settled (completed)"); // R26: no re-inflating the reservation
     const cur = rec.grant;
     if (req.epoch !== cur.epoch) return deny("stale epoch");
     // D7: approving a cross-lineage step is a decision the operator opts into, whatever the lease policy says.

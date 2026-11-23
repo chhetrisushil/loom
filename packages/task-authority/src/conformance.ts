@@ -29,6 +29,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.renew-born-expired",
   "broker.reservation-never-released",
   "broker.refund-foldless",
+  "broker.refund-guards",
   "broker.identity-fixed",
   "broker.reads-sandbox",
   "broker.signs-current-key",
@@ -118,6 +119,7 @@ const CHECKS: Record<string, Check> = {
     // I2: a child minted but never claimed can no longer start, and takes its whole lease back once
     const b2 = mk(s);
     await b2.mint(mintReq("p", 6));
+    await b2.claim("p", "exec-p"); // a held parent (the slice-1 rules)
     await b2.reserve("p", "m", { w: 6 });
     await b2.mint({ ...mintReq("m", 6, "p"), parentReserved: { w: 6 } });
     await b2.settleUnstarted("m", "p");
@@ -135,6 +137,7 @@ const CHECKS: Record<string, Check> = {
     );
     const b3 = mk(s);
     await b3.mint(mintReq("p", 6));
+    await b3.claim("p", "exec-p"); // a held parent (the slice-1 rules)
     await b3.reserve("p", "u2", { w: 6 });
     await b3.settleUnstarted("u2", "p"); // never minted
     must((await b3.takeReturn("u2", "p")).w === 6, "setup: the unminted take was not whole");
@@ -145,6 +148,7 @@ const CHECKS: Record<string, Check> = {
     // settleUnstarted is atomic with claim: never BOTH started and paid the whole reservation
     const b4 = mk(s);
     await b4.mint(mintReq("p", 6));
+    await b4.claim("p", "exec-p"); // a held parent (the slice-1 rules)
     await b4.reserve("p", "r2", { w: 6 });
     await b4.mint({ ...mintReq("r2", 6, "p"), parentReserved: { w: 6 } });
     const [, claimed] = await Promise.all([b4.settleUnstarted("r2", "p"), b4.claim("r2", "e")]);
@@ -204,6 +208,7 @@ const CHECKS: Record<string, Check> = {
     const b = mk(s);
     await b.mint(mintReq("p", 10)); // never claimed: no fold (a schedule grant)
     await b.mint(mintReq("c1", 10, "p"));
+    await b.claim("c1", "exec-c1"); // only a STARTED child is refunded (R26)
     await mustRefuse(b.mint(mintReq("c2", 1, "p")), "the parent had no headroom left");
     await b.settleChild("c1", { w: 1 }); // spent 1 of 10
     must(
@@ -214,6 +219,36 @@ const CHECKS: Record<string, Check> = {
     await mustRefuse(b.mint(mintReq("c3", 1, "p")), "the refund exceeded what was unused");
     await b.settleChild("c1", { w: 1 }); // a repeat must not refund again
     await mustRefuse(b.mint(mintReq("c4", 1, "p")), "a second settleChild refunded again");
+  },
+  "broker.refund-guards": async (s) => {
+    const b = mk(s);
+    await b.mint(mintReq("p", 10)); // no fold
+    await b.mint(mintReq("c1", 5, "p"));
+    await b.claim("c1", "exec-c1");
+    await b.mint(mintReq("c3", 5, "p")); // minted, never claimed
+    await b.settleChild("c3", {}); // claims nothing was spent: must NOT refund a child that never started
+    await mustRefuse(
+      b.mint(mintReq("c4", 1, "p")),
+      "an unclaimed child was refunded by settleChild"
+    );
+    await b.settleChild("c1", { w: 1 }); // started: 4 of 5 refunded
+    must((await b.current("c1")) === undefined, "a settled child's grant stayed live");
+    must(
+      !(await b.renew(req("c1", 0, 0))).granted,
+      "a settled child renewed (re-inflating its reservation)"
+    );
+    await mustRefuse(b.mint(mintReq("c1", 5, "p")), "a settled child id was minted again");
+    await b.mint(mintReq("c4", 4, "p")); // exactly the refunded 4
+    await mustRefuse(
+      b.mint(mintReq("c5", 1, "p")),
+      "the headroom was inflated past what was unused (renew or re-reserve)"
+    );
+    await b.reserve("p", "u", { w: 1 }).catch(() => undefined);
+    await b.settleUnstarted("u", "p");
+    must(
+      !Object.keys(await b.takeReturn("u", "p")).length,
+      "an unstarted reservation of a fold-less parent was takeable"
+    );
   },
   "broker.identity-fixed": async (s) => {
     const b = mk(s, () => ({}));
