@@ -18,7 +18,12 @@ import { installTaskAuthority } from "./install";
 import { taskLeaseMiddleware } from "./lease";
 import { InMemoryGrantBroker } from "./renew";
 import { mintScheduleGrant } from "./scheduleGrant";
-import { schedulePrincipalFor, settleScheduledTick } from "./schedulePrincipal";
+import {
+  RECLAIM_MARGIN_MS,
+  reclaimScheduledTick,
+  schedulePrincipalFor,
+  settleScheduledTick,
+} from "./schedulePrincipal";
 
 const SECRET = "tick-secret";
 const MINUTE = 60_000;
@@ -32,7 +37,18 @@ const every = schedule$<Record<string, never>>({
 });
 const task = (id: string) => ({ _tag: "TaskDefinition", kind: "tool", id, toolId: "act" }) as never;
 
-function boot(o: { ttlMs?: number; ceiling?: number; tick?: number; fail?: boolean } = {}) {
+function boot(
+  o: {
+    ttlMs?: number;
+    ceiling?: number;
+    tick?: number;
+    fail?: boolean;
+    sandbox?: "isolated";
+    reads?: string[];
+    rootEffects?: string[];
+    hookEffects?: string[];
+  } = {}
+) {
   const clock = { t: T0 };
   const broker = new InMemoryGrantBroker({ secret: SECRET, now: () => clock.t });
   const seen: (PrincipalChain | undefined)[] = [];
@@ -78,7 +94,11 @@ function boot(o: { ttlMs?: number; ceiling?: number; tick?: number; fail?: boole
   };
   runtime.registerFlow(definition, runner);
   installTaskAuthority(runtime, { source: broker, secret: SECRET, now: () => clock.t });
-  const hook = schedulePrincipalFor(broker, { lease: { calls: o.tick ?? 50 }, now: () => clock.t });
+  const hook = schedulePrincipalFor(broker, {
+    lease: { calls: o.tick ?? 50 },
+    now: () => clock.t,
+    ...(o.hookEffects && { effects: o.hookEffects }),
+  });
   const errors: unknown[] = [];
   const service = new TimerService(runtime, timerStore, {
     schedules: [every],
@@ -90,10 +110,12 @@ function boot(o: { ttlMs?: number; ceiling?: number; tick?: number; fail?: boole
     mintScheduleGrant(broker, {
       scheduleId: "nightly",
       issuedTo: "svc-reports",
-      effects: ["act"],
-      leases: { calls: { ceiling: o.ceiling ?? 100, effects: ["act"] } },
+      effects: o.rootEffects ?? ["act"],
+      leases: { calls: { ceiling: o.ceiling ?? 100, effects: o.rootEffects ?? ["act"] } },
       ttlMs: o.ttlMs ?? 30 * MINUTE,
       tenant: "acme",
+      ...(o.sandbox && { sandbox: o.sandbox }),
+      ...(o.reads && { reads: o.reads }),
     });
   const tickAt = async (t: number) => {
     clock.t = t;
@@ -267,5 +289,100 @@ describe("per-tick child grants (ADR 0150 D12, S10c)", () => {
       });
     await expect(probe(51)).rejects.toThrow(/headroom/); // 25 x 2 spent = 50 used, 50 free: not 52
     await expect(probe(50)).resolves.toBeDefined();
+  });
+
+  it("tick grants inherit the schedule's reads and sandbox, and narrow lease effects with o.effects (R25 I1)", async () => {
+    // Kills: dropping reads/sandbox (an isolated schedule never runs: the broker refuses a non-isolated child), and lease effects wider than the child's own effects.
+    const app = boot({
+      sandbox: "isolated",
+      reads: ["files.read:/data/*"],
+      rootEffects: ["act", "other"],
+      hookEffects: ["act"],
+    });
+    await app.approve();
+    await app.tickAt(first);
+    expect(app.errors).toEqual([]);
+    expect(app.seen).toHaveLength(2);
+    const g = app.seen[0]?.taskGrant as TaskGrant;
+    expect(g).toMatchObject({
+      sandbox: "isolated",
+      reads: ["files.read:/data/*"],
+      effects: ["act"],
+    });
+    expect(g.leases.calls?.effects).toEqual(["act"]);
+  });
+
+  it("a minted-but-never-started tick is reclaimed after its grant expires plus the margin, freeing the headroom (R25 I4)", async () => {
+    // Kills: no reserve (settleUnstarted is a no-op: the headroom leaks forever), reclaiming before expiry (another node may still start it),
+    // ignoring the margin, reclaiming a STARTED tick, and a revoked tick still being served by the hook.
+    const app = boot({ tick: 50 });
+    const root = await app.approve();
+    const sched = every;
+    app.clock.t = first;
+    await app.hook(sched, occ(0), sig()); // minted, never started
+    await app.hook(sched, occ(1), sig());
+    await expect(app.hook(sched, occ(2), sig())).rejects.toBeInstanceOf(ScheduleGrantError); // 100 carved
+    const exp = (await app.broker.current(`nightly@${occ(0)}`))?.exp as number;
+    const reclaim = (n: number, t: number) =>
+      reclaimScheduledTick(app.broker, "nightly", occ(n), { now: () => t });
+    expect(await reclaim(0, exp + RECLAIM_MARGIN_MS - 1)).toBe("pending");
+    expect(await reclaim(0, exp)).toBe("pending"); // expired, margin not yet over
+    expect(await reclaim(7, exp + 10 * MINUTE)).toBe("none");
+    expect(await reclaim(0, exp + RECLAIM_MARGIN_MS)).toBe("reclaimed");
+    expect(await app.broker.current(`nightly@${occ(0)}`)).toBeUndefined(); // revoked: it can no longer start
+    await expect(app.hook(sched, occ(0), sig())).rejects.toBeInstanceOf(ScheduleGrantError);
+    await expect(app.hook(sched, occ(2), sig())).resolves.toBeDefined(); // the 50 are back
+    // a STARTED tick is never reclaimed
+    await app.broker.claim(`nightly@${occ(1)}`, `nightly@${occ(1)}`);
+    expect(await reclaim(1, exp + 99 * MINUTE)).toBe("started");
+    expect(await app.broker.current(`nightly@${occ(1)}`)).toBeDefined();
+    expect(root.taskId).toBe("nightly");
+  });
+
+  it("a re-read tick grant that has expired is an error, not a principal; a non-child grant is refused (R25)", async () => {
+    // Kills: handing the codec an expired grant (toRef then refuses with an opaque error), and the parentId guard.
+    const app = boot();
+    const rootGrant = await app.approve();
+    app.clock.t = first;
+    await app.hook(every, occ(0), sig());
+    app.clock.t = first + 6 * MINUTE; // the tick grant (5 min) is over, the schedule grant (30 min) is not
+    await expect(app.hook(every, occ(0), sig())).rejects.toThrow(/expired/);
+    const impostor = {
+      current: async () => rootGrant,
+      mint: async () => rootGrant,
+      reserve: async () => undefined,
+    };
+    await expect(
+      schedulePrincipalFor(impostor as never, { lease: { calls: 5 }, now: () => app.clock.t })(
+        every,
+        occ(3),
+        sig()
+      )
+    ).rejects.toThrow(/not a child/);
+  });
+
+  it("an abort that lands DURING the mint is still refused (post-mint check)", async () => {
+    // Kills: removing the check after the broker call (a timed-out hook would hand back a principal the TimerService already gave up on).
+    const app = boot();
+    await app.approve();
+    app.clock.t = first;
+    const c = new AbortController();
+    const inner = app.broker;
+    const racing = {
+      current: inner.current.bind(inner),
+      reserve: inner.reserve.bind(inner),
+      mint: async (r: never) => {
+        const g = await inner.mint(r);
+        c.abort();
+        return g;
+      },
+    };
+    await expect(
+      schedulePrincipalFor(racing as never, { lease: { calls: 5 }, now: () => app.clock.t })(
+        every,
+        occ(0),
+        { signal: c.signal }
+      )
+    ).rejects.toBeInstanceOf(ScheduleGrantError);
   });
 });

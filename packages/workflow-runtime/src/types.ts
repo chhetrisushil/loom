@@ -624,6 +624,12 @@ export interface ExecutionAuthorizer {
    * otherwise a refused start still takes the id. Called for every committed start, with or
    * without a principal (a system-started execution has none, or inherits `parentExecutionId`).
    * Synchronous; a throw is swallowed (the start has already happened).
+   *
+   * Contract (slice-2 S10a): a PARENT-LESS start that rode the system grant and still carries a `principal` is a
+   * scheduled occurrence (`TimerService` with `principalFor`). That principal was NOT authenticated or authorized
+   * for the start (the system grant bypasses `authorize`); it is whatever the app's hook named, so a policy that
+   * records it as the OWNER is trusting the hook. Today only `TimerService` starts this way; a parented system
+   * start (a supervised child) never carries its principal here.
    */
   committed?(request: ExecutionAuthzRequest): void;
 }
