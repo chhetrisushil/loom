@@ -92,10 +92,10 @@ describe("effect mode boundary (ADR 0073)", () => {
 });
 
 describe("ADR 0151: flush is absent on the transient seam", () => {
-  it("invokeTransient provides no ctx.flush to middleware or the effect", async () => {
+  it("invokeTransient provides no ctx.flush or ctx.readResources to middleware or the effect", async () => {
     const seen: Array<unknown> = [];
     const mw: EffectMiddleware = async (c, _i, next) => {
-      seen.push(c.flush);
+      seen.push(c.flush, c.readResources);
       return next();
     };
     const rt = new EffectRuntime([mw]);
@@ -103,13 +103,13 @@ describe("ADR 0151: flush is absent on the transient seam", () => {
       "page",
       new ToolEffect(
         async (_input, c) => {
-          seen.push(c.flush);
+          seen.push(c.flush, c.readResources);
           return { rows: [] };
         },
         { mode: "ambient" }
       )
     );
     await rt.invokeTransient("page", {});
-    expect(seen).toEqual([undefined, undefined]);
+    expect(seen).toEqual([undefined, undefined, undefined, undefined]);
   });
 });

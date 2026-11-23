@@ -1050,6 +1050,11 @@ export class WorkflowContextImpl implements WorkflowContext {
       // K3 — running resource totals (from the durable fold) so accounting/quota
       // middleware can meter and enforce budgets deterministically.
       resources: this.resourceSnapshot(),
+      // ADR 0151 D6 — live, synchronous, and a copy (the snapshot object is fold-owned).
+      readResources: (): ResourceSnapshot => {
+        const r = this.resourceSnapshot();
+        return r.custom === undefined ? { ...r } : { ...r, custom: { ...r.custom } };
+      },
     };
 
     let output: TOut;

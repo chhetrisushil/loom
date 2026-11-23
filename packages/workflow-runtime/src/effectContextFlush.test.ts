@@ -74,7 +74,9 @@ function boot(
 ) {
   const ran: string[] = [];
   const flushErrors: unknown[] = [];
+  const signals: Array<AbortSignal | undefined> = [];
   const meter: EffectMiddleware = async (ctx, _input, next) => {
+    signals.push(ctx.signal);
     ctx.emit("RESOURCE_METERED", { tokens: 1 });
     if (opts.useFlush) {
       try {
@@ -121,7 +123,7 @@ function boot(
     steps: [stepX],
   };
   runtime.registerFlow(definition, runner);
-  return { runtime, flow: { definition, runner }, ran, flushErrors };
+  return { runtime, flow: { definition, runner }, ran, flushErrors, signals };
 }
 
 const types = async (store: InMemoryAsyncEventStore, id: string): Promise<string[]> =>
@@ -230,9 +232,9 @@ describe("ADR 0151: EffectContext.flush()", () => {
     const a = boot(held.store, { useFlush: true, order, step: timed });
     const h = await a.runtime.start(a.flow, {}, { executionId: "fl-m2" });
     await until(() => order.includes("append:RESOURCE_METERED"), "the held meter append");
-    // timing-bound: the step deadline is a 100 ms timer, so a wait is inherent; 600 ms is a wide
-    // margin over it. The run cannot settle while the append is held (completion drains the journal).
-    await new Promise((r) => setTimeout(r, 600));
+    // Condition, not a sleep: the step signal the middleware holds aborts when the deadline fires.
+    // The run cannot settle while the append is held (completion drains the journal).
+    await until(() => a.signals[0]?.aborted === true, "the step deadline to fire");
     held.release();
     const err = await h.waitForCompletion().then(
       () => undefined,
@@ -263,4 +265,123 @@ describe("ADR 0151: EffectContext.flush()", () => {
     expect(a.ran).toEqual([]);
     expect(order).not.toContain("effect:a");
   }, 15_000);
+});
+
+// ── ADR 0151 D6: EffectContext.readResources() ─────────────────────────────────────────────────
+const stepB = step$({ id: "b", name: "B", toolId: "tool-b", ...io });
+
+/** Runs `steps` (in parallel when more than one) through ONE middleware; every tool returns ok. */
+async function runWith(
+  mw: EffectMiddleware,
+  steps: Array<typeof stepA>,
+  id: string
+): Promise<InMemoryAsyncEventStore> {
+  const store = new InMemoryAsyncEventStore();
+  const effects = new EffectRuntime([mw]);
+  for (const s of steps)
+    effects.register(s.toolId as string, new ToolEffect(async () => ({ ok: true })));
+  const runtime = new WorkflowRuntime({
+    eventStore: store,
+    snapshotStore: new InMemoryAsyncSnapshotStore(),
+    effectRuntime: effects,
+    onWarn: () => {},
+  });
+  const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+    if (steps.length === 1) return ctx.run(steps[0] as typeof stepA, {});
+    return (
+      await ctx.parallel(steps.map((s) => [s, {}] as [typeof stepA, Record<string, never>]))
+    )[0] as {
+      ok: boolean;
+    };
+  };
+  const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
+    _tag: "FlowDefinition",
+    id,
+    name: id,
+    version: "1.0.0",
+    inputSchema: io.inputSchema,
+    outputSchema: io.outputSchema,
+    steps,
+  };
+  runtime.registerFlow(definition, runner);
+  const h = await runtime.start({ definition, runner }, {}, { executionId: id });
+  await h.waitForCompletion();
+  return store;
+}
+
+describe("ADR 0151 D6: EffectContext.readResources()", () => {
+  it("(g) shows the middleware's own emit in the same synchronous block; ctx.resources does not", async () => {
+    const seen: Array<{ live: number; snapshot: number }> = [];
+    await runWith(
+      async (ctx, _i, next) => {
+        ctx.emit("RESOURCE_METERED", { count: 1 });
+        seen.push({ live: ctx.readResources!().count, snapshot: ctx.resources!.count });
+        return next();
+      },
+      [stepA],
+      "rr-g"
+    );
+    expect(seen).toEqual([{ live: 1, snapshot: 0 }]);
+  });
+
+  it("(h) concurrent effects of one execution: each reads the others' meters, the snapshot is stale", async () => {
+    const reads: number[] = [];
+    const snaps: number[] = [];
+    let arrived = 0;
+    let open: () => void = () => {};
+    const barrier = new Promise<void>((r) => {
+      open = r;
+    });
+    await runWith(
+      async (ctx, _i, next) => {
+        ctx.emit("RESOURCE_METERED", { count: 1 });
+        if (++arrived === 2) open();
+        await barrier;
+        reads.push(ctx.readResources!().count);
+        snaps.push(ctx.resources!.count);
+        return next();
+      },
+      [stepA, stepB],
+      "rr-h"
+    );
+    expect(reads).toEqual([2, 2]);
+    expect(Math.min(...snaps)).toBe(0); // the first context's snapshot never saw either meter
+    expect(Math.max(...snaps)).toBeLessThan(2);
+  });
+
+  it("(i) the fold drops a 33rd custom dimension; readResources() after the emit shows it absent", async () => {
+    let custom: Record<string, number> | undefined;
+    await runWith(
+      async (ctx, _i, next) => {
+        const full: Record<string, number> = {};
+        for (let i = 0; i < 32; i++) full[`dim_${i}`] = 1;
+        ctx.emit("RESOURCE_METERED", { custom: full });
+        ctx.emit("RESOURCE_METERED", { custom: { lease_count: 1 } });
+        custom = ctx.readResources!().custom as Record<string, number>;
+        return next();
+      },
+      [stepA],
+      "rr-i"
+    );
+    expect(Object.keys(custom ?? {})).toHaveLength(32);
+    expect(Object.hasOwn(custom ?? {}, "lease_count")).toBe(false);
+  });
+
+  it("(j) mutating the returned object does not change a later read", async () => {
+    const after: Array<{ count: number; gpu: number | undefined }> = [];
+    await runWith(
+      async (ctx, _i, next) => {
+        ctx.emit("RESOURCE_METERED", { count: 1, custom: { gpu: 5 } });
+        const r = ctx.readResources!() as { count: number; custom: Record<string, number> };
+        r.count = 999;
+        r.custom.gpu = 999;
+        const again = ctx.readResources!();
+        after.push({ count: again.count, gpu: again.custom?.gpu });
+        return next();
+      },
+      [stepA],
+      "rr-j"
+    );
+    expect(after).toEqual([{ count: 1, gpu: 5 }]);
+  });
 });
