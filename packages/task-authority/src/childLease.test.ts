@@ -664,3 +664,121 @@ describe("child lease reservation (ADR 0150 D6)", () => {
     expect(await custom(parked.h.runtime, PARENT)).toEqual({});
   });
 });
+
+// R33 (T15): a child that never starts returns its WHOLE reservation, exactly once.
+describe("never-started child (R33)", () => {
+  const refuseMint = (real: ChildGrantMinter): ChildGrantMinter => ({
+    ...real,
+    settleUnstarted: (c, p) => real.settleUnstarted?.(c, p) as Promise<void>,
+    mintChildGrant: async () => {
+      throw new GrantBrokerError("refused by the minter");
+    },
+  });
+  const takesBack: Parent = async (ctx) => {
+    const res = await reserveChildLease(ctx, "k", { w: 6 });
+    let err: string | undefined;
+    try {
+      await awaitChild(ctx, { key: "k", flowId: "child", input: { n: 6 }, ...res.spawn });
+    } catch (e) {
+      if (e instanceof SuspendError) throw e;
+      err = (e as Error).name;
+    }
+    await res.settle();
+    return { err, ownRan: (await acts(ctx, "a", 10)).ran };
+  };
+
+  it("a mint refused after a fold-allowed reservation: the parent takes the whole 6 back once", async () => {
+    const { h, broker } = await runParent(takesBack, { wrapMint: refuseMint });
+    const out = await output(h.runtime, PARENT);
+    expect(out.err).toBeDefined();
+    expect(await h.runtime.loadState(CHILD)).toBeNull();
+    expect(out.ownRan).toBe(10); // before R33: 4 (the 6 was lost for good)
+    expect(h.ran.n).toBe(10); // the total stays at the ceiling
+    expect((await custom(h.runtime, PARENT))["lease.w.returned"]).toBe(6);
+    expect(await broker.takeReturn(CHILD, PARENT)).toEqual({}); // a second take pays nothing
+  });
+
+  it("a second return step for the same child meters nothing more", async () => {
+    const twice: Parent = async (ctx) => {
+      const res = await reserveChildLease(ctx, "k", { w: 6 });
+      await awaitChild(ctx, { key: "k", flowId: "child", input: { n: 6 }, ...res.spawn }).catch(
+        (e) => {
+          if (e instanceof SuspendError) throw e;
+        }
+      );
+      await res.settle();
+      await ctx.run(
+        { ...(task("again") as object), toolId: CHILD_LEASE_TOOL } as never,
+        { op: "return", child: CHILD } as never
+      );
+      return { ownRan: (await acts(ctx, "a", 20)).ran };
+    };
+    const { h } = await runParent(twice, { wrapMint: refuseMint });
+    expect((await output(h.runtime, PARENT)).ownRan).toBe(10);
+    expect((await custom(h.runtime, PARENT))["lease.w.returned"]).toBe(6);
+  });
+
+  it("a crash around settleUnstarted: recovery returns the reservation once, never twice", async () => {
+    for (const when of ["before", "after"] as const) {
+      const w = world();
+      const broker = mk();
+      const g = await root(broker);
+      const hang: BootOpts = {
+        wrapMint: (real) => ({
+          ...refuseMint(real),
+          settleUnstarted: async (c, p) => {
+            if (when === "after") await real.settleUnstarted?.(c, p);
+            return new Promise<never>(() => {}); // "crash" before the parent is resumed
+          },
+        }),
+      };
+      const a = boot(w, broker, takesBack, hang);
+      await a.runtime.start(a.parentFlow, {}, { executionId: PARENT, principal: chain(g) });
+      await until(async () => (await a.runtime.loadState(PARENT))?.status === "suspended", "park");
+      await new Promise((r) => setTimeout(r, 50));
+      const b = boot(w, broker, takesBack, { wrapMint: refuseMint });
+      await b.sup.recover();
+      const out = await output(b.runtime, PARENT);
+      expect(out.ownRan).toBe(10);
+      expect(a.ran.n + b.ran.n).toBe(10);
+      expect((await custom(b.runtime, PARENT))["lease.w.returned"]).toBe(6);
+    }
+  }, 30_000);
+
+  it("a child is EITHER started OR unstarted: the broker keeps the first, the other changes nothing", async () => {
+    const m = (b: InMemoryGrantBroker, id: string, c: number) =>
+      b.mint({
+        taskId: id,
+        issuedTo: id,
+        effects: ["act"],
+        leases: { w: { ceiling: c, effects: ["act"] } },
+        ttlMs: 60_000,
+        parent: { taskId: PARENT },
+      });
+    const b = mk();
+    await root(b);
+    // settleChild first (a started child): a later settleUnstarted adds nothing
+    await b.reserve(PARENT, "s", { w: 6 });
+    await m(b, "s", 6);
+    await b.claim("s", "e");
+    await b.settleChild("s", { w: 2 });
+    await b.settleUnstarted("s", PARENT);
+    expect(await b.takeReturn("s", PARENT)).toEqual({ w: 4 });
+    expect(await b.takeReturn("s", PARENT)).toEqual({});
+    // settleUnstarted first (minted, never claimed): revoked, whole take once, a later settleChild adds nothing
+    await b.reserve(PARENT, "u", { w: 4 });
+    await m(b, "u", 4);
+    await b.settleUnstarted("u", PARENT);
+    await b.settleChild("u", { w: 0 });
+    expect(await b.current("u")).toBeUndefined(); // it can never start
+    expect(await b.takeReturn("u", PARENT)).toEqual({ w: 4 });
+    expect(await b.takeReturn("u", PARENT)).toEqual({});
+    // the released high-water lets the parent carve again: 10 - 6 (s) = 4 is free
+    await b.reserve(PARENT, "v", { w: 4 });
+    await m(b, "v", 4);
+    // reserve is idempotent and refuses a conflicting record
+    await b.reserve(PARENT, "v", { w: 4 });
+    await expect(b.reserve(PARENT, "v", { w: 3 })).rejects.toThrow(/different reservation/);
+    await expect(b.reserve("nope", "x", { w: 1 })).rejects.toThrow(/unknown or revoked/);
+  });
+});

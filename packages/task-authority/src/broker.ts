@@ -75,6 +75,20 @@ export interface GrantBroker extends GrantSource {
    * (else, or when nothing is recorded yet, or already taken: `{}`). MUST be an atomic compare-and-set.
    */
   takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>>;
+  /**
+   * R33: record, at the broker, the reservation `parentTaskId` made in its fold for the child `childId` (the
+   * supervisor's id, `<parentExecutionId>::<key>`). Idempotent for the same `(parent, childId, lease)`; a
+   * different lease for a known child, an unknown or revoked parent, or a bad amount is refused. Called by
+   * the reserve step AFTER the fold meters it, so a record never exceeds what the fold reserved.
+   */
+  reserve(parentTaskId: string, childId: string, lease: Record<string, number>): Promise<void>;
+  /**
+   * R33: the child `childId` will never start (its mint was refused, or the supervisor gave up). Makes the
+   * WHOLE reservation takeable once through `takeReturn`, and revokes a grant minted for it but never claimed.
+   * A child is EITHER started (`settleChild`, or already claimed) OR unstarted, never both: whichever comes
+   * first wins and the other changes nothing. No record, or a started child: nothing happens.
+   */
+  settleUnstarted(childId: string, parentTaskId: string): Promise<void>;
 }
 
 /** A request was refused (parent missing/expired/revoked, scope widened, ceiling over headroom, duplicate, bad ttl, unserializable). */
@@ -98,6 +112,14 @@ export interface Rec {
   revoked?: string;
   /** D6: unused amounts recorded by `settleChild`; `taken` once `takeReturn` handed them out. */
   settled?: Record<string, number>;
+  taken?: boolean;
+}
+
+/** @internal R33: a reservation recorded at the broker. `outcome` is set once: the first of started / unstarted. */
+export interface Reservation {
+  parent: string;
+  lease: Record<string, number>;
+  outcome?: "started" | "unstarted";
   taken?: boolean;
 }
 
@@ -126,6 +148,7 @@ export class InMemoryGrantLedger {
   protected readonly tasks = new Map<string, Rec>();
   protected readonly revokedDigests = new Set<string>();
   protected readonly claims = new Map<string, string>();
+  protected readonly reservations = new Map<string, Reservation>();
   protected readonly secret: GrantKeys;
   protected readonly now: () => number;
 
@@ -141,7 +164,39 @@ export class InMemoryGrantLedger {
   async holder(taskId: string): Promise<string | undefined> {
     return this.claims.get(taskId);
   }
+  async reserve(
+    parentTaskId: string,
+    childId: string,
+    lease: Record<string, number>
+  ): Promise<void> {
+    const want = cloneRequest(lease);
+    const parent = this.tasks.get(parentTaskId);
+    if (!parent || parent.revoked) throw new GrantBrokerError("parent is unknown or revoked");
+    for (const [n, a] of Object.entries(want))
+      if (!Object.hasOwn(parent.grant.leases, n) || !Number.isSafeInteger(a) || a <= 0)
+        throw new GrantBrokerError(`reservation ${n}: unknown lease or bad amount`);
+    const have = this.reservations.get(childId);
+    if (have === undefined) this.reservations.set(childId, { parent: parentTaskId, lease: want });
+    else if (have.parent !== parentTaskId || JSON.stringify(have.lease) !== JSON.stringify(want))
+      throw new GrantBrokerError(`child ${childId} already has a different reservation`);
+  }
+  async settleUnstarted(childId: string, parentTaskId: string): Promise<void> {
+    const v = this.reservations.get(childId);
+    if (!v || v.parent !== parentTaskId || v.outcome !== undefined) return;
+    const r = this.tasks.get(childId);
+    if (r !== undefined) {
+      if (this.claims.has(childId)) return; // it started: settleChild's path, never both
+      await this.revoke(childId, "never started"); // minted, never claimed: it can no longer start
+      r.high = Object.fromEntries(Object.keys(r.high).map((n) => [n, 0])); // and holds nothing
+    }
+    v.outcome = "unstarted";
+  }
   async settleChild(taskId: string, spend: Record<string, number>): Promise<void> {
+    const v = this.reservations.get(taskId);
+    if (v !== undefined) {
+      if (v.outcome === "unstarted") return;
+      v.outcome = "started";
+    }
     const r = this.tasks.get(taskId);
     if (!r || r.revoked || r.parent === undefined || r.settled !== undefined) return;
     r.settled = Object.fromEntries(
@@ -152,6 +207,12 @@ export class InMemoryGrantLedger {
     );
   }
   async takeReturn(taskId: string, parentTaskId: string): Promise<Record<string, number>> {
+    const v = this.reservations.get(taskId);
+    if (v?.outcome === "unstarted" && v.parent === parentTaskId) {
+      if (v.taken) return {};
+      v.taken = true;
+      return { ...v.lease };
+    }
     const r = this.tasks.get(taskId);
     if (!r || r.parent !== parentTaskId || r.settled === undefined || r.taken) return {};
     r.taken = true;
@@ -230,6 +291,14 @@ export class InMemoryGrantLedger {
         )
           throw new GrantBrokerError(`lease ${name} exceeds what the parent reserved in its fold`);
       }
+    }
+    const resv = this.reservations.get(taskId);
+    if (resv !== undefined) {
+      if (resv.outcome === "unstarted" || resv.parent !== req.parent?.taskId)
+        throw new GrantBrokerError(`child ${taskId} has no live reservation from that parent`);
+      for (const [n, spec] of Object.entries(unsigned.leases))
+        if (spec.ceiling > (resv.lease[n] ?? 0))
+          throw new GrantBrokerError(`lease ${n} ceiling exceeds what was reserved for the child`);
     }
     const grant = signTaskGrant(this.secret, unsigned);
     this.tasks.set(taskId, {

@@ -32,6 +32,14 @@ class PaysTwice extends InMemoryGrantBroker {
     return r?.parent === parentTaskId && r.settled !== undefined ? { ...r.settled } : {};
   }
 }
+/** R33: settleUnstarted ignores that the child already started (or was settled) and re-arms the whole take. */
+class PaysBothPaths extends InMemoryGrantBroker {
+  override async settleUnstarted(childId: string, parent: string): Promise<void> {
+    await super.settleUnstarted(childId, parent);
+    const v = this.reservations.get(childId);
+    if (v?.parent === parent) Object.assign(v, { outcome: "unstarted", taken: false });
+  }
+}
 class ForgetsPastDigests extends InMemoryGrantBroker {
   override async revoked(digest: string): Promise<boolean> {
     return [...this.tasks.values()].some((r) => r.revoked && r.digests.at(-1) === digest);
@@ -94,6 +102,7 @@ class NeverRevokes extends InMemoryGrantBroker {
 class IgnoresParentReserved extends InMemoryGrantBroker {
   override async mint(r: MintRequest) {
     const { parentReserved: _ignored, ...rest } = r;
+    this.reservations.delete(r.taskId); // R33's broker-side record would also refuse it: ignore that too
     return super.mint(rest);
   }
 }
@@ -185,6 +194,12 @@ describe("checkTaskAuthorityConformance", () => {
   // The fail-proof: each broken broker must fail the NAMED check, with a message that says why.
   const cases: [string, new (o: Opts) => InMemoryGrantBroker, string, RegExp][] = [
     ["a non-atomic claim", NonAtomicClaim, "broker.claim-atomic", /concurrent claims won/],
+    [
+      "a settleUnstarted that also pays a started child",
+      PaysBothPaths,
+      "broker.unstarted-return",
+      /changed the take|CLAIMED|paid again/,
+    ],
     ["a takeReturn that pays twice", PaysTwice, "broker.take-return-once", /paid twice/],
     [
       "a revoked() that knows only the current digest",

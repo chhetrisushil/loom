@@ -21,6 +21,7 @@ export const CONFORMANCE_CHECK_IDS = [
   "broker.claim-atomic",
   "broker.holder-pure",
   "broker.take-return-once",
+  "broker.unstarted-return",
   "broker.revoked-covers-past-digests",
   "broker.mint-subset-headroom",
   "broker.mint-parent-reserved",
@@ -71,6 +72,43 @@ const CHECKS: Record<string, Check> = {
     must(first.w === 3, `first takeReturn gave ${JSON.stringify(first)}, expected {"w":3}`);
     const second = await b.takeReturn("c", "p");
     must(!Object.keys(second).length, `takeReturn paid twice: ${JSON.stringify(second)}`);
+  },
+  "broker.unstarted-return": async (s) => {
+    const b = mk(s);
+    await b.mint(mintReq("p", 8));
+    const none = (o: Record<string, number>) => !Object.keys(o).length;
+    await b.reserve("p", "u", { w: 3 });
+    await b.reserve("p", "u", { w: 3 }); // idempotent
+    await mustRefuse(b.reserve("p", "u", { w: 2 }), "a different reservation for a known child");
+    await b.settleUnstarted("u", "other"); // not its parent: nothing
+    must(none(await b.takeReturn("u", "p")), "a take before settleUnstarted paid");
+    await b.settleUnstarted("u", "p");
+    must(none(await b.takeReturn("u", "other")), "a wrong parent took an unstarted reservation");
+    const whole = await b.takeReturn("u", "p");
+    must(whole.w === 3, `the unstarted take gave ${JSON.stringify(whole)}, expected {"w":3}`);
+    must(none(await b.takeReturn("u", "p")), "an unstarted reservation was taken twice");
+    await mustRefuse(b.mint(mintReq("u", 3, "p")), "a child was minted after it settled unstarted");
+    // EITHER started OR unstarted, never both
+    await b.reserve("p", "s", { w: 4 });
+    await b.mint(mintReq("s", 4, "p"));
+    await b.settleChild("s", { w: 1 });
+    await b.settleUnstarted("s", "p");
+    must(
+      (await b.takeReturn("s", "p")).w === 3,
+      "settleUnstarted after settleChild changed the take"
+    );
+    must(
+      none(await b.takeReturn("s", "p")),
+      "a started child's reservation paid again via unstarted"
+    );
+    await b.reserve("p", "r", { w: 1 });
+    await b.mint(mintReq("r", 1, "p"));
+    must(await b.claim("r", "e"), "setup: the child could not start");
+    await b.settleUnstarted("r", "p");
+    must(
+      none(await b.takeReturn("r", "p")),
+      "a CLAIMED (started) child returned its whole reservation"
+    );
   },
   "broker.revoked-covers-past-digests": async (s) => {
     const b = mk(s, () => ({}));

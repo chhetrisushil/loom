@@ -16,7 +16,8 @@ import { type GrantKeys, type TaskGrant, sealKeys, verifyTaskGrant } from "./gra
 export const CHILD_LEASE_TOOL = "task-authority:child-lease";
 
 type Amounts = Record<string, number>;
-type Op = { op: "reserve"; lease: Amounts } | { op: "return"; child: string };
+type Op = { op: "reserve"; lease: Amounts; child: string } | { op: "return"; child: string };
+
 type Out = { taskId: string; lease?: Amounts };
 const ok = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0;
 const read = (ctx: EffectContext, d: string): number => ctx.readResources?.().custom?.[d] ?? 0;
@@ -35,7 +36,7 @@ const read = (ctx: EffectContext, d: string): number => ctx.readResources?.().cu
  */
 export function childLeaseEffect(o: {
   secret: GrantKeys;
-  broker: Pick<GrantBroker, "takeReturn">;
+  broker: Pick<GrantBroker, "takeReturn" | "reserve">;
 }): ToolEffect<Op, Out> {
   const secret = sealKeys(o.secret);
   return new ToolEffect<Op, Out>(
@@ -72,6 +73,8 @@ export function childLeaseEffect(o: {
         for (const [d, w] of watch) if (read(ctx, d) !== w) throw new LeaseDimensionDroppedError(d);
         await ctx.flush();
       }
+      // R33: the broker records it only AFTER the fold holds it, so a record never exceeds the reservation
+      if (input.op === "reserve") await o.broker.reserve(grant.taskId, input.child, input.lease);
       return reserve ? { taskId: grant.taskId, lease: input.lease } : { taskId: grant.taskId };
     },
     { idempotent: false }
@@ -101,7 +104,8 @@ const step = (kind: string, key: string, attempt: string | undefined) =>
  * of a later call) into `awaitChild` / a group member. Whatever the flow passes, the supervisor's minter
  * refuses a child the parent's fold did not reserve (R25). After a COMPLETED child, `settle()` takes the
  * unused amount the supervisor recorded at the broker and meters it as `returned`; a failed or cancelled
- * child records nothing, so there is nothing to take (R7). Concurrent reservations are exact (the check and
+ * child records nothing, so there is nothing to take (R7); a child that NEVER STARTED (mint refused, supervisor
+ * gave up) returns its WHOLE reservation through the same `settle()` (R33). Concurrent reservations are exact (the check and
  * the meter are one synchronous block); never reuse a child key.
  */
 export async function reserveChildLease(
@@ -110,15 +114,16 @@ export async function reserveChildLease(
   lease: Amounts,
   opts: { attempt?: string } = {}
 ): Promise<{ spawn: { lease: Amounts; leaseParent: string }; settle(): Promise<void> }> {
+  // the child id scheme of `childIdFor` (orchestration): `<parentExecutionId>::<key>`
+  const child = `${ctx.executionId}::${childKey}`;
   const r = (await ctx.run(step("reserve", childKey, opts.attempt), {
     op: "reserve",
     lease,
+    child,
   } as never)) as Required<Out>;
   return {
     spawn: { lease: r.lease, leaseParent: r.taskId },
     async settle() {
-      // the child id scheme of `childIdFor` (orchestration): `<parentExecutionId>::<key>`
-      const child = `${ctx.executionId}::${childKey}`;
       await ctx.run(step("return", childKey, opts.attempt), { op: "return", child } as never);
     },
   };
@@ -127,6 +132,8 @@ export async function reserveChildLease(
 /** The shape `SupervisorDeps.taskAuthority` takes (structural: orchestration is not a dependency). */
 export interface ChildGrantMinter {
   settleChild(childId: string, resources: Record<string, number>): Promise<void>;
+  /** R33: the child will never start; its whole reservation becomes takeable (see `GrantBroker.settleUnstarted`). */
+  settleUnstarted?(childId: string, parentTaskId: string): Promise<void>;
   mintChildGrant(
     parent: { executionId: string; taskId?: string; resources: Record<string, number> },
     spec: {
@@ -170,6 +177,7 @@ export function childGrantMinter(
       }
       await broker.settleChild(childId, spend);
     },
+    settleUnstarted: (childId, parentTaskId) => broker.settleUnstarted(childId, parentTaskId),
     async mintChildGrant(parent, spec) {
       const pid = parent.taskId;
       if (pid === undefined) throw new GrantBrokerError("the spawn names no parent task");

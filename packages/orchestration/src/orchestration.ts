@@ -542,6 +542,8 @@ export interface SupervisorDeps {
    */
   taskAuthority?: {
     settleChild(childId: string, resources: Record<string, number>): Promise<void>;
+    /** R33 - the child will NEVER start (mint refused, no flow, envelope refused): its whole reservation may be returned. Optional; errors are reported, never fatal. */
+    settleUnstarted?(childId: string, parentTaskId: string): Promise<void>;
     mintChildGrant(
       parent: { executionId: string; taskId?: string; resources: Record<string, number> },
       spec: {
@@ -1630,6 +1632,15 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     }
   };
 
+  // R33 - a child that never starts returns its whole reservation (a no-op without a lease or a hook).
+  const settleUnstarted = async (
+    childId: string,
+    spec: SpawnChoice | GroupMember
+  ): Promise<void> => {
+    if (spec.lease === undefined || spec.leaseParent === undefined) return;
+    await deps.taskAuthority?.settleUnstarted?.(childId, spec.leaseParent).catch(fail);
+  };
+
   // ADR 0150 D6 - the leased child's grant. Fails closed: a lease with no hook (or no parent) never starts.
   const mintLeased = async (
     parentId: string | undefined,
@@ -1692,6 +1703,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         track(
           (async () => {
             if (!(await gate(group.parentId, correlationKey))) return;
+            await Promise.all(group.members.map((m) => settleUnstarted(m.childId, m)));
             await resumeParent(
               group.parentId,
               { settled: group.members.map(() => refused) },
@@ -1734,6 +1746,8 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             fail(err); // a refused mint starts NO member: the group settles failed.
             for (const m of group.members) memberOf.delete(m.childId);
             groups.delete(correlationKey);
+            // R33: no member starts, so each returns its whole reservation (the broker keeps one that did start).
+            await Promise.all(durable.members.map((m) => settleUnstarted(m.childId, m)));
             await resumeParent(
               group.parentId,
               { settled: durable.members.map(() => refusal(err)) },
@@ -1780,6 +1794,8 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         track(
           (async () => {
             if (!(await gate(parentOfRefused, childId))) return;
+            const durable = (await durableSpawn(parentOfRefused, childId)).single;
+            if (durable !== undefined) await settleUnstarted(childId, durable);
             await resumeParent(
               parentOfRefused,
               { __childFailed: { status: "failed", error: `${breach.name}: ${breach.message}` } },
@@ -1809,6 +1825,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         } catch (err) {
           fail(err); // never start an unbounded child: the parent sees childFailed.
           specs.delete(childId);
+          await settleUnstarted(childId, durable);
           if (parentId !== undefined) {
             await resumeParent(parentId, { __childFailed: refusal(err) }, { key: childId });
           }

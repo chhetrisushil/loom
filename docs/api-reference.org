@@ -1858,6 +1858,12 @@ interface GrantSource { current(taskId): Promise<TaskGrant | undefined>; revoked
 // claim (R16, REQUIRED): first claim wins, a repeat by the same executionId is true, another execution is false; unknown/revoked task is false.
 //   taskIds MUST NOT be reused or reissued to another holder (the ref MAC binds the holder, R15).
 interface GrantBroker extends GrantSource { mint(r): Promise<TaskGrant>; renew(r): Promise<RenewalVerdict>; revoke(taskId, reason): Promise<void> }
+// R33 (unstarted child): `reserve(parentTaskId, childId, lease)` records at the broker the reservation the parent's fold holds (childId = `<parentExecutionId>::<key>`);
+//   idempotent per (parent, child, lease), a different lease / an unknown or revoked parent / a bad amount is GrantBrokerError. `reserveChildLease` calls it AFTER the fold meters, so
+//   the record never exceeds the reservation (a crash between the two loses the record: the reservation stays reserved, never doubled). A child minted under a record may not exceed it.
+//   `settleUnstarted(childId, parentTaskId)` (supervisor only; `childGrantMinter().settleUnstarted`, hook `SupervisorDeps.taskAuthority.settleUnstarted`, called when a mint is refused,
+//   the envelope refuses, or a group is refused) makes the WHOLE reservation takeable ONCE through `takeReturn(childId, parentTaskId)` (the parent's `settle()`), revokes a grant minted
+//   but never CLAIMED and releases its high-water. Either started (settleChild, or claimed) or unstarted, never both: the first wins, the other changes nothing. conformance: `broker.unstarted-return`.
 class GrantBrokerError extends Error {}
 class InMemoryGrantLedger {                       // mint / current / revoked / claim / revoke (renewal arrives in T4b)
   constructor(o: { secret: string; now?: () => number })
