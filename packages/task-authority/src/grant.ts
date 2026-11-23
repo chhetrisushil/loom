@@ -46,6 +46,12 @@ const MAX_ID = 256;
 const MAX_EFFECTS = 256;
 const MAX_EFFECT_LEN = 512;
 const MAX_LEASES = 10;
+/** S-R4: a `reads` entry may hold at most this many `*` (the matcher's cost grows with it). */
+export const READS_MAX_STARS = 4;
+/** S-R4: the total size of `reads` (sum of entry lengths); with the star cap, bounds a subset check at O(total^2) steps. */
+export const READS_MAX_TOTAL = 16 * 1024;
+// C1 controls, line/paragraph separators and bidi controls: invisible in a log line or an operator UI.
+const READS_HIDDEN = /[\u0080-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 const MAX_SERIALIZED = 64 * 1024;
 // No dots: lease `a` owns dimensions `lease.a`, `.reserved`, `.returned`; a name "a.reserved" must not collide.
 const LEASE_NAME = /^[a-z][a-z0-9_-]{0,48}$/;
@@ -120,9 +126,20 @@ function checkShape(g: unknown, signed: boolean): void {
   const effects = effectList(own(g, "effects"), "effects", MAX_EFFECTS);
   const reads = own(g, "reads");
   if (reads !== undefined) {
-    effectList(reads, "reads", MAX_EFFECTS);
-    for (const r of reads as string[])
-      if (CONTROL.test(r)) fail("reads entries must not contain control characters");
+    const list = effectList(reads, "reads", MAX_EFFECTS);
+    if (new Set(list).size !== list.length) fail("reads entries must be unique");
+    if (list.reduce((n, r) => n + r.length, 0) > READS_MAX_TOTAL)
+      fail(`reads must total at most ${READS_MAX_TOTAL} chars`);
+    for (const r of list) {
+      if (CONTROL.test(r) || READS_HIDDEN.test(r))
+        fail("reads entries must not contain control or invisible characters");
+      // a literal tool id first, so no entry can match every capability (`**`, `*:*`, `:*`)
+      const colon = r.indexOf(":");
+      if (colon < 1 || r.lastIndexOf("*", colon) >= 0)
+        fail('reads entries must be "<toolId>:<resource glob>" with a literal, non-empty tool id');
+      if (r.split("*").length - 1 > READS_MAX_STARS)
+        fail(`reads entries may hold at most ${READS_MAX_STARS} "*"`);
+    }
   }
   const sandbox = own(g, "sandbox");
   if (sandbox !== undefined && sandbox !== "isolated") fail('sandbox must be "isolated"');
@@ -204,14 +221,16 @@ function canonicalBody(g: UnsignedTaskGrant): string {
  * S-R4: is the glob `child` covered by the glob `parent`? `*` matches any run of characters (including
  * `:`); every other character is literal. `child` is matched as a LITERAL string, so its own `*` must be
  * absorbed by a `*` in `parent`: sound (every string `child` matches, `parent` matches) and conservative.
+ * Greedy two-pointer match, no regex (no exponential backtracking): at most O(|parent| * |child|) steps,
+ * so a `reads` list within `READS_MAX_TOTAL` costs O(total^2) over all pairs. `meter` counts the steps.
  */
-export function globCovers(parent: string, child: string): boolean {
-  // Linear-space two-pointer wildcard match (no regex: a hostile pattern cannot backtrack).
+export function globCovers(parent: string, child: string, meter?: { steps: number }): boolean {
   let p = 0;
   let c = 0;
   let star = -1;
   let mark = 0;
   while (c < child.length) {
+    if (meter) meter.steps++;
     if (parent[p] === "*") {
       star = p++;
       mark = c;
@@ -230,9 +249,12 @@ export function globCovers(parent: string, child: string): boolean {
 /** S-R4: the first reason `child` is not a subset of `parent`'s `reads` / `sandbox`, or `undefined`. */
 export function widensReadsOrSandbox(
   parent: Pick<UnsignedTaskGrant, "reads" | "sandbox">,
-  child: Pick<UnsignedTaskGrant, "reads" | "sandbox">
+  child: Pick<UnsignedTaskGrant, "reads" | "sandbox">,
+  meter?: { steps: number }
 ): string | undefined {
-  const bad = (child.reads ?? []).find((r) => !(parent.reads ?? []).some((p) => globCovers(p, r)));
+  const bad = (child.reads ?? []).find(
+    (r) => !(parent.reads ?? []).some((p) => globCovers(p, r, meter))
+  );
   if (bad !== undefined) return `child reads "${bad}" exceeds the parent's reads`;
   if (parent.sandbox === "isolated" && child.sandbox !== "isolated")
     return "a child of an isolated task must be isolated";

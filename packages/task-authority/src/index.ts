@@ -3,7 +3,16 @@ export const TASK_AUTHORITY_VERSION = "0.0.0-slice1";
 
 export { TaskAuthorityPrincipalError, TaskGrantShapeError } from "./errors";
 export type { GrantKeys, LeaseSpec, TaskGrant, UnsignedTaskGrant } from "./grant";
+/**
+ * `globCovers` and `widensReadsOrSandbox` are the REFERENCE subset check for a child grant's `reads` / `sandbox`
+ * (ADR 0150 S-R4): a third-party broker should call `widensReadsOrSandbox(parent, child)` at mint and refuse on a
+ * string result. `READS_MAX_STARS` / `READS_MAX_TOTAL` are the bounds `validateGrantShape` enforces.
+ */
 export {
+  READS_MAX_STARS,
+  READS_MAX_TOTAL,
+  globCovers,
+  widensReadsOrSandbox,
   signTaskGrant,
   taskGrantDigest,
   validateGrantShape,

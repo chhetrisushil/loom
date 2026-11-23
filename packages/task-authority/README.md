@@ -33,7 +33,9 @@ Slice 1 surface (see `docs/api-reference.org`):
   capabilities; `sandbox` asks that a sandbox effect be network-less and fresh per run. Both are signed and encoded only
   when present (a grant without them keeps its signature), a child's `reads` must be covered by the parent's (absent
   = none) and a child of an isolated parent must be isolated, and a renewal keeps both. `childGrantMinter` passes the
-  parent's through.
+  parent's through. Each `reads` entry is `<toolId>:<glob>` with a literal tool id (`**`, `*:*`, `:*` are refused), at most 4 `*`, unique,
+  16 KB in total. `globCovers` / `widensReadsOrSandbox` are the reference subset check for third-party brokers.
+  Upgrade every verifier before minting grants with these fields: an older verifier refuses them (fail closed).
 - Key rotation: a secret may be a `GrantKeys` ring (`current`, `previous`, `refOnly`); removing a key strands
   runs started under it, so retire through `refOnly` (see the user guide).
 - Strict leases: `taskLeaseMiddleware` defaults to `strictLeases: true`, so an in-scope effect that no lease counts is
