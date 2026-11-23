@@ -5,7 +5,13 @@
 // resume folds only the tail. A pre-1.27 channel event is scanned over its JSON view; a run stamped from the start folds its
 // recorded lists natively. A permanent read error is a STICKY overflow, a transient one a retryable failure persisting nothing.
 import type { EventEnvelope, ExecutionState } from "@loomwork/core";
-import { type EventStore, isPayloadShredded, readRangeOf } from "@loomwork/event-runtime";
+import {
+  type ArchiveSegmentHeader,
+  type EventStore,
+  isPayloadShredded,
+  readRangeOf,
+  segmentDigest,
+} from "@loomwork/event-runtime";
 import {
   CHANNELS,
   ReplayVM,
@@ -17,7 +23,8 @@ import {
   trackSeenOrigins,
   validKey,
 } from "@loomwork/replay-vm";
-import { isSealedUnreadable } from "./sealGuard";
+import { isSealedUnreadable, sealedDetailOf } from "./sealGuard";
+import { QuarantineHeldError } from "./types";
 
 const PAGE = 500;
 const MEMO_MAX = 256;
@@ -30,6 +37,7 @@ const PERMANENT = new Set([
   "ArchiveUnserializableError",
   "ArchiveTenantMismatchError",
   "PlaintextArchiveError",
+  "PayloadUndecryptableError",
 ]);
 
 /** A transient read failure during adoption: the resume fails, nothing is persisted or memoized, the next attempt rescans. */
@@ -53,16 +61,31 @@ export interface SeenOriginsSeedDeps {
   enabled: boolean;
   limits: SeenOriginsLimits;
   events: Pick<EventStore, "read" | "readFrom" | "readRange">;
-  /** The archived envelopes of `[from..through]` (guarded: incarnation, digests); absent = no compaction archive. */
-  archive?: (id: string, range: { from: number; through: number }) => Promise<EventEnvelope[]>;
-  memo: Map<string, { key: SeenOriginsKey; atId: string }>;
+  /** The compaction archive, read ONE SEGMENT at a time (guarded: incarnation, digests); absent = none configured. */
+  archive?: {
+    headers(id: string): Promise<ArchiveSegmentHeader[]>;
+    read(id: string, range: { from: number; through: number }): Promise<EventEnvelope[]>;
+  };
+  memo: Map<string, SeenOriginsMemo>;
 }
 
+/** A memoized key, bound to the log it came from: digests of sequence 0 (incarnation) and of the envelope at `through` (event ids are `<id>-<seq>`, so reuse of an id repeats them). */
+export interface SeenOriginsMemo {
+  key: SeenOriginsKey;
+  e0: string;
+  at: string;
+}
+
+const dig = (e: EventEnvelope): string => segmentDigest([e]);
+// A sealed refusal for a key that is merely unavailable, or a quarantine hold, is recoverable: the resume retries.
+const recoverable = (e: unknown): boolean =>
+  sealedDetailOf(e)?.reason === "key-unavailable" || e instanceof QuarantineHeldError;
 const permanent = (e: unknown): boolean =>
   e instanceof IncompleteLog ||
-  isPayloadShredded(e) ||
-  isSealedUnreadable(e) ||
-  PERMANENT.has((e as Error | undefined)?.name ?? "");
+  (!recoverable(e) &&
+    (isPayloadShredded(e) ||
+      isSealedUnreadable(e) ||
+      PERMANENT.has((e as Error | undefined)?.name ?? "")));
 
 /** Fold `[0..through]` (live pages, archived gaps) into a key; throws on any read problem. */
 async function scan(
@@ -70,11 +93,12 @@ async function scan(
   id: string,
   through: number,
   limits: SeenOriginsLimits
-): Promise<{ key: SeenOriginsKey; atId: string }> {
+): Promise<SeenOriginsMemo> {
   let scratch: ReplayVM | undefined;
   let stamped = true;
   let next = 0;
-  let atId = "";
+  let first: EventEnvelope | undefined;
+  let last: EventEnvelope | undefined;
   const feed = (e: EventEnvelope): void => {
     if (e.sequence !== next) throw new IncompleteLog(`hole at ${next}`);
     let ev = e;
@@ -92,8 +116,9 @@ async function scan(
       if (!stamped) ev = { ...e, payload: { ...p, seenOriginsLimits: limits } };
     }
     if (!stamped && CHANNELS.has(e.eventType)) {
-      // pre-1.27 history: a recorded list could be app metadata, so it is dropped and the JSON view scanned
-      const { origins: _o, originsOverflow: _f, ...meta } = e.metadata ?? {};
+      // pre-1.27 history is scanned over its JSON view, and a list recorded AFTER an adoption (or forged as app metadata)
+      // is unioned in: only the fail-closed direction, since a recorded origin can add to the set, never hide one.
+      const { origins: rec0, originsOverflow: over0, ...meta } = e.metadata ?? {};
       const rec = seenOriginsRecord(
         next === 0 ? undefined : scratch?.peekState(),
         ev.eventType,
@@ -101,19 +126,39 @@ async function scan(
         meta,
         "json"
       );
-      ev = { ...ev, metadata: { ...meta, ...rec } };
+      const bad =
+        over0 === true || (Array.isArray(rec0) && !rec0.every((o) => typeof o === "string"));
+      const merged =
+        rec === undefined
+          ? undefined
+          : rec.originsOverflow === true || bad
+            ? { originsOverflow: true }
+            : {
+                origins: [
+                  ...new Set([...(rec.origins ?? []), ...((rec0 as string[] | undefined) ?? [])]),
+                ].sort(),
+              };
+      ev = { ...ev, metadata: { ...meta, ...merged } };
     }
     scratch?.applyEvent(ev);
-    atId = e.id;
+    first ??= e;
+    last = e;
     next++;
   };
   const fill = async (from: number, to: number): Promise<void> => {
     if (d.archive === undefined) throw new IncompleteLog("compacted, no archive configured");
-    for (const e of await d.archive(id, { from, through: to })) feed(e);
+    // one segment at a time, each fed and dropped: memory is O(segment), never O(archived history)
+    for (const h of await d.archive.headers(id)) {
+      if (h.through < next || h.from > to || h.kind === "legacy-checkpoint") continue;
+      const lo = Math.max(h.from, next);
+      for (const e of await d.archive.read(id, { from: lo, through: Math.min(h.through, to) }))
+        feed(e);
+    }
     if (next <= to) throw new IncompleteLog(`archive does not cover ${next}`);
   };
   while (next <= through) {
     const end = Math.min(through, next + PAGE - 1);
+    // NOTE: a store without `readRange` falls back to `readFrom`, which returns the whole tail per page.
     for (const e of await readRangeOf(d.events, id, next, end)) {
       if (e.sequence > next) await fill(next, e.sequence - 1);
       feed(e);
@@ -123,7 +168,8 @@ async function scan(
   }
   const key = scratch?.peekState().variables[SEEN_ORIGINS_KEY];
   if (!validKey(key) || key.through !== through) throw new IncompleteLog("no key folded");
-  return { key, atId };
+  if (first === undefined || last === undefined) throw new IncompleteLog("empty");
+  return { key, e0: dig(first), at: dig(last) };
 }
 
 /** Adopt or rebuild the key of `vm` (see the file header). A no-op with the gate off, for a trusted key and for a sticky overflow. */
@@ -135,13 +181,20 @@ export async function adoptSeenOrigins(d: SeenOriginsSeedDeps, vm: ReplayVM): Pr
   const id = st.executionId;
   const S = st.sequence;
   const limits = validKey(cur) ? cur.limits : d.limits;
-  let got: { key: SeenOriginsKey; atId: string };
+  let got: SeenOriginsMemo | undefined;
   try {
     got = await memoOrScan(d, id, S, limits);
   } catch (err) {
     if (!permanent(err)) throw new SeenOriginsRescanUnavailableError(id, err);
-    const at = (await readRangeOf(d.events, id, S, S).catch(() => []))[0];
-    got = { key: { v: 1, limits, origins: [], overflow: true, through: S }, atId: at?.id ?? "" };
+    const key = { v: 1 as const, limits, origins: [], overflow: true as const, through: S };
+    try {
+      const [a, b] = [await readRangeOf(d.events, id, 0, 0), await readRangeOf(d.events, id, S, S)];
+      got = a[0] && b[0] ? { key, e0: dig(a[0]), at: dig(b[0]) } : undefined;
+    } catch {
+      got = undefined; // unreadable now: the sticky key is used but not memoized
+    }
+    d.memo.delete(id);
+    if (got === undefined) return vm.replaceSeenOrigins(key);
   }
   d.memo.delete(id);
   d.memo.set(id, got);
@@ -155,19 +208,27 @@ async function memoOrScan(
   id: string,
   S: number,
   limits: SeenOriginsLimits
-) {
+): Promise<SeenOriginsMemo> {
   const m = d.memo.get(id);
   const T = m?.key.through;
   if (m !== undefined && T !== undefined && T <= S) {
     const seen = await readRangeOf(d.events, id, T, S);
-    if (seen[0]?.sequence === T && seen[0].id === m.atId && seen.length === S - T + 1) {
+    const e0 = (await readRangeOf(d.events, id, 0, 0))[0];
+    // a hit must be THIS log: the same incarnation (sequence 0) and the same envelope at `through`
+    if (
+      e0 !== undefined &&
+      seen[0]?.sequence === T &&
+      seen.length === S - T + 1 &&
+      dig(e0) === m.e0 &&
+      dig(seen[0]) === m.at
+    ) {
       let s = {
         sequence: T,
         variables: { [SEEN_ORIGINS_KEY]: m.key },
       } as unknown as ExecutionState;
       for (const e of seen.slice(1)) s = { ...trackSeenOrigins(s, e), sequence: e.sequence };
       const key = s.variables[SEEN_ORIGINS_KEY] as SeenOriginsKey;
-      return { key, atId: seen[seen.length - 1]?.id ?? m.atId };
+      return { key, e0: m.e0, at: dig(seen[seen.length - 1] as EventEnvelope) };
     }
   }
   return scan(d, id, S, limits);
