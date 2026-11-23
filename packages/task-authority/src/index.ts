@@ -39,6 +39,8 @@ export type { TaskAuthorityCodecOptions, TaskAuthorityPrincipalCodec } from "./c
 export { TASK_REF_PREFIX, TASK_REF_PREFIX_V2, taskAuthorityPrincipalCodec } from "./codec";
 export type { PrincipalCodecHost } from "./install";
 export { installTaskAuthority } from "./install";
+export type { GrantTemplate } from "./deriveGrant";
+export { deriveGrant } from "./deriveGrant";
 export type { TaskLeaseOptions } from "./lease";
 export { taskLeaseMiddleware } from "./lease";
 export {
