@@ -26,7 +26,12 @@ const read = (ctx: EffectContext, d: string): number => ctx.readResources?.().cu
  * (ADR 0151), so the parent's available lease, `ceiling - spent - reserved + returned`, is exact. A refusal
  * is a renewable `LeaseExhaustedError`. `return` takes NO amount from the flow: it asks the broker for the
  * one-time take of what the supervisor recorded for that child (R25). Not idempotent: a crash inside the
- * step parks it in doubt (an operator resolves it; a return is then lost, never doubled).
+ * step parks it in doubt (an operator resolves it): for a RESERVE the operator adopts with output
+ * `{ taskId, lease }`, and a wrong value changes the spawn ceiling the minter then checks against the fold
+ * (so it cannot exceed what was metered); an in-doubt RETURN is lost, never doubled.
+ * Trust line (ADR 0151 D7): `installTaskAuthority` reserves the `lease.` meter prefix, so FLOW code cannot
+ * forge these counters; grants bound the model and flow code, while app-registered effects and middleware
+ * (this effect, the lease middleware) are trusted.
  */
 export function childLeaseEffect(o: {
   secret: string;

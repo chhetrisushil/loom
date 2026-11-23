@@ -139,7 +139,8 @@ function boot(
     onEvent: (e) => holder.sup?.onEvent(e),
   });
   const childRunner: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext, input) => {
-    const { n, fails } = input as { n: number; fails?: boolean };
+    const { n, fails, forge } = input as { n: number; fails?: boolean; forge?: boolean };
+    if (forge === true) ctx.emit("RESOURCE_METERED", { custom: { "lease.w.returned": 100 } });
     const r = await acts(ctx, "c", n);
     if (fails === true) throw new Error("child blew up");
     return { ran: r.ran, err: r.err };
@@ -505,6 +506,96 @@ describe("child lease reservation (ADR 0150 D6)", () => {
     ).rejects.toBeInstanceOf(GrantBrokerError);
     expect(await broker.holder("victim")).toBeUndefined();
     expect(await broker.claim("victim", "victim-exec")).toBe(true);
+  });
+
+  it("(F1) a flow cannot forge lease.w.reserved to launder a raw spawn", async () => {
+    const parent: Parent = async (ctx) => {
+      let refused = false;
+      try {
+        ctx.emit("RESOURCE_METERED", { custom: { "lease.w.reserved": 10 } });
+      } catch {
+        refused = true;
+      }
+      const out = await raw(10)(ctx);
+      return { refused, out };
+    };
+    const { h } = await runParent(parent);
+    const done = (await finished(h.runtime, PARENT)).variables._output as { refused: boolean };
+    expect(done.refused).toBe(true);
+    expect(String(h.errors[0])).toMatch(/reserved in its fold/);
+    expect(h.ran.n).toBeLessThanOrEqual(10);
+    expect((await custom(h.runtime, PARENT))["lease.w.reserved"]).toBeUndefined();
+  });
+
+  it("(F2) a flow cannot forge lease.w.returned to buy back its own lease", async () => {
+    const parent: Parent = async (ctx) => {
+      let refused = false;
+      try {
+        ctx.emit("RESOURCE_METERED", { custom: { "lease.w.returned": 40 } });
+      } catch {
+        refused = true;
+      }
+      return { refused, own: (await acts(ctx, "a", 50)).ran };
+    };
+    const { h } = await runParent(parent);
+    const done = (await finished(h.runtime, PARENT)).variables._output as { refused: boolean };
+    expect(done.refused).toBe(true);
+    expect(h.ran.n).toBe(10);
+  });
+
+  it("(F3) a child flow cannot forge returned either: its emit is refused and it fails", async () => {
+    const parent: Parent = async (ctx) => {
+      const res = await reserveChildLease(ctx, "k", { w: 6 });
+      try {
+        await awaitChild(ctx, {
+          key: "k",
+          flowId: "child",
+          input: { n: 1, forge: true },
+          ...res.spawn,
+        });
+      } catch (e) {
+        if (e instanceof SuspendError) throw e;
+        return { failed: true, own: (await acts(ctx, "a", 10)).ran };
+      }
+      return { failed: false };
+    };
+    const { h } = await runParent(parent);
+    const done = (await finished(h.runtime, PARENT)).variables._output as { failed: boolean };
+    expect(done.failed).toBe(true);
+    expect(h.ran.n).toBeLessThanOrEqual(10);
+    expect(await custom(h.runtime, CHILD)).toEqual({});
+  });
+
+  it("settleChild clamps what it records to [0, high]", async () => {
+    const broker = mk();
+    await root(broker);
+    await broker.claim(PARENT, PARENT);
+    const m = childGrantMinter(broker, { ttlMs: 60_000, now: () => NOW });
+    for (const [id, spend, want] of [
+      ["P::neg", -50, 4],
+      ["P::big", 999, 0],
+    ] as const) {
+      await m.mintChildGrant(
+        { executionId: PARENT, taskId: PARENT, resources: { "lease.w.reserved": 8 } },
+        { childId: id, lease: { w: 4 } }
+      );
+      await m.settleChild(id, { "lease.w": spend });
+      expect(await broker.takeReturn(id, PARENT)).toEqual({ w: want });
+    }
+  });
+
+  it("installTaskAuthority refuses a host without reserveEffectDimensions, and reserves lease. otherwise", () => {
+    const codecs: unknown[] = [];
+    const bare = { composePrincipalCodec: (c: unknown) => codecs.push(c) };
+    const opts = { source: mk(), secret: SECRET };
+    expect(() => installTaskAuthority(bare, opts)).toThrow(/reserveEffectDimensions/);
+    expect(codecs).toEqual([]);
+    const reserved: string[] = [];
+    installTaskAuthority(
+      { ...bare, reserveEffectDimensions: (p: string) => reserved.push(p) },
+      opts
+    );
+    expect(reserved).toEqual(["lease."]);
   });
 
   it("(e) a failed child returns nothing", async () => {

@@ -43,6 +43,8 @@ const addCapped = (set: Set<string>, key: string): void => {
  * Then `await flush()` makes it durable (ADR 0151) and `next()` runs. No in-process counters: the
  * fold is the one source of spend, so concurrent siblings, retries and restarts all see it.
  *
+ * Trust line (ADR 0151 D7): only effects and middleware write `lease.*`; `installTaskAuthority` reserves the
+ * prefix against flow code. Grants bound the model and flow code; app-registered effects are trusted.
  * Wiring (R22):
  * - Place it INSIDE (after) any retry middleware in `effectMiddleware`; outside, a retry re-runs the
  *   effect under one count.
