@@ -68,6 +68,12 @@ export interface CapabilityRequest {
    * the bare `toolId` still authorizes every resource of the effect (unchanged behaviour).
    */
   resource?: string;
+  /**
+   * ADR 0150 D8 — set by the RUNTIME (never the caller) when the registered effect declares
+   * `capabilities.read === true`. A task-grant authorizer then requires `<toolId>:<resource>` to be
+   * covered by the grant's `reads`.
+   */
+  read?: true;
   executionId: string;
   workflowId: string;
   stepId: string;
