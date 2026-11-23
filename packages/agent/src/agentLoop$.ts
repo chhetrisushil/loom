@@ -35,6 +35,15 @@ import { approvalViewDigest } from "@loomwork/workflow-runtime";
 import type { BranchContext, DecideOptions, ExecutionContext } from "@loomwork/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
+import {
+  AuthorityRenewalDeniedError,
+  DEFAULT_RENEWAL_GATE,
+  isRenewable,
+  renewalDecisionId,
+  renewalRequestOf,
+  renewalViewDigest,
+  requireGranted,
+} from "./authorityRenewal";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 import { type AgentLoopDistill, distillWriteBack, validateDistill } from "./distillWriteBack";
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
@@ -296,6 +305,17 @@ export interface AgentLoopConfig {
    * itself).
    */
   toolErrors?: "feedback" | "fail";
+  /**
+   * ADR 0150 D5 — what a RENEWABLE authority error from a tool (a spent task lease, an expired or revoked
+   * task grant: `renewable === true` on the cause chain) does. `"fail"` (default) is the terminal
+   * behaviour of every earlier version. `"park"` records a renewal request as a decision, parks on `gate`
+   * (default `"task-authority:renew"`, the gate `answerRenewal` of `@loomwork/task-authority` answers) and,
+   * once granted, runs the SAME call again under a fresh task id (`<id>:r<n>`); the model never sees an
+   * error for it. A refusal, or more than `maxRenewals` (default 8) per call, fails the run with an
+   * `AuthorityRenewalDeniedError`. Needs `toolErrors: "feedback"`; `kind: "human"` tools are not renewed.
+   * Under `parallelTools` the parks happen after the scope settles, one call at a time in call order.
+   */
+  authority?: { onExhausted?: "fail" | "park"; gate?: string; maxRenewals?: number };
   /**
    * R10 — run the tool calls of ONE model turn concurrently through `ctx.parallel`. `false`
    * (default) keeps the strictly sequential gate, run, gate, run order (and the exact frame
@@ -1012,6 +1032,22 @@ export async function agentLoop$(
       "agentLoop$: the ReasoningRuntime has a response cache, so `cacheScope` is required (use a per-tenant value; a constant value means every run using it shares entries)"
     );
   }
+  const parks = config.authority?.onExhausted === "park";
+  const maxRenewals = config.authority?.maxRenewals ?? 8;
+  if (
+    config.authority?.onExhausted !== undefined &&
+    config.authority.onExhausted !== "park" &&
+    config.authority.onExhausted !== "fail"
+  )
+    throw new AgentLoopConfigError('agentLoop$: authority.onExhausted must be "fail" or "park"');
+  if (parks && config.toolErrors === "fail")
+    throw new AgentLoopConfigError(
+      'agentLoop$: authority.onExhausted "park" needs toolErrors "feedback" (a failing tool is not recorded under "fail", so a renewal could not replay)'
+    );
+  if (!Number.isSafeInteger(maxRenewals) || maxRenewals < 0)
+    throw new AgentLoopConfigError(
+      "agentLoop$: authority.maxRenewals must be a non-negative integer"
+    );
   const parallelTools = config.parallelTools ?? false;
   if (
     typeof parallelTools === "number" &&
@@ -1375,6 +1411,8 @@ export async function agentLoop$(
     isError: boolean;
     /** A parallel branch that reached its checkpoint after the stop: it never ran. */
     notRun?: true;
+    /** Authority park: a parallel branch recorded this renewal request (attempt n); the settle phase parks. */
+    renewFrom?: number;
     /** D14 — the size compaction's byte trigger counts for this result, when not its own (a changed skill text on replay). */
     virtualBytes?: number;
   }
@@ -1496,7 +1534,8 @@ export async function agentLoop$(
     toolCall: LlmToolCall,
     turn: number,
     j: number,
-    inBranch: boolean
+    inBranch: boolean,
+    from = 0
   ): Promise<Outcome> => {
     // A branch that wakes after the stop does not throw (that would fail the scope and drop the
     // work its siblings completed): it reports "not run" and the interruption is raised after.
@@ -1518,33 +1557,57 @@ export async function agentLoop$(
       if (config.toolErrors === "fail" || humanTools.has(toolCall.name)) {
         return { output: await c.execute(task, toolCall.input), isError: false };
       }
-      const recorded = await c.decide<{ ok: true } | { failed: unknown } | { error: string }>(
-        `${id}:outcome`,
-        async () => {
-          try {
-            await c.execute(task, toolCall.input);
-            return { ok: true as const };
-          } catch (err) {
-            // Authority, safety, park, cancel and divergence are the runtime's: not recorded.
-            if (fatal(err)) {
-              markToolRaised(err);
-              throw err;
+      for (let n = from; ; n++) {
+        // Attempt n>0 is a fresh task id: the failed frame of the earlier attempt is never the answer.
+        const attempt = n === 0 ? task : { ...task, id: `${id}:r${n}` };
+        const recorded = await c.decide<
+          { ok: true } | { failed: unknown } | { error: string } | { request: unknown }
+        >(
+          parks ? renewalDecisionId(id, n) : `${id}:outcome`,
+          async () => {
+            try {
+              await c.execute(attempt, toolCall.input);
+              return { ok: true as const };
+            } catch (err) {
+              // Renewable BEFORE the terminal check: `LeaseExhaustedError` declares `retryable = false`.
+              if (parks && isRenewable(err)) {
+                if (n >= maxRenewals)
+                  throw new AuthorityRenewalDeniedError(`more than ${maxRenewals} renewals`);
+                return { request: renewalRequestOf(err, n) };
+              }
+              // Authority, safety, park, cancel and divergence are the runtime's: not recorded.
+              if (fatal(err)) {
+                markToolRaised(err);
+                throw err;
+              }
+              return { failed: failureOutput(toolCall.name, err) };
             }
-            return { failed: failureOutput(toolCall.name, err) };
-          }
-        },
-        { source: SOURCE_OUTCOME }
-      );
-      if ("failed" in recorded) return { output: recorded.failed, isError: true };
-      // (A pre-fix-round-2 record held the bare string; it is fenced on the way out all the same.)
-      if ("error" in recorded) {
-        return {
-          output: tainted({ error: recorded.error }, errorOrigin(toolCall.name)),
-          isError: true,
-        };
+          },
+          { source: SOURCE_OUTCOME }
+        );
+        if ("request" in recorded) {
+          // A park cannot happen inside a parallel branch: hand it to the settle phase.
+          if (inBranch) return { output: undefined, isError: false, renewFrom: n };
+          const key = `${ctx.executionId}#${id}#${n}`;
+          const verdict = await ctx.suspend({
+            on: config.authority?.gate ?? DEFAULT_RENEWAL_GATE,
+            correlationKey: key,
+            viewDigest: renewalViewDigest(key, recorded.request as never),
+          });
+          requireGranted(verdict);
+          continue;
+        }
+        if ("failed" in recorded) return { output: recorded.failed, isError: true };
+        // (A pre-fix-round-2 record held the bare string; it is fenced on the way out all the same.)
+        if ("error" in recorded) {
+          return {
+            output: tainted({ error: recorded.error }, errorOrigin(toolCall.name)),
+            isError: true,
+          };
+        }
+        // Served from the completed frame (no second run).
+        return { output: await c.execute(attempt, toolCall.input), isError: false };
       }
-      // Served from the completed frame (no second run).
-      return { output: await c.execute(task, toolCall.input), isError: false };
     } catch (err) {
       // R10 — a failing tool is feedback, not a failed run. Authority, safety, park, cancel and
       // divergence are the runtime's (see `isTerminalToolError`); `toolErrors: "fail"` opts out.
@@ -1649,6 +1712,11 @@ export async function agentLoop$(
           typeof parallelTools === "number" ? { limit: parallelTools } : {}
         );
         for (const [k, j] of toRun.entries()) outcomes[j] = ran[k] as Outcome;
+        for (const j of toRun) {
+          const from = (outcomes[j] as Outcome).renewFrom;
+          if (from !== undefined)
+            outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j, false, from);
+        }
         if (ran.some((o) => o.notRun === true)) {
           // The stop landed while the scope ran: carry out every call that completed (the ones that
           // never started are simply absent), then raise the interruption outside the scope.

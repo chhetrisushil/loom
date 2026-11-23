@@ -230,6 +230,9 @@ importers:
       '@loomwork/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
+      '@loomwork/task-authority':
+        specifier: workspace:*
+        version: link:../task-authority
       '@loomwork/worker-runtime':
         specifier: workspace:*
         version: link:../worker-runtime
