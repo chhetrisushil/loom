@@ -1209,7 +1209,7 @@ const grant = await broker.mint({ taskId: "t2", issuedTo: "agent-a", tenant: "ac
 await runtime.start(flow, {}, { principal: { actor: grant.issuedTo, tenant: "acme", onBehalfOf: "user-7", taskGrant: grant } });
 ```
 
-**Read scope and isolation (`reads`, `sandbox`; enforced from S6 / S8).** `mint` also takes `reads: string[]` (globs over `<toolId>:<resource>` read capabilities, `*` any run of characters, a bare `*` refused) and `sandbox: "isolated"`. Both are signed into the grant and encoded only when present, so a grant without them is byte-identical to before. A child may only narrow them: each child read must be covered by a parent read (a parent with none allows none) and a child of an isolated parent must be isolated, else `mint` throws `GrantBrokerError`; `childGrantMinter` inherits both, and a renewal keeps them. Each `reads` entry is `<toolId>:<glob>` with a literal tool id (`**`, `*:*` and `:*` are refused), at most 4 `*`, no duplicates, 16 KB in total. Upgrade every verifier before you mint grants with these fields: an older verifier refuses them (fail closed). Today they are carried and signed only: the `reads` check lands with S6 and the sandbox check with S8.
+**Read scope and isolation (`reads` enforced from S6, `sandbox` from S8; see "Read scope" below).** `mint` also takes `reads: string[]` (globs over `<toolId>:<resource>` read capabilities, `*` any run of characters, a bare `*` refused) and `sandbox: "isolated"`. Both are signed into the grant and encoded only when present, so a grant without them is byte-identical to before. A child may only narrow them: each child read must be covered by a parent read (a parent with none allows none) and a child of an isolated parent must be isolated, else `mint` throws `GrantBrokerError`; `childGrantMinter` inherits both, and a renewal keeps them. Each `reads` entry is `<toolId>:<glob>` with a literal tool id (`**`, `*:*` and `:*` are refused), at most 4 `*`, no duplicates, 16 KB in total. Upgrade every verifier before you mint grants with these fields: an older verifier refuses them (fail closed). Today they are carried and signed only: the `reads` check lands with S6 and the sandbox check with S8.
 
 **Rotating the secret.** Pass a ring wherever `secret` goes: `{ current, previous?, refOnly? }`. New grants sign with `current`; grants signed with a `previous` key still verify and renew onto `current`. Retire an old key in two steps: move it to `previous`, then, once its grants have renewed (or after the longest grant TTL: nothing renews a grant that never exhausts, and a run holding a grant signed by a key that has left `previous` fails to restore), to `refOnly`, where it can only restore the ref of a run already started under it (never vouch for a grant). Keep it there for the lifetime of the longest such run. **Removing a key outright strands every run started under it, and that is terminal**, so do it last.
 
@@ -1273,6 +1273,26 @@ channels above. Close the gaps by routing writes through the helpers, by listing
   them as foreign: that is the point, and it applies to your own agents' shared scopes too.
 - A2A: `new LoomAgentExecutor(runtime, flow, { taintInbound: { lineageOf: lineageOrigin(secret) } })` wraps the peer's prompt as
   `a2a-inbound:<actor>` and, for a principal with a verified grant, `lineage:<rootId>` (opt-in: the flow input becomes a tainted wrapper).
+
+#### Read scope: `reads` (ADR 0150 D8)
+
+Memory recall and durable-state loads are made checkable by being EFFECTS with a resource. Register `memoryRecallEffect(memory)`
+under an id, set `agentLoop$({ ..., recall: { toolId } })`, and the recall runs through the effect ring (authorizer, middleware,
+leases, journal): the resource is the recall scope, so a grant with `reads: ["memory.recall:user/*"]` may recall `user/1` and is
+refused (`task-grant:read-scope`) anywhere else. A replay serves the recorded entries; with `recall` unset the loop is unchanged.
+
+```ts
+effects.register("memory.recall", memoryRecallEffect(memory));
+const grant = await broker.mint({ taskId, issuedTo, effects: ["memory.recall", ...], leases, ttlMs, reads: ["memory.recall:user/*"] });
+await awaitChild(ctx, { key: "k", flowId: "child", input, ...res.spawn, reads: ["memory.recall:user/1"] }); // narrow; omit to inherit
+```
+
+- `reads` governs EVERY effect that declares `capabilities: { read: true }`, not only cross-lineage reads. Own-lineage reads are not
+  exempt: list the task's own namespace. Absent `reads` covers nothing.
+- Durable-state `load` declares itself a read with the key as the resource (`<loadToolId>:<key>`).
+- **Residual: an app must mark its own read tools** (`new ToolEffect(fn, { resourceOf, capabilities: { read: true } })`). An unmarked
+  read is NOT checked, and a read that goes straight to a store (not through an effect) is outside the ring.
+- Cross-lineage content that does arrive is attributed by `directedBy`; a kernel-attested writer (S-R9) is the future refinement.
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 

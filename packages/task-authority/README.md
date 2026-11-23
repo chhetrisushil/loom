@@ -28,7 +28,7 @@ Slice 1 surface (see `docs/api-reference.org`):
   the middleware throws `LeaseChildEffectUnbrandedError`.
 - Multi-tenant: `tenant` / `onBehalfOf` are signed into the grant, bound in a `ta2:` ref, denied on mismatch
   (`task-grant:identity`) and inherited by children.
-- Grant fields `reads` and `sandbox: "isolated"` (ADR 0150 S-R4, enforced from S6 / S8; today they are signed and carried only):
+- Grant fields `reads` and `sandbox: "isolated"` (ADR 0150 S-R4; `reads` is enforced from S6 (see "Read scope" below), `sandbox` from S8):
   `reads` is a list of globs (`*` matches any run of characters, bare `*` refused) over `<toolId>:<resource>` read
   capabilities; `sandbox` asks that a sandbox effect be network-less and fresh per run. Both are signed and encoded only
   when present (a grant without them keeps its signature), a child's `reads` must be covered by the parent's (absent
@@ -41,6 +41,17 @@ Slice 1 surface (see `docs/api-reference.org`):
 - Strict leases: `taskLeaseMiddleware` defaults to `strictLeases: true`, so an in-scope effect that no lease counts is
   refused when called (`LeaseUnmappedError`).
 - `@loomwork/task-authority/conformance`: a kit that proves a broker and runtime wiring resist laundering.
+
+## Read scope (`reads`, ADR 0150 D8)
+
+An effect that declares `capabilities: { read: true }` is a READ. The runtime marks its authorization request `read: true`, and
+`TaskGrantAuthorizer` denies it (`task-grant:read-scope`) unless `<toolId>:<resource>` is covered by one of the grant's `reads`
+globs (`globCovers`); a grant with no `reads` covers nothing. EVERY declared read is checked: own-lineage reads are not exempt, so
+the minter lists the task's own namespace. Cross-lineage CONTENT is attributed by `directedBy`, not here. `memoryRecallEffect(memory)`
+(resource = the recall scope; use it with `agentLoop$({ recall: { toolId } })`) and durable-state `load` (resource = the key)
+self-declare. Residual: an app must mark its OWN read tools (`new ToolEffect(fn, { resourceOf, capabilities: { read: true } })`); an
+unmarked read is not checked. A spawn may narrow a child with `awaitChild({ reads })`; inheritance stays the default and the broker
+refuses a widening.
 
 ## Covered laundering (`directedBy`)
 

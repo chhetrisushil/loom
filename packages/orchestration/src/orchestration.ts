@@ -193,6 +193,8 @@ interface SpawnChoice {
   lease?: Record<string, number>;
   /** ADR 0150 D6 - the parent's task id, handed to the minter (the supervisor cannot read the parent's principal). */
   leaseParent?: string;
+  /** ADR 0150 D8 - narrows the child's `reads` (a subset of the parent's; omitted = inherits). */
+  reads?: readonly string[];
   /** ADR 0112 D5 — opts out of the cancel cascade: this child outlives a cancelled parent. */
   detached?: boolean;
 }
@@ -217,6 +219,8 @@ interface GroupMember {
   expiresAt?: number;
   lease?: Record<string, number>;
   leaseParent?: string;
+  /** ADR 0150 D8 - narrow the child's `reads` (see `awaitChild`). */
+  reads?: readonly string[];
   /** ADR 0112 D5 — see {@link SpawnChoice.detached}. */
   detached?: boolean;
 }
@@ -283,6 +287,8 @@ export async function awaitChild<TOut = unknown>(
     lease?: Record<string, number>;
     /** ADR 0150 D6 - the parent's task id, for the minter. */
     leaseParent?: string;
+    /** ADR 0150 D8 - narrow the child's `reads` to a subset of the parent's (omitted = inherits). */
+    reads?: readonly string[];
     /**
      * ADR 0112 D5 — opt out of the cancel cascade. By default cancelling this execution cancels
      * the child it is awaiting; a `detached` child is work that must outlive its parent.
@@ -306,6 +312,7 @@ export async function awaitChild<TOut = unknown>(
     ...(spec.expiresAt !== undefined && { expiresAt: spec.expiresAt }),
     ...(spec.lease !== undefined && { lease: spec.lease }),
     ...(spec.leaseParent !== undefined && { leaseParent: spec.leaseParent }),
+    ...(spec.reads !== undefined && { reads: spec.reads }),
     ...(spec.detached === true && { detached: true }),
   }));
   // R8 round 1 — `viewDigest` binds the park to ITS child: a supervisor's resume must echo it, so
@@ -359,6 +366,7 @@ export async function awaitChildren<TOut = unknown>(
       /** ADR 0150 D6 - see `awaitChild`. */
       lease?: Record<string, number>;
       leaseParent?: string;
+      reads?: readonly string[];
       /** ADR 0112 D5 — this member outlives a cancelled parent (see `awaitChild`). */
       detached?: boolean;
     }[];
@@ -378,6 +386,7 @@ export async function awaitChildren<TOut = unknown>(
     ...(c.expiresAt !== undefined && { expiresAt: c.expiresAt }),
     ...(c.lease !== undefined && { lease: c.lease }),
     ...(c.leaseParent !== undefined && { leaseParent: c.leaseParent }),
+    ...(c.reads !== undefined && { reads: c.reads }),
     ...(c.detached === true && { detached: true }),
   }));
   if (group.maxDepth !== undefined) {
@@ -551,6 +560,7 @@ export interface SupervisorDeps {
         childId: string;
         lease: Record<string, number>;
         grants?: readonly string[];
+        reads?: readonly string[];
         expiresAt?: number;
       }
     ): Promise<PrincipalChain>;
@@ -1704,6 +1714,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         childId,
         lease: spec.lease,
         ...(spec.grants !== undefined && { grants: spec.grants }),
+        ...(spec.reads !== undefined && { reads: spec.reads }),
         ...(spec.expiresAt !== undefined && { expiresAt: spec.expiresAt }),
       }
     );
