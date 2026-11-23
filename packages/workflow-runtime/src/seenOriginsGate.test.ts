@@ -223,10 +223,11 @@ describe("seen origins: fleet gate, stamps and EffectContext.seenOrigins", () =>
     expect(w.transient.map((p) => p.present)).toEqual([false, false]);
   });
 
-  it("restoreFromState ignores a forged clean _seenOrigins: the run reads untracked", async () => {
+  it("restoreFromState ignores a forged clean _seenOrigins: it is rebuilt from the log (S2c)", async () => {
     const w = world();
     const rt = w.runtime({ seenOriginsEnabled: true });
     const f = reg(rt, "r", async (ctx) => {
+      await ctx.run(taint, "x");
       await ctx.receive("go");
       await ctx.run(probe, "p");
       return "done";
@@ -248,6 +249,7 @@ describe("seen origins: fleet gate, stamps and EffectContext.seenOrigins", () =>
     };
     const rt2 = w.runtime({ seenOriginsEnabled: true });
     reg(rt2, "r", async (ctx) => {
+      await ctx.run(taint, "x");
       await ctx.receive("go");
       await ctx.run(probe, "p");
       return "done";
@@ -256,7 +258,7 @@ describe("seen origins: fleet gate, stamps and EffectContext.seenOrigins", () =>
     await settle(h2);
     await rt2.send("r1", { topic: "go", payload: 1, messageId: "g" });
     await until(() => w.probes.length > 0);
-    expect(w.probes.at(-1)?.present).toBe(false);
+    expect(w.probes.at(-1)?.list).toEqual(["lineage:A", "inbox:go"]); // the forged clean key was not trusted
   });
 
   it("a gate-off continueAsNew of a tracked predecessor writes no carry and no stamp; its successor reads absent", async () => {
@@ -301,7 +303,7 @@ describe("seen origins: fleet gate, stamps and EffectContext.seenOrigins", () =>
     expect(w.liveReads).toEqual([{ before: [], after: ["lineage:Z"] }]);
   });
 
-  it("a run started gate-off then resumed on a gate-on runtime reads absent", async () => {
+  it("a run started gate-off then resumed on a gate-on runtime is adopted (S2c), not left absent", async () => {
     const w = world();
     const body: FlowRunner<unknown, unknown> = async (ctx) => {
       await ctx.receive("go");
@@ -314,7 +316,7 @@ describe("seen origins: fleet gate, stamps and EffectContext.seenOrigins", () =>
     reg(on, "up", body);
     await on.send("up1", { topic: "go", payload: 1, messageId: "g" });
     await until(() => w.probes.length > 0);
-    expect(w.probes.at(-1)?.present).toBe(false);
+    expect(w.probes.at(-1)?.list).toEqual(["inbox:go"]);
   });
 
   it("a fork of a tracked run sees the parent's origins; a fork of an untracked run reads absent", async () => {

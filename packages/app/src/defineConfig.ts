@@ -2330,6 +2330,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         maxChainHops: config.kernel.continuation.maxChainHops,
       }),
     }),
+    ...(compactionArchive !== undefined && { compactionArchive }),
     ...(config.kernel?.features?.inbox === true && {
       inboxEnabled: true,
       ...(config.kernel.inbox?.archive === "none"

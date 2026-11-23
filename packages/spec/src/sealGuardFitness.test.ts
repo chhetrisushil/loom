@@ -80,6 +80,8 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
       "packages/workflow-runtime/src/quarantine.ts",
       "packages/workflow-runtime/src/redriveAbandoned.ts",
       "packages/workflow-runtime/src/sealGuard.ts",
+      // ADR 0152 S2c: the seen-origins rescan reads through the store the runtime hands it (the guarded one).
+      "packages/workflow-runtime/src/seenOriginsSeed.ts",
     ]);
   });
 
