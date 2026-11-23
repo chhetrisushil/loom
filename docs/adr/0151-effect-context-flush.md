@@ -1,4 +1,4 @@
-# ADR 0151 — `EffectContext.flush()`: middleware can make its own events durable before the effect runs
+# ADR 0151 — `EffectContext.flush()` and `readResources()`: middleware can make its own events durable before the effect runs, and read the live totals
 
 - Status: **Proposed**
 - Date: 2026-11-23
@@ -12,9 +12,9 @@
   metering. K3 budgets meter AFTER the effect through the same write-behind journal, and the K8 abort path
   already shows that "metered before the effect can escape it" matters there. Any accounting middleware that must
   never under-count a side effect it allowed is the general case.
-- Placement verdict: **kernel (one optional field on `EffectContext`, wired in `WorkflowContext`)**. Durability of the
+- Placement verdict: **kernel (two optional fields on `EffectContext`, `flush` and `readResources`, wired in `WorkflowContext`)**. Durability of the
   journal is the kernel's alone: no seam outside it can await the write-behind tail.
-- Version/compat impact: `EffectContext` gains an OPTIONAL `flush?: () => Promise<void>` (additive; middleware and
+- Version/compat impact: `EffectContext` gains an OPTIONAL `flush?: () => Promise<void>` and `readResources?: () => ResourceSnapshot` (additive; middleware and
   effects that do not call it are byte-identical). No new event, no EVENT_SCHEMA or KERNEL_ABI change. The kernel
   budget for `packages/workflow-runtime/src/WorkflowContext.ts` grows by the wiring (`LOOM_KERNEL_BUDGET_ADR=0151`).
 
@@ -88,6 +88,29 @@ middleware refuses a leased effect on a context with no `flush` (ADR 0150 D4 ame
 It does not make `emit` itself durable, and the hot path stays write-behind. It does not change K3 metering's
 behaviour; moving K3's meter before the effect and flushing it is a separate decision. It adds no syscall: it is a
 method on the effect context that middleware already receives.
+
+### D6 — `readResources()`: the live fold, not the build-time snapshot
+
+```ts
+/** ADR 0151 D6 — the execution's CURRENT resource totals from the fold, read at call time (not the
+ *  context-build snapshot `resources`). Absent where no fold backs the context. Synchronous. */
+readonly readResources?: () => ResourceSnapshot;
+```
+
+`ctx.resources` is a snapshot taken when the effect context is built, so accounting middleware that counts
+side effects against a ceiling cannot trust it. The lease middleware's review reproduced three failures from
+patching around it with in-process reservations: (I1) it double-counted a sibling whose meter was already in a
+later context's snapshot, so 4 parallel `idempotent: false` calls against a ceiling of 4 ran only 2; (I6) a retry
+re-entering an old context after its high-water cache entry was evicted overshot the ceiling; (I5) the fold caps
+custom dimensions at 32 and silently drops a new one, so a lease count could vanish and a snapshot cannot show it.
+
+`readResources()` is **live and synchronous**: it evaluates the same fold read as `resources`, on each call, and
+returns a copy (mutating it never reaches the fold). A check-then-emit in one synchronous block is therefore exact
+against concurrent effects of the same execution: emits fold synchronously, so the next read sees them. It is
+absent on the transient seam and on test contexts, and a consumer that needs it fails closed, like `flush`.
+
+I5 consequence: after its emit, middleware re-reads and checks that the dimension it just metered is present
+(`Object.hasOwn(custom, name)`); if the fold dropped it, the middleware fails closed instead of dispatching.
 
 ## Consequences
 

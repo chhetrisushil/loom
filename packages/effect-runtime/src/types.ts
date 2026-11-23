@@ -102,6 +102,13 @@ export interface EffectContext {
    */
   readonly flush?: () => Promise<void>;
   /**
+   * ADR 0151 D6 — the execution's CURRENT resource totals from the fold, read at call time (not the
+   * context-build snapshot `resources`). Absent where no fold backs the context. Synchronous: a
+   * check-then-emit in one synchronous block is exact against concurrent effects of the same
+   * execution. The result is a copy; mutating it does not touch the fold.
+   */
+  readonly readResources?: () => ResourceSnapshot;
+  /**
    * The resolved effect id for this invocation. The runtime sets it on the view
    * of the context the MIDDLEWARE chain receives (additive — hand-built contexts
    * simply leave it unset, and the effect itself still receives the caller's
