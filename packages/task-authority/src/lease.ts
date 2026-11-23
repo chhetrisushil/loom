@@ -13,6 +13,10 @@ import { type TaskGrant, taskGrantDigest, verifyTaskGrant } from "./grant";
 
 export interface TaskLeaseOptions {
   secret: string;
+  /**
+   * Revocation source. WITHOUT it revocation is NOT checked at all: a revoked grant keeps running
+   * until it expires or its lease is exhausted. Pass the broker (or any `GrantSource` with `revoked`).
+   */
   source?: GrantSource;
   /** Refuse an in-scope effect that no lease counts. Default TRUE; `false` lets it run uncounted. */
   strictLeases?: boolean;
@@ -61,13 +65,23 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
   const cleanUntil = new Map<string, number>();
   const revoked = new Set<string>();
   const decided = new Set<string>();
+  // K parallel effects on a cache miss share ONE `source.revoked` call per digest (R20 semantics kept).
+  const inflight = new Map<string, Promise<boolean>>();
 
+  // Every caller gets a promise and waiters share the owner's, so they resume in call order.
   // Anything but a clean boolean `false` is revoked (fail closed): true, undefined, a throw, a hang.
-  async function isRevoked(digest: string): Promise<boolean> {
-    const check = opts.source?.revoked;
-    if (check === undefined) return false;
-    if (revoked.has(digest)) return true;
-    if ((cleanUntil.get(digest) ?? 0) > now()) return false;
+  function isRevoked(digest: string): Promise<boolean> {
+    if (opts.source?.revoked === undefined) return Promise.resolve(false);
+    if (revoked.has(digest)) return Promise.resolve(true);
+    if ((cleanUntil.get(digest) ?? 0) > now()) return Promise.resolve(false);
+    const pending = inflight.get(digest);
+    if (pending !== undefined) return pending;
+    const fresh = checkRevoked(digest);
+    inflight.set(digest, fresh);
+    return fresh;
+  }
+  async function checkRevoked(digest: string): Promise<boolean> {
+    const check = opts.source?.revoked as NonNullable<GrantSource["revoked"]>;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const answer = await Promise.race([
@@ -91,6 +105,7 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
       return true;
     } finally {
       clearTimeout(timer);
+      inflight.delete(digest);
     }
   }
 

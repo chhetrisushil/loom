@@ -1903,7 +1903,7 @@ function taskLeaseMiddleware(o: TaskLeaseOptions): EffectMiddleware   // reads c
 //   synchronous block: spent = readResources().custom["lease.<n>"]; >= ceiling => QUOTA_EXCEEDED { level: "lease" } + LeaseExhaustedError { renewable, lease, ceiling, spent, epoch };
 //   else DECISION_RECORDED "task-authority:grant:<epoch>" { digest, exp, epoch } (once per step/attempt/epoch), RESOURCE_METERED { custom: { "lease.<n>": 1 } }, a re-read that
 //   must show spent + 1 (else LeaseDimensionDroppedError: the fold's 32-dimension cap is full), `await flush()`, next(). No in-process counters: the fold is the spend.
-// D5 (R20): source.revoked(digest) with a timeout. A clean `false` is trusted for revocationCacheMs; `true` is sticky; anything else (undefined, a throw, a non-promise, a timeout) is revoked.
+// D5 (R20): source.revoked(digest) with a timeout. A clean `false` is trusted for revocationCacheMs; `true` is sticky; anything else (undefined, a throw, a non-promise, a timeout) is revoked. K parallel effects on a cache miss share ONE in-flight `revoked` call per digest. WITHOUT `source`, revocation is NOT checked at all (a revoked grant runs until it expires or its lease is exhausted).
 class LeaseExhaustedError extends Error { renewable: true; lease; ceiling; spent; epoch; taskId? }
 class GrantRevokedError extends Error { renewable: true; taskId; epoch? }
 class RenewalDeniedError extends Error {}   // renewable: false; a refused renewal or more than maxRenewals

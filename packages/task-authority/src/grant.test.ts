@@ -252,6 +252,12 @@ describe("task grant token", () => {
         leases(g).writes!.effects = ["db.write:orders"];
       });
     });
+    it("accepts a resource-qualified GRANT effect while the lease lists the bare tool", () => {
+      const g = base();
+      g.effects = [...g.effects, "db.write:orders"];
+      expect(() => validateGrantShape(g)).not.toThrow();
+      expect(() => signTaskGrant(S, g)).not.toThrow();
+    });
     it("accepts the base grant", () => {
       expect(() => validateGrantShape(base())).not.toThrow();
     });

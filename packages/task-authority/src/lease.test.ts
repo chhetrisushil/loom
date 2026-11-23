@@ -355,6 +355,26 @@ describe("revocation", () => {
     expect(emitted).toEqual([]);
   });
 
+  it("K concurrent leased effects on a cache miss make exactly one revoked() call", async () => {
+    let calls = 0;
+    let release: (v: boolean) => void = () => {};
+    const gate = new Promise<boolean>((r) => {
+      release = r;
+    });
+    const mw = taskLeaseMiddleware({
+      secret: SECRET,
+      source: src(() => {
+        calls++;
+        return gate;
+      }),
+    });
+    const runs = Array.from({ length: 8 }, () => mw(fakeCtx(g).ctx, {}, async () => 1));
+    await until(() => calls >= 1, "the first revoked() call");
+    release(false);
+    expect(await Promise.all(runs)).toEqual(Array(8).fill(1));
+    expect(calls).toBe(1);
+  });
+
   it("a hanging revoked() fails closed within the timeout and is not cached", async () => {
     let calls = 0;
     const mw = taskLeaseMiddleware({
@@ -522,6 +542,22 @@ describe("durability of the count (ADR 0151)", () => {
       {},
       async () => 1
     );
+  });
+
+  it("a rejecting flush() propagates, next never runs, and the meter was already emitted", async () => {
+    const g = signTaskGrant(SECRET, grantBody());
+    const { ctx, emitted } = fakeCtx(g);
+    const boom = new Error("flush failed");
+    (ctx as { flush?: () => Promise<void> }).flush = () => Promise.reject(boom);
+    let nextCalls = 0;
+    await expect(
+      taskLeaseMiddleware({ secret: SECRET })(ctx, {}, async () => {
+        nextCalls++;
+        return 1;
+      })
+    ).rejects.toBe(boom);
+    expect(nextCalls).toBe(0);
+    expect(JSON.stringify(emitted)).toContain("RESOURCE_METERED");
   });
 
   it("a context without readResources gets LeaseDurabilityError and counts nothing", async () => {
