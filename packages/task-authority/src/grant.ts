@@ -105,6 +105,7 @@ function checkShape(g: unknown, signed: boolean): void {
   );
   const names = Object.keys(leases);
   const allowed = new Set(effects);
+  const leased = new Set<string>();
   for (const name of names) {
     if (!LEASE_NAME.test(name)) fail(`lease name "${name}" must match ${LEASE_NAME}`);
     for (const dim of [`lease.${name}`, `lease.${name}.reserved`, `lease.${name}.returned`])
@@ -120,6 +121,12 @@ function checkShape(g: unknown, signed: boolean): void {
     if (le.length === 0) fail(`lease ${name} effects must be non-empty`);
     if (!le.every((e) => allowed.has(e)))
       fail(`lease ${name} effects must be a subset of the grant's`);
+    for (const e of le) {
+      // R21: the effect context carries no resource in slice 1, so `<tool>:<resource>` could never match.
+      if (e.includes(":")) fail(`lease ${name} effect "${e}" must not be resource-qualified`);
+      if (leased.has(e)) fail(`effect "${e}" is listed in two leases (overlap)`);
+      leased.add(e);
+    }
   }
   if (!isNonNegInt(own(g, "exp"))) fail("exp must be a non-negative integer");
   if (!isNonNegInt(own(g, "epoch"))) fail("epoch must be a non-negative integer");

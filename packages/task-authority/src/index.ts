@@ -24,7 +24,9 @@ export type { TaskLeaseOptions } from "./lease";
 export { taskLeaseMiddleware } from "./lease";
 export {
   GrantRevokedError,
+  LeaseDimensionDroppedError,
   LeaseDurabilityError,
   LeaseExhaustedError,
+  LeaseGrantInvalidError,
   LeaseUnmappedError,
 } from "./errors";

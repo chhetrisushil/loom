@@ -1894,18 +1894,21 @@ class TaskAuthorityPrincipalError extends Error {}   // toRef refused a chain ca
 function taskAuthorityPrincipalCodec(source: GrantSource, opts: TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec
 interface PrincipalCodecHost { composePrincipalCodec(codec): void }   // a WorkflowRuntime; no kernel dependency is added
 function installTaskAuthority(runtime: PrincipalCodecHost, o: { source: GrantSource } & TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec  // composePrincipalCodec: keeps any codec already set
-interface TaskLeaseOptions { secret: string; source?: GrantSource; strictLeases?: boolean; revocationTimeoutMs?: number /* default 5000 */ }
+interface TaskLeaseOptions { secret: string; source?: GrantSource; strictLeases?: boolean /* default TRUE */; revocationTimeoutMs?: number /* 5000 */; revocationCacheMs?: number /* 1000 */; now?: () => number }
 function taskLeaseMiddleware(o: TaskLeaseOptions): EffectMiddleware   // reads ctx.principal.taskGrant; none => next() untouched, zero events
-// D4: the effect maps to the first lease (sorted by name) whose `effects` contain its toolId (EffectContext carries no resource, so NOT `toolId:resource`).
-//   No lease: strictLeases => LeaseUnmappedError, else runs uncounted. A leased effect: spent = max(fold `lease.<name>` + in-flight reservations, process floor), reserved
-//   SYNCHRONOUSLY; at/over the ceiling => QUOTA_EXCEEDED { level: "lease" } + LeaseExhaustedError { renewable: true, lease, ceiling, spent, epoch }. Under it: emit
-//   DECISION_RECORDED "task-authority:grant:<epoch>" { digest, exp, epoch } (once per step/attempt/epoch), emit RESOURCE_METERED { custom: { "lease.<name>": 1 } },
-//   `await ctx.flush()` (ADR 0151), then next(). A leased effect on a context WITHOUT flush() => LeaseDurabilityError (never runs; a lease-governed effect runs only on a durable context).
-//   The attempt is counted whether or not the effect then throws. D5: source.revoked(digest) checked with a timeout (fails closed), a `false` cached per digest => GrantRevokedError { renewable: true }.
-//   Bounded: 1024 executions (idle evicted first), 256 decision keys per execution, 4096 cached digests. A forged grant throws.
+// Wiring (R22): place it INSIDE (after) any retry middleware, or a retry re-runs the effect under one count; run TaskGrantAuthorizer alongside (the middleware checks neither
+//   expiry nor holder); QUOTA_EXCEEDED folds a sticky `_resources.exceeded` that survives a renewal.
+// D4 (R19): effects map by toolId only (shape validation refuses overlapping leases and `:`-qualified lease effects, R21). No lease: strictLeases (default) => LeaseUnmappedError,
+//   else it runs uncounted. A leased effect needs ctx.flush AND ctx.readResources (ADR 0151) else LeaseDurabilityError (never runs). Then the revocation check, then ONE
+//   synchronous block: spent = readResources().custom["lease.<n>"]; >= ceiling => QUOTA_EXCEEDED { level: "lease" } + LeaseExhaustedError { renewable, lease, ceiling, spent, epoch };
+//   else DECISION_RECORDED "task-authority:grant:<epoch>" { digest, exp, epoch } (once per step/attempt/epoch), RESOURCE_METERED { custom: { "lease.<n>": 1 } }, a re-read that
+//   must show spent + 1 (else LeaseDimensionDroppedError: the fold's 32-dimension cap is full), `await flush()`, next(). No in-process counters: the fold is the spend.
+// D5 (R20): source.revoked(digest) with a timeout. A clean `false` is trusted for revocationCacheMs; `true` is sticky; anything else (undefined, a throw, a non-promise, a timeout) is revoked.
 class LeaseExhaustedError extends Error { renewable: true; lease; ceiling; spent; epoch }
 class GrantRevokedError extends Error { renewable: true }
 class LeaseUnmappedError extends Error {}   // renewable: false
+class LeaseGrantInvalidError extends Error {}   // renewable: false
+class LeaseDimensionDroppedError extends Error {}   // renewable: false
 class LeaseDurabilityError extends Error {} // renewable: false
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.

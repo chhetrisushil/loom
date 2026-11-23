@@ -1,6 +1,7 @@
 import type { EventEnvelope, FlowDefinition } from "@loomwork/core";
 import {
   type EffectContext,
+  type EffectMiddleware,
   EffectRuntime,
   type PrincipalChain,
   ToolEffect,
@@ -19,8 +20,10 @@ import { z } from "zod";
 import type { GrantSource } from "./broker";
 import {
   GrantRevokedError,
+  LeaseDimensionDroppedError,
   LeaseDurabilityError,
   LeaseExhaustedError,
+  LeaseGrantInvalidError,
   LeaseUnmappedError,
 } from "./errors";
 import { type TaskGrant, signTaskGrant } from "./grant";
@@ -71,10 +74,14 @@ interface BootOpts {
   idempotent?: boolean;
   body?: () => Promise<void>;
   throws?: boolean;
+  /** Throw on the first call only. */
+  throwsFirst?: boolean;
+  pre?: EffectMiddleware[];
 }
 function boot(o: BootOpts) {
   const ran = { n: 0 };
   const effects = new EffectRuntime([
+    ...(o.pre ?? []),
     taskLeaseMiddleware({
       secret: SECRET,
       source: o.broker,
@@ -83,9 +90,9 @@ function boot(o: BootOpts) {
   ]);
   const act = new ToolEffect(
     async () => {
-      ran.n++;
+      const nth = ++ran.n;
       await o.body?.();
-      if (o.throws === true) throw new Error("boom");
+      if (o.throws === true || (o.throwsFirst === true && nth === 1)) throw new Error("boom");
       return { ok: true };
     },
     o.idempotent === undefined ? {} : { idempotent: o.idempotent }
@@ -277,30 +284,42 @@ function grantBody(over: Partial<TaskGrant> = {}) {
 }
 function fakeCtx(
   g: TaskGrant | undefined,
-  over: { attempt?: number; flush?: boolean; toolId?: string; exec?: string } = {}
+  over: {
+    attempt?: number;
+    flush?: boolean;
+    readResources?: boolean;
+    toolId?: string;
+    exec?: string;
+  } = {}
 ) {
   const emitted: string[] = [];
+  const custom: Record<string, number> = {};
   const ctx = {
     executionId: over.exec ?? "fx",
     stepId: "s",
     workflowId: "w",
     attempt: over.attempt ?? 1,
     toolId: over.toolId ?? "act",
-    emit: (t: string) => {
+    emit: (t: string, payload: { custom?: Record<string, number> }) => {
       emitted.push(t);
+      if (t === "RESOURCE_METERED")
+        for (const [k, v] of Object.entries(payload.custom ?? {})) custom[k] = (custom[k] ?? 0) + v;
     },
     ...(over.flush !== false && { flush: async () => {} }),
+    ...(over.readResources !== false && {
+      readResources: () => ({ tokens: 0, costUsd: 0, ms: 0, count: 0, custom: { ...custom } }),
+    }),
     ...(g !== undefined && { principal: { actor: "agent-a", taskGrant: g } }),
   } as unknown as EffectContext;
-  return { ctx, emitted };
+  return { ctx, emitted, custom };
 }
 
 describe("mapping", () => {
-  it("strictLeases refuses an unmapped effect; non-strict lets it through uncounted", async () => {
+  it("strict by default refuses an unmapped effect; strictLeases:false lets it through uncounted", async () => {
     const broker = mkBroker();
     const g = await mint(broker, 3);
-    const strict = taskLeaseMiddleware({ secret: SECRET, strictLeases: true });
-    const loose = taskLeaseMiddleware({ secret: SECRET });
+    const strict = taskLeaseMiddleware({ secret: SECRET });
+    const loose = taskLeaseMiddleware({ secret: SECRET, strictLeases: false });
     const a = fakeCtx(g, { toolId: "other" });
     await expect(strict(a.ctx, {}, async () => 1)).rejects.toBeInstanceOf(LeaseUnmappedError);
     expect(a.emitted).toEqual([]);
@@ -312,9 +331,9 @@ describe("mapping", () => {
   it("a forged grant makes the middleware throw", async () => {
     const g = signTaskGrant("other-secret", grantBody());
     const { ctx, emitted } = fakeCtx(g);
-    await expect(taskLeaseMiddleware({ secret: SECRET })(ctx, {}, async () => 1)).rejects.toThrow(
-      /failed verification/
-    );
+    await expect(
+      taskLeaseMiddleware({ secret: SECRET })(ctx, {}, async () => 1)
+    ).rejects.toBeInstanceOf(LeaseGrantInvalidError);
     expect(emitted).toEqual([]);
   });
 });
@@ -351,18 +370,52 @@ describe("revocation", () => {
     expect(calls).toBe(2);
   });
 
-  it("a false answer is cached per digest", async () => {
+  it("a clean answer is trusted only for the TTL: a revoke after it is seen once the clock passes it", async () => {
+    let clock = 0;
+    let revokedNow = false;
     let calls = 0;
     const mw = taskLeaseMiddleware({
       secret: SECRET,
+      revocationCacheMs: 1000,
+      now: () => clock,
       source: src(async () => {
         calls++;
-        return false;
+        return revokedNow;
       }),
     });
     await mw(fakeCtx(g).ctx, {}, async () => 1);
-    await mw(fakeCtx(g, { exec: "other" }).ctx, {}, async () => 1);
+    revokedNow = true;
+    clock = 999;
+    await mw(fakeCtx(g, { exec: "o2" }).ctx, {}, async () => 1); // still inside the TTL: cached clean
     expect(calls).toBe(1);
+    clock = 1001;
+    await expect(mw(fakeCtx(g, { exec: "o3" }).ctx, {}, async () => 1)).rejects.toBeInstanceOf(
+      GrantRevokedError
+    );
+    expect(calls).toBe(2);
+    revokedNow = false; // a revoked answer is sticky
+    clock = 10_000;
+    await expect(mw(fakeCtx(g, { exec: "o4" }).ctx, {}, async () => 1)).rejects.toBeInstanceOf(
+      GrantRevokedError
+    );
+    expect(calls).toBe(2);
+  });
+
+  it("anything but a clean false fails closed: undefined, a non-promise, a sync throw", async () => {
+    const answers: Array<() => unknown> = [
+      () => Promise.resolve(undefined),
+      () => "no",
+      () => {
+        throw new Error("sync");
+      },
+    ];
+    for (const a of answers) {
+      const mw = taskLeaseMiddleware({
+        secret: SECRET,
+        source: src(a as never),
+      });
+      await expect(mw(fakeCtx(g).ctx, {}, async () => 1)).rejects.toBeInstanceOf(GrantRevokedError);
+    }
   });
 });
 
@@ -463,6 +516,163 @@ describe("durability of the count (ADR 0151)", () => {
     expect(bare.emitted).toEqual([]);
     // an unleased effect and a no-grant call need no flush
     const other = fakeCtx(g, { flush: false, toolId: "other" });
-    await taskLeaseMiddleware({ secret: SECRET })(other.ctx, {}, async () => 1);
+    await taskLeaseMiddleware({ secret: SECRET, strictLeases: false })(
+      other.ctx,
+      {},
+      async () => 1
+    );
+  });
+
+  it("a context without readResources gets LeaseDurabilityError and counts nothing", async () => {
+    const g = signTaskGrant(SECRET, grantBody());
+    const { ctx, emitted } = fakeCtx(g, { readResources: false });
+    await expect(
+      taskLeaseMiddleware({ secret: SECRET })(ctx, {}, async () => 1)
+    ).rejects.toBeInstanceOf(LeaseDurabilityError);
+    expect(emitted).toEqual([]);
+  });
+});
+
+describe("live-fold counting (R19)", () => {
+  const runAll =
+    (n: number, settled: PromiseSettledResult<unknown>[]): FlowRunner<unknown, unknown> =>
+    async (ctx: ExecutionContext) => {
+      settled.push(
+        ...(await Promise.allSettled(
+          Array.from({ length: n }, (_, i) => ctx.run(task(`c${i}`), {}))
+        ))
+      );
+      return {};
+    };
+
+  for (const idempotent of [undefined, false]) {
+    it(`K parallel calls with K = ceiling all run (idempotent: ${String(idempotent)})`, async () => {
+      const broker = mkBroker();
+      const g = await mint(broker, 4);
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const settled: PromiseSettledResult<unknown>[] = [];
+      const h = boot({
+        broker,
+        runner: runAll(4, settled),
+        body: () => gate,
+        ...(idempotent !== undefined && { idempotent }),
+      });
+      const run = await h.start(`k-${String(idempotent)}`, g);
+      await until(() => h.ran.n === 4, "all four effects to start");
+      release();
+      await run.waitForCompletion();
+      expect(h.ran.n).toBe(4);
+      expect(settled.every((r) => r.status === "fulfilled")).toBe(true);
+    });
+  }
+
+  it("A in flight, an unleased step, then B and C at ceiling 3: all three run", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker, 3);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let calls = 0;
+    const runner: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext) => {
+      const a = ctx.run(task("A"), {});
+      await ctx.run(task("U", "other"), {});
+      await ctx.run(task("B"), {});
+      await ctx.run(task("C"), {});
+      release();
+      await a;
+      return {};
+    };
+    const h = boot({
+      broker,
+      runner,
+      strict: false,
+      body: () => (calls++ === 0 ? gate : Promise.resolve()),
+    });
+    const run = await h.start("p1b", g);
+    await run.waitForCompletion();
+    expect(h.ran.n).toBe(3);
+  });
+
+  it("the same context twice at ceiling 1: the first attempt throws, the second is refused", async () => {
+    const g = signTaskGrant(SECRET, grantBody({ leases: { w: { ceiling: 1, effects: ["act"] } } }));
+    const mw = taskLeaseMiddleware({ secret: SECRET });
+    const { ctx } = fakeCtx(g);
+    await expect(
+      mw(ctx, {}, async () => {
+        throw new Error("boom");
+      })
+    ).rejects.toThrow("boom");
+    await expect(mw(ctx, {}, async () => 1)).rejects.toBeInstanceOf(LeaseExhaustedError);
+  });
+
+  it("ceiling 2, the first effect throws and the flow catches it: the second runs", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker, 2);
+    const out: { err?: unknown } = {};
+    const runner: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext) => {
+      try {
+        await ctx.run(task("t0"), {});
+      } catch {
+        // the failure is the flow's to handle
+      }
+      await ctx.run(task("t1"), {});
+      return seq(1, out)(ctx, {});
+    };
+    const h = boot({ broker, runner, throwsFirst: true });
+    const run = await h.start("t4", g);
+    await run.waitForCompletion();
+    expect(h.ran.n).toBe(2);
+    expect(out.err).toBeInstanceOf(LeaseExhaustedError); // two counted attempts spent the ceiling
+    expect((await types(h.stores, "t4")).filter((x) => x === "RESOURCE_METERED")).toHaveLength(2);
+  });
+
+  it("a full custom-dimension cap: LeaseDimensionDroppedError, the effect never runs, a restart does not overshoot", async () => {
+    const broker = mkBroker();
+    const g = await mint(broker, 2);
+    const pre: EffectMiddleware = async (ctx, _i, next) => {
+      if (ctx.toolId === "other") {
+        const custom: Record<string, number> = {};
+        for (let i = 0; i < 32; i++) custom[`app.d${i}`] = 1;
+        ctx.emit("RESOURCE_METERED", { custom });
+      }
+      return next();
+    };
+    const errs: unknown[] = [];
+    const runner: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext) => {
+      await ctx.run(task("o", "other"), {});
+      for (const s of ["a0", "a1"]) {
+        try {
+          await ctx.run(task(s), {});
+        } catch (e) {
+          errs.push(e);
+        }
+      }
+      await ctx.suspend({ on: "GO" });
+      for (const s of ["a2", "a3"]) {
+        try {
+          await ctx.run(task(s), {});
+        } catch (e) {
+          errs.push(e);
+        }
+      }
+      return {};
+    };
+    const h1 = boot({ broker, runner, pre: [pre], strict: false });
+    const r1 = await h1.start("dims", g);
+    await r1.waitForSuspend();
+    const h2 = boot({ broker, runner, stores: h1.stores, pre: [pre], strict: false });
+    const r2 = await h2.runtime.resume(
+      "dims",
+      { eventType: "GO", payload: {} },
+      { principal: chainOf(g) }
+    );
+    await r2.waitForCompletion();
+    expect(h1.ran.n + h2.ran.n).toBe(0);
+    expect(errs.length).toBeGreaterThanOrEqual(4); // a resume re-runs the failed steps too
+    for (const e of errs) expect(e).toBeInstanceOf(LeaseDimensionDroppedError);
   });
 });

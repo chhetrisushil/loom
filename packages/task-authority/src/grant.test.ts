@@ -20,10 +20,10 @@ const base = (): UnsignedTaskGrant => ({
   rootId: "t-root",
   parentId: "t-parent",
   issuedTo: "agent-1",
-  effects: ["email.send", "db.write"],
+  effects: ["email.send", "db.write", "db.read"],
   leases: {
     emails: { ceiling: 5, effects: ["email.send"] },
-    writes: { ceiling: 9, effects: ["db.write", "email.send"] },
+    writes: { ceiling: 9, effects: ["db.write", "db.read"] },
   },
   exp: 2_000_000,
   epoch: 3,
@@ -75,6 +75,7 @@ describe("task grant token", () => {
       "issuedTo",
       "effects.0",
       "effects.1",
+      "effects.2",
       "exp",
       "epoch",
       "sig",
@@ -208,10 +209,10 @@ describe("task grant token", () => {
       epoch: 3,
       exp: 2_000_000,
       leases: {
-        writes: { effects: ["email.send", "db.write"], ceiling: 9 },
+        writes: { effects: ["db.read", "db.write"], ceiling: 9 },
         emails: { effects: ["email.send"], ceiling: 5 },
       },
-      effects: ["db.write", "email.send"],
+      effects: ["db.write", "db.read", "email.send"],
       issuedTo: "agent-1",
       parentId: "t-parent",
       rootId: "t-root",
@@ -240,6 +241,17 @@ describe("task grant token", () => {
     };
     const leases = (g: Record<string, unknown>) =>
       g.leases as Record<string, { ceiling: unknown; effects: unknown }>;
+    it("refuses an effect listed in two leases (overlap, R21a)", () => {
+      bad((g) => {
+        leases(g).writes!.effects = ["db.write", "email.send"];
+      });
+    });
+    it("refuses a resource-qualified lease effect (R21b)", () => {
+      bad((g) => {
+        (g.effects as string[]).push("db.write:orders");
+        leases(g).writes!.effects = ["db.write:orders"];
+      });
+    });
     it("accepts the base grant", () => {
       expect(() => validateGrantShape(base())).not.toThrow();
     });
