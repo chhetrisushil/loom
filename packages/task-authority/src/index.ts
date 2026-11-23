@@ -34,8 +34,11 @@ export {
 export type { RenewalContext, RenewalRuntime } from "./renewal";
 export {
   RENEWAL_GATE,
+  RENEWAL_TERMINAL_NAMES,
   answerRenewal,
   isRenewable,
+  renewalDecisionId,
+  renewalViewDigest,
   renewalResumeSchema,
   withRenewal,
 } from "./renewal";

@@ -21,6 +21,7 @@ export {
   memoryWriteBackEffect,
   registerReasoningRoutes,
 } from "./agentLoop$";
+export { AuthorityRenewalDeniedError, DEFAULT_RENEWAL_GATE } from "./authorityRenewal";
 export {
   classifyModelCallError,
   classifyModelCallFailure,

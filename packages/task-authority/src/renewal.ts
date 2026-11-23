@@ -20,6 +20,41 @@ export const renewalResumeSchema = z.discriminatedUnion("granted", [
 
 const MAX_DEPTH = 8;
 const EXPIRED = /^task-grant:expired/;
+/**
+ * The error classes the agent loop never feeds back (`TERMINAL_ERROR_NAMES` of `@loomwork/agent`, restated:
+ * this package cannot import it; `authorityRenewal.test.ts` in agent asserts the two lists are equal). The cause
+ * walk stops at the first one, so a safety, kill-switch or divergence error wrapping a renewable error never parks.
+ */
+export const RENEWAL_TERMINAL_NAMES: ReadonlySet<string> = new Set(
+  (
+    "SuspendError ScopeAbortedError ScopeServedError ContinueAsNewSignal " +
+    "ContinueAsNewRefusedError ContinueAsNewUnavailableError CapabilityDeniedError " +
+    "CapabilityInvokeDeniedError EffectModeViolationError ExecutionDeniedError " +
+    "ApprovalRejectedError SafetyViolationError KillSwitchEngagedError IdempotentToolRefusedError " +
+    "QuotaExceededError RateLimitExceededError ExecutionCancelledError DecideScopeClosedError " +
+    "ParallelScopeFailedError FlowDivergenceError FlowReplayDivergenceError FlowCodeMismatchError " +
+    "StartFencedOutError PrincipalUnrestorableError StorageWriteError " +
+    "ExecutionStoreUnavailableError InboxTopicStreamsRequiredError SealedPayloadUnreadableError " +
+    "QuarantineHeldError SealedStreamUnreadableError KeyUnavailableError " +
+    "ShardSealingMismatchError PlaintextCheckpointError ArchiveGapError " +
+    "CompactionArchiveRequiredError ReservedStreamArchiveRequiredError " +
+    "ReservedStreamDeleteUnsupportedError InboxArchiveRequiredError PlaintextArchiveError " +
+    "ArchiveConflictError ArchiveDigestError ArchiveIncompleteError ArchiveLogMismatchError " +
+    "ArchiveTenantMismatchError ArchiveIncarnationError ArchiveUnserializableError LeaseLostError " +
+    "LeaseHeldError LeaseStoreQuietError LeaseStoreTimeoutError StartLeaseHeldError " +
+    "LeaseEvidenceError AsyncContextUnavailableError StaleFenceError ExecutionSupersededError " +
+    "DuplicateEnvelopeIdError DuplicateSequenceError EgressDeniedError SpawnLimitExceededError " +
+    "LlmStreamError LlmResponseLimitError LlmResponseInvalidError"
+  ).split(" ")
+);
+const isTerminalLayer = (e: object): boolean => {
+  if (RENEWAL_TERMINAL_NAMES.has((e as { name?: string }).name ?? "")) return true;
+  for (let p = Object.getPrototypeOf(e); p !== null; p = Object.getPrototypeOf(p)) {
+    const n = (p as { constructor?: { name?: string } }).constructor?.name;
+    if (n !== undefined && RENEWAL_TERMINAL_NAMES.has(n)) return true;
+  }
+  return false;
+};
 const find = (err: unknown): Record<string, unknown> | undefined => {
   let e = err;
   for (let i = 0; i < MAX_DEPTH && typeof e === "object" && e !== null; i++) {
@@ -31,6 +66,7 @@ const find = (err: unknown): Record<string, unknown> | undefined => {
       EXPIRED.test(o.reason)
     )
       return o;
+    if (isTerminalLayer(e)) return undefined;
     e = o.cause;
   }
   return undefined;
