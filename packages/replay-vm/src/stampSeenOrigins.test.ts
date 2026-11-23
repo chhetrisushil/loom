@@ -21,9 +21,10 @@ const tracked = () =>
   ]);
 
 describe("stampSeenOrigins", () => {
-  it("stampSeenOrigins strips a caller-supplied origins / originsOverflow, tracked or not", () => {
+  it("strips a caller-supplied origins / originsOverflow on a CHANNEL event, tracked or not", () => {
     const forged = { origins: ["forged"], originsOverflow: true, fence: 3 };
-    expect(stampSeenOrigins(undefined, "APP", {}, forged)).toEqual({ fence: 3 });
+    // an untracked run's channel event: stripped, nothing recorded
+    expect(stampSeenOrigins(undefined, "STEP_COMPLETED", {}, forged)).toEqual({ fence: 3 });
     const st = tracked();
     expect(stampSeenOrigins(st, "STEP_COMPLETED", { output: "clean" }, forged)).toEqual({
       fence: 3,
@@ -33,6 +34,14 @@ describe("stampSeenOrigins", () => {
       fence: 3,
       origins: ["real"],
     });
+  });
+  it("M-C: application metadata on a NON-channel event (or a run that never opted in) is byte-untouched", () => {
+    const app = { origins: ["app-owned"], originsOverflow: false, other: 1 };
+    // untracked run, non-channel event: the very same object, the value preserved
+    expect(stampSeenOrigins(undefined, "APP_EVENT", { v: 1 }, app)).toBe(app);
+    // tracked run, non-channel event: also untouched (the fold ignores a record on a non-channel event anyway)
+    expect(stampSeenOrigins(tracked(), "STEP_STARTED", { stepId: "a" }, app)).toBe(app);
+    expect(app.origins).toEqual(["app-owned"]);
   });
   it("returns the same metadata object when there is nothing to record (untracked run, non-channel event)", () => {
     const m = { kernel: true };

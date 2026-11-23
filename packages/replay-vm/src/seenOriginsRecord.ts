@@ -240,8 +240,8 @@ export function seenOriginsRecord(
 }
 
 /**
- * The journal's envelope-metadata step: drop any caller-supplied `origins` / `originsOverflow` (the field is the
- * kernel's alone, like the `kernel` stamp), then add the record of this event. Returns `metadata` untouched
+ * The journal's envelope-metadata step: drop any caller-supplied `origins` / `originsOverflow` on a CHANNEL event (the field is the
+ * kernel's alone there, like the `kernel` stamp; application metadata on any other event is left byte-untouched), then add the record of this event. Returns `metadata` untouched
  * (same object) when there is nothing to record: an untracked or overflowed run, or a non-channel event.
  */
 export function stampSeenOrigins(
@@ -253,6 +253,7 @@ export function stampSeenOrigins(
   let meta = metadata;
   if (
     meta !== undefined &&
+    CHANNELS.has(eventType) &&
     (Object.hasOwn(meta, "origins") || Object.hasOwn(meta, "originsOverflow"))
   ) {
     const { origins: _o, originsOverflow: _f, ...rest } = meta;
