@@ -128,8 +128,10 @@ dimension starting with any reserved prefix. EFFECT-scope emits are unaffected.
 The trust line: grants and guards bound the model and flow code; effects and middleware are registered by the app
 and are trusted. The kernel knows no vocabulary: the contributor (for example `@loomwork/task-authority`) names its
 own prefix, so nothing like "lease" appears in the kernel. It is additive: with no prefix reserved the behaviour is
-byte-identical. It guards new appends only: a recorded event is never re-guarded, so a log that holds an effect
+byte-identical. The prefix should include its delimiter (`lease.`, not `lease`: a bare `lease` also reserves `leaseholder`), and a reservation belongs to one `WorkflowRuntime` instance. Every non-effect scope is guarded (flow, or none given). `custom` is snapshotted once before any check (R28), so a Proxy or getter object cannot show the guard one set of names and the fold another. It guards new appends only: a recorded event is never re-guarded, so a log that holds an effect
 meter under a prefix reserved later still replays (a re-run FLOW emit under it is refused, as any new emit).
+
+Upgrade hazard: a suspended flow that already emitted a now-reserved dimension at flow scope fails on its next resume, because the re-run flow body emits it again. Remedy: reserve the prefix before first use, or migrate the flow. A test pins this.
 
 ## Consequences
 

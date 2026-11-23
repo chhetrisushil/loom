@@ -190,7 +190,7 @@
       "adr": "0148"
     },
     "userspaceEmit.ts": {
-      "codeLines": 231,
+      "codeLines": 244,
       "adr": "0151"
     },
     "writeConflict.ts": {
