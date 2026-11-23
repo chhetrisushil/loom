@@ -61,9 +61,16 @@ calls it.
 
 `flush()` yields. While it waits, a terminal seal may land: a terminal commit, a sealed inbox payload, or a park
 barrier that gave up. After the drain, `flush()` applies the same rule as the K9.3 pre-dispatch drain: a sealed
-context never dispatches. It does not resolve, so the effect is never run and nothing unrecordable happens.
-A frozen or parked-scope context resolves normally: the step is already in flight and holds `activeWork`, exactly
-as at the K9.3 drain. The implementation reuses the K9.3 code path rather than duplicating its reasoning.
+context does not resolve, so a middleware awaiting it never reaches `next()`. A frozen or parked-scope context
+resolves normally: the step is already in flight and holds `activeWork`, exactly as at the K9.3 drain. K9.3 and
+`flush()` share one synchronous verdict (`sealedVerdict`); the K9.3 site keeps its drain, seal check, `inFlight++`
+and dispatch in one synchronous run (R18), because a microtask between the check and the dispatch lets a terminal
+commit seal the context in the gap.
+
+The guarantee is narrow: **the context was not sealed at the moment `flush()` resolved.** Middleware has at least
+one tick between `await ctx.flush()` and `next()`, so a seal can land in between. The effect may then run, and its
+outcome is not recorded. `flush()` also rejects, with the step signal's reason (deadline or cancel), when the
+step's own signal aborted during the drain, so a timed-out step does not dispatch a zombie through the middleware.
 
 ### D3 — in-flight accounting
 

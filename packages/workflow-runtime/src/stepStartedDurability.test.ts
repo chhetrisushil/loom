@@ -476,3 +476,56 @@ describe("K9.3 STEP_STARTED drain: cancel and onPark abort during the drain", ()
     expect(a.ran).toEqual(["a"]);
   }, 15_000);
 });
+
+// ADR 0151 R18 — the K9.3 continuation (seal check -> inFlight++ -> dispatch) is ONE synchronous run.
+// An extra microtask between the seal check and the dispatch lets a sibling's terminal commit seal
+// the context in that gap, and the effect then dispatches AFTER EXECUTION_COMPLETED.
+describe("K9.3: no microtask between the post-drain seal check and the dispatch", () => {
+  it("an idempotent:false effect never starts after EXECUTION_COMPLETED, for any flow-return delay", async () => {
+    const late: number[] = [];
+    for (let k = 0; k <= 20; k++) {
+      const log: string[] = [];
+      const effects = new EffectRuntime();
+      effects.register(
+        "tool-a",
+        new ToolEffect(
+          async () => {
+            log.push("effect");
+            return { ok: true };
+          },
+          { idempotent: false }
+        )
+      );
+      const runtime = new WorkflowRuntime({
+        eventStore: new InMemoryAsyncEventStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: effects,
+        onWarn: () => {},
+        onEvent: (e: { eventType: string }) => log.push(e.eventType),
+      });
+      const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+        void ctx.run(stepA, {}).catch(() => {});
+        for (let i = 0; i < k; i++) await Promise.resolve();
+        return { ok: true };
+      };
+      const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
+        _tag: "FlowDefinition",
+        id: "seal-gap",
+        name: "seal-gap",
+        version: "1.0.0",
+        inputSchema: io.inputSchema,
+        outputSchema: io.outputSchema,
+        steps: [stepA],
+      };
+      runtime.registerFlow(definition, runner);
+      const h = await runtime.start({ definition, runner }, {}, { executionId: `gap-${k}` });
+      await h.waitForCompletion();
+      // Let any (buggy) post-seal dispatch land: a bounded run of macrotask turns.
+      for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 1));
+      const done = log.indexOf("EXECUTION_COMPLETED");
+      const ran = log.indexOf("effect");
+      if (done >= 0 && ran > done) late.push(k);
+    }
+    expect(late).toEqual([]);
+  });
+});
