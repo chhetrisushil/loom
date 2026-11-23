@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { EffectRuntime } from "./EffectRuntime";
 import { ToolEffect } from "./effects/ToolEffect";
 import { EffectModeViolationError } from "./types";
-import type { EffectContext } from "./types";
+import type { EffectContext, EffectMiddleware } from "./types";
 
 // ── ADR 0073 — the determinism-boundary check ────────────────────────────────
 //
@@ -88,5 +88,28 @@ describe("effect mode boundary (ADR 0073)", () => {
         ctx({ executionId: "transient:page", workflowId: "transient", stepId: "page" })
       )
     ).rejects.toThrow(EffectModeViolationError);
+  });
+});
+
+describe("ADR 0151: flush is absent on the transient seam", () => {
+  it("invokeTransient provides no ctx.flush to middleware or the effect", async () => {
+    const seen: Array<unknown> = [];
+    const mw: EffectMiddleware = async (c, _i, next) => {
+      seen.push(c.flush);
+      return next();
+    };
+    const rt = new EffectRuntime([mw]);
+    rt.register(
+      "page",
+      new ToolEffect(
+        async (_input, c) => {
+          seen.push(c.flush);
+          return { rows: [] };
+        },
+        { mode: "ambient" }
+      )
+    );
+    await rt.invokeTransient("page", {});
+    expect(seen).toEqual([undefined, undefined]);
   });
 });

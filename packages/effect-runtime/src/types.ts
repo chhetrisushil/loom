@@ -95,6 +95,13 @@ export interface EffectContext {
   workflowId: string;
   attempt: number;
   /**
+   * ADR 0151 — await the durable write of every event this execution has committed so far,
+   * including this effect's own emits. Rejects with StorageWriteError if any write failed (the
+   * run is already failing). Absent where no durable journal backs the context (the transient
+   * seam, test harnesses): a caller that needs durability MUST fail closed when it is absent.
+   */
+  readonly flush?: () => Promise<void>;
+  /**
    * The resolved effect id for this invocation. The runtime sets it on the view
    * of the context the MIDDLEWARE chain receives (additive — hand-built contexts
    * simply leave it unset, and the effect itself still receives the caller's

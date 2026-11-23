@@ -805,7 +805,7 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0150), one line per range:
+- **[ADRs](adr/)** — the full decision history (0001–0151), one line per range:
   - **0016–0026** cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series
   - **0036–0041** the three-direction arc
   - **0042** the AI-native brownfield `appgen`
@@ -936,4 +936,5 @@ Being honest about the edges:
   - **0148** npm publishing under `@loomwork` (Accepted): every public package publishes as `@loomwork/*` (loom-ui as `@loomwork/ui-*`, the loom-plugins plugins as `@loomwork/plugin-*`) published on the `next` dist-tag and then promoted to `latest` (npm sets `latest` on a first publish, and `^0.1.x` ranges resolve to it), from one metadata generator guarded by a spec test; `@loom` was taken. A rename only: no event, SPI, ABI or persisted value names a package.
   - **0149** distilled memory write-back (Accepted): opt-in `agentLoop$({ writeBack: { distill: { toolId } } })` stores short facts instead of the raw prompt / answer; the distiller effect `{ prompt, answer, existing } -> { add, supersede }` sees the scope's existing facts (a recorded read) and can supersede only ids it was shown; facts get content-hash ids, inherit taint from any tainted input, and a failing distiller writes nothing and degrades. Built-in `createDistillerEffect(provider)`; `conversation$` distills per turn through the same field. 1P `@loomwork/agent` only.
   - **0150** task-scoped authority (Accepted, not yet implemented): opt-in 1P `@loomwork/task-authority` — a signed per-task grant (scope, expiry, lease ceilings, root/parent ids) restored through the principal codec and recorded by digest; side-effect leases counted in the execution's own fold; renewable authority errors park on a typed renewal gate (`withRenewal`, `agentLoop$({ authority: { onExhausted: "park" } })`); child leases carved by reservation; cross-lineage provenance taint records which lineage directed an effect; a laundering conformance kit. Kernel change zero; no new event.
+  - **0151** `EffectContext.flush()` (Proposed): an optional method on the effect context that awaits the journal's write-behind tail, so middleware that emits (a lease or meter count) can make it durable before calling `next()`; applies the K9.3 seal rule after the drain; absent on the transient seam. One kernel field, no new event.
 - **[Presentation](presentation/loom-deck.md)** — the deck.
