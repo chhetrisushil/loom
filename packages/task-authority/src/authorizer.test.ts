@@ -1,7 +1,9 @@
 import {
   type CapabilityAuthorizer,
   type CapabilityRequest,
+  EffectRuntime,
   GrantTable,
+  ToolEffect,
 } from "@loomwork/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { TASK_GRANT_DENIAL, TaskGrantAuthorizer } from "./authorizer";
@@ -275,5 +277,62 @@ describe("TaskGrantAuthorizer", () => {
     const deny: CapabilityAuthorizer = { authorize: () => ({ allowed: false, reason: "no" }) };
     const d = authz(deny).authorize(req(grant()));
     expect(d).toEqual({ allowed: false, reason: expect.stringMatching(/^task-grant:base.*no/) });
+  });
+});
+
+describe("TaskGrantAuthorizer identity (R34)", () => {
+  const byTenant = (t: string): CapabilityAuthorizer => ({
+    authorize: (r) => ({ allowed: r.principal?.tenant === t }),
+  });
+  const withId = (g: TaskGrant, id: { tenant?: string; onBehalfOf?: string }) => {
+    const r = req(g);
+    r.principal = { ...r.principal, ...id };
+    return r;
+  };
+  const acme = (): TaskGrant => grant({ tenant: "acme", onBehalfOf: "u1" });
+  it("denies a chain naming another tenant, though the base would allow that tenant", () => {
+    const d = authz(byTenant("globex")).authorize(
+      withId(acme(), { tenant: "globex", onBehalfOf: "u1" })
+    );
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toMatch(new RegExp(`^${TASK_GRANT_DENIAL.identity}`));
+  });
+  it("denies a different onBehalfOf, a missing identity, and an identity on an identity-free grant", () => {
+    const a = authz(byTenant("acme"));
+    for (const r of [
+      withId(acme(), { tenant: "acme", onBehalfOf: "u2" }),
+      withId(acme(), { tenant: "acme" }),
+      withId(acme(), {}),
+      withId(grant(), { tenant: "acme" }),
+    ])
+      expect(a.authorize(r).reason).toMatch(/^task-grant:identity/);
+  });
+  it("allows the honest chain", () => {
+    expect(
+      authz(byTenant("acme")).authorize(withId(acme(), { tenant: "acme", onBehalfOf: "u1" }))
+        .allowed
+    ).toBe(true);
+    expect(authz().authorize(req(grant())).allowed).toBe(true); // both absent
+  });
+  it("is enforced on the transient path too (invokeTransient skips the codec)", async () => {
+    const effects = new EffectRuntime([], { authorizer: authz(byTenant("globex")) });
+    effects.register("db.read", new ToolEffect(async () => ({ ok: true })));
+    const g = acme();
+    await expect(
+      effects.invokeTransient(
+        "db.read",
+        {},
+        { principal: { actor: "agent-a", taskGrant: g, tenant: "globex", onBehalfOf: "u1" } }
+      )
+    ).rejects.toThrow(/task-grant:identity/);
+    const honest = new EffectRuntime([], { authorizer: authz(byTenant("acme")) });
+    honest.register("db.read", new ToolEffect(async () => ({ ok: true })));
+    await expect(
+      honest.invokeTransient(
+        "db.read",
+        {},
+        { principal: { actor: "agent-a", taskGrant: g, tenant: "acme", onBehalfOf: "u1" } }
+      )
+    ).resolves.toEqual({ ok: true });
   });
 });

@@ -14,6 +14,7 @@ export const TASK_GRANT_DENIAL = {
   signature: "task-grant:signature",
   expired: "task-grant:expired",
   holder: "task-grant:holder",
+  identity: "task-grant:identity",
   scope: "task-grant:scope",
   base: "task-grant:base",
   error: "task-grant:error",
@@ -141,6 +142,14 @@ export class TaskGrantAuthorizer implements CapabilityAuthorizer {
       return deny(
         TASK_GRANT_DENIAL.scope,
         `effect "${req.resource === undefined ? req.toolId : `${req.toolId}:${req.resource}`}" not in the task grant`
+      );
+    }
+    // R34: tenant/onBehalfOf must equal the grant's signed ones (absent = absent), as `toRef` requires. The
+    // transient path skips the codec, so a caller could otherwise present another tenant to a tenant-scoped base.
+    if (req.principal?.tenant !== g.tenant || req.principal?.onBehalfOf !== g.onBehalfOf) {
+      return deny(
+        TASK_GRANT_DENIAL.identity,
+        "the principal's tenant/onBehalfOf differ from the task grant's"
       );
     }
     // Hand `base` the pinned actor, so it cannot be shown a different one than the holder check saw.
