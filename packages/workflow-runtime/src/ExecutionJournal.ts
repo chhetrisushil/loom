@@ -1,7 +1,7 @@
 import { StorageWriteError } from "@loomwork/core";
-import type { EventEnvelope } from "@loomwork/core";
+import type { EventEnvelope, ExecutionState } from "@loomwork/core";
 import type { EventStore } from "@loomwork/event-runtime";
-import { KERNEL_STAMPED_EVENT_TYPES } from "@loomwork/replay-vm";
+import { KERNEL_STAMPED_EVENT_TYPES, stampSeenOrigins } from "@loomwork/replay-vm";
 import type { ReplayVM } from "@loomwork/replay-vm";
 
 /**
@@ -116,13 +116,16 @@ export class ExecutionJournal {
     payload: unknown,
     opts: { id?: string; timestamp?: number; metadata?: Record<string, unknown> } | undefined,
     fence: number | undefined,
-    now: () => number
+    now: () => number,
+    // ADR 0152 R11 - the state this envelope folds onto: a TRACKED run's channel value is scanned here, once,
+    // and recorded in the metadata (`origins`). Undefined for the sequence-0 start (tracked by its own stamp).
+    before?: ExecutionState
   ): EventEnvelope {
     // EVENT_SCHEMA 1.23.0 — the journal stamps `kernel: true` on the kinds whose fold requires
     // it. The stamp is applied LAST, so it is the journal's alone: no caller metadata sets it
     // for any other kind, and a userspace emit of these kinds is refused before it gets here.
     const stamp = KERNEL_STAMPED_EVENT_TYPES.has(eventType);
-    const metadata =
+    const base =
       opts?.metadata !== undefined || fence !== undefined || stamp
         ? {
             ...opts?.metadata,
@@ -130,6 +133,8 @@ export class ExecutionJournal {
             ...(stamp && { kernel: true }),
           }
         : undefined;
+    // ADR 0152 R11: also drops a caller-supplied `origins` / `originsOverflow` (the record is the kernel's alone).
+    const metadata = stampSeenOrigins(before, eventType, payload, base);
     return {
       id: opts?.id ?? `${identity.executionId}-${sequence}`,
       workflowId: identity.workflowId,
@@ -153,7 +158,13 @@ export class ExecutionJournal {
     sequence: number,
     eventType: string,
     payload: unknown,
-    opts: { metadata?: Record<string, unknown>; fence?: number; now?: () => number } = {}
+    opts: {
+      metadata?: Record<string, unknown>;
+      fence?: number;
+      now?: () => number;
+      /** ADR 0152 R11: the state this envelope folds onto, so a tracked run's value is recorded. */
+      before?: ExecutionState;
+    } = {}
   ): EventEnvelope {
     return ExecutionJournal.build(
       identity,
@@ -162,7 +173,8 @@ export class ExecutionJournal {
       payload,
       opts.metadata !== undefined ? { metadata: opts.metadata } : undefined,
       opts.fence,
-      opts.now ?? Date.now
+      opts.now ?? Date.now,
+      opts.before
     );
   }
 
@@ -213,7 +225,8 @@ export class ExecutionJournal {
       payload,
       opts,
       this.fence,
-      this.now
+      this.now,
+      this.vm.peekState()
     );
     this.vm.applyEvent(envelope); // in-memory fold — synchronous, authoritative
     this.emit(envelope); // live projection fold — synchronous unless held behind a deferred batch
@@ -262,7 +275,8 @@ export class ExecutionJournal {
         e.payload,
         e.metadata !== undefined ? { metadata: e.metadata } : undefined,
         this.fence,
-        this.now
+        this.now,
+        this.vm.peekState()
       );
       this.vm.applyEvent(envelope);
       if (defer) {

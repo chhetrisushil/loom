@@ -42,6 +42,7 @@ import {
   INBOX_DEDUPE_CAP,
   QUARANTINE_FOLD_CAP,
   ReplayVM,
+  foldEvents,
   knownEventTypes,
   normalizeSnapshotState,
 } from "@loomwork/replay-vm";
@@ -4369,8 +4370,11 @@ export class WorkflowRuntime {
       // ADR 0130 D11: this append bypasses the journal (and so its write gate): check the lease here.
       if (!lease.valid()) throw lease.lossError();
       const at = vm.peekState().sequence;
-      const envelopes = events.map((e, i) =>
-        ExecutionJournal.envelopeAt(
+      // ADR 0152 R13: this batch bypasses the journal, and the vm only advances at `adopt`, so each envelope's seen-origins record is
+      // scanned against a scratch fold of the entries before it (rebuilt per attempt from the vm incl. refolded late outcomes).
+      let before = vm.peekState();
+      const envelopes = events.map((e, i) => {
+        const envelope = ExecutionJournal.envelopeAt(
           { executionId, workflowId },
           at + 1 + i,
           e.eventType,
@@ -4379,9 +4383,12 @@ export class WorkflowRuntime {
             ...(e.metadata !== undefined && { metadata: e.metadata }),
             ...(fence !== undefined && { fence }),
             now: this.now,
+            before,
           }
-        )
-      );
+        );
+        before = foldEvents([envelope], before);
+        return envelope;
+      });
       try {
         await store.appendBatch(envelopes);
         return events.map((e, i) => ({ ...e, durable: envelopes[i] as EventEnvelope }));

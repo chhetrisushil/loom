@@ -6,6 +6,7 @@
 // fold, the runtime and the tests share cannot drift.
 
 import type { EventEnvelope, ExecutionState } from "@loomwork/core";
+import { carrySeenOrigins } from "@loomwork/replay-vm";
 import { storedPrincipalOf } from "./principal";
 
 /** The default kernel cap on a carry (ADR 0109 D1, decided by the user 2026-10-05): 1 MiB. */
@@ -188,12 +189,15 @@ export interface CarriedState {
   inbox?: { cursors: Record<string, number>; dedupe: string[] };
   /** ADR 0130 residuals D9: the held (quarantined) entries per topic - a hold survives a rotation. */
   quarantined?: Record<string, unknown>;
+  /** ADR 0152 D1: the origins the predecessor was shown (and its overflow marker): a rotation never launders them. */
+  seenOrigins?: { origins: string[]; overflow?: true };
   chainDeadline?: number;
 }
 
 export function carriedOf(state: ExecutionState, chainDeadline: number | undefined): CarriedState {
   const resources = state.variables._resources;
   const inbox = state.variables._inbox as { cursors?: unknown; dedupe?: unknown } | undefined;
+  const seenOrigins = carrySeenOrigins(state);
   return {
     ...(resources !== undefined && resources !== null && { resources }),
     ...(inbox !== undefined && {
@@ -205,6 +209,7 @@ export function carriedOf(state: ExecutionState, chainDeadline: number | undefin
     ...(state.variables._quarantined !== undefined && {
       quarantined: state.variables._quarantined as Record<string, unknown>,
     }),
+    ...(seenOrigins !== undefined && { seenOrigins }),
     ...(chainDeadline !== undefined && { chainDeadline }),
   };
 }
