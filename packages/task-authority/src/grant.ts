@@ -29,7 +29,20 @@ const MAX_ID = 256;
 const MAX_EFFECTS = 256;
 const MAX_EFFECT_LEN = 512;
 const MAX_LEASES = 10;
-const FORBIDDEN_NAMES = new Set(["__proto__", "constructor", "prototype"]);
+const MAX_SERIALIZED = 64 * 1024;
+// No dots: lease `a` owns dimensions `lease.a`, `.reserved`, `.returned`; a name "a.reserved" must not collide.
+const LEASE_NAME = /^[a-z][a-z0-9_-]{0,48}$/;
+const GRANT_KEYS = [
+  "taskId",
+  "rootId",
+  "parentId",
+  "issuedTo",
+  "effects",
+  "leases",
+  "exp",
+  "epoch",
+];
+const LEASE_KEYS = ["ceiling", "effects"];
 const VERSION_PREFIX = "tg1\n";
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
@@ -41,6 +54,11 @@ const isNonNegInt = (v: unknown): v is number =>
 
 function fail(msg: string): never {
   throw new TaskGrantShapeError(msg);
+}
+function onlyKeys(o: object, allowed: readonly string[], what: string): void {
+  for (const k of Reflect.ownKeys(o))
+    if (typeof k !== "string" || !allowed.includes(k))
+      fail(`${what} has an unexpected key ${String(k)}`);
 }
 function idField(o: Record<string, unknown>, k: string): string {
   const v = own(o, k);
@@ -60,7 +78,11 @@ function effectList(v: unknown, what: string, max: number): string[] {
 
 /** Assert the structural bounds of an (unsigned or signed) grant; throws `TaskGrantShapeError`. */
 export function validateGrantShape(g: unknown): asserts g is UnsignedTaskGrant {
+  checkShape(g, false);
+}
+function checkShape(g: unknown, signed: boolean): void {
   if (!isObj(g)) fail("grant must be an object");
+  onlyKeys(g, signed ? [...GRANT_KEYS, "sig"] : GRANT_KEYS, "grant");
   const taskId = idField(g, "taskId");
   const rootId = idField(g, "rootId");
   idField(g, "issuedTo");
@@ -72,16 +94,25 @@ export function validateGrantShape(g: unknown): asserts g is UnsignedTaskGrant {
   const effects = effectList(own(g, "effects"), "effects", MAX_EFFECTS);
   const leases = own(g, "leases");
   if (!isObj(leases)) fail("leases must be an object");
+  let count = 0;
+  for (const k in leases) {
+    if (Object.hasOwn(leases, k) && ++count > MAX_LEASES) fail(`at most ${MAX_LEASES} leases`);
+  }
+  onlyKeys(
+    leases,
+    Reflect.ownKeys(leases).filter((k): k is string => typeof k === "string"),
+    "leases"
+  );
   const names = Object.keys(leases);
-  if (names.length > MAX_LEASES) fail(`at most ${MAX_LEASES} leases`);
   const allowed = new Set(effects);
   for (const name of names) {
-    if (FORBIDDEN_NAMES.has(name)) fail(`lease name ${name} is forbidden`);
+    if (!LEASE_NAME.test(name)) fail(`lease name "${name}" must match ${LEASE_NAME}`);
     for (const dim of [`lease.${name}`, `lease.${name}.reserved`, `lease.${name}.returned`])
       if (!DIMENSION_PATTERN.test(dim))
         fail(`lease name "${name}" does not fit the dimension pattern`);
     const spec = leases[name];
     if (!isObj(spec)) fail(`lease ${name} must be an object`);
+    onlyKeys(spec, LEASE_KEYS, `lease ${name}`);
     const c = own(spec, "ceiling");
     if (typeof c !== "number" || !Number.isInteger(c) || c <= 0 || c > CEILING_MAX)
       fail(`lease ${name} ceiling must be a positive integer <= ${CEILING_MAX}`);
@@ -120,43 +151,68 @@ const mac = (secret: string, g: UnsignedTaskGrant): string =>
     .update(VERSION_PREFIX + canonicalBody(g))
     .digest("hex");
 
+function needSecret(secret: unknown): asserts secret is string {
+  if (typeof secret !== "string" || secret.length === 0) fail("secret must be a non-empty string");
+}
+
 /** Mint a grant: validates the shape, then signs EVERY field with HMAC-SHA256. */
 export function signTaskGrant(secret: string, g: UnsignedTaskGrant): TaskGrant {
-  validateGrantShape(g);
-  const { parentId } = g;
-  const leases: Record<string, LeaseSpec> = {};
-  for (const n of Object.keys(g.leases).sort()) {
-    const s = g.leases[n] as LeaseSpec;
-    leases[n] = { ceiling: s.ceiling, effects: [...s.effects] };
-  }
-  const clean: UnsignedTaskGrant = {
-    taskId: g.taskId,
-    rootId: g.rootId,
-    ...(parentId !== undefined && { parentId }),
-    issuedTo: g.issuedTo,
-    effects: [...g.effects],
-    leases,
-    exp: g.exp,
-    epoch: g.epoch,
-  };
-  return { ...clean, sig: mac(secret, clean) };
+  needSecret(secret);
+  const snap = snapshot(g, false);
+  return { ...snap, sig: mac(secret, snap) } as TaskGrant;
 }
 
-/** Constant-time verification; malformed input returns false and never throws. */
-export function verifyTaskGrant(secret: string, g: TaskGrant): boolean {
+// Detached plain-data copy (getters, toJSON, custom iterators, non-enumerables are resolved ONCE
+// here), validated, so later reads cannot differ from what was checked.
+function snapshot(g: unknown, signed: boolean): UnsignedTaskGrant & { sig?: string } {
+  let text: string | undefined;
   try {
-    validateGrantShape(g);
-    const sig = own(g as unknown as Record<string, unknown>, "sig");
-    if (typeof sig !== "string" || !/^[0-9a-f]{64}$/.test(sig)) return false;
-    return timingSafeEqual(Buffer.from(mac(secret, g), "hex"), Buffer.from(sig, "hex"));
+    text = JSON.stringify(g);
   } catch {
-    return false;
+    fail("grant is not serializable");
+  }
+  if (text === undefined || text.length > MAX_SERIALIZED)
+    fail("grant is not serializable or too large");
+  const copy: unknown = JSON.parse(text);
+  checkShape(copy, signed);
+  return copy as UnsignedTaskGrant & { sig?: string };
+}
+function deepFreeze<T>(v: T): T {
+  if (typeof v === "object" && v !== null) {
+    for (const c of Object.values(v)) deepFreeze(c);
+    Object.freeze(v);
+  }
+  return v;
+}
+
+/**
+ * Constant-time verification. Returns a deep-frozen SNAPSHOT of exactly what was signed, or
+ * `undefined` (never throws). Use the returned copy, never the input, for every later read.
+ */
+export function verifyTaskGrant(secret: string, g: TaskGrant): TaskGrant | undefined {
+  try {
+    needSecret(secret);
+    const snap = snapshot(g, true);
+    const sig = snap.sig;
+    if (typeof sig !== "string" || !/^[0-9a-f]{64}$/.test(sig)) return undefined;
+    const { sig: _s, ...body } = snap;
+    if (!timingSafeEqual(Buffer.from(mac(secret, body), "hex"), Buffer.from(sig, "hex")))
+      return undefined;
+    return deepFreeze(snap as TaskGrant);
+  } catch {
+    return undefined;
   }
 }
 
-/** sha256 hex of the canonical encoding including the signature: a stable, non-bearer identifier. */
+/**
+ * sha256 hex of the canonical encoding including the signature: a stable, non-bearer identifier.
+ * Computed from a validated snapshot (not the live object); throws `TaskGrantShapeError` on a
+ * malformed grant. It does not check the signature: pass a grant returned by `verifyTaskGrant`.
+ */
 export function taskGrantDigest(g: TaskGrant): string {
+  const { sig, ...body } = snapshot(g, true);
+  if (typeof sig !== "string") fail("sig must be a string");
   return createHash("sha256")
-    .update(`${VERSION_PREFIX}${canonicalBody(g)}\n${String(g.sig)}`)
+    .update(`${VERSION_PREFIX}${canonicalBody(body)}\n${sig}`)
     .digest("hex");
 }

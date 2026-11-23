@@ -1841,8 +1841,8 @@ interface TaskGrant {
 }
 type UnsignedTaskGrant = Omit<TaskGrant, "sig">
 function signTaskGrant(secret: string, g: UnsignedTaskGrant): TaskGrant   // validates the shape first
-function verifyTaskGrant(secret: string, g: TaskGrant): boolean           // timing-safe; malformed input → false, never throws
-function taskGrantDigest(g: TaskGrant): string                            // sha256 hex of the canonical encoding incl. sig
+function verifyTaskGrant(secret: string, g: TaskGrant): TaskGrant | undefined  // timing-safe; returns a deep-frozen SNAPSHOT of what was signed, or undefined; never throws; strict key allowlist; empty secret refused
+function taskGrantDigest(g: TaskGrant): string                            // sha256 hex of the canonical encoding incl. sig, over a validated snapshot; throws TaskGrantShapeError if malformed (does not check the sig: pass a verified grant)
 function validateGrantShape(g: unknown): asserts g is UnsignedTaskGrant   // throws TaskGrantShapeError
 class TaskGrantShapeError extends Error {}
 #+end_src

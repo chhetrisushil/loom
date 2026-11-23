@@ -1,4 +1,8 @@
-import { CUSTOM_DIMENSION_CEILING, CUSTOM_DIMENSION_PATTERN } from "@loomwork/replay-vm";
+import {
+  CUSTOM_DIMENSION_CEILING,
+  CUSTOM_DIMENSION_MAX,
+  CUSTOM_DIMENSION_PATTERN,
+} from "@loomwork/replay-vm";
 import { describe, expect, it } from "vitest";
 import {
   type TaskGrant,
@@ -51,12 +55,12 @@ describe("task grant token", () => {
   it("round-trips", () => {
     const g = signTaskGrant(S, base());
     expect(g.sig).toMatch(/^[0-9a-f]{64}$/);
-    expect(verifyTaskGrant(S, g)).toBe(true);
-    expect(verifyTaskGrant(S, clone(g))).toBe(true);
+    expect(verifyTaskGrant(S, g)).toBeDefined();
+    expect(verifyTaskGrant(S, clone(g))).toBeDefined();
   });
 
   it("wrong secret fails", () => {
-    expect(verifyTaskGrant("other", signTaskGrant(S, base()))).toBe(false);
+    expect(verifyTaskGrant("other", signTaskGrant(S, base()))).toBeUndefined();
   });
 
   it("changing ANY field (derived from the real object) fails verification", () => {
@@ -81,16 +85,121 @@ describe("task grant token", () => {
       expect(flat).toContain(f);
     for (const p of all) {
       const t = mutate(g, p);
-      expect(verifyTaskGrant(S, t), `tampering ${p.join(".")}`).toBe(false);
+      expect(verifyTaskGrant(S, t), `tampering ${p.join(".")}`).toBeUndefined();
     }
     // adding / removing / renaming fields
     const extraLease = clone(g);
     extraLease.leases.more = { ceiling: 1, effects: ["db.write"] };
-    expect(verifyTaskGrant(S, extraLease)).toBe(false);
+    expect(verifyTaskGrant(S, extraLease)).toBeUndefined();
     const { parentId: _pid, ...noParent } = clone(g);
-    expect(verifyTaskGrant(S, noParent as TaskGrant)).toBe(false);
+    expect(verifyTaskGrant(S, noParent as TaskGrant)).toBeUndefined();
     const root = signTaskGrant(S, rootBase("t-root"));
-    expect(verifyTaskGrant(S, { ...root, parentId: "t-parent" })).toBe(false);
+    expect(verifyTaskGrant(S, { ...root, parentId: "t-parent" })).toBeUndefined();
+  });
+
+  it("shape-preserving tampers (shape stays valid, signature must fail)", () => {
+    const g = signTaskGrant(S, base());
+    const tampers: Record<string, (c: TaskGrant) => void> = {
+      "append unreferenced effect": (c) => {
+        c.effects.push("admin.drop");
+      },
+      "lease effects -> other valid subset": (c) => {
+        (c.leases.writes as unknown as { effects: string[] }).effects = ["db.write"];
+      },
+      "rename a lease": (c) => {
+        c.leases.mails = c.leases.emails as never;
+        Reflect.deleteProperty(c.leases, "emails");
+      },
+      "swap lease ceilings": (c) => {
+        const a = (c.leases.emails as { ceiling: number }).ceiling;
+        (c.leases.emails as { ceiling: number }).ceiling = (
+          c.leases.writes as { ceiling: number }
+        ).ceiling;
+        (c.leases.writes as { ceiling: number }).ceiling = a;
+      },
+    };
+    for (const [name, f] of Object.entries(tampers)) {
+      const c = clone(g);
+      f(c);
+      const { sig: _s, ...body } = c;
+      expect(() => validateGrantShape(body), name).not.toThrow();
+      expect(verifyTaskGrant(S, c), name).toBeUndefined();
+    }
+  });
+
+  it("refuses keys it never signed (top level, lease spec, symbol)", () => {
+    const g = signTaskGrant(S, base());
+    expect(
+      verifyTaskGrant(S, { ...g, reads: ["x"], ambient: true } as unknown as TaskGrant)
+    ).toBeUndefined();
+    const lease = clone(g);
+    (lease.leases.emails as unknown as Record<string, unknown>).extra = 1;
+    expect(verifyTaskGrant(S, lease)).toBeUndefined();
+    const sym = { ...clone(g), [Symbol("x")]: 1 };
+    expect(verifyTaskGrant(S, sym as TaskGrant)?.effects).not.toContain("*");
+    expect(() => validateGrantShape({ ...base(), [Symbol("x")]: 1 })).toThrow(TaskGrantShapeError);
+    expect(() => validateGrantShape({ ...base(), sig: "a" })).toThrow(TaskGrantShapeError);
+  });
+
+  it("TOCTOU: the returned copy is what was signed and is frozen", () => {
+    const g = signTaskGrant(S, base());
+    let reads = 0;
+    const getter = clone(g);
+    Object.defineProperty(getter, "effects", {
+      enumerable: true,
+      get: () => (++reads === 1 ? g.effects : ["*"]),
+    });
+    const a = verifyTaskGrant(S, getter);
+    if (a) expect(a.effects).toEqual([...g.effects]);
+    expect(a?.effects).not.toContain("*");
+
+    const iter = clone(g);
+    Object.defineProperty(iter.effects, Symbol.iterator, {
+      value: function* () {
+        yield* g.effects;
+      },
+    });
+    iter.effects[0] = "*";
+    expect(verifyTaskGrant(S, iter)).toBeUndefined();
+
+    const hidden = clone(g);
+    Object.defineProperty(hidden.leases, "emails", {
+      enumerable: false,
+      value: hidden.leases.emails,
+    });
+    expect(verifyTaskGrant(S, hidden)).toBeUndefined();
+
+    const ok = verifyTaskGrant(S, g) as TaskGrant;
+    expect(Object.isFrozen(ok)).toBe(true);
+    expect(Object.isFrozen(ok.effects)).toBe(true);
+    expect(Object.isFrozen(ok.leases.emails)).toBe(true);
+    expect(ok).not.toBe(g);
+    expect(ok.effects).not.toContain("admin.drop");
+  });
+
+  it("empty secret: sign throws, verify returns undefined", () => {
+    expect(() => signTaskGrant("", base())).toThrow(TaskGrantShapeError);
+    expect(verifyTaskGrant("", signTaskGrant(S, base()))).toBeUndefined();
+  });
+
+  it("digest: computed from a validated snapshot; malformed input throws TaskGrantShapeError", () => {
+    expect(() => taskGrantDigest(null as unknown as TaskGrant)).toThrow(TaskGrantShapeError);
+    expect(() =>
+      taskGrantDigest({ ...signTaskGrant(S, base()), extra: 1 } as unknown as TaskGrant)
+    ).toThrow(TaskGrantShapeError);
+  });
+
+  it("a huge lease object is rejected", () => {
+    const leases = Object.fromEntries(Array.from({ length: 50_000 }, (_, i) => [`l${i}`, 1]));
+    expect(() => validateGrantShape({ ...base(), leases })).toThrow(TaskGrantShapeError);
+  });
+
+  it("lease names: no dots, so no collision with reservation dimensions", () => {
+    for (const name of ["a.reserved", "A", "1a", "__proto__", "constructor".toUpperCase()]) {
+      const g = base();
+      g.leases = { [name]: { ceiling: 1, effects: ["db.write"] } };
+      expect(() => validateGrantShape(g), name).toThrow(TaskGrantShapeError);
+    }
   });
 
   it("input key / array order changes neither signature nor digest", () => {
@@ -117,7 +226,7 @@ describe("task grant token", () => {
   it("a root grant has no parent and rootId === taskId", () => {
     const g = signTaskGrant(S, rootBase("r"));
     expect("parentId" in g).toBe(false);
-    expect(verifyTaskGrant(S, g)).toBe(true);
+    expect(verifyTaskGrant(S, g)).toBeDefined();
   });
 
   describe("shape bounds", () => {
@@ -188,12 +297,6 @@ describe("task grant token", () => {
       bad((g) => {
         g.leases = JSON.parse('{"__proto__":{"ceiling":1,"effects":["db.write"]}}');
       });
-      bad((g) => {
-        g.leases = { constructor: { ceiling: 1, effects: ["db.write"] } };
-      });
-      bad((g) => {
-        g.leases = { prototype: { ceiling: 1, effects: ["db.write"] } };
-      });
       for (const c of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 1e15 + 2, "5"])
         bad((g) => {
           (leases(g).emails as { ceiling: unknown }).ceiling = c;
@@ -245,11 +348,12 @@ describe("task grant token", () => {
       { ...g, leases: { emails: null } },
       Object.create(g), // inherited fields only
     ];
-    for (const i of inputs) expect(verifyTaskGrant(S, i as TaskGrant)).toBe(false);
+    for (const i of inputs) expect(verifyTaskGrant(S, i as TaskGrant)).toBeUndefined();
   });
 
   it("mirrors the kernel's custom-dimension rules", () => {
     expect(CUSTOM_DIMENSION_PATTERN.source).toBe("^[a-z][a-z0-9._-]{0,63}$");
     expect(CUSTOM_DIMENSION_CEILING).toBe(1e15);
+    expect(CUSTOM_DIMENSION_MAX).toBe(32);
   });
 });
