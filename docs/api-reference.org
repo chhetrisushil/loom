@@ -1964,6 +1964,21 @@ function checkTaskAuthorityConformance(subject: ConformanceSubject): Promise<Con
 //   replay: a run replaying 8 effects makes the same number of broker calls as one replaying 1 (principal resolution is a fixed cost; ruling R29). No broker can fail it: the calls come from the runtime.
 #+end_src
 
+// ADR 0150 D12 — scheduled agents (slice-2 S10): a schedule grant, approved once, and a child grant per tick.
+const SCHEDULE_GATE = "task-authority:schedule"   // the typed resume gate of the one-off approval run
+type ScheduleGrantSpec = Omit<MintRequest, "taskId" | "parent" | "parentReserved"> & { scheduleId: string }   // `scheduleId` becomes the root grant's taskId; `leases` are the TOTAL budget over all ticks; `ttlMs` the schedule's life
+function requestScheduleApproval(ctx: { executionId; suspend; decide }, spec: ScheduleGrantSpec): Promise<void>
+//   call from a flow: records the proposal as a decision, parks on SCHEDULE_GATE with a viewDigest over it; a refusal throws ScheduleDeniedError. Mints nothing.
+function answerScheduleApproval(runtime, broker: Pick<GrantBroker, "mint" | "current">, executionId: string, decision: { approved: boolean; reason?: string }, resumeOpts?: unknown): Promise<TaskGrant | undefined>
+//   operator helper: checks the parked gate + digest, resumes with the echo, and ONLY THEN (approved) mints the schedule grant; a resume the runtime refuses (unverified approver) mints nothing. undefined for a refusal.
+function mintScheduleGrant(broker, spec: ScheduleGrantSpec): Promise<TaskGrant>   // idempotent for the same spec; a different spec or holder for the same id throws GrantBrokerError
+function schedulePrincipalFor(broker, o: { lease: Record<string, number>; ttlMs?: number; effects?: string[]; now? }): (schedule, occurrence, { signal }) => Promise<PrincipalChain>
+//   the TimerService `principalFor` hook (ADR 0152 D2): per occurrence a CHILD grant of the schedule grant, taskId `<scheduleId>@<occurrence>` (= the execution id), ceilings = `lease`. Idempotent (a re-call
+//   returns the minted grant; a lost mint race takes the winner's). No/expired/revoked/exhausted schedule grant or an aborted signal THROWS ScheduleGrantError (the occurrence is skipped as SchedulePrincipalError).
+function settleScheduledTick(runtime, broker: GrantBroker, scheduleId: string, occurrence: number): Promise<boolean>
+//   after a COMPLETED tick records its unused lease at the broker (settleChild), takeable once with broker.takeReturn(`<scheduleId>@<n>`, scheduleId); a tick that is not completed records nothing.
+// Errors: ScheduleDeniedError (approval refused/malformed), ScheduleGrantError { scheduleId } (a tick cannot get its grant).
+
 ** ~@loomwork/compliance~ — subject export & erasure (T3)
 
 #+begin_src typescript
