@@ -198,6 +198,8 @@ export interface TaskGrantTemplateSpec {
   readonly flowId: string;
   readonly effects: readonly string[];
   readonly reach?: readonly string[];
+  /** Declared child flow ids that are not registered (a typo would otherwise read as no reach). */
+  readonly unknownChildren?: readonly string[];
 }
 
 export interface VerifyInput {

@@ -65,7 +65,26 @@ describe("task-grant-reach (ADR 0150 D9)", () => {
       flows: [flow("f", ["a"], { unresolvedReach: [{ expr: "x()", kind: "step" }] })],
       taskGrants: [{ flowId: "f", effects: ["a"] }],
     });
+    expect(f.filter((x) => x.severity === "warn")).toHaveLength(1);
+  });
+
+  it("warns on a declared child flow that is not registered", () => {
+    // kills: a typo'd child silently contributing no reach
+    const f = run({
+      flows: [flow("f", ["a"])],
+      taskGrants: [{ flowId: "f", effects: ["a"], reach: ["a"], unknownChildren: ["kid"] }],
+    });
     expect(f).toHaveLength(1);
-    expect(f[0]?.severity).toBe("warn");
+    expect(f[0]).toMatchObject({ severity: "warn" });
+    expect(f[0]?.message).toContain('"kid"');
+  });
+
+  it("notes, as info, a template with no declared reach over a flow with unresolved reach", () => {
+    // kills: not saying the undeclared-edge limit
+    const f = run({
+      flows: [flow("f", ["a"], { unresolvedReach: [{ expr: "x()", kind: "step" }] })],
+      taskGrants: [{ flowId: "f", effects: ["a"] }],
+    });
+    expect(f.map((x) => x.severity).sort()).toEqual(["info", "warn"]);
   });
 });

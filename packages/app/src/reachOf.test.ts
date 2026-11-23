@@ -101,4 +101,43 @@ describe("reachOf (ADR 0150 D9, S-R5)", () => {
     expect(reachOf(rt, "f", { children: { f: [] }, agentLoops: {} })).toEqual(["a"]);
     expect(reachOf(rt, "constructor", { children: {}, agentLoops: {} })).toEqual([]);
   });
+
+  describe("agentLoopReach: the loop's own ring-routed effects (R30 I1)", () => {
+    const base = { definition: agent$({ id: "a", name: "a", tools: [] } as never) };
+    const reach = (c: object) => agentLoopReach({ ...base, ...c } as never);
+
+    it("includes modelToolId", () => {
+      // kills: reach without the model call, which a derived grant would then deny
+      expect(reach({ modelToolId: "llm" })).toEqual(["llm"]);
+    });
+    it("includes a string reasoningToolId", () => {
+      expect(reach({ reasoningToolId: "model:r" })).toEqual(["model:r"]);
+    });
+    it("expands a per-route reasoningToolId over the reasoning runtime's routes", () => {
+      // kills: ignoring a function reasoningToolId, or calling it with no routes
+      const reasoning = { availableRoutes: [{ id: "fast" }, { id: "deep" }] };
+      expect(reach({ reasoning, reasoningToolId: (r: string) => `model:${r}` })).toEqual([
+        "model:deep",
+        "model:fast",
+      ]);
+    });
+    it("includes recall.toolId and compaction.toolId", () => {
+      expect(reach({ recall: { toolId: "recall" }, compaction: { toolId: "sum" } })).toEqual([
+        "recall",
+        "sum",
+      ]);
+    });
+    it("includes writeBack.toolId only for an object that has one", () => {
+      // kills: reading toolId off `false` / an allowDirect config
+      expect(reach({ writeBack: { toolId: "wb" } })).toEqual(["wb"]);
+      expect(reach({ writeBack: { allowDirect: true } })).toEqual([]);
+      expect(reach({ writeBack: false })).toEqual([]);
+    });
+    it("reachOf (the input to deriveGrant) contains the loop's model tool id", () => {
+      const rt = runtimeOf({ f: ["step"] });
+      const l = { ...loop(["own"]), modelToolId: "llm" };
+      // deriveGrant(reach).effects is exactly reach (see its own test), so this is the grant's effects
+      expect(reachOf(rt, "f", { agentLoops: { f: [l] } })).toContain("llm");
+    });
+  });
 });
