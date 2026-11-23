@@ -17,6 +17,8 @@ describe("@loomwork/task-authority public surface", () => {
       "LeaseUnmappedError",
       "MAX_JUSTIFICATION",
       "MAX_JUSTIFICATIONS_KEPT",
+      "READS_MAX_STARS",
+      "READS_MAX_TOTAL",
       "RENEWAL_GATE",
       "RENEWAL_TERMINAL_NAMES",
       "RenewalDeniedError",
@@ -30,6 +32,7 @@ describe("@loomwork/task-authority public surface", () => {
       "answerRenewal",
       "childGrantMinter",
       "childLeaseEffect",
+      "globCovers",
       "installTaskAuthority",
       "isChildLeaseEffect",
       "isRenewable",
@@ -43,6 +46,7 @@ describe("@loomwork/task-authority public surface", () => {
       "taskLeaseMiddleware",
       "validateGrantShape",
       "verifyTaskGrant",
+      "widensReadsOrSandbox",
       "withRenewal",
     ]);
     expect(api.TASK_AUTHORITY_VERSION).toBe("0.0.0-slice1");

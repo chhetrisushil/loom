@@ -114,7 +114,7 @@ interface TaskGrant {
   effects: string[];     // capability ids, incl. R12 "<toolId>:<resource>"; "*" refused at mint
   leases: Record<string, { ceiling: number; effects: string[] }>; // see D4
   reads?: string[];      // D8: Loom namespaces this task may read across lineages (slice 2 S4: signed and carried since S4; the check is S6)
-  ambient?: "none" | "declared"; // D10 (slice 2, NOT built: rejected the same way)
+  sandbox?: "isolated";  // D10 (renamed from `ambient`, S-R4): carried since S4; the check is S8
   exp: number;           // absolute expiry (epoch ms), REQUIRED; a task grant never lives forever
   epoch: number;         // 0 at mint, +1 per renewal (D5)
   sig: string;           // HMAC-SHA256 over the canonical encoding, same scheme as signDelegation
@@ -560,7 +560,7 @@ built by the same helper as `readResources()` ([ADR 0151](0151-effect-context-fl
 
 ### Still open
 
-Slice 2, none of it built: provenance taint across lineages (D7), `reads` scoping (D8), grant derivation (D9), `ambient` and the enforcing sandbox (D10), the schedule root (D11) and disclosure (D12); and covered laundering, which the kit reports as skipped. The `@loomwork/verify` options the header promised did not ship with slice 1.
+Slice 2 (S4 carries the signed grant fields `reads` and `sandbox`; nothing else is built): provenance taint across lineages (D7), `reads` scoping (D8), grant derivation (D9), `ambient` and the enforcing sandbox (D10), the schedule root (D11) and disclosure (D12); and covered laundering, which the kit reports as skipped. The `@loomwork/verify` options the header promised did not ship with slice 1.
 
 ## Amendment (2026-11-23, slice 2 design)
 

@@ -4,6 +4,8 @@ import { childGrantMinter } from "./childLease";
 import { checkTaskAuthorityConformance } from "./conformance";
 import type { ConformanceSubject } from "./conformanceKit";
 import {
+  READS_MAX_STARS,
+  READS_MAX_TOTAL,
   type TaskGrant,
   type UnsignedTaskGrant,
   globCovers,
@@ -11,6 +13,7 @@ import {
   taskGrantDigest,
   validateGrantShape,
   verifyTaskGrant,
+  widensReadsOrSandbox,
 } from "./grant";
 import { InMemoryGrantBroker } from "./renew";
 
@@ -114,6 +117,18 @@ describe("S-R4 shape", () => {
     bad({ reads: [1] });
     bad({ reads: [""] });
     bad({ reads: ["*"] });
+    bad({ reads: ["**"] }); // universal patterns: every entry needs a literal tool id first
+    bad({ reads: ["*:*"] });
+    bad({ reads: [":*"] });
+    bad({ reads: ["mem*:a"] });
+    bad({ reads: ["mem"] });
+    bad({ reads: ["m:a*b*c*d*e*"] }); // 5 stars
+    bad({ reads: ["m:a", "m:a"] }); // duplicate
+    bad({ reads: ["m:\u0085a"] }); // C1
+    bad({ reads: ["m:\u2028a"] });
+    bad({ reads: ["m:\u202ea"] }); // bidi override
+    bad({ reads: ["m:\u2067a"] });
+    bad({ reads: Array.from({ length: 33 }, (_, i) => `m:${"x".repeat(500)}${i}`) }); // over READS_MAX_TOTAL
     bad({ reads: ["m:\u0000a"] });
     bad({ reads: ["m".repeat(513)] });
     bad({ reads: Array.from({ length: 257 }, (_, i) => `m:${i}`) });
@@ -124,6 +139,11 @@ describe("S-R4 shape", () => {
 });
 
 describe("globCovers", () => {
+  it("is exposed on the package index as the reference subset check", async () => {
+    const idx = await import("./index");
+    expect(idx.globCovers).toBe(globCovers);
+    expect(idx.widensReadsOrSandbox).toBe(widensReadsOrSandbox);
+  });
   it("is sound and conservative", () => {
     expect(globCovers("m:*", "m:a")).toBe(true);
     expect(globCovers("m:*", "m:a*")).toBe(true);
@@ -135,8 +155,27 @@ describe("globCovers", () => {
     expect(globCovers("a*b*c", "aXbY")).toBe(false);
     expect(globCovers("m.a", "mXa")).toBe(false); // `.` is literal
   });
-  it("does not backtrack catastrophically", () => {
-    expect(globCovers(`${"*a".repeat(200)}*b`, "a".repeat(500))).toBe(false);
+  // kills: a matcher whose cost is not bounded by the caps (the reviewer's 58 KB parent cost 2.85 s of CPU)
+  it("a list at the caps costs at most O(total^2) steps (counted, not timed)", () => {
+    const stars = "a*".repeat(READS_MAX_STARS - 1);
+    const mkList = (tail: string) =>
+      Array.from(
+        { length: 32 },
+        (_, i) => `m:${stars}${"a".repeat(200)}${tail}${String(i).padStart(3, "0")}`
+      );
+    const parent = mkList("b");
+    const child = Array.from(
+      { length: 32 },
+      (_, i) => `m:${"a".repeat(480)}${String(i).padStart(3, "0")}`
+    );
+    for (const l of [parent, child])
+      expect(() => validateGrantShape(unsigned({ reads: l }))).not.toThrow();
+    const meter = { steps: 0 };
+    expect(widensReadsOrSandbox({ reads: parent }, { reads: child }, meter)).toMatch(/exceeds/);
+    const sum = (l: string[]) => l.reduce((n, r) => n + r.length, 0);
+    expect(meter.steps).toBeGreaterThan(0);
+    expect(meter.steps).toBeLessThanOrEqual(sum(parent) * sum(child)); // <= READS_MAX_TOTAL^2
+    expect(sum(parent) * sum(child)).toBeLessThanOrEqual(READS_MAX_TOTAL ** 2);
   });
 });
 
@@ -261,6 +300,45 @@ describe("S-R4 conformance", () => {
     }
   }
 
+  // kills: a coverage test that is symmetric (accepts a wider child when the parent is covered by it)
+  class BothDirections extends InMemoryGrantBroker {
+    override async mint(r: MintRequest) {
+      const p = r.parent && this.tasks.get(r.parent.taskId)?.grant;
+      const ok =
+        p &&
+        r.reads?.every((c) => (p.reads ?? []).some((q) => globCovers(q, c) || globCovers(c, q)));
+      if (!ok) return super.mint(r);
+      const g = await super.mint({ ...r, reads: p.reads as string[] });
+      const { sig: _s, reads: _r, ...body } = g;
+      const wide = signTaskGrant(this.secret, { ...body, reads: r.reads as string[] });
+      const rec = this.tasks.get(r.taskId);
+      if (rec) rec.grant = wide;
+      return wide;
+    }
+  }
+  // kills: a broker that widens a CHILD on renewal (here: to the parent's reads, dropping sandbox)
+  class WidensChildOnRenew extends InMemoryGrantBroker {
+    override async renew(r: Parameters<InMemoryGrantBroker["renew"]>[0]) {
+      const v = await super.renew(r);
+      const rec = this.tasks.get(r.taskId);
+      const par = rec?.parent && this.tasks.get(rec.parent)?.grant;
+      if (rec && par) {
+        const { sig: _s, reads: _r, ...body } = rec.grant;
+        rec.grant = signTaskGrant(this.secret, { ...body, reads: par.reads as string[] });
+      }
+      return v;
+    }
+  }
+  it("fails a broker whose coverage test is symmetric", async () => {
+    const v = await verdict(BothDirections);
+    expect(v?.status).toBe("failed");
+    expect(v?.message).toMatch(/reads mem:\* was minted/);
+  }, 30_000);
+  it("fails a broker that widens a child on renewal", async () => {
+    const v = await verdict(WidensChildOnRenew);
+    expect(v?.status).toBe("failed");
+    expect(v?.message).toMatch(/child renewal dropped or changed/);
+  }, 30_000);
   it("fails a broker that drops reads/sandbox on renewal", async () => {
     const v = await verdict(DropsOnRenew);
     expect(v?.status).toBe("failed");

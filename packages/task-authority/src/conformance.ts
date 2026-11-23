@@ -237,6 +237,14 @@ const CHECKS: Record<string, Check> = {
       b.mint({ ...mintReq("x2", 1, "p"), reads: ["mem:a"] }),
       "a non-isolated child of an isolated parent was minted"
     );
+    for (const [i, narrow] of [["mem:a"], ["mem:a*"]].entries()) {
+      const nb = mk(s);
+      await nb.mint({ ...mintReq("p", 4), reads: narrow as string[] });
+      await mustRefuse(
+        nb.mint({ ...mintReq(`w${i}`, 1, "p"), reads: ["mem:*"] }),
+        `a child with reads mem:* was minted under a parent with ${narrow}`
+      );
+    }
     await b.mint(mintReq("free", 4));
     await mustRefuse(
       b.mint({ ...mintReq("x3", 1, "free"), reads: ["mem:a"] }),
@@ -247,6 +255,12 @@ const CHECKS: Record<string, Check> = {
     must(
       now?.reads?.join() === "mem:*" && now?.sandbox === "isolated",
       "a renewal dropped or changed reads / sandbox"
+    );
+    must((await b.renew(req("c", 0, 0))).granted, "setup: child renewal denied");
+    const kidNow = await b.current("c");
+    must(
+      kidNow?.reads?.join() === "mem:a" && kidNow?.sandbox === "isolated",
+      "a child renewal dropped or changed reads / sandbox"
     );
   },
   "broker.signs-current-key": async (s) => {
