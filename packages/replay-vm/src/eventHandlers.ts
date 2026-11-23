@@ -187,7 +187,7 @@ export const FLOW_DIVERGED_GATE = "__loom_diverged__";
  */
 export const FAILED_WHILE_PARKED = "_failedWhileParked";
 
-function isStatusOnlyResume(state: ExecutionState, payload: unknown): boolean {
+export function isStatusOnlyResume(state: ExecutionState, payload: unknown): boolean {
   return (
     payload === null &&
     (state.status !== "suspended" ||
@@ -228,11 +228,11 @@ export const KERNEL_STAMPED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "INBOX_RELEASED",
 ]);
 
-function isKernelWritten(event: EventEnvelope): boolean {
+export function isKernelWritten(event: EventEnvelope): boolean {
   return event.metadata?.kernel === true;
 }
 
-function isPlain(v: unknown): v is Record<string, unknown> {
+export function isPlain(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
@@ -258,7 +258,7 @@ function ownedRecord<T>(prior: Record<string, T> | undefined): Record<string, T>
   return next;
 }
 
-function safeMapKey(key: unknown): key is string {
+export function safeMapKey(key: unknown): key is string {
   return typeof key === "string" && key.length > 0 && !RESERVED_FOLD_KEYS.has(key);
 }
 
@@ -446,7 +446,7 @@ function seedQuarantined(raw: unknown): Quarantined | undefined {
 }
 
 /** The chain identity a `forkChain` stamp or the start payload names; `undefined` if malformed. */
-function chainIdentity(v: unknown): { chainId: string; generation: number } | undefined {
+export function chainIdentity(v: unknown): { chainId: string; generation: number } | undefined {
   if (!isPlain(v)) return undefined;
   const { chainId, generation } = v;
   if (typeof chainId !== "string" || chainId.length === 0) return undefined;
@@ -458,7 +458,10 @@ function chainIdentity(v: unknown): { chainId: string; generation: number } | un
 type WaitResume =
   | { answer: true; waitId: string; wait: SuspendWait; inner: unknown }
   | { answer: false };
-function parseWaitResume(state: ExecutionState, event: EventEnvelope): WaitResume | undefined {
+export function parseWaitResume(
+  state: ExecutionState,
+  event: EventEnvelope
+): WaitResume | undefined {
   if (!isKernelWritten(event)) return undefined;
   const p = event.payload;
   if (!isPlain(p) || typeof p.waitId !== "string" || !Object.hasOwn(p, "payload")) {
@@ -1753,7 +1756,12 @@ export function getHandler(eventType: string): Handler | undefined {
 // O(frames) pass, so `fold(snapshot, tail) == fold(events)` holds. Nothing reads a settled frame's input
 // from the fold; the log (or the compaction archive, ADR 0138) holds it. A pre-1.26 node re-adds an input
 // to a frame it settles (harmless; stripped by the next normalize) - the documented mixed-fleet exception.
-export const EVENT_SCHEMA_VERSION = "1.26.0";
+// 1.27.0: ADR 0152 D1, NO new kind. Additive optional `EXECUTION_STARTED.seenOriginsLimits` (and
+// `continuedFrom.carried.seenOrigins`) and the reserved fold key `_seenOrigins { v, limits, origins, overflow?, through }`:
+// the distinct taint origins of every tainted value that crossed INTO the run (see seenOrigins.ts for the channels).
+// Created ONLY when the start carries the stamp or a carried set, so a log without either folds byte-identically to
+// 1.26.0. `normalizeSnapshotState` reads a key whose `through` is not `state.sequence` as overflow (a 1.26 fold left it stale).
+export const EVENT_SCHEMA_VERSION = "1.27.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

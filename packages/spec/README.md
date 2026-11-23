@@ -13,7 +13,7 @@ version means, and you run it (`pnpm --filter @loomwork/spec test`) to find out 
 import { CAPABILITIES, checkCompatibility, kernelManifest, renderCompatibilityMatrix } from "@loomwork/spec";
 
 const manifest = kernelManifest(); // built by importing the real version constants
-console.log(manifest.eventSchema.version, manifest.spis.memoryStore); // "1.26.0" "2.1.0"
+console.log(manifest.eventSchema.version, manifest.spis.memoryStore); // "1.27.0" "2.1.0"
 
 // Same major is compatible, a different major is not; only fields you pass are checked.
 const report = checkCompatibility({ eventSchema: "1.0.0", memoryStoreSpi: "1.0.0" });

@@ -16,3 +16,11 @@ export {
   knownEventTypes,
 } from "./eventHandlers";
 export type { FlowEmitCounts, FlowEmitLeaf } from "./eventHandlers";
+export {
+  SEEN_ORIGINS_DEFAULTS,
+  SEEN_ORIGINS_KEY,
+  SEEN_ORIGINS_OVERFLOW,
+  SEEN_ORIGIN_MAX_CHARS,
+  carrySeenOrigins,
+} from "./seenOrigins";
+export type { SeenOriginsKey, SeenOriginsLimits } from "./seenOrigins";

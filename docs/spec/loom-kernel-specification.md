@@ -121,7 +121,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   execution's snapshots, which makes the log authoritative.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.26.0** — after the
+  the pinned type set MUST change together. The current version is **1.27.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -198,6 +198,13 @@ load-bearing, plus the global guardrails that gate every additive capability:
   1.24.0: a pre-1.26 node re-adds an input to a frame it settles, harmlessly. The wire `stateView`,
   `executionFromState`, the inspector's state pane and `ReplayInspector.framesTouched` therefore no longer
   show a completed step's input; read it from the log (the timeline) or `LogLifecycle.readArchived`.
+  [ADR 0152](../adr/0152-seen-origins-and-schedule-principal.md) added 1.27.0, no new kind: an optional
+  `EXECUTION_STARTED.seenOriginsLimits` stamp, an optional `continuedFrom.carried.seenOrigins`, the optional envelope
+  metadata fields `origins` / `originsOverflow` (written by the journal at commit, never by a caller), and the reserved fold
+  variable `_seenOrigins { v, limits, origins, overflow?, through }`: the distinct taint origins of every tainted value that
+  crossed into the run. The key exists only for a run whose start carries the stamp or a carried set, so a log without either
+  folds byte-identically to 1.26.0; the fold unions the RECORDED lists and never opens a payload.
+  `normalizeSnapshotState` reads a key whose `through` is not `state.sequence` as overflow (a pre-1.27 fold left it stale).
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, hold a `STEP_FAILED`
   that no status-setting event follows, or record any `DECISION_RECORDED` (the folded state now

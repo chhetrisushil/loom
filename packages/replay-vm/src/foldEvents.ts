@@ -7,6 +7,7 @@ import {
   resetFoldOwnership,
   useFoldOwnership,
 } from "./eventHandlers";
+import { staleSeenOrigins, trackSeenOrigins } from "./seenOrigins";
 
 const DEFAULT_STATE: Omit<ExecutionState, "executionId" | "workflowId" | "workflowVersion"> = {
   status: "pending",
@@ -47,6 +48,8 @@ export function foldEvents(
     if (handler) {
       state = handler(state, event);
     }
+    // 1.27.0 (ADR 0152 D1) - `_seenOrigins`: inert (one property read) unless the run is tracked.
+    state = trackSeenOrigins(state, event);
     // 1.19.0 (ADR 0102) — the one fold step keyed on an envelope STAMP rather than an
     // event type: a flow-level emit (`ctx.emit`/`ctx.stream`/`ctx.ui`, usually a domain
     // event with no handler) may carry `metadata.flowEmit = <content digest>`, and
@@ -78,7 +81,7 @@ export function foldEvents(
  * (same object).
  */
 export function normalizeSnapshotState<T extends Partial<ExecutionState>>(state: T): T {
-  return normalizeFailed(stripSettledInputs(state));
+  return staleSeenOrigins(normalizeFailed(stripSettledInputs(state)));
 }
 
 const SETTLED_FRAME = new Set(["completed", "failed", "cancelled"]);

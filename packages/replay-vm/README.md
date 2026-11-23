@@ -37,7 +37,7 @@ console.log(EVENT_SCHEMA_VERSION, knownEventTypes().length);
 - **`ReplayVM`.** `new ReplayVM(events, initial?)`, `applyEvent`, `getState()`, `peekState()`,
   `hasCompleted`, `hasFailed`, `getOutput`, `getTypedFailure`, `hasDecision`, `getDecision`,
   `flowEmitCount`, `recordedFrames`, `expectedReplayFrames`.
-- **Event-schema ABI.** `EVENT_SCHEMA_VERSION` (currently 1.26.0) and `knownEventTypes()`, the sorted set
+- **Event-schema ABI.** `EVENT_SCHEMA_VERSION` (currently 1.27.0) and `knownEventTypes()`, the sorted set
   the fold handles. A governance test pins the set; the event schema is versioned and additive.
 - **Fold limits and constants.** `INBOX_DEDUPE_CAP`, `QUARANTINE_FOLD_CAP`, the custom-dimension limits,
   `KERNEL_STAMPED_EVENT_TYPES`, `FAILED_WHILE_PARKED`, `FLOW_DIVERGED_GATE`.
