@@ -48,6 +48,18 @@ export class GrantRevokedError extends Error {
   }
 }
 
+/** R33: the effect under `CHILD_LEASE_TOOL` is not the one `childLeaseEffect()` made, or the middleware cannot tell. */
+export class LeaseChildEffectUnbrandedError extends Error {
+  readonly renewable = false;
+  readonly retryable = false;
+  constructor(toolId: string) {
+    super(
+      `task lease: the effect registered as "${toolId}" is not the branded child-lease effect: either the middleware was not given \`effects: () => runtime\`, or two copies of @loomwork/task-authority are installed (the brand is per module copy)`
+    );
+    this.name = "LeaseChildEffectUnbrandedError";
+  }
+}
+
 /** `strictLeases`: the effect is in scope but no lease counts it. */
 export class LeaseUnmappedError extends Error {
   readonly renewable = false;

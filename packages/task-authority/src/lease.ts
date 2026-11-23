@@ -3,6 +3,7 @@ import type { GrantSource } from "./broker";
 import { CHILD_LEASE_TOOL, isChildLeaseEffect } from "./childLease";
 import {
   GrantRevokedError,
+  LeaseChildEffectUnbrandedError,
   LeaseDimensionDroppedError,
   LeaseDurabilityError,
   LeaseExhaustedError,
@@ -28,8 +29,9 @@ export interface TaskLeaseOptions {
   strictLeases?: boolean;
   /**
    * R33: where to look the registered effect up (`() => effectRuntime`; a getter, since the runtime is built
-   * AFTER its middleware). Without it nothing can prove an effect under `CHILD_LEASE_TOOL` is the real
-   * `childLeaseEffect()`, so it gets NO exemption: it is a normal leased effect (strict leases refuse it).
+   * AFTER its middleware). Required when `CHILD_LEASE_TOOL` is registered: only the effect `childLeaseEffect()`
+   * made is exempt from counting. Without it, or with any other effect under that id, the middleware throws
+   * `LeaseChildEffectUnbrandedError` and the effect never runs.
    */
   effects?: () => { entries(): Iterable<[string, unknown]> };
   /** Revocation check budget in ms; on expiry the grant is treated as revoked (default 5000). */
@@ -136,7 +138,8 @@ export function taskLeaseMiddleware(opts: TaskLeaseOptions): EffectMiddleware {
     if (grant === undefined) throw new LeaseGrantInvalidError();
     const toolId = ctx.toolId ?? "";
     const digest = taskGrantDigest(grant);
-    if (toolId === CHILD_LEASE_TOOL && realChildLease()) {
+    if (toolId === CHILD_LEASE_TOOL) {
+      if (!realChildLease()) throw new LeaseChildEffectUnbrandedError(toolId);
       // D6 bookkeeping, not a leased side effect: uncounted, but a revoked task still cannot meter
       if (await isRevoked(digest)) throw new GrantRevokedError(grant.taskId);
       return next();

@@ -41,6 +41,17 @@ const group: FlowRunner<unknown, unknown> = async (ctx) =>
     ],
   });
 
+// member 1 is DETACHED: it outlives the group, so a refused member must not cancel it (ADR 0112 D5)
+const groupWithDetached: FlowRunner<unknown, unknown> = async (ctx) =>
+  awaitChildren(ctx, {
+    key: "g",
+    children: [
+      { flowId: "waiter", input: {}, lease: { w: 2 }, leaseParent: "task-P" },
+      { flowId: "waiter", input: {}, lease: { w: 2 }, leaseParent: "task-P", detached: true },
+      { flowId: "late", input: {}, lease: { w: 3 }, leaseParent: "task-P" },
+    ],
+  });
+
 async function until(pred: () => Promise<boolean>): Promise<void> {
   const t0 = Date.now();
   while (!(await pred())) {
@@ -49,59 +60,69 @@ async function until(pred: () => Promise<boolean>): Promise<void> {
   }
 }
 
+/** Supervisor 1 (only `waiter` registered) starts the waiters; supervisor 2 refuses member `refused`'s mint. */
+async function recoverWithRefusal(parentRunner: FlowRunner<unknown, unknown>, refused: string) {
+  const holder: { sup?: ReturnType<typeof superviseChildren> } = {};
+  const runtime = new WorkflowRuntime({
+    effectRuntime: new EffectRuntime([]),
+    eventStore: new InMemoryAsyncEventStore(),
+    snapshotStore: new InMemoryAsyncSnapshotStore(),
+    onWarn: () => {},
+    onEvent: (e) => holder.sup?.onEvent(e),
+  });
+  runtime.registerFlow(def("parent"), parentRunner);
+  runtime.registerFlow(def("waiter"), waiter);
+  runtime.registerFlow(def("late"), waiter);
+  const status = async (id: string) => (await runtime.loadState(id))?.status;
+  const mint = async (_p: unknown, s: { childId: string }) => ({ actor: s.childId });
+  holder.sup = superviseChildren({
+    runtime,
+    flows: { waiter: reg("waiter", waiter) },
+    taskAuthority: { mintChildGrant: mint, settleChild: async () => {} },
+    onError: () => {},
+  });
+  await runtime.start(reg("parent", parentRunner) as never, {}, { executionId: "P" });
+  await until(async () => (await status("P::g#0")) === "suspended");
+  expect(await runtime.loadState(`P::${refused}`)).toBeNull();
+
+  const unstarted: [string, string][] = [];
+  const errors: unknown[] = [];
+  holder.sup = superviseChildren({
+    runtime,
+    flows: { waiter: reg("waiter", waiter), late: reg("late", waiter) },
+    taskAuthority: {
+      mintChildGrant: async (p, s) => {
+        if (s.childId === `P::${refused}`) throw new Error("over the headroom");
+        return mint(p, s);
+      },
+      settleChild: async () => {},
+      settleUnstarted: async (c, p) => {
+        unstarted.push([c, p]);
+      },
+    },
+    onError: (e) => errors.push(e),
+  });
+  await holder.sup.recover();
+  await until(async () => (await status("P")) === "completed");
+  const out = (await runtime.loadState("P"))?.variables._output as ChildResult[];
+  return { runtime, status, out, unstarted, errors };
+}
+
 describe("a refused group mint during recovery (R33)", () => {
   it("cancels the members that already started, returns the others' reservations, and the parent sees all failed", async () => {
-    const holder: { sup?: ReturnType<typeof superviseChildren> } = {};
-    const runtime = new WorkflowRuntime({
-      effectRuntime: new EffectRuntime([]),
-      eventStore: new InMemoryAsyncEventStore(),
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
-      onWarn: () => {},
-      onEvent: (e) => holder.sup?.onEvent(e),
-    });
-    runtime.registerFlow(def("parent"), group);
-    runtime.registerFlow(def("waiter"), waiter);
-    runtime.registerFlow(def("late"), waiter);
-    const status = async (id: string) => (await runtime.loadState(id))?.status;
+    const r = await recoverWithRefusal(group, "g#1");
+    expect(r.out.map((x) => x.status)).toEqual(["failed", "failed"]);
+    expect(await r.status("P::g#0")).toBe("cancelled"); // before R33 it kept running
+    expect(await r.runtime.loadState("P::g#1")).toBeNull();
+    expect(r.unstarted).toEqual([["P::g#1", "task-P"]]); // only the never-started member returns its reservation
+    expect(String(r.errors[0])).toMatch(/over the headroom/);
+  }, 30_000);
 
-    // supervisor 1 knows only `waiter`: member 0 starts, member 1 has no flow (the crash stand-in)
-    const mint = async (_p: unknown, s: { childId: string }) => ({ actor: s.childId });
-    holder.sup = superviseChildren({
-      runtime,
-      flows: { waiter: reg("waiter", waiter) },
-      taskAuthority: { mintChildGrant: mint, settleChild: async () => {} },
-      onError: () => {},
-    });
-    await runtime.start(reg("parent", group) as never, {}, { executionId: "P" });
-    await until(async () => (await status("P::g#0")) === "suspended");
-    expect(await runtime.loadState("P::g#1")).toBeNull();
-
-    // supervisor 2 (a restart) refuses member 1's mint
-    const unstarted: [string, string][] = [];
-    const errors: unknown[] = [];
-    holder.sup = superviseChildren({
-      runtime,
-      flows: { waiter: reg("waiter", waiter), late: reg("late", waiter) },
-      taskAuthority: {
-        mintChildGrant: async (p, s) => {
-          if (s.childId === "P::g#1") throw new Error("over the headroom");
-          return mint(p, s);
-        },
-        settleChild: async () => {},
-        settleUnstarted: async (c, p) => {
-          unstarted.push([c, p]);
-        },
-      },
-      onError: (e) => errors.push(e),
-    });
-    await holder.sup.recover();
-
-    await until(async () => (await status("P")) === "completed");
-    const out = (await runtime.loadState("P"))?.variables._output as ChildResult[];
-    expect(out.map((r) => r.status)).toEqual(["failed", "failed"]);
-    expect(await status("P::g#0")).toBe("cancelled"); // before R33 it kept running
-    expect(await runtime.loadState("P::g#1")).toBeNull();
-    expect(unstarted).toEqual([["P::g#1", "task-P"]]); // only the never-started member returns its reservation
-    expect(String(errors[0])).toMatch(/over the headroom/);
+  it("a DETACHED member that already started is not cancelled (ADR 0112 D5)", async () => {
+    const r = await recoverWithRefusal(groupWithDetached, "g#2");
+    expect(r.out.map((x) => x.status)).toEqual(["failed", "failed", "failed"]);
+    expect(await r.status("P::g#0")).toBe("cancelled");
+    expect(await r.status("P::g#1")).toBe("suspended"); // detached: left running
+    expect(r.unstarted).toEqual([["P::g#2", "task-P"]]);
   }, 30_000);
 });
