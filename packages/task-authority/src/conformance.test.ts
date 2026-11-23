@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RenewalRequest } from "./broker";
+import type { MintRequest, RenewalRequest } from "./broker";
 import {
   CONFORMANCE_CHECK_IDS,
   type ConformanceReport,
@@ -53,6 +53,17 @@ class NeverRevokes extends InMemoryGrantBroker {
     return false;
   }
 }
+/** Mints a child beyond the parent's fold reservation: ignores \`parentReserved\`. */
+class IgnoresParentReserved extends InMemoryGrantBroker {
+  override async mint(r: MintRequest) {
+    const { parentReserved: _ignored, ...rest } = r;
+    return super.mint(rest);
+  }
+}
+/** Reports a renewal as granted (epoch bumped) but never raises the ceiling: the policy is ignored. */
+const stuckCeiling: ConformanceSubject = {
+  makeBroker: ({ policy: _policy, ...o }) => new InMemoryGrantBroker({ ...o, policy: () => ({}) }),
+};
 class ReleasesOnRevoke extends InMemoryGrantBroker {
   override async revoke(taskId: string, reason: string): Promise<void> {
     await super.revoke(taskId, reason);
@@ -80,6 +91,37 @@ describe("checkTaskAuthorityConformance", () => {
     expect(r.results.filter((x) => x.status === "passed").length).toBe(
       CONFORMANCE_CHECK_IDS.length - 2
     );
+  }, 30_000);
+
+  it("names every ADR 0150 D14 check", () => {
+    const ids = CONFORMANCE_CHECK_IDS.join(" ");
+    for (const d14 of [
+      "laundering.uncovered",
+      "laundering.covered",
+      "carve.",
+      "pause-renew",
+      "replay",
+      "revocation",
+    ])
+      expect(ids).toContain(d14);
+  });
+
+  it("fails carve.total-spend for a broker that ignores parentReserved", async () => {
+    const r = await checkTaskAuthorityConformance(broken(IgnoresParentReserved));
+    expect(find(r, "carve.total-spend")?.status).toBe("failed");
+    expect(find(r, "carve.total-spend")?.message).toMatch(/beyond the parent's reservation/);
+  }, 30_000);
+
+  it("fails pause-renew for a renewal that is granted but leaves the ceiling", async () => {
+    const r = await checkTaskAuthorityConformance(stuckCeiling);
+    expect(find(r, "pause-renew")?.status).toBe("failed");
+    expect(find(r, "pause-renew")?.message).toMatch(/did not resume the run to completion/);
+  }, 30_000);
+
+  it("the guard checks do not depend on the broker: a broken broker cannot fail them", async () => {
+    const r = await checkTaskAuthorityConformance(broken(ReleasesOnRevoke));
+    for (const id of ["carve.forged-meters", "laundering.uncovered.shared-memory"])
+      expect(find(r, id)?.status).toBe("passed");
   }, 30_000);
 
   // The fail-proof: each broken broker must fail the NAMED check, with a message that says why.
