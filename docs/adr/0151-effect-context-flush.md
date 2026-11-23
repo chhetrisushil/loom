@@ -1,0 +1,101 @@
+# ADR 0151 — `EffectContext.flush()`: middleware can make its own events durable before the effect runs
+
+- Status: **Proposed**
+- Date: 2026-11-23
+- Builds on: [ADR 0150](0150-task-scoped-authority.md) (D4 counts side-effect attempts, so the count must be
+  durable before the attempt), K9.3 (the `idempotent: false` pre-dispatch drain of `STEP_STARTED`), K3
+  (`RESOURCE_METERED` and custom dimensions), [ADR 0102](0102-flow-emits-append-once.md) (in-flight accounting of emits), [ADR 0115](0115-open-vocabularies.md),
+  and the userspace-emit guard (`guardUserspaceEmit`).
+- Found by: ADR 0150 slice 1, task T6. The lease middleware's investigation found the crash window below.
+  The owner chose a kernel seam over a documented gap (2026-11-23).
+- Gate: second consumer: (1) `@loomwork/task-authority`'s lease middleware (ADR 0150 D4); (2) `@loomwork/middleware`
+  metering. K3 budgets meter AFTER the effect through the same write-behind journal, and the K8 abort path
+  already shows that "metered before the effect can escape it" matters there. Any accounting middleware that must
+  never under-count a side effect it allowed is the general case.
+- Placement verdict: **kernel (one optional field on `EffectContext`, wired in `WorkflowContext`)**. Durability of the
+  journal is the kernel's alone: no seam outside it can await the write-behind tail.
+- Version/compat impact: `EffectContext` gains an OPTIONAL `flush?: () => Promise<void>` (additive; middleware and
+  effects that do not call it are byte-identical). No new event, no EVENT_SCHEMA or KERNEL_ABI change. The kernel
+  budget for `packages/workflow-runtime/src/WorkflowContext.ts` grows by the wiring (`LOOM_KERNEL_BUDGET_ADR=0151`).
+
+## Context
+
+`EffectContext.emit` commits synchronously into the fold, but the durable write is **write-behind**: the journal
+enqueues it on a serial tail (`ExecutionJournal.enqueue`). Nothing drains between an emit made by middleware and the
+effect body that middleware then calls. Only `STEP_STARTED` of an `idempotent: false` tool is drained before dispatch
+(K9.3), and that drain happens before the middleware chain runs.
+
+So a middleware that emits `RESOURCE_METERED` and then calls `next()` can have this happen:
+
+1. the meter is folded and enqueued, not yet stored;
+2. the effect performs its side effect;
+3. the process crashes before the meter write lands.
+
+On recovery the step either re-runs, so the first side effect was never counted, or, for an `idempotent: false` tool
+whose in-doubt step an operator resolves as `completed-with-result`, is adopted without re-running. In that case a
+side effect happened and was never counted at all. ADR 0150 D4 promises to count attempts, not successes. That
+promise cannot be kept without a durability barrier. K3 metering has the same window, and a wider one, because it
+emits after the effect.
+
+## Decision
+
+### D1 — `flush()` on the effect context
+
+```ts
+interface EffectContext {
+  // ...
+  /**
+   * ADR 0151 — await the durable write of every event this execution has committed so far,
+   * including this effect's own emits. Rejects with StorageWriteError if any write failed (the
+   * run is already failing). Absent where no durable journal backs the context (the transient
+   * seam, test harnesses): a caller that needs durability MUST fail closed when it is absent.
+   */
+  readonly flush?: () => Promise<void>;
+}
+```
+
+`WorkflowContext` wires it to `journal.drain()`. It is one awaited store round trip, paid only by middleware that
+calls it.
+
+### D2 — the seal check after the drain
+
+`flush()` yields. While it waits, a terminal seal may land: a terminal commit, a sealed inbox payload, or a park
+barrier that gave up. After the drain, `flush()` applies the same rule as the K9.3 pre-dispatch drain: a sealed
+context never dispatches. It does not resolve, so the effect is never run and nothing unrecordable happens.
+A frozen or parked-scope context resolves normally: the step is already in flight and holds `activeWork`, exactly
+as at the K9.3 drain. The implementation reuses the K9.3 code path rather than duplicating its reasoning.
+
+### D3 — in-flight accounting
+
+`flush()` is called from inside `EffectRuntime.execute`, so the step already counts as in flight (ADR 0102). It adds
+no counter of its own.
+
+### D4 — where it is absent
+
+The transient seam (`EffectRuntime` invoke-transient, whose `emit` is a no-op) and test contexts do not provide
+`flush`. A consumer that needs the guarantee refuses to proceed when it is absent. `@loomwork/task-authority`'s lease
+middleware refuses a leased effect on a context with no `flush` (ADR 0150 D4 amendment).
+
+### D5 — what it does not do
+
+It does not make `emit` itself durable, and the hot path stays write-behind. It does not change K3 metering's
+behaviour; moving K3's meter before the effect and flushing it is a separate decision. It adds no syscall: it is a
+method on the effect context that middleware already receives.
+
+## Consequences
+
+- An accounting middleware can count an attempt durably before the attempt: emit, `await ctx.flush?.()`, then
+  `next()`. After a crash the count is in the log whenever the side effect could have happened.
+- Cost: one store round trip per flushed effect. Lease-governed effects pay it, and nothing else does.
+- Residual: an effect that runs after a successful flush and crashes is counted once and may run again on recovery
+  (it is re-run, or adopted in doubt). That is the at-least-once boundary the kernel already documents. The count can
+  be higher than the number of real side effects, never lower.
+
+## Rejected alternatives
+
+| Alternative | Why rejected | What would reopen it |
+|---|---|---|
+| Document the gap (soft ceilings) | Owner decision 2026-11-23: a lease that can be silently under-counted after an operator adopts an in-doubt step does not deliver ADR 0150 D4. | — |
+| Make every middleware `emit` durable | Puts a store round trip on every metered effect, including K3 metering on hot paths. | A measured case where write-behind emits cause a correctness bug in a 1P middleware that cannot opt in. |
+| A separately committed emission channel for middleware | Two journals for one execution break the single ordered log every fold relies on. | Nothing: invariant. |
+| Count from `STEP_STARTED` in a projection | `STEP_STARTED` is drained only for `idempotent: false` tools, and the lease middleware reads the fold, not a projection. | — |

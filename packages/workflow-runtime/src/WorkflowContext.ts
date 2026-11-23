@@ -836,6 +836,44 @@ export class WorkflowContextImpl implements WorkflowContext {
     }
   }
 
+  /**
+   * K9.3 / ADR 0151 — drain the write-behind journal for a step about to dispatch (STEP_STARTED of an
+   * `idempotent: false` tool) or already dispatched (`EffectContext.flush`), then decide whether the
+   * effect may proceed. One code path, so the two cannot drift. `track` counts the drain window as in
+   * flight; `flush` passes false because its effect is already counted inside `effectRuntime.execute`.
+   */
+  private async drainBeforeDispatch(
+    signal: AbortSignal | undefined,
+    track: boolean
+  ): Promise<"dispatch" | "never"> {
+    // The drain window counts as in flight (like the dispatch), so a sibling flow-level
+    // emit is stamped exactly as it was when commit + dispatch were synchronous. Decremented on
+    // every exit (ack, throw); the dispatch takes over the count synchronously.
+    if (track) this.inFlight++;
+    try {
+      await this.journal.drain();
+    } finally {
+      if (track) this.inFlight--;
+    }
+    // The drain yielded: a terminal seal may have landed (terminal commit, sealed inbox payload,
+    // a park barrier that gave up). A sealed context never dispatches: nothing it did could be
+    // recorded, and nothing waits on its idle set any more, so the call simply never settles.
+    // A FROZEN / parked-scope context is different: this step was already in flight (it holds
+    // activeWork, so the park barrier is waiting for it) and, like any in-flight step at a
+    // barrier, it runs to completion and journals its result before EXECUTION_SUSPENDED.
+    // Bailing here would leave activeWork > 0 forever (stalling the barrier for parkDrainMs)
+    // and strand a STEP_STARTED with no dispatch, which resume would park as EFFECT_INDOUBT.
+    if (this.sealed) {
+      // A CANCEL seal settles instead (the abort precedes the seal, so the signal is already
+      // aborted): execute's finally then ends the work, so the park barrier / run() is not held
+      // for parkDrainMs behind an activeWork count nothing will ever lower.
+      this.throwIfCancelled(signal);
+      this.throwIfCancelled();
+      return "never";
+    }
+    return "dispatch";
+  }
+
   private async executeLive<TIn, TOut>(
     scope: Scope,
     task: ExecutableTask<TIn, TOut>,
@@ -922,29 +960,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     // refused write (stale fence, storage error) throws here, so the effect is never dispatched
     // and the run fails like any other storage failure (the journal already aborted the run).
     if (this.effectRuntime.declaredIdempotence(toolId) === false) {
-      // The drain window counts as in flight (like the dispatch below), so a sibling flow-level
-      // emit is stamped exactly as it was when commit + dispatch were synchronous. Decremented on
-      // every exit (ack, throw); the dispatch below takes over the count synchronously.
-      this.inFlight++;
-      try {
-        await this.journal.drain();
-      } finally {
-        this.inFlight--;
-      }
-      // The drain yielded: a terminal seal may have landed (terminal commit, sealed inbox payload,
-      // a park barrier that gave up). A sealed context never dispatches: nothing it did could be
-      // recorded, and nothing waits on its idle set any more, so the call simply never settles.
-      // A FROZEN / parked-scope context is different: this step was already in flight (it holds
-      // activeWork, so the park barrier is waiting for it) and, like any in-flight step at a
-      // barrier, it runs to completion and journals its result before EXECUTION_SUSPENDED.
-      // Bailing here would leave activeWork > 0 forever (stalling the barrier for parkDrainMs)
-      // and strand a STEP_STARTED with no dispatch, which resume would park as EFFECT_INDOUBT.
-      if (this.sealed) {
-        // A CANCEL seal settles instead (the abort precedes the seal, so the signal is already
-        // aborted): execute's finally then ends the work, so the park barrier / run() is not held
-        // for parkDrainMs behind an activeWork count nothing will ever lower.
-        this.throwIfCancelled(scope.signal);
-        this.throwIfCancelled();
+      if ((await this.drainBeforeDispatch(scope.signal, true)) === "never") {
         return new Promise<TOut>(() => {});
       }
     }
@@ -1020,6 +1036,13 @@ export class WorkflowContextImpl implements WorkflowContext {
             this.meterCeilings
           )
         ), // ADR 0104
+      // ADR 0151 — durable barrier for middleware: the K9.3 drain + seal rule. No extra in-flight
+      // count: the effect already holds one inside `effectRuntime.execute`.
+      flush: async (): Promise<void> => {
+        if ((await this.drainBeforeDispatch(scope.signal, false)) === "never") {
+          await new Promise<void>(() => {});
+        }
+      },
       ...(stepSignal !== undefined && { signal: stepSignal }),
       // K12.1 — the principal chain flows to the K2 authorizer (carried opaque).
       ...(this.principal !== undefined && { principal: this.principal }),
