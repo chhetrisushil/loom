@@ -77,7 +77,12 @@ export const CHILD_DONE = "CHILD_DONE";
  * on a non-`completed` outcome.)
  */
 export type ChildResult<TOut = unknown> =
-  | { status: "completed"; output: TOut }
+  | {
+      status: "completed";
+      output: TOut;
+      /** ADR 0150 D6 - the child's final `lease.*` custom resource totals; set only when {@link SupervisorDeps.taskAuthority} is configured. */
+      usage?: Record<string, number>;
+    }
   | { status: "failed"; error: string }
   | { status: "cancelled"; reason?: string };
 
@@ -188,6 +193,10 @@ interface SpawnChoice {
   grants?: readonly string[];
   /** Absolute epoch-ms expiry for the minted token. Absolute, so a re-mint on recovery is identical. */
   expiresAt?: number;
+  /** ADR 0150 D6 - per-lease ceilings reserved for this child; see {@link SupervisorDeps.taskAuthority}. */
+  lease?: Record<string, number>;
+  /** ADR 0150 D6 - the parent's task id, handed to the minter (the supervisor cannot read the parent's principal). */
+  leaseParent?: string;
   /** ADR 0112 D5 — opts out of the cancel cascade: this child outlives a cancelled parent. */
   detached?: boolean;
 }
@@ -210,6 +219,8 @@ interface GroupMember {
   /** The capability subset conferred on THIS member (see {@link SpawnChoice.grants}). */
   grants?: readonly string[];
   expiresAt?: number;
+  lease?: Record<string, number>;
+  leaseParent?: string;
   /** ADR 0112 D5 — see {@link SpawnChoice.detached}. */
   detached?: boolean;
 }
@@ -272,6 +283,12 @@ export async function awaitChild<TOut = unknown>(
     grants?: readonly string[];
     /** Absolute epoch-ms expiry for the conferred authority. Absolute so a re-mint on recovery is identical. */
     expiresAt?: number;
+    /** ADR 0150 D6 - lease ceilings carved for this child; needs `SupervisorDeps.taskAuthority` (else the spawn fails closed). Recorded in the spawn decision. */
+    lease?: Record<string, number>;
+    /** ADR 0150 D6 - the parent's task id, for the minter. */
+    leaseParent?: string;
+    /** ADR 0150 D6 - receives the completed child's `ChildResult.usage` (replay-deterministic: it rides the recorded resume). */
+    onUsage?: (usage: Record<string, number>) => void;
     /**
      * ADR 0112 D5 — opt out of the cancel cascade. By default cancelling this execution cancels
      * the child it is awaiting; a `detached` child is work that must outlive its parent.
@@ -293,6 +310,8 @@ export async function awaitChild<TOut = unknown>(
     input: spec.input,
     ...(spec.grants !== undefined && { grants: spec.grants }),
     ...(spec.expiresAt !== undefined && { expiresAt: spec.expiresAt }),
+    ...(spec.lease !== undefined && { lease: spec.lease }),
+    ...(spec.leaseParent !== undefined && { leaseParent: spec.leaseParent }),
     ...(spec.detached === true && { detached: true }),
   }));
   // R8 round 1 — `viewDigest` binds the park to ITS child: a supervisor's resume must echo it, so
@@ -304,6 +323,7 @@ export async function awaitChild<TOut = unknown>(
     viewDigest: childId,
   })) as unknown as {
     output?: TOut;
+    usage?: Record<string, number>;
     __childFailed?: Exclude<ChildResult, { status: "completed" }>;
   };
   if (resumed.__childFailed !== undefined) {
@@ -311,6 +331,7 @@ export async function awaitChild<TOut = unknown>(
     // recovery re-run re-throws it at the same point and re-takes the same catch branch.
     fail(CHILD_FAILED, { childId, ...resumed.__childFailed });
   }
+  if (resumed.usage !== undefined) spec.onUsage?.(resumed.usage);
   return resumed.output as TOut;
 }
 
@@ -343,6 +364,9 @@ export async function awaitChildren<TOut = unknown>(
       input: unknown;
       grants?: readonly string[];
       expiresAt?: number;
+      /** ADR 0150 D6 - see `awaitChild`. */
+      lease?: Record<string, number>;
+      leaseParent?: string;
       /** ADR 0112 D5 — this member outlives a cancelled parent (see `awaitChild`). */
       detached?: boolean;
     }[];
@@ -360,6 +384,8 @@ export async function awaitChildren<TOut = unknown>(
     input: c.input,
     ...(c.grants !== undefined && { grants: c.grants }),
     ...(c.expiresAt !== undefined && { expiresAt: c.expiresAt }),
+    ...(c.lease !== undefined && { lease: c.lease }),
+    ...(c.leaseParent !== undefined && { leaseParent: c.leaseParent }),
     ...(c.detached === true && { detached: true }),
   }));
   if (group.maxDepth !== undefined) {
@@ -510,6 +536,26 @@ export interface SupervisorDeps {
    * Unset ⇒ no token is ever minted and every child starts exactly as before (G2).
    */
   delegation?: { secret: string };
+  /**
+   * ADR 0150 D6 - mint the grant of a child whose spawn carries a `lease`. Called once per such child at
+   * start with the parent execution (and the `leaseParent` task id the spawn recorded); the returned chain
+   * becomes the child's principal (it replaces any delegation). Orchestration only carries the numbers: the
+   * implementation is `childGrantMinter` in `@loomwork/task-authority`, which also makes the mint idempotent
+   * (a recovery re-start mints again). A refusal fails the child, the parent sees `childFailed`.
+   * A spawn with a `lease` and NO hook fails closed (the child never starts, unbounded). When set, a completed
+   * child's `ChildResult.usage` carries its final `lease.*` totals.
+   */
+  taskAuthority?: {
+    mintChildGrant(
+      parent: { executionId: string; taskId?: string },
+      spec: {
+        childId: string;
+        lease: Record<string, number>;
+        grants?: readonly string[];
+        expiresAt?: number;
+      }
+    ): Promise<PrincipalChain>;
+  };
   /**
    * R9 — the autonomy envelope's spawn bounds, enforced where a child is actually started so a
    * parent cannot bypass them by not using {@link boundOrchestration}. A refused spawn starts
@@ -1425,12 +1471,41 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       fail(writeErr); // the row could not be written: recover() is the backstop
     }
   };
+  // ADR 0150 D6 - a completed child's final `lease.*` totals, read from ITS fold once, before the resume
+  // is built (the resume is recorded, so replay never re-reads). Unreadable => no usage (nothing returned).
+  const leaseUsage = async (childId: string): Promise<Record<string, number> | undefined> => {
+    const st = await deps.runtime
+      .loadState(childId, deps.runtime.systemOptions())
+      .catch(() => null);
+    if (st === null || st === undefined) return undefined;
+    const custom = (st.variables._resources as { custom?: Record<string, number> } | undefined)
+      ?.custom;
+    return Object.fromEntries(Object.entries(custom ?? {}).filter(([k]) => k.startsWith("lease.")));
+  };
+  const withUsage = async (payload: unknown, key: string): Promise<unknown> => {
+    const p = payload as { output?: unknown; settled?: ChildResult[] };
+    if (Array.isArray(p.settled)) {
+      const settled = await Promise.all(
+        p.settled.map(async (r, i) => {
+          const usage = r.status === "completed" ? await leaseUsage(`${key}#${i}`) : undefined;
+          return usage === undefined ? r : { ...r, usage };
+        })
+      );
+      return { ...p, settled };
+    }
+    const usage = "output" in p ? await leaseUsage(key) : undefined;
+    return usage === undefined ? payload : { ...p, usage };
+  };
   const resumeParent = async (
     parentId: string,
-    payload: unknown,
+    rawPayload: unknown,
     opts: { key?: string; adopted?: boolean } = {}
   ): Promise<void> => {
     const key = opts.key;
+    const payload =
+      deps.taskAuthority !== undefined && key !== undefined
+        ? await withUsage(rawPayload, key)
+        : rawPayload;
     const sys = deps.runtime.systemOptions();
     const body = key !== undefined ? { ...(payload as object), viewDigest: key } : payload;
     let fence: number | undefined;
@@ -1540,20 +1615,21 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     flow: RegisteredFlow,
     childId: string,
     spec: { input: unknown; grants?: readonly string[]; expiresAt?: number },
-    parentId: string | undefined
+    parentId: string | undefined,
+    principal?: PrincipalChain
   ): Promise<void> => {
     try {
-      await deps.runtime.start(
-        flow,
-        spec.input,
-        childStartOptions(
-          childId,
-          spec,
-          deps.delegation,
-          { ...deps.runtime.systemOptions(), ...deps.runtime.lineageOptions() },
-          parentId
-        )
+      const options = childStartOptions(
+        childId,
+        spec,
+        deps.delegation,
+        { ...deps.runtime.systemOptions(), ...deps.runtime.lineageOptions() },
+        parentId
       );
+      await deps.runtime.start(flow, spec.input, {
+        ...options,
+        ...(principal !== undefined && { principal }),
+      });
       startedTotal++;
     } catch (err) {
       const exists = await deps.runtime
@@ -1563,6 +1639,36 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       if (!exists) fail(err);
     }
   };
+
+  // ADR 0150 D6 - the leased child's grant. Fails closed: a lease with no hook (or no parent) never starts.
+  const mintLeased = async (
+    parentId: string | undefined,
+    childId: string,
+    spec: SpawnChoice | GroupMember
+  ): Promise<PrincipalChain | undefined> => {
+    if (spec.lease === undefined) return undefined;
+    if (deps.taskAuthority === undefined || parentId === undefined) {
+      throw new Error(
+        `orchestration: child "${childId}" reserves a lease but SupervisorDeps.taskAuthority is not configured`
+      );
+    }
+    return deps.taskAuthority.mintChildGrant(
+      {
+        executionId: parentId,
+        ...(spec.leaseParent !== undefined && { taskId: spec.leaseParent }),
+      },
+      {
+        childId,
+        lease: spec.lease,
+        ...(spec.grants !== undefined && { grants: spec.grants }),
+        ...(spec.expiresAt !== undefined && { expiresAt: spec.expiresAt }),
+      }
+    );
+  };
+  const refusal = (err: unknown): ChildResult => ({
+    status: "failed",
+    error: `${(err as Error)?.name}: ${(err as Error)?.message}`,
+  });
 
   // Spawn handling for a parent's CHILD_DONE suspend on `correlationKey`: start the single
   // child / every unstarted group member, or refuse per the R9 envelope. Called from the live
@@ -1622,11 +1728,36 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             forget(correlationKey);
             return;
           }
+          const minted = new Map<string, PrincipalChain>();
+          try {
+            for (const m of durable.members) {
+              const chain = started.has(m.childId)
+                ? undefined
+                : await mintLeased(group.parentId, m.childId, m);
+              if (chain !== undefined) minted.set(m.childId, chain);
+            }
+          } catch (err) {
+            fail(err); // a refused mint starts NO member: the group settles failed.
+            for (const m of group.members) memberOf.delete(m.childId);
+            groups.delete(correlationKey);
+            await resumeParent(
+              group.parentId,
+              { settled: durable.members.map(() => refusal(err)) },
+              { key: correlationKey }
+            );
+            return;
+          }
           for (const member of durable.members) {
             const flow = deps.flows[member.flowId];
             if (flow === undefined || started.has(member.childId)) continue;
             started.add(member.childId);
-            await startChild(flow, member.childId, member, group.parentId);
+            await startChild(
+              flow,
+              member.childId,
+              member,
+              group.parentId,
+              minted.get(member.childId)
+            );
           }
         })()
       );
@@ -1678,7 +1809,18 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           forget(childId);
           return;
         }
-        await startChild(durableFlow, childId, durable, parentId);
+        let principal: PrincipalChain | undefined;
+        try {
+          principal = await mintLeased(parentId, childId, durable);
+        } catch (err) {
+          fail(err); // never start an unbounded child: the parent sees childFailed.
+          specs.delete(childId);
+          if (parentId !== undefined) {
+            await resumeParent(parentId, { __childFailed: refusal(err) }, { key: childId });
+          }
+          return;
+        }
+        await startChild(durableFlow, childId, durable, parentId, principal);
       })()
     );
   };
