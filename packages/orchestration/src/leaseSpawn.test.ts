@@ -37,6 +37,7 @@ const childRunner: FlowRunner<unknown, unknown> = async (ctx: ExecutionContext) 
   return { done: true };
 };
 type Seen = {
+  resources: Record<string, number>;
   executionId: string;
   taskId?: string;
   childId: string;
@@ -45,7 +46,8 @@ type Seen = {
 
 function boot(
   taskAuthority: SupervisorDeps["taskAuthority"],
-  parent: FlowRunner<unknown, unknown>
+  parent: FlowRunner<unknown, unknown>,
+  child: FlowRunner<unknown, unknown> = childRunner
 ) {
   const errors: unknown[] = [];
   const holder: { sup?: ReturnType<typeof superviseChildren> } = {};
@@ -56,11 +58,11 @@ function boot(
     onWarn: () => {},
     onEvent: (e) => holder.sup?.onEvent(e),
   });
-  runtime.registerFlow(def("child"), childRunner);
+  runtime.registerFlow(def("child"), child);
   runtime.registerFlow(def("parent"), parent);
   holder.sup = superviseChildren({
     runtime,
-    flows: { child: { definition: def("child"), runner: childRunner } as RegisteredFlow },
+    flows: { child: { definition: def("child"), runner: child } as RegisteredFlow },
     ...(taskAuthority !== undefined && { taskAuthority }),
     onError: (e) => errors.push(e),
   });
@@ -78,41 +80,74 @@ async function output(rt: WorkflowRuntime, id: string): Promise<unknown> {
 }
 
 describe("lease spawn (ADR 0150 D6, orchestration half)", () => {
-  it("awaitChild: the hook mints once with the recorded numbers; usage keeps only lease.* totals", async () => {
+  it("awaitChild: the hook gets the parent's live fold; a completed child is settled before the resume", async () => {
     const seen: Seen[] = [];
-    let usage: unknown;
+    const settled: [string, Record<string, number>][] = [];
     const h = boot(
       {
         async mintChildGrant(parent, spec) {
           seen.push({ ...parent, childId: spec.childId, lease: spec.lease });
           return { actor: spec.childId };
         },
+        async settleChild(id, resources) {
+          settled.push([id, resources]);
+        },
       },
       async (ctx) => {
+        ctx.emit("RESOURCE_METERED", { custom: { "lease.w.reserved": 6 } });
         await awaitChild(ctx, {
           key: "k",
           flowId: "child",
           input: {},
           lease: { w: 6 },
           leaseParent: "task-P",
-          onUsage: (u) => {
-            usage = u;
-          },
         });
-        return { usage };
+        return { done: true };
       }
     );
     await h.start();
-    expect(await output(h.runtime, "P")).toEqual({
-      usage: { "lease.w": 3, "lease.w.reserved": 1 },
-    });
+    await output(h.runtime, "P");
     expect(seen).toEqual([
-      { executionId: "P", taskId: "task-P", childId: "P::k", lease: { w: 6 } },
+      {
+        executionId: "P",
+        taskId: "task-P",
+        resources: { "lease.w.reserved": 6 }, // read from the parent's fold, not from the spawn
+        childId: "P::k",
+        lease: { w: 6 },
+      },
     ]);
+    expect(settled).toEqual([["P::k", { "lease.w": 3, "lease.w.reserved": 1, other: 9 }]]);
     expect(h.errors).toEqual([]);
   });
 
-  it("awaitChildren: each completed member carries usage; a refused mint fails the whole group", async () => {
+  it("a failed child is never settled (R7)", async () => {
+    const settled: string[] = [];
+    const h = boot(
+      {
+        mintChildGrant: async (_p, s) => ({ actor: s.childId }),
+        settleChild: async (id) => {
+          settled.push(id);
+        },
+      },
+      async (ctx) => {
+        try {
+          await awaitChild(ctx, { key: "k", flowId: "child", input: {}, lease: { w: 1 } });
+        } catch (e) {
+          if ((e as Error).name === "SuspendError") throw e;
+          return { failed: true };
+        }
+        return { failed: false };
+      },
+      async () => {
+        throw new Error("boom");
+      }
+    );
+    await h.start();
+    expect(await output(h.runtime, "P")).toEqual({ failed: true });
+    expect(settled).toEqual([]);
+  });
+
+  it("awaitChildren: completed members are settled; a refused mint fails the whole group", async () => {
     const group: FlowRunner<unknown, unknown> = async (ctx) =>
       awaitChildren(ctx, {
         key: "g",
@@ -121,20 +156,27 @@ describe("lease spawn (ADR 0150 D6, orchestration half)", () => {
           { flowId: "child", input: {} },
         ],
       });
-    const ok = boot({ mintChildGrant: async (_p, s) => ({ actor: s.childId }) }, group);
+    const settled: string[] = [];
+    const ok = boot(
+      {
+        mintChildGrant: async (_p, s) => ({ actor: s.childId }),
+        settleChild: async (id) => {
+          settled.push(id);
+        },
+      },
+      group
+    );
     await ok.start();
-    const settled = (await output(ok.runtime, "P")) as ChildResult[];
-    expect(settled.map((r) => r.status)).toEqual(["completed", "completed"]);
-    expect(settled.map((r) => (r as { usage?: unknown }).usage)).toEqual([
-      { "lease.w": 3, "lease.w.reserved": 1 },
-      { "lease.w": 3, "lease.w.reserved": 1 },
-    ]);
+    const done = (await output(ok.runtime, "P")) as ChildResult[];
+    expect(done.map((r) => r.status)).toEqual(["completed", "completed"]);
+    expect(settled.sort()).toEqual(["P::g#0", "P::g#1"]);
 
     const refused = boot(
       {
         mintChildGrant: async () => {
           throw new Error("over the headroom");
         },
+        settleChild: async () => {},
       },
       group
     );
@@ -144,7 +186,7 @@ describe("lease spawn (ADR 0150 D6, orchestration half)", () => {
     expect(await refused.runtime.loadState("P::g#0")).toBeNull(); // nothing started
   });
 
-  it("without a hook a lease spawn fails closed and no usage is added to a plain child", async () => {
+  it("without a hook a lease spawn fails closed", async () => {
     const closed = boot(undefined, async (ctx) => {
       try {
         await awaitChild(ctx, { key: "k", flowId: "child", input: {}, lease: { w: 6 } });
@@ -158,16 +200,5 @@ describe("lease spawn (ADR 0150 D6, orchestration half)", () => {
     expect(await output(closed.runtime, "P")).toEqual({ failed: true });
     expect(await closed.runtime.loadState("P::k")).toBeNull();
     expect(String(closed.errors[0])).toMatch(/taskAuthority is not configured/);
-
-    const plain = boot(undefined, async (ctx) =>
-      awaitChildren(ctx, {
-        key: "g",
-        children: [{ flowId: "child", input: {} }],
-      })
-    );
-    await plain.start();
-    expect(await output(plain.runtime, "P")).toEqual([
-      { status: "completed", output: { done: true } },
-    ]);
   });
 });

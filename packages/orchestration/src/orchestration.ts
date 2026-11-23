@@ -77,12 +77,7 @@ export const CHILD_DONE = "CHILD_DONE";
  * on a non-`completed` outcome.)
  */
 export type ChildResult<TOut = unknown> =
-  | {
-      status: "completed";
-      output: TOut;
-      /** ADR 0150 D6 - the child's final `lease.*` custom resource totals; set only when {@link SupervisorDeps.taskAuthority} is configured. */
-      usage?: Record<string, number>;
-    }
+  | { status: "completed"; output: TOut }
   | { status: "failed"; error: string }
   | { status: "cancelled"; reason?: string };
 
@@ -287,8 +282,6 @@ export async function awaitChild<TOut = unknown>(
     lease?: Record<string, number>;
     /** ADR 0150 D6 - the parent's task id, for the minter. */
     leaseParent?: string;
-    /** ADR 0150 D6 - receives the completed child's `ChildResult.usage` (replay-deterministic: it rides the recorded resume). */
-    onUsage?: (usage: Record<string, number>) => void;
     /**
      * ADR 0112 D5 — opt out of the cancel cascade. By default cancelling this execution cancels
      * the child it is awaiting; a `detached` child is work that must outlive its parent.
@@ -323,7 +316,6 @@ export async function awaitChild<TOut = unknown>(
     viewDigest: childId,
   })) as unknown as {
     output?: TOut;
-    usage?: Record<string, number>;
     __childFailed?: Exclude<ChildResult, { status: "completed" }>;
   };
   if (resumed.__childFailed !== undefined) {
@@ -331,7 +323,6 @@ export async function awaitChild<TOut = unknown>(
     // recovery re-run re-throws it at the same point and re-takes the same catch branch.
     fail(CHILD_FAILED, { childId, ...resumed.__childFailed });
   }
-  if (resumed.usage !== undefined) spec.onUsage?.(resumed.usage);
   return resumed.output as TOut;
 }
 
@@ -542,12 +533,17 @@ export interface SupervisorDeps {
    * becomes the child's principal (it replaces any delegation). Orchestration only carries the numbers: the
    * implementation is `childGrantMinter` in `@loomwork/task-authority`, which also makes the mint idempotent
    * (a recovery re-start mints again). A refusal fails the child, the parent sees `childFailed`.
-   * A spawn with a `lease` and NO hook fails closed (the child never starts, unbounded). When set, a completed
-   * child's `ChildResult.usage` carries its final `lease.*` totals.
+   * A spawn with a `lease` and NO hook fails closed (the child never starts, unbounded).
+   * `parent.resources` is the parent's LIVE custom resource fold (`_resources.custom`), read by the supervisor,
+   * so the minter can check the spawn against what the parent really reserved. Before a COMPLETED child's
+   * result resumes its parent, `settleChild(childId, resources)` receives that child's final custom fold
+   * (once per resume; never for a failed or cancelled child), so the unused lease can be recorded at the
+   * broker. The parent never supplies either number.
    */
   taskAuthority?: {
+    settleChild(childId: string, resources: Record<string, number>): Promise<void>;
     mintChildGrant(
-      parent: { executionId: string; taskId?: string },
+      parent: { executionId: string; taskId?: string; resources: Record<string, number> },
       spec: {
         childId: string;
         lease: Record<string, number>;
@@ -1471,41 +1467,35 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       fail(writeErr); // the row could not be written: recover() is the backstop
     }
   };
-  // ADR 0150 D6 - a completed child's final `lease.*` totals, read from ITS fold once, before the resume
-  // is built (the resume is recorded, so replay never re-reads). Unreadable => no usage (nothing returned).
-  const leaseUsage = async (childId: string): Promise<Record<string, number> | undefined> => {
-    const st = await deps.runtime
-      .loadState(childId, deps.runtime.systemOptions())
-      .catch(() => null);
+  // ADR 0150 D6 - before a COMPLETED child's result resumes the parent, hand the child's final fold to the
+  // hook. Unreadable => nothing is recorded (nothing returns); a throwing hook is reported, never fatal.
+  const customOf = async (id: string): Promise<Record<string, number> | undefined> => {
+    const st = await deps.runtime.loadState(id, deps.runtime.systemOptions()).catch(() => null);
     if (st === null || st === undefined) return undefined;
-    const custom = (st.variables._resources as { custom?: Record<string, number> } | undefined)
-      ?.custom;
-    return Object.fromEntries(Object.entries(custom ?? {}).filter(([k]) => k.startsWith("lease.")));
+    return (
+      (st.variables._resources as { custom?: Record<string, number> } | undefined)?.custom ?? {}
+    );
   };
-  const withUsage = async (payload: unknown, key: string): Promise<unknown> => {
-    const p = payload as { output?: unknown; settled?: ChildResult[] };
+  const settleChild = async (childId: string): Promise<void> => {
+    const resources = await customOf(childId);
+    if (resources !== undefined)
+      await deps.taskAuthority?.settleChild(childId, resources).catch(fail);
+  };
+  const settleCompleted = async (payload: unknown, key: string): Promise<void> => {
+    const p = payload as { settled?: ChildResult[] };
     if (Array.isArray(p.settled)) {
-      const settled = await Promise.all(
-        p.settled.map(async (r, i) => {
-          const usage = r.status === "completed" ? await leaseUsage(`${key}#${i}`) : undefined;
-          return usage === undefined ? r : { ...r, usage };
-        })
+      await Promise.all(
+        p.settled.map((r, i) => (r.status === "completed" ? settleChild(`${key}#${i}`) : undefined))
       );
-      return { ...p, settled };
-    }
-    const usage = "output" in p ? await leaseUsage(key) : undefined;
-    return usage === undefined ? payload : { ...p, usage };
+    } else if ("output" in (payload as object)) await settleChild(key);
   };
   const resumeParent = async (
     parentId: string,
-    rawPayload: unknown,
+    payload: unknown,
     opts: { key?: string; adopted?: boolean } = {}
   ): Promise<void> => {
     const key = opts.key;
-    const payload =
-      deps.taskAuthority !== undefined && key !== undefined
-        ? await withUsage(rawPayload, key)
-        : rawPayload;
+    if (deps.taskAuthority !== undefined && key !== undefined) await settleCompleted(payload, key);
     const sys = deps.runtime.systemOptions();
     const body = key !== undefined ? { ...(payload as object), viewDigest: key } : payload;
     let fence: number | undefined;
@@ -1652,9 +1642,13 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         `orchestration: child "${childId}" reserves a lease but SupervisorDeps.taskAuthority is not configured`
       );
     }
+    const resources = await customOf(parentId);
+    if (resources === undefined)
+      throw new Error(`orchestration: cannot read the fold of "${parentId}"`);
     return deps.taskAuthority.mintChildGrant(
       {
         executionId: parentId,
+        resources,
         ...(spec.leaseParent !== undefined && { taskId: spec.leaseParent }),
       },
       {
