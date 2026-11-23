@@ -565,7 +565,7 @@ Slice 2, none of it built: provenance taint across lineages (D7), `reads` scopin
 ## Amendment (2026-11-23, slice 2 design)
 
 Slice 2 (D7–D12) was designed against the code at main 7409550f. The kernel seams it needs are decided in
-[ADR 0152](0152-seen-origins-and-schedule-principal.md) (Proposed). Earlier text above is kept unchanged. Where research showed a premise to be wrong, the correction is marked "(corrected)".
+[ADR 0152](0152-seen-origins-and-schedule-principal.md) (Accepted 2026-11-23). Earlier text above is kept unchanged. Where research showed a premise to be wrong, the correction is marked "(corrected)".
 
 ### Owner decisions (2026-11-23)
 
