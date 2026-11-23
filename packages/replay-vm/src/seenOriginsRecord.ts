@@ -107,7 +107,11 @@ export function scanSeenOriginsLive(root: unknown, maxNodes: number): string[] |
       if (ArrayBuffer.isView(v) || v instanceof ArrayBuffer) continue;
       if (ancestors.has(v)) return undefined;
       const proto = Object.getPrototypeOf(v) as object | null;
-      if (proto === Date.prototype && v instanceof Date) continue;
+      // a Date is a leaf only with no own key (an own property could hold a wrapper the flow reads)
+      if (proto === Date.prototype && v instanceof Date) {
+        if (Reflect.ownKeys(v).length > 0) return undefined;
+        continue;
+      }
       const isArr = proto === Array.prototype && Array.isArray(v);
       const isMap = proto === Map.prototype && v instanceof Map;
       const isSet = proto === Set.prototype && v instanceof Set;
