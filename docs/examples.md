@@ -101,6 +101,15 @@ pnpm --filter @loomwork/db-observability start
   resumed in a fresh runtime with no tool re-run, `writeBack` through `memoryWriteBackEffect`
   recalled by the next ticket (tainted, inside the untrusted fence), a fork guard, and the config
   errors (a bare `writeBack: true` from an untyped caller, which the type refuses; a response cache without `cacheScope` on the direct path).
+- **`task-authority-digest`** — task-scoped authority (ADR 0150 slices 1 and 2, ADR 0152) on a
+  nightly incident-digest agent, offline with a scripted model: a grant derived from `reachOf` with
+  `deriveGrant` (the `task-grant-reach` rule warns on a template that names an unreachable effect),
+  leases plus signed `reads` (a recall of another team's scope is refused `task-grant:read-scope`),
+  `onDenied: "reason"` feeding a denial back to the model while the default ends the run,
+  `directedBy` parking an `email.send` that another task's note directed until the operator approves
+  that lineage, and a scheduled agent approved once (`answerScheduleApproval` with `expect.issuedTo`)
+  whose ticks each run as `<schedule>@<occurrence>`, refund unused lease with `settleScheduledTick`,
+  and are skipped (never run anonymously) once the schedule's headroom is spent.
 - **`chat-agent`** — the conversation layer (ADR 0122) for one owner: multi-turn chat, barge-in
   (a new turn aborts the in-flight answer; the partial is kept as interrupted), a tiny token
   window (rotation plus a rolling summary; the prompt plateaus), a process restart then an SSE

@@ -700,12 +700,14 @@ export const CAPABILITIES: readonly Capability[] = [
     id: "task-authority",
     title: "Task-scoped Authority",
     package: "@loomwork/task-authority",
-    level: "L2",
+    level: "L3",
     summary:
       "ADR 0150 — per-task signed grants, side-effect leases that pause on exhaustion, child leases carved by reservation, cross-lineage provenance.",
     evidence: {
       conformanceTest: "packages/task-authority/src/conformance.test.ts",
+      usedIn:
+        "loom-examples: task-authority-digest (a grant derived from reach, signed reads, denial feedback, directedBy parking a cross-lineage write, a scheduled agent with a grant per tick)",
     },
-    note: "ADR 0150 slices 1 and 2, implemented (amended 2026-11-23/24). L2: a real test suite plus a published conformance kit (`@loomwork/task-authority/conformance`, whose checks each carry a fail-proof). Not L3: no example consumes it yet. Needs the ADR 0151 and 0152 kernel seams, which are Accepted and implemented. Covered laundering is a real kit check; A2A laundering runs when the subject supplies a transport, else it is reported skipped.",
+    note: "ADR 0150 slices 1 and 2, implemented (amended 2026-11-23/24). A real test suite plus a published conformance kit (`@loomwork/task-authority/conformance`, whose checks each carry a fail-proof). L2 -> L3 once `task-authority-digest` consumed it: writing it surfaced three docs gaps (every granted ring effect of an agent loop needs a lease under strict leases; a tick lease key must name a lease of the schedule grant; `answerScheduleApproval` needs the broker's `now` on a non-wall clock), fixed in the user guide. Needs the ADR 0151 and 0152 kernel seams, which are Accepted and implemented. Covered laundering is a real kit check; A2A laundering runs when the subject supplies a transport, else it is reported skipped.",
   },
 ];
