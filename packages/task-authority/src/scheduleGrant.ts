@@ -152,10 +152,12 @@ export interface ScheduleApprovalRuntime {
 export interface ScheduleExpect {
   tenant?: string;
   onBehalfOf?: string;
-  issuedTo?: string;
+  /** REQUIRED (R26): the operator vouches for the holder. A JS caller that omits it is still refused at run time. */
+  issuedTo: string;
 }
 export interface AnswerScheduleOptions {
-  expect?: ScheduleExpect;
+  /** REQUIRED: what the operator vouches the schedule is for; a call without `expect.issuedTo` does not compile. */
+  expect: ScheduleExpect;
   /** The broker's clock (see `mintScheduleGrant`). */
   now?: () => number;
   /**
@@ -176,7 +178,7 @@ export interface AnswerScheduleOptions {
 function bindSpec(
   spec: ScheduleGrantSpec,
   principal: unknown,
-  expect: ScheduleExpect | undefined
+  expect: Partial<ScheduleExpect> | undefined
 ): void {
   if (expect?.issuedTo === undefined)
     throw new ScheduleDeniedError("the operator must vouch for the holder: pass expect.issuedTo");
@@ -195,7 +197,7 @@ function bindSpec(
 }
 
 /**
- * Operator helper: reads the pending `ScheduleGrantSpec` of the execution parked on `SCHEDULE_GATE`, refuses it unless
+ * Operator helper (`resumeOpts` and `o` are required; pass `undefined` for no resume options): reads the pending `ScheduleGrantSpec` of the execution parked on `SCHEDULE_GATE`, refuses it unless
  * its `issuedTo` is `o.expect.issuedTo` (REQUIRED, R26: an approver is not the service it approves) and its `tenant` /
  * `onBehalfOf` equal `o.expect`'s and the approval run's recorded principal's (R25 I3: a cross-tenant mint is refused BEFORE the resume), resumes it with the decision plus the
  * `viewDigest` echo (ADR 0117), and ONLY THEN, if approved, mints the schedule grant. A resume the runtime refuses
@@ -209,9 +211,11 @@ export async function answerScheduleApproval(
   broker: Pick<GrantBroker, "mint" | "current">,
   executionId: string,
   decision: { approved: boolean; reason?: string },
-  resumeOpts?: unknown,
-  o: AnswerScheduleOptions = {}
+  resumeOpts: unknown,
+  opts: AnswerScheduleOptions
 ): Promise<TaskGrant | undefined> {
+  // `opts` is required in the types; a JS caller that omits it reaches `bindSpec`'s refusal below.
+  const o: Partial<AnswerScheduleOptions> = opts ?? {};
   const state = await runtime.loadState(executionId);
   const gate = state?.suspendedOn;
   const key = gate?.correlationKey ?? "";

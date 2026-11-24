@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`@loomwork/task-authority`: `answerScheduleApproval`'s vouching is required in the types (breaking at compile time).** `AnswerScheduleOptions.expect` (and so the sixth argument) and `ScheduleExpect.issuedTo` are now required; a call without `{ expect: { issuedTo } }` no longer compiles. The run-time refusal stays for JS callers (`ScheduleDeniedError`: "the operator must vouch for the holder"), so no call that worked before can have been valid. `ScheduleExpect.tenant` / `onBehalfOf` stay optional.
+- **`@loomwork/task-authority`: `TASK_AUTHORITY_VERSION` is `"0.0.0-slice2"`** (was `"0.0.0-slice1"`); it names the feature level, not the release, and no guard ties it to `RELEASE_VERSION`.
+- **Upgrade: durable-state `load` is now a declared read.** A task-grant holder that calls durable-state `load` with no `reads` is refused (`task-grant:read-scope`). Impact: list `"<loadToolId>:<key glob>"` in the grant's `reads`; runs with no task grant are unaffected.
+- **Rolling upgrade (EVENT_SCHEMA 1.27.0).** Upgrade every node before enabling `kernel.features.seenOrigins` (default off), and before minting grants with `reads` or `sandbox`: an older node refuses or mis-folds them. The slice-2 scheduled agents need `@loomwork/workflow-runtime` 0.1.7 or later.
+
 ### Added
 
 - **Task authority slice 2 is built ([ADR 0150](docs/adr/0150-task-scoped-authority.md) D7-D12, [ADR 0152](docs/adr/0152-seen-origins-and-schedule-principal.md)).** One block, in build order: the kernel seams (seen origins recorded at commit, the `principalFor` hook); the signed grant fields `reads` and `sandbox`; D7 provenance (`directedBy`, lineage tagging, A2A ingress taint); D8 `reads` made checkable; D10 `sandboxRequirement`; D12 scheduled agents (schedule grant, grant per tick, refund contract); D11 `authority.onDenied`; D9 `reachOf`, `deriveGrant` and the verify rule `task-grant-reach`; and the kit's covered and A2A laundering checks. The how-to is the user guide's "Task authority beyond the paper" section; the deviations from the original design and the documented residuals are ADR 0150's "As built (slice 2)" section. Docs pass (slice-2 S12): the stale "not built" and "skipped" claims in the security overview, architecture, maturity, whitepaper, API reference and package README now match the code, ADR 0150 and 0152 gain "As built" sections, and ADR 0152's I7 bullet records the S10 amendment (the hook mints).
