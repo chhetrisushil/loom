@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/llm",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Provider-agnostic LLM abstraction for Loom workflows",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/workflow-runtime",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Durable workflow execution runtime with suspend and resume",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

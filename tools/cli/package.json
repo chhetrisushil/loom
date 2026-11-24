@@ -1,6 +1,6 @@
 {
   "name": "@loomwork/cli",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "The loom CLI — project-local commands over the durable log: logs, debug (time-travel), eval",
   "bin": {
     "loom": "./dist/cli.js"
