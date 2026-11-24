@@ -1,5 +1,5 @@
 /** Slice-1 marker for `@loomwork/task-authority` (ADR 0150). */
-export const TASK_AUTHORITY_VERSION = "0.0.0-slice1";
+export const TASK_AUTHORITY_VERSION = "0.0.0-slice2";
 
 export {
   ScheduleDeniedError,

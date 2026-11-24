@@ -75,7 +75,7 @@ describe("@loomwork/task-authority public surface", () => {
       "withRenewal",
       "wrapLineage",
     ]);
-    expect(api.TASK_AUTHORITY_VERSION).toBe("0.0.0-slice1");
+    expect(api.TASK_AUTHORITY_VERSION).toBe("0.0.0-slice2");
   });
 
   it("keeps the conformance kit off the main entry (it needs the optional runtime peers)", async () => {

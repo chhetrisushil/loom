@@ -5,9 +5,9 @@ agent doing another's work with its own, perfectly valid credentials, so a promp
 agent can spend authority that was never meant for the task. This package binds authority to the task: a
 signed per-task grant names the effects an execution may run, side-effect leases count attempts and pause
 the run for renewal when exhausted, and a child's lease is carved from its parent's by reservation. The
-kernel gains two optional `EffectContext` methods (`flush`, `readResources`) and one composition-time method,
+kernel gains three optional `EffectContext` methods (`flush`, `readResources`, and `seenOrigins`, ADR 0152) and one composition-time method,
 `WorkflowRuntime.reserveEffectDimensions` (ADR 0151); the rest sits behind the existing authorizer, metering and
-principal-codec seams. Needs `@loomwork/workflow-runtime` 0.1.5 or later: `installTaskAuthority` throws on a host
+principal-codec seams. Needs `@loomwork/workflow-runtime` 0.1.5 or later for slice 1 and 0.1.7 or later for slice 2 (`seenOrigins`, `principalFor`, the `committed()` principal): `installTaskAuthority` throws on a host
 without `reserveEffectDimensions`, and the lease middleware throws `LeaseDurabilityError` where `flush` or
 `readResources` is absent (the transient seam).
 
@@ -77,7 +77,7 @@ read as clean unless you list their prefix; a grant-holder on a raw path can lab
 
 A schedule has no human per run, so its root authority is a **schedule grant** approved once.
 1. In a one-off flow call `await requestScheduleApproval(ctx, { scheduleId, issuedTo, effects, leases, ttlMs })` (it parks);
-   an operator answers with `answerScheduleApproval(runtime, broker, executionId, { approved: true })`, which mints the grant
+   an operator answers with `answerScheduleApproval(runtime, broker, executionId, { approved: true }, resumeOpts, { expect: { issuedTo } })` (`expect.issuedTo` is REQUIRED, and `expect` is required in the types), which mints the grant
    (`taskId` = `scheduleId`) only after the runtime accepted the approval. Its `leases` are the TOTAL budget over all ticks.
 2. Give the `TimerService` (or `defineConfig({ timers: { principalFor } })`) `principalFor: schedulePrincipalFor(broker, { lease: { calls: 50 } })`.
    Each occurrence runs under its own child grant `<scheduleId>@<occurrence>`; a missing, expired, revoked or exhausted schedule grant skips that occurrence

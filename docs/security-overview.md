@@ -8,7 +8,7 @@ Loom is a durable execution kernel for long-running and agentic workloads: every
 
 This document lists the guardrails loom ships, what each one guarantees, and where it stops. It is written for a security reviewer. Every claim names the ADR (`docs/adr/NNNN-*.md`), the package, and where possible the test that pins it, so you can check the claim against code.
 
-**Version reviewed:** `loom` `main` at commit `ac30b375` (2026-11-23, release 0.1.5), 77 packages under `packages/`, `plugins/` and `tools/`. The 2026-11-23 update added the guardrails of ADR 0147 to 0151 (sections 3, 4, 5 and 9); the earlier guardrail claims were last re-checked at `64bc28b2` (2026-10-24).
+**Version reviewed:** `loom` `main` at commit `ba92d405` (2026-11-24, after release 0.1.6), 77 packages under `packages/`, `plugins/` and `tools/`. The 2026-11-23 update added the guardrails of ADR 0147 to 0151 (sections 3, 4, 5 and 9); the earlier guardrail claims were last re-checked at `64bc28b2` (2026-10-24).
 
 **Read this first: almost every guardrail is opt-in.** Loom's design rule G2 says an unwired guardrail leaves behaviour byte-identical to before. This keeps the kernel generic, but it means a deployment is only as safe as what it wires. Section 9 lists what an integrator must configure. A review of loom is a review of the *mechanisms*; a review of a product built on loom must also check that those mechanisms are switched on.
 
@@ -154,7 +154,7 @@ It also turns on defaults that do not depend on the workload: principal required
 
 `signDelegation` and `verifyDelegation` use HMAC-SHA256. A token is bound to its holder (`issuedTo` must match the caller's actor) and may carry a signed expiry. `DelegationAuthorizer` grants only the intersection of the verified token and the callee's own grants, and `base` is **required**: the symmetric key means a callee could mint itself a wildcard token, so the intersection is what bounds it. Cross-organisation delegation (asymmetric keys) and revocation (`jti`) are out of scope today.
 
-### Task-scoped authority (ADR 0150, 0151; opt-in `@loomwork/task-authority`)
+### Task-scoped authority (ADR 0150, 0151, 0152; opt-in `@loomwork/task-authority`)
 
 A valid credential does not say whose work is being done. This opt-in package binds authority to the task, which narrows what a prompt-injected or delegating agent can spend with perfectly valid credentials.
 
@@ -164,6 +164,10 @@ A valid credential does not say whose work is being done. This opt-in package bi
 - **A spent lease, an expired grant or a revoked grant parks the run** on a typed renewal gate (`withRenewal`, `agentLoop$({ authority })`) instead of failing or running on. A broker policy decides the renewal; the approver is shown a digest of the request it answers (ADR 0117).
 - **Child leases are carved by reservation,** recorded in the parent's fold and mirrored in a never-decreasing broker ledger, so children cannot exceed the parent's ceiling, a returned amount is taken once, and a spawn with a lease and no minter fails closed.
 - **ADR 0151 seams make this enforceable.** `EffectContext.flush()` closes the crash window between a metered count and the effect; `readResources()` and a copied `ctx.resources` stop accounting middleware reading or mutating the fold-owned object; `WorkflowRuntime.reserveEffectDimensions("lease.")` stops flow code forging a `lease.*` meter dimension (effect-scope emits stay trusted).
+- **Provenance (`directedBy`).** A leased effect directed by a foreign lineage is attributed, parked or denied, from the run's seen origins (ADR 0152, fleet gate `kernel.features.seenOrigins`); only tagged channels are attributed.
+- **Read scope.** Effects declaring `capabilities.read` need a covering `reads` glob (`task-grant:read-scope`).
+- **Isolated sandbox.** `sandbox: "isolated"` with `sandboxRequirement` refuses a backend without `network: "none"` and `freshPerRun`.
+- **Scheduled agents.** A once-approved schedule grant and a child grant per tick, minted by the `TimerService` `principalFor` hook.
 - **Key ring.** `GrantKeys` (`current`, `previous`, `refOnly`) rotates the secret; a key removed outright strands every run started under it (fail closed).
 
 Where it stops: see the "Task authority" row in section 9.
