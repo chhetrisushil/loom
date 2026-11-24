@@ -246,6 +246,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   wall-clock drift never enters the fold. When a `TimerStore` is wired the runtime DERIVES `wakeAt`
   from a suspend's `timeout`, so `suspend({ on, timeout })` satisfies this; without one, the timed
   suspend is silently never woken, which is what `suspension-safety` reports.
+- A `TimerService` MAY be given a `principalFor(schedule, occurrence)` hook; the returned principal is recorded on the occurrence's `EXECUTION_STARTED` (and handed to `ExecutionAuthorizer.committed`). A hook that throws, times out or returns a malformed value MUST cause the occurrence to be skipped, not started anonymous.
 - Resume is **ingress**-gated, always and un-opt-outably (#304/#305). `eventType` is caller-supplied
   — A2A `provideInput` and the wire-ABI `execution.resume` both hand a network-supplied
   `ResumeEvent` straight to `resume()` — and the log folds by NAME, so this gate decides WHICH event
@@ -378,6 +379,7 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
   (`_resources`), read via `EffectContext.resources` (`ResourceSnapshot`). Dimensions
   (`ResourceDimension`): `tokens`, `costUsd`, `ms`, and (ADR 0032) optional `memBytes`, `wallMs`,
   `netBytes`. A dimension is present only where an effect can measure it (no false zeros).
+- `EffectContext.seenOrigins?()` returns the distinct taint origins recorded for the run (ADR 0152). It is absent when tracking is off (a consumer MUST treat absent as untracked and fail closed) and contains the reserved `SEEN_ORIGINS_OVERFLOW` marker when a bound was exceeded.
 - A `Budget` MAY cap any dimension; exceeding it raises `QUOTA_EXCEEDED` via admission control.
   `ctx.negotiateBudget(dimension, request, opts?)` resolves a bounded grant **through the decision
   seam** (recorded, replay-safe) — advisory only; it never enforces.

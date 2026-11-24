@@ -559,6 +559,8 @@ verified** rather than passing clean.
 its reach declaration, e.g. `checks: { verify: { reach: { planner } } }`. A hand-off with no entry
 is reported unresolved, naming the key to add (ADR 0086, L32).
 
+`checks.verify` also takes **`taskGrants`** (ADR 0150 D9): `[{ flowId, effects, reach? }]` grant templates (derive them with `deriveGrant(reachOf(...))`). The `task-grant-reach` rule warns when a template names an effect its flow cannot reach, or a flow that is not registered; absent is a no-op, an empty list reports an `info`.
+
 > If the config's own `defineConfig` sets `checks: { verify: "error" }`, requiring the module throws at boot; the CLI catches that and prints it. This command exists for on-demand verification **independent** of the config's own mode.
 
 ### `loom migrate-config [<file>...] [--config <file>] [--apply] [--json]`
