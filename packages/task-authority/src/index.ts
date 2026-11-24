@@ -1,4 +1,4 @@
-/** Slice-1 marker for `@loomwork/task-authority` (ADR 0150). */
+/** Slice marker (slice 2: ADR 0150 D7-D12) for `@loomwork/task-authority` (ADR 0150). */
 export const TASK_AUTHORITY_VERSION = "0.0.0-slice2";
 
 export {

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-24
+
 ### Changed
 
 - **`@loomwork/task-authority`: `answerScheduleApproval`'s vouching is required in the types (breaking at compile time).** `AnswerScheduleOptions.expect` (and so the sixth argument) and `ScheduleExpect.issuedTo` are now required; a call without `{ expect: { issuedTo } }` no longer compiles. The run-time refusal stays for JS callers (`ScheduleDeniedError`: "the operator must vouch for the holder"), so no call that worked before can have been valid. `ScheduleExpect.tenant` / `onBehalfOf` stay optional.
