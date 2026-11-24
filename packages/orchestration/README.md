@@ -37,6 +37,10 @@ may travel in the carry.
    sees the parent's `EXECUTION_SUSPENDED`, and on the child's `EXECUTION_COMPLETED` resumes the
    parent with the child's output — all correlated from observed events (no store read → no race).
 
+## Task authority (ADR 0150)
+
+A leased child may narrow its `reads` (`reads: [...]` on `awaitChild` / `awaitChildren` members, a subset of the parent's); naming `reads` without a `lease` throws. On a run with `kernel.features.seenOrigins`, the child's seen origins ride the `CHILD_DONE` body as `childOrigins` (one taint wrapper per origin), so the parent's seen origins grow; an unreadable or untracked child adds the overflow marker.
+
 ## Attenuated authority (K12.4)
 
 A spawned child does not inherit its parent's authority — it starts with no principal, so it is

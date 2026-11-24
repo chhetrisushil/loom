@@ -95,6 +95,10 @@ await app.close();
 - **Driver liveness.** Heartbeat leases and `recoverAbandoned` re-drive executions whose process
   died: [operations.md sections 2 and 3](../../docs/operations.md#2-heartbeat-leases),
   [ADR 0130](../../docs/adr/0130-sealed-payload-delivery-guard.md).
+- **Slice-2 seams for task authority (ADR 0152, EVENT_SCHEMA 1.27.0).** `kernel.features.seenOrigins` (default off) records the
+  taint origins a run has seen and exposes them as `EffectContext.seenOrigins`; `TimerServiceOptions.principalFor` (with
+  `principalForTimeoutMs` and `SchedulePrincipalError`) records a principal on each schedule occurrence. Upgrade every node
+  before enabling the feature.
 - **Storage** is pluggable behind the `EventStore` and `SnapshotStore` SPIs
   ([`@loomwork/event-runtime`](../event-runtime/README.md)).
 

@@ -39,6 +39,9 @@ console.log(EVENT_SCHEMA_VERSION, knownEventTypes().length);
   `flowEmitCount`, `recordedFrames`, `expectedReplayFrames`.
 - **Event-schema ABI.** `EVENT_SCHEMA_VERSION` (currently 1.27.0) and `knownEventTypes()`, the sorted set
   the fold handles. A governance test pins the set; the event schema is versioned and additive.
+- **Seen origins (ADR 0152).** The fold keeps a bounded `_seenOrigins` record (limits from `resolveSeenOriginsLimits`); the
+  record and scan functions (`seenOriginsRecord`, `scanSeenOriginsJson`, `scanSeenOriginsLive`, `trackSeenOrigins`,
+  `seenOriginsList`, `hasSeenOrigins`) are exported.
 - **Fold limits and constants.** `INBOX_DEDUPE_CAP`, `QUARANTINE_FOLD_CAP`, the custom-dimension limits,
   `KERNEL_STAMPED_EVENT_TYPES`, `FAILED_WHILE_PARKED`, `FLOW_DIVERGED_GATE`.
 
