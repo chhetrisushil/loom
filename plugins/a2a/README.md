@@ -51,6 +51,7 @@ await server.start();
 
 ## Behaviour that surprises people
 
+- **`taintInbound` wraps what peers send you.** Off by default. On, the flow receives `{ prompt: <tainted wrapper> }` (origin `a2a-inbound:<actor|anonymous>`, printable ASCII, at most 128 chars); a `provideInput` payload is wrapped too, except for a gate with a `resumeSchema`. `{ lineageOf: lineageOrigin(secret) }` adds the peer's verified `lineage:<rootId>` origin, which `directedBy` reads across the hop. See the user guide's "Task authority beyond the paper".
 - **`taintResults` marks the peer's text, not its task state.** `content`, `raw.artifacts` and `raw.error`
   become tainted values the prompt boundary refuses in instruction positions, so `unwrapTainted()` them to
   compute with. `raw.id` and `raw.status` stay plain for control flow. If you put those into a prompt, nothing marks them

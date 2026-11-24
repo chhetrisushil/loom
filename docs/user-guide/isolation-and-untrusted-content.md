@@ -63,6 +63,8 @@ unconditionally: tainted content may appear only in a `user` message, and only f
 `<untrusted-input origin="…">`. A system message, an assistant turn, or a tool name/description
 throws `UntrustedContentError`.
 
+Some origins are reserved namespaces: `a2a-inbound:`, `lineage:` and `unknown:` are written by the A2A plugin and `@loomwork/task-authority`; see the user guide's task-authority sections.
+
 The producers ship opt-in: `registerMcpInvoke(client, runtime, { taintResults: true })`,
 `client.registerInto(effects, { taintResults: true })`, `mcpTool$(client, name, { taintResults: true })` and
 `new A2APeerClient({ url, taintResults: true })`. [Data classification](../data-classification.md) lists what they do not cover. The **refusal is structural**; the **fence is only

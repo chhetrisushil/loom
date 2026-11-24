@@ -55,6 +55,9 @@ void ToolEffect;
 - **Capability grants (K2)**, quotas (K3), cancellation (K8) and delivery guarantees (K9) apply at
   this seam: [kernel guide pages](../../docs/user-guide/grants-and-strict-mode.md),
   [ADR 0021](../../docs/adr/0021-k9-effect-delivery-contract-idempotency-fencing.md).
+- **Capabilities and seen origins.** An `Effect` may carry `capabilities` (`ToolEffect` takes `capabilities: { read }`, which marks
+  a read with a resource); `EffectContext.seenOrigins?()` returns the run's seen taint origins (absent = untracked), and
+  `SEEN_ORIGINS_OVERFLOW` is re-exported from here (ADR 0150, 0152).
 - Effects are `journaled` (recorded and replayed) or `ambient`; a transient facade
   (`invokeTransient`) runs one without an execution
   ([ADR 0066](../../docs/adr/0066-transient-effect-invocation-facade.md)).

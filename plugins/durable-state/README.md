@@ -59,6 +59,7 @@ export const app = defineConfig({
 
 ## Behaviour that surprises people
 
+- **`load` is a declared read.** It declares `capabilities: { read: true }` with the key as `resourceOf`, so under `@loomwork/task-authority` a grant's `reads` globs (`<toolId>:<key>`) govern it; a task-grant holder with no `reads` is refused (`task-grant:read-scope`). A run with no task grant is unaffected.
 - **A bad contract fails loudly.** A missing migration step, a migration that throws, a stored version
   newer than yours, or a payload that fails the current schema all throw `StateContractMismatchError`;
   state is never coerced. A `save` also validates against the schema before writing.

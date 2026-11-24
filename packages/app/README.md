@@ -30,6 +30,9 @@ them on the same release. Inside this repo use `workspace:*`; a sibling checkout
 option groups `SecurityOptions`, `ObservabilityOptions`, `DurabilityOptions`, `ExecutionOptions`,
 `ChecksOptions`.
 
+`reachOf(runtime, flowId, { inputs?, children?, agentLoops? })` returns the sorted effect tool ids a flow can reach (ADR 0150 D9);
+it feeds `deriveGrant` and the `task-grant-reach` verify rule (`checks.verify.taskGrants`). `agentLoopReach` gives one agent loop's reach.
+
 ## Example
 
 ```ts
