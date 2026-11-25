@@ -107,6 +107,6 @@ A schedule has no human per run, so its root authority is a **schedule grant** a
 
 A custom `GrantBroker` must implement `mint`, `renew`, `revoke`, `claim`, `holder`, `settleChild`, `takeReturn`,
 `reserve` and `settleUnstarted` (plus `current`, and optionally `revoked`); run `@loomwork/task-authority/conformance`
-against it.
+against it. Guide: [Write your own grant broker](../../docs/custom-grant-broker.md).
 
 Design: [ADR 0150 — task-scoped authority](../../docs/adr/0150-task-scoped-authority.md).

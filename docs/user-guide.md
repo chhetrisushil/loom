@@ -1202,6 +1202,8 @@ await resumed.waitForCompletion();
 
 An `agentLoop$` run parks the same way with `authority: { onExhausted: "park" }` (it needs `toolErrors: "feedback"`, the default, else `AgentLoopConfigError`; a refused renewal throws `AuthorityRenewalDeniedError`). Child leases (`childLeaseEffect`, `childGrantMinter`; give `taskLeaseMiddleware` `effects: () => effectRuntime` so it can tell the real child-lease effect from another effect under the same id; the grant must also list `task-authority:child-lease` in its `effects`) and the `@loomwork/task-authority/conformance` kit (its `laundering.uncovered.a2a` check runs when the subject supplies an `a2a` transport, else it is skipped) are covered in the [package README](../packages/task-authority/README.md) and the ADR's slice-1 amendment, which also lists what task authority refuses (fork and `continueAsNew` of a task-held run, overlapping or resource-qualified leases).
 
+**Your own broker.** `InMemoryGrantBroker` forgets everything at a restart. [Write your own grant broker](custom-grant-broker.md) covers renewal rules, a durable Postgres broker and the full contract.
+
 **Multi-tenant grants.** Give `mint` a `tenant` and, optionally, an `onBehalfOf`; both are signed into the grant and bound into the run's `ta2:` ref. The run's principal must carry the same values (a mismatch is refused at start, and denied as `task-grant:identity` on a transient call), and a child grant inherits them. The log holds only the ref; the broker holds identity, so erasing it there makes the task permanently unrestorable (fail closed). A delegation together with a task grant is still refused: mint a child grant instead.
 
 ```ts
