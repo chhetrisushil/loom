@@ -16,6 +16,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Transient manifest interpreter](transient-interpreter.md)** | Run a hot, content-addressed read path with zero events, escalating to a durable run only when a repair must be recorded. |
 | **[Data-protection patterns](data-protection-patterns.md)** | The assembly order for long-running observer agents: redaction, shredding, pinned retention, tenant scoping, residency. |
 | **[Security guardrails overview](security-overview.md)** | For security reviewers: trust boundaries and threat model, every guardrail loom ships with its ADR, code and tests, known residual risks, and the integrator checklist. |
+| **[Write your own grant broker](custom-grant-broker.md)** | Persist task-scoped authority: renewal rules, a durable Postgres broker, the `GrantBroker` contract and its conformance kit. |
 | **[Acceptance governance](acceptance-governance.md)** | The self-quieting loop: OUTCOME_RECORDED → rankFromOutcomes → rankedRouter — proactivity trained by usage. |
 | **[Task-scoped authority whitepaper](spec/task-scoped-authority-whitepaper.md)** | The design argument behind [ADR 0150](adr/0150-task-scoped-authority.md): authority bound to the task, leases that pause when spent, and what a runtime can add. |
 | **[Fitness functions](spec/fitness-functions.md)** | The kernel's design invariants, made executable: every PR proves them (normative). |

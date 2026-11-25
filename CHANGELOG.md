@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Guide: [Write your own grant broker](docs/custom-grant-broker.md)** (task-scoped authority, ADR 0150): renewal rules, a durable Postgres broker and the `GrantBroker` contract, with every example run against the conformance kit.
+
 ## [0.1.7] - 2026-11-24
 
 ### Changed
