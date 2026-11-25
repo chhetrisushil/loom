@@ -165,8 +165,9 @@ export function cloneRequest<T>(v: T): T {
 
 /**
  * Reference in-process ledger (ADR 0150 D13): mint, current, revoked, revoke. Not an enforcement point.
- * Reservations: the sum of ALL children's HIGH-WATER ceilings (max ever granted; revoked or not; renewing down releases nothing) for a lease never exceeds the parent's
- * ceiling. The broker NEVER releases a reservation; returning unused amounts is the parent fold's job (T8).
+ * Reservations: the sum of ALL children's HIGH-WATER ceilings (max ever granted; revoking or renewing down releases nothing) for a lease never exceeds the parent's
+ * ceiling. Only `settleUnstarted`, and `settleChild` when no execution holds the parent (D12 refund), release one;
+ * with a held parent the unused amount is taken once into its fold (`takeReturn`).
  * Bad input surfaces as `GrantBrokerError` (broker rules) or `TaskGrantShapeError` (grant shape), never a TypeError.
  * Keys: `secret` is a `GrantKeys` ring fixed at construction. There is no live rotation API, and rebuilding the
  * broker loses its in-memory ledger; a real broker persists its ledger and is rebuilt with the new ring.

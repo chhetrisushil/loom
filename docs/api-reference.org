@@ -1838,14 +1838,15 @@ function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string |
 
 ** ~@loomwork/task-authority~ — authority scoped to the task (ADR 0150)
 
-Slice 1 shipped in 0.1.5 (ADR 0150, amended twice on 2026-11-23). Slice 2 (D7-D12) is built on main after 0.1.6: provenance (=directedBy=), =reads=, the isolated sandbox, grant derivation, denial feedback and scheduled agents, listed in the blocks below and described in the [[file:user-guide.md][user guide]] and ADR 0150's "As built (slice 2)" section. The signed task grant token (D2) is an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. The package also ships =TaskGrantAuthorizer=, the broker SPI with =InMemoryGrantLedger= and =InMemoryGrantBroker= (renewal), the principal codec and installer, =taskLeaseMiddleware=, the renewal helpers, child leases and the conformance kit. It needs the ADR 0151 kernel seams (=EffectContext.flush=, =readResources=, =WorkflowRuntime.reserveEffectDimensions=).
+Slice 1 shipped in 0.1.5 (ADR 0150, amended twice on 2026-11-23). Slice 2 (D7-D12) shipped in 0.1.7: provenance (=directedBy=), =reads=, the isolated sandbox, grant derivation, denial feedback and scheduled agents, listed in the blocks below and described in the [[file:user-guide.md][user guide]] and ADR 0150's "As built (slice 2)" section. The signed task grant token (D2) is an HMAC-SHA256 over a versioned canonical encoding (=tg1\n= + sorted-key JSON, sorted arrays) that binds EVERY field. The package also ships =TaskGrantAuthorizer=, the broker SPI with =InMemoryGrantLedger= and =InMemoryGrantBroker= (renewal), the principal codec and installer, =taskLeaseMiddleware=, the renewal helpers, child leases and the conformance kit. It needs the ADR 0151 kernel seams (=EffectContext.flush=, =readResources=, =WorkflowRuntime.reserveEffectDimensions=).
 
 #+begin_src typescript
-const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice1" — a marker, not an ABI version
+const TASK_AUTHORITY_VERSION: string   // "0.0.0-slice2" — a marker, not an ABI version
 interface LeaseSpec { ceiling: number; effects: readonly string[] }
 interface TaskGrant {
   taskId: string; rootId: string; parentId?: string; issuedTo: string; tenant?: string; onBehalfOf?: string
-  effects: string[]; reads?: string[] /* S-R4: globs "<toolId>:<resource glob>", literal non-empty tool id, <=4 "*" each, <=16 KB total, unique; signed, encoded only when present; enforced by TaskGrantAuthorizer for effects that declare capabilities.read (task-grant:read-scope), S6 */; sandbox?: "isolated" /* S-R4: signed, encoded only when present; enforced from S8 */; leases: Record<string, LeaseSpec>; exp: number; epoch: number; sig: string
+  effects: string[]; reads?: string[] /* S-R4: globs "<toolId>:<resource glob>", literal non-empty tool id, <=4 "*" each, <=16 KB total, unique; signed, encoded only when present; enforced by TaskGrantAuthorizer for effects that declare capabilities.read (task-grant:read-scope), S6 */; sandbox?: "isolated" /* S-R4: signed, encoded only when present; enforced by sandboxRequirement (task-grant:sandbox) */; leases: Record<string, LeaseSpec>; exp: number; epoch: number
+  approvedLineages?: string[] /* D7: the foreignSetHash values a directedBy park was approved for, at most 16 (a 17th drops the oldest); written only by a broker */; sig: string
 }
 type UnsignedTaskGrant = Omit<TaskGrant, "sig">
 type GrantKeys = string | { current: string; previous?: readonly string[]; refOnly?: readonly string[] }   // R31 key ring: a string is { current }. Everywhere a grant secret is accepted (sign/verify, TaskGrantAuthorizer, taskLeaseMiddleware, childLeaseEffect, the codec's ta1/ta2 ref MAC, InMemoryGrantLedger/Broker, installTaskAuthority). SIGN and MAC with `current`; VERIFY against current then every previous. `refOnly` keys verify a recorded REF MAC (the codec's fromRef) and are NEVER accepted for a grant signature (verifyTaskGrant, authorizer, lease middleware, child lease), so a retired key cannot mint authority (R35). current non-empty; previous <= 8 and refOnly <= 8; every key non-empty and unique across current, previous and refOnly; each list is read once; refused at construction. keyRing/sealKeys are internal (signTaskGrant already takes a ring). InMemoryGrantBroker has no live rotation API: rebuilding it loses the ledger, a real broker persists its ledger. Retirement: put the new key in `current`, the old in `previous`; once its grants have renewed onto `current` (or after the longest grant TTL) move it to `refOnly` and keep it there for the lifetime of any run started under it. A key REMOVED from the ring no longer verifies (fail closed): a run holding a grant signed with it is denied, and a run STARTED under it is stranded for its whole life because its recorded ref (never rewritten) is MAC'd with it, so keep it in `refOnly` until no run started under it can still be parked or resumed. Renewals re-sign with `current`, so grants migrate on their own; refs do not. Every component must hold the same ring: a codec that lacks a previous key refuses a ref MAC'd with it (principalUnresolved).
@@ -1854,13 +1855,13 @@ function verifyTaskGrant(secret: GrantKeys, g: TaskGrant): TaskGrant | undefined
 function taskGrantDigest(g: TaskGrant): string                            // sha256 hex of the canonical encoding incl. sig, over a validated snapshot; throws TaskGrantShapeError if malformed (does not check the sig: pass a verified grant)
 function validateGrantShape(g: unknown): asserts g is UnsignedTaskGrant   // throws TaskGrantShapeError
 class TaskGrantShapeError extends Error {}
-const TASK_GRANT_DENIAL: { blocked, shape, signature, expired, holder, identity, scope, base, error }   // stable reason prefixes, "task-grant:<cause>"
+const TASK_GRANT_DENIAL: { blocked, shape, signature, expired, holder, identity, scope, base, error, crossLineage, untracked, readScope, sandbox }   // stable reason prefixes, "task-grant:<cause>"
 class TaskGrantAuthorizer implements CapabilityAuthorizer {
   constructor(o: { secret: GrantKeys; base: CapabilityAuthorizer; now?: () => number })  // base REQUIRED (symmetric secret); empty secret throws
   authorize(req: CapabilityRequest): CapabilityDecision   // reads req.principal.taskGrant; never throws
 }
 interface MintRequest { taskId; issuedTo; effects: string[]; leases: Record<string, LeaseSpec>; ttlMs; parent?: { taskId }; tenant?: string; onBehalfOf?: string; reads?: string[]; sandbox?: "isolated" /* S-R4: a child's reads must be covered by the parent's (absent = none), a child of an isolated parent must be isolated; globCovers / widensReadsOrSandbox are the exported reference check */; parentReserved?: Record<string, number> /* D6: the parent's `lease.<n>.reserved` totals, supplied by the supervisor */ }
-interface RenewalRequest { taskId; epoch; spent: Record<string, number>; renewals; effectClassesCaused?: string[]; justification?: TaintedValue<string> | string }
+interface RenewalRequest { taskId; epoch; spent: Record<string, number>; renewals; effectClassesCaused?: string[]; justification?: TaintedValue<string> | string; reason?: "cross-lineage"; lineages?: string[]; hash?: string /* D7: a request to approve a directedBy park; hash = foreignSetHash(lineages) */ }
 type RenewalVerdict = { granted: true; epoch: number; digest: string } | { granted: false; reason: string }
 interface GrantSource { current(taskId): Promise<TaskGrant | undefined>; revoked?(digest): Promise<boolean>; claim(taskId, executionId): Promise<boolean>; holder(taskId): Promise<string | undefined> }  // holder: side-effect free (never claims)
 // claim (R16, REQUIRED): first claim wins, a repeat by the same executionId is true, another execution is false; unknown/revoked task is false.
@@ -1877,23 +1878,23 @@ interface GrantBroker extends GrantSource {
 //   the envelope refuses, or a group is refused) makes the WHOLE reservation takeable ONCE through `takeReturn(childId, parentTaskId)` (the parent's `settle()`), revokes a grant minted
 //   but never CLAIMED and releases its high-water. A group refused during recovery also cancels members already RUNNING (ADR 0112 cascade). R36: the broker keeps a NEVER-DECREASING per-parent `carved[lease]` (each minted ceiling, plus an unminted child's reservation at settleUnstarted) and compares `parentReserved` against it, so a returned reservation cannot back an unreserved child (lineage stays <= the root ceiling); the released high-water serves only the ceiling headroom check. `settleUnstarted` MUST be atomic with `claim` (check-unclaimed + revoke is one CAS). The reserve step refuses a `child` that does not start with `<ctx.executionId>::`. A transient failure that makes the supervisor call `settleUnstarted` is a permanent "unstarted" outcome; a `broker.reserve` throw after the flush leaks the fold reservation (safe direction). Either started (settleChild, or claimed) or unstarted, never both: the first wins, the other changes nothing. conformance: `broker.unstarted-return`.
 class GrantBrokerError extends Error {}
-class InMemoryGrantLedger {                       // mint / current / revoked / claim / revoke (renewal arrives in T4b)
+class InMemoryGrantLedger {                       // everything in GrantBroker except renew
   constructor(o: { secret: GrantKeys; now?: () => number })
 }
 // mint: the request is cloned FIRST (size-capped at 64 KiB; BigInt/cycles => GrantBrokerError), then validated. Bad input is a
 //   GrantBrokerError (broker rule) or TaskGrantShapeError (grant shape), never a TypeError. Root => rootId = taskId, epoch 0,
 //   exp = now + ttlMs (ttlMs a positive safe integer, now + ttlMs safe). With parent: parent must be live and unexpired; effects
 //   subset of parent's; each lease must exist on the parent; ceiling <= parent ceiling minus the ceilings of ALL children ever
-//   minted (revoked or not), each at its HIGH-WATER ceiling (renewing down releases nothing). The broker never releases a reservation (returning unused amounts is the parent fold's job, T8).
+//   minted (revoked or not), each at its HIGH-WATER ceiling (renewing down releases nothing). Revoking a child or renewing it down releases nothing; a reservation is released only by settleUnstarted, or by settleChild when no execution holds the parent (D12 refund). With a held parent the unused amount is taken once into its fold (takeReturn).
 //   Child exp = min(now + ttl, parent exp). Duplicate taskId refused.
 type RenewalPolicy = (req, history: { renewals; spentSoFar }) => false | { leases?: Record<string, number> }   // MUST be synchronous
 class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBroker {
-  constructor(o: { secret: string; now?: () => number; policy?: RenewalPolicy })
+  constructor(o: { secret: GrantKeys; now?: () => number; policy?: RenewalPolicy; approveCrossLineage?: boolean | ((r: Readonly<RenewalRequest>) => boolean) /* default: a cross-lineage approval is refused */ })
 }
 // renew: the request is cloned (size-capped) then bounds-checked; unknown/revoked/stale-epoch/unserializable => { granted: false, reason }.
-//   No await between the epoch check and the commit, so concurrent renewals at one epoch grant exactly once. The policy may only RESET
+//   No await between the epoch check and the commit, so concurrent renewals at one epoch grant exactly once. The policy may only SET the total
 //   ceilings of EXISTING leases (adding effects/leases is refused, not dropped); a non-false, non-object result (Promise, null) denies.
-//   A ceiling below the sum of ALL the task's children's ceilings is refused; a child is bounded by parent headroom. Default policy (R37):
+//   A ceiling below the sum of ALL the task's children's ceilings is refused; a child's ceiling may not exceed its minted (reserved) one. Default policy (R37):
 //   at most 8 renewals (broker-counted); each lease the request reports exhausted (spent[name] >= ceiling) is topped up by its
 //   minted (epoch-0) ceiling, one tranche per renewal; a non-exhausted lease keeps its ceiling; a CHILD's exhausted lease denies
 //   ("child lease <n> exhausted: needs a new parent reservation"). `spent` is caller-reported: a liar gets at most 8 extra tranches. Grant => epoch+1, exp = min(now + original ttl, parent exp); an EXPIRED grant may still renew (D5).
@@ -1904,7 +1905,7 @@ class InMemoryGrantBroker extends InMemoryGrantLedger implements GrantBroker {
 //   so a ref is bound to its holder (the id is split from the MAC at the LAST "."). toRef: a chain with no taskGrant => undefined (other codecs apply); a chain
 //   that CARRIES one is encoded or REFUSED with TaskAuthorityPrincipalError (the kernel then refuses the start before anything is appended; undefined would let
 //   the default record drop the grant). R30: TaskGrant has optional signed tenant?/onBehalfOf? (same bounds as ids + no control chars; absent => canonical encoding byte-identical to before); MintRequest tenant?/onBehalfOf? (a child INHERITS both, naming a different one is refused; renewal keeps them); a grant WITH either records ref "ta2:<taskId>.<mac>", mac = base64url(hmac(secret, "ta2\n" + JSON([taskId, issuedTo, tenant|null, onBehalfOf|null]))), a grant without keeps "ta1:" and old ta1 refs restore; a ta1 ref never restores a grant that has identity; chain tenant/onBehalfOf must EQUAL the grant's (both ways) else refused; fromRef restores { actor, taskGrant, tenant?, onBehalfOf? } from the verified grant only (strict/ref mode: the log holds only the ref; the broker holds identity, the app owns erasure of onBehalfOf there); delegation + taskGrant stays refused. ERASURE: erasing onBehalfOf/tenant at the broker (re-sign, strip or delete) makes the task permanently unrestorable (ta2 MAC mismatch => principalUnresolved => deny; the execution access policy sees an unknown owner). TaskGrantAuthorizer (R34) also denies "task-grant:identity" when the request principal's tenant/onBehalfOf differ from the grant's (absent = absent; the transient path skips the codec). childGrantMinter returns the child grant's tenant/onBehalfOf on the chain. It encodes only a verified, unexpired (exp > now()) grant, actor === issuedTo, taskId
-//   1..256 chars with no control characters. fromRef answers EVERY "ta1:" ref (never undefined, so no older codec or principalResolver can restore a principal
+//   1..256 chars with no control characters. fromRef answers EVERY "ta1:" and "ta2:" ref (never undefined, so no older codec or principalResolver can restore a principal
 //   without the grant): bad format/MAC, source miss, revoked, verify failure, taskId or holder mismatch, claim held by another execution, a throwing or
 //   hanging source (timeoutMs per source call) => { principalUnresolved: "task grant <taskId>: <reason>" } (<= 256 chars) => the kernel denies (ADR 0111 D4).
 //   After a revoke the execution's owner is unknown to the execution access policy (ADR 0111 unknownOwner). orchestrationPrincipalCodec.toRef declines a chain with a taskGrant.
@@ -1913,14 +1914,13 @@ interface TaskAuthorityPrincipalCodec { toRef(chain): string | undefined; fromRe
 interface TaskAuthorityCodecOptions { secret: GrantKeys; now?: () => number /* toRef exp check, default Date.now */; timeoutMs?: number /* per source call, default 5000 */ }
 class TaskAuthorityPrincipalError extends Error {}   // toRef refused a chain carrying a taskGrant it cannot encode
 function taskAuthorityPrincipalCodec(source: GrantSource, opts: TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec
-interface PrincipalCodecHost { composePrincipalCodec(codec): void }   // a WorkflowRuntime; no kernel dependency is added
-function installTaskAuthority(runtime: PrincipalCodecHost, o: { source: GrantSource } & TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec  // composePrincipalCodec: keeps any codec already set
+interface PrincipalCodecHost { composePrincipalCodec(codec): void; reserveEffectDimensions?(prefix: string): void }   // a WorkflowRuntime; no kernel dependency is added
+function installTaskAuthority(runtime: PrincipalCodecHost, o: { source: GrantSource } & TaskAuthorityCodecOptions): TaskAuthorityPrincipalCodec  // keeps any codec already set; reserves the `lease.` meter prefix, and throws on a host without reserveEffectDimensions (ADR 0151 D7)
 interface TaskLeaseOptions { secret: GrantKeys; source?: GrantSource; effects?: () => { entries(): Iterable<[string, unknown]> } /* R33: the registry lookup (`() => effectRuntime`) */; strictLeases?: boolean /* default TRUE */; revocationTimeoutMs?: number /* 5000 */; revocationCacheMs?: number /* 1000 */; now?: () => number }
 function taskLeaseMiddleware(o: TaskLeaseOptions): EffectMiddleware   // reads ctx.principal.taskGrant; none => next() untouched, zero events
 // R33 (branded child-lease effect): only the effect `childLeaseEffect()` returned is exempt from counting under CHILD_LEASE_TOOL (`isChildLeaseEffect(e)`, a module-private WeakSet brand).
 //   The middleware cannot see the effect (EffectContext carries only `toolId`), so it looks the registered effect up through `effects` (`() => effectRuntime`; a getter because the
-//   runtime is built after its middleware). An app effect under the id, or NO `effects` lookup, gets no exemption: it is a normal leased effect (a lease cannot map the id, a `:` makes
-//   it resource-qualified, so strict leases refuse it; strictLeases:false runs it uncounted like any unmapped effect). M4: an effect under CHILD_LEASE_TOOL that is not the branded one (or no `effects` lookup, or two copies of the package) throws `LeaseChildEffectUnbrandedError` (renewable: false) instead of running; it supersedes the "normal leased effect" wording above. Pass `effects` whenever CHILD_LEASE_TOOL is registered. A detached group member is never cancelled by a refused group (ADR 0112 D5).
+//   runtime is built after its middleware). Any other effect under the id, or no `effects` lookup (or two copies of the package), throws `LeaseChildEffectUnbrandedError` (renewable: false) and the effect never runs. Pass `effects` whenever CHILD_LEASE_TOOL is registered. A detached group member is never cancelled by a refused group (ADR 0112 D5).
 // Wiring (R22): place it INSIDE (after) any retry middleware, or a retry re-runs the effect under one count; run TaskGrantAuthorizer alongside (the middleware checks neither
 //   expiry nor holder); QUOTA_EXCEEDED folds a sticky `_resources.exceeded` that survives a renewal.
 // D4 (R19): effects map by toolId only (shape validation refuses overlapping leases and `:`-qualified lease effects, R21). No lease: strictLeases (default) => LeaseUnmappedError,
@@ -1940,6 +1940,15 @@ class LeaseChildEffectUnbrandedError extends Error {}   // renewable: false; the
 // Also exported: MAX_JUSTIFICATION (4096) and MAX_JUSTIFICATIONS_KEPT (16) (renewal bounds); RENEWAL_TERMINAL_NAMES (error names `isRenewable` stops at); renewalDecisionId(id, n) = `task-authority:attempt:<id>:<n>`;
 //   renewalViewDigest(gate, request); TaskGrantAuthorizerOptions; ChildLeaseContext and ChildGrantMinter (the structural shapes `reserveChildLease` and `superviseChildren({ taskAuthority })` take).
 // D5 renewal (plain flows). Needs no kernel dependency: `ctx` is the structural RenewalContext { executionId, suspend, decide }.
+// D6 child leases
+const CHILD_LEASE_TOOL = "task-authority:child-lease"   // list it in the parent grant's effects
+function childLeaseEffect(o: { secret: GrantKeys; broker: Pick<GrantBroker, "takeReturn" | "reserve"> }): ToolEffect
+function isChildLeaseEffect(e: unknown): boolean
+function reserveChildLease(ctx: ChildLeaseContext, childKey: string, lease: Record<string, number>, o?: { attempt?: string }): Promise<{ spawn: { lease; leaseParent: string }; settle(): Promise<void> }>
+function childGrantMinter(broker: GrantBroker, o: { ttlMs: number; now?: () => number }): ChildGrantMinter   // SupervisorDeps.taskAuthority
+// S-R4: the reference subset check for a third-party broker
+function globCovers(parent: string, child: string): boolean
+function widensReadsOrSandbox(parent, child): string | undefined   // a string is the refusal
 const RENEWAL_GATE = "task-authority:renew"
 const renewalResumeSchema: ZodType   // { granted: true, epoch, digest, viewDigest? } | { granted: false, reason, viewDigest? }: flow$({ resumeSchemas: { [RENEWAL_GATE]: renewalResumeSchema } })
 function isRenewable(err: unknown): boolean   // `renewable === true`, or a CapabilityDeniedError (by name) whose reason starts "task-grant:expired", on the cause chain (depth 8)
@@ -1950,7 +1959,7 @@ function withRenewal<T>(ctx: RenewalContext, id: string, fn: (attemptId: string)
 //   The payload is parsed with renewalResumeSchema even without resumeSchemas; granted => retry under a fresh id (the codec restores the new grant); denied, malformed, or
 //   n > maxRenewals => RenewalDeniedError. fn MUST be replay-pure and MUST NOT park; attempt-id steps re-run after a renewal, stable-id steps replay; `id` MUST be unique per
 //   call site per execution. A non-renewable error propagates untouched, recording nothing. No task/epoch on the error and no `taskId` => RenewalDeniedError (never epoch 0).
-function answerRenewal<H>(runtime: RenewalRuntime<H>, broker: { renew(r): Promise<RenewalVerdict> }, executionId: string, resumeOpts?: unknown): Promise<H>
+function answerRenewal<H>(runtime: RenewalRuntime<H>, broker: { renew(r): Promise<RenewalVerdict>; current?(taskId): Promise<{ epoch: number } | undefined> }, executionId: string, resumeOpts?: unknown): Promise<H>
 //   operator helper: reads the pending request, refuses if its digest != the parked viewDigest, takes the epoch from broker.current when offered, broker.renew(request), runtime.resume(id, { eventType: RENEWAL_GATE, payload: verdict + viewDigest echo }, resumeOpts)
 // order: principalBlocked → no grant ⇒ base → shape → signature → exp (now() >= exp denies) → holder (actor === issuedTo)
 //        → scope (exact capabilityIds match, no globs) → base intersection. A present-but-malformed grant is a denial.
@@ -1960,13 +1969,12 @@ type A2ATransport   // (slice-2 S11) the in-process agent-to-agent hop the kit d
 type CheckStatus = "passed" | "failed" | "skipped"
 interface ConformanceResult { id: string; status: CheckStatus; message?: string }   // message = why it failed or was skipped
 interface ConformanceReport { ok: boolean; results: ConformanceResult[] }            // ok = no check failed
-const CONFORMANCE_CHECK_IDS: readonly string[]   // broker.* (claim, holder, take-return, revoked, mint, renew, reservation, identity-fixed, signs-current-key = mint and renewal sign with the ring current key), carve.child-renew-ceiling, laundering.*
+const CONFORMANCE_CHECK_IDS: readonly string[]   // broker.*, carve.*, reads.read-scope, sandbox.isolated, laundering.*, pause-renew, replay, revocation
 function checkTaskAuthorityConformance(subject: ConformanceSubject): Promise<ConformanceReport>
 //   never throws. Broker-contract checks, plus (needs the optional peers core, event-runtime, snapshot-runtime, workflow-runtime, orchestration) runtime checks on a
 //   rig the kit builds: carve.forged-meters and laundering.uncovered.shared-memory guard the package and kernel, NOT the broker (a broken broker cannot fail them); revocation.
 //   laundering.covered and reads.read-scope / sandbox.isolated / broker.reads-sandbox / broker.refund-* are real checks (slice 2). laundering.uncovered.a2a runs when the subject supplies `a2a: A2ATransport` (an in-process hop built on LoomAgentExecutor), else it is reported skipped ("no A2A transport supplied"), never passed.
 //   replay: a run replaying 8 effects makes the same number of broker calls as one replaying 1 (principal resolution is a fixed cost; ruling R29). No broker can fail it: the calls come from the runtime.
-#+end_src
 
 // ADR 0150 D12 — scheduled agents (slice-2 S10): a schedule grant, approved once, and a child grant per tick.
 const SCHEDULE_GATE = "task-authority:schedule"   // the typed resume gate of the one-off approval run
@@ -1986,6 +1994,7 @@ function reclaimScheduledTick(broker: Pick<GrantBroker, "current" | "holder" | "
 // answerScheduleApproval(runtime, broker, executionId, decision, resumeOpts, o: { expect: { issuedTo; tenant?; onBehalfOf? }; now?; onMinted?(grant, approvalExecutionId); requireVerifiedApproval? }): expect.issuedTo is REQUIRED; tenant/onBehalfOf must equal expect's and the approval run's recorded principal's, BEFORE the resume; an approved COMPLETED run mints from its recorded proposal (crash recovery) only with the approval marker requestScheduleApproval writes after the suspend (and, with requireVerifiedApproval, the kernel's APPROVAL_GRANTED).
 // mintScheduleGrant(broker, spec, o?: { now?; recoveryMs? }): idempotent only if every signed field and the ttl (minted <= SCHEDULE_RECOVERY_MS = 10 min ago) match; an expired or different grant throws GrantBrokerError.
 // Errors: ScheduleDeniedError (approval refused/malformed), ScheduleGrantError { scheduleId } (a tick cannot get its grant).
+#+end_src
 
 ** ~@loomwork/task-authority~ — slice 2 (ADR 0150 D7-D12)
 

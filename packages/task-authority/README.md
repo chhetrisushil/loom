@@ -11,7 +11,7 @@ principal-codec seams. Needs `@loomwork/workflow-runtime` 0.1.5 or later for sli
 without `reserveEffectDimensions`, and the lease middleware throws `LeaseDurabilityError` where `flush` or
 `readResources` is absent (the transient seam).
 
-Slice 1 surface (see `docs/api-reference.org`):
+Core surface (slice 1 plus the signed grant fields; see `docs/api-reference.org`):
 
 - `signTaskGrant` / `verifyTaskGrant` / `taskGrantDigest` / `validateGrantShape`: the HMAC-signed grant token.
 - `TaskGrantAuthorizer`: denies effects outside the grant, and a grant held by the wrong principal.
